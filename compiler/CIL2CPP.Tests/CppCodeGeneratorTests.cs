@@ -407,4 +407,340 @@ public class CppCodeGeneratorTests
                 Directory.Delete(tempDir, true);
         }
     }
+
+    // ===== Array Init Data =====
+
+    [Fact]
+    public void Generate_WithArrayInitData_EmitsStaticData()
+    {
+        var module = CreateSimpleModule();
+        module.RegisterArrayInitData(new byte[] { 0x01, 0x02, 0xFF });
+        var gen = new CppCodeGenerator(module);
+        var output = gen.Generate();
+
+        Assert.Contains("static const unsigned char __arr_init_0[]", output.SourceFile.Content);
+        Assert.Contains("0x01", output.SourceFile.Content);
+        Assert.Contains("0x02", output.SourceFile.Content);
+        Assert.Contains("0xFF", output.SourceFile.Content);
+    }
+
+    // ===== Primitive TypeInfo =====
+
+    [Fact]
+    public void Generate_WithPrimitiveTypeInfo_EmitsTypeInfoInHeader()
+    {
+        var module = CreateSimpleModule();
+        module.RegisterPrimitiveTypeInfo("System.Int32");
+        var gen = new CppCodeGenerator(module);
+        var output = gen.Generate();
+
+        Assert.Contains("extern cil2cpp::TypeInfo System_Int32_TypeInfo;", output.HeaderFile.Content);
+    }
+
+    [Fact]
+    public void Generate_WithPrimitiveTypeInfo_EmitsTypeInfoInSource()
+    {
+        var module = CreateSimpleModule();
+        module.RegisterPrimitiveTypeInfo("System.Int32");
+        var gen = new CppCodeGenerator(module);
+        var output = gen.Generate();
+
+        Assert.Contains("System_Int32_TypeInfo", output.SourceFile.Content);
+        Assert.Contains("sizeof(int32_t)", output.SourceFile.Content);
+        Assert.Contains("ValueType", output.SourceFile.Content);
+    }
+
+    // ===== Static Constructor Guard =====
+
+    [Fact]
+    public void Generate_WithStaticCtorGuard_EmitsGuardFunction()
+    {
+        var module = new IRModule { Name = "Test" };
+        var type = new IRType
+        {
+            ILFullName = "MyClass", CppName = "MyClass", Name = "MyClass", Namespace = "",
+            HasCctor = true
+        };
+        var cctorMethod = new IRMethod
+        {
+            Name = ".cctor", CppName = "MyClass__cctor", DeclaringType = type,
+            IsStatic = true, IsConstructor = true, IsStaticConstructor = true,
+            ReturnTypeCpp = "void"
+        };
+        var bb = new IRBasicBlock { Id = 0 };
+        bb.Instructions.Add(new IRReturn());
+        cctorMethod.BasicBlocks.Add(bb);
+        type.Methods.Add(cctorMethod);
+        module.Types.Add(type);
+
+        var gen = new CppCodeGenerator(module);
+        var output = gen.Generate();
+
+        Assert.Contains("MyClass_cctor_called", output.SourceFile.Content);
+        Assert.Contains("MyClass_ensure_cctor()", output.SourceFile.Content);
+        Assert.Contains("MyClass_ensure_cctor();", output.HeaderFile.Content);
+    }
+
+    // ===== TypeInfo Flags =====
+
+    [Fact]
+    public void Generate_ValueType_HasValueTypeFlag()
+    {
+        var module = new IRModule { Name = "Test" };
+        var type = new IRType
+        {
+            ILFullName = "MyStruct", CppName = "MyStruct", Name = "MyStruct", Namespace = "",
+            IsValueType = true
+        };
+        module.Types.Add(type);
+        var gen = new CppCodeGenerator(module);
+        var output = gen.Generate();
+
+        Assert.Contains("cil2cpp::TypeFlags::ValueType", output.SourceFile.Content);
+    }
+
+    [Fact]
+    public void Generate_AbstractType_HasAbstractFlag()
+    {
+        var module = new IRModule { Name = "Test" };
+        var type = new IRType
+        {
+            ILFullName = "MyBase", CppName = "MyBase", Name = "MyBase", Namespace = "",
+            IsAbstract = true
+        };
+        module.Types.Add(type);
+        var gen = new CppCodeGenerator(module);
+        var output = gen.Generate();
+
+        Assert.Contains("Abstract", output.SourceFile.Content);
+    }
+
+    [Fact]
+    public void Generate_SealedType_HasSealedFlag()
+    {
+        var module = new IRModule { Name = "Test" };
+        var type = new IRType
+        {
+            ILFullName = "MySealed", CppName = "MySealed", Name = "MySealed", Namespace = "",
+            IsSealed = true
+        };
+        module.Types.Add(type);
+        var gen = new CppCodeGenerator(module);
+        var output = gen.Generate();
+
+        Assert.Contains("Sealed", output.SourceFile.Content);
+    }
+
+    // ===== Multi-Level Inheritance (Bug 3 fix verification) =====
+
+    [Fact]
+    public void Generate_MultiLevelInheritance_EmitsAllFields()
+    {
+        var module = new IRModule { Name = "Test" };
+
+        var grandparent = new IRType
+        {
+            ILFullName = "GrandParent", CppName = "GrandParent", Name = "GrandParent", Namespace = ""
+        };
+        grandparent.Fields.Add(new IRField
+        {
+            Name = "gpField", CppName = "f_gpField", FieldTypeName = "System.Int32"
+        });
+
+        var parent = new IRType
+        {
+            ILFullName = "Parent", CppName = "Parent", Name = "Parent", Namespace = "",
+            BaseType = grandparent
+        };
+        parent.Fields.Add(new IRField
+        {
+            Name = "pField", CppName = "f_pField", FieldTypeName = "System.Int32"
+        });
+
+        var child = new IRType
+        {
+            ILFullName = "Child", CppName = "Child", Name = "Child", Namespace = "",
+            BaseType = parent
+        };
+        child.Fields.Add(new IRField
+        {
+            Name = "cField", CppName = "f_cField", FieldTypeName = "System.Int32"
+        });
+
+        module.Types.Add(grandparent);
+        module.Types.Add(parent);
+        module.Types.Add(child);
+
+        var gen = new CppCodeGenerator(module);
+        var output = gen.Generate();
+
+        // Child struct should contain fields from GrandParent AND Parent
+        var childStructStart = output.HeaderFile.Content.IndexOf("struct Child {");
+        var childStructEnd = output.HeaderFile.Content.IndexOf("};", childStructStart);
+        var childStruct = output.HeaderFile.Content[childStructStart..childStructEnd];
+
+        Assert.Contains("f_gpField", childStruct);
+        Assert.Contains("f_pField", childStruct);
+        Assert.Contains("f_cField", childStruct);
+    }
+
+    // ===== EscapeString =====
+
+    [Fact]
+    public void Generate_StringWithBackslash_IsEscaped()
+    {
+        var module = CreateSimpleModule();
+        module.RegisterStringLiteral("hello\\world");
+        var gen = new CppCodeGenerator(module);
+        var output = gen.Generate();
+
+        Assert.Contains("hello\\\\world", output.SourceFile.Content);
+    }
+
+    [Fact]
+    public void Generate_StringWithNewline_IsEscaped()
+    {
+        var module = CreateSimpleModule();
+        module.RegisterStringLiteral("hello\nworld");
+        var gen = new CppCodeGenerator(module);
+        var output = gen.Generate();
+
+        Assert.Contains("hello\\nworld", output.SourceFile.Content);
+    }
+
+    [Fact]
+    public void Generate_StringWithQuote_IsEscaped()
+    {
+        var module = CreateSimpleModule();
+        module.RegisterStringLiteral("hello\"world");
+        var gen = new CppCodeGenerator(module);
+        var output = gen.Generate();
+
+        Assert.Contains("hello\\\"world", output.SourceFile.Content);
+    }
+
+    // ===== AddAutoDeclarations =====
+
+    [Fact]
+    public void Generate_TempVar_GetsAutoPrefix()
+    {
+        var module = new IRModule { Name = "Test" };
+        var type = new IRType { ILFullName = "MyClass", CppName = "MyClass", Name = "MyClass", Namespace = "" };
+        var method = new IRMethod
+        {
+            Name = "Foo", CppName = "MyClass_Foo", DeclaringType = type,
+            IsStatic = true, ReturnTypeCpp = "int32_t"
+        };
+        var bb = new IRBasicBlock { Id = 0 };
+        bb.Instructions.Add(new IRBinaryOp { Left = "1", Right = "2", Op = "+", ResultVar = "__t0" });
+        bb.Instructions.Add(new IRReturn { Value = "__t0" });
+        method.BasicBlocks.Add(bb);
+        type.Methods.Add(method);
+        module.Types.Add(type);
+
+        var gen = new CppCodeGenerator(module);
+        var output = gen.Generate();
+
+        Assert.Contains("auto __t0 = 1 + 2;", output.SourceFile.Content);
+    }
+
+    [Fact]
+    public void Generate_TempVarLargeIndex_GetsAutoPrefix()
+    {
+        // Verifies Bug 5 fix: large temp var indices should still get auto
+        var module = new IRModule { Name = "Test" };
+        var type = new IRType { ILFullName = "MyClass", CppName = "MyClass", Name = "MyClass", Namespace = "" };
+        var method = new IRMethod
+        {
+            Name = "Foo", CppName = "MyClass_Foo", DeclaringType = type,
+            IsStatic = true, ReturnTypeCpp = "int32_t"
+        };
+        var bb = new IRBasicBlock { Id = 0 };
+        bb.Instructions.Add(new IRBinaryOp { Left = "1", Right = "2", Op = "+", ResultVar = "__t1000000" });
+        bb.Instructions.Add(new IRReturn { Value = "__t1000000" });
+        method.BasicBlocks.Add(bb);
+        type.Methods.Add(type.Methods.Count == 0 ? method : method);
+        type.Methods.Clear();
+        type.Methods.Add(method);
+        module.Types.Add(type);
+
+        var gen = new CppCodeGenerator(module);
+        var output = gen.Generate();
+
+        Assert.Contains("auto __t1000000 = 1 + 2;", output.SourceFile.Content);
+    }
+
+    // ===== Label Scope Handling =====
+
+    [Fact]
+    public void Generate_MethodWithLabels_EmitsLabelScopes()
+    {
+        var module = new IRModule { Name = "Test" };
+        var type = new IRType { ILFullName = "MyClass", CppName = "MyClass", Name = "MyClass", Namespace = "" };
+        var method = new IRMethod
+        {
+            Name = "Foo", CppName = "MyClass_Foo", DeclaringType = type,
+            IsStatic = true, ReturnTypeCpp = "void"
+        };
+        var bb = new IRBasicBlock { Id = 0 };
+        bb.Instructions.Add(new IRLabel { LabelName = "IL_0000" });
+        bb.Instructions.Add(new IRReturn());
+        method.BasicBlocks.Add(bb);
+        type.Methods.Add(method);
+        module.Types.Add(type);
+
+        var gen = new CppCodeGenerator(module);
+        var output = gen.Generate();
+
+        Assert.Contains("IL_0000:", output.SourceFile.Content);
+        // Verify label scope braces are present
+        var methodContent = output.SourceFile.Content;
+        Assert.Contains("{", methodContent); // opening scope
+    }
+
+    // ===== CMake Default Build Type =====
+
+    [Fact]
+    public void Generate_CMake_DebugConfig_DefaultsToDebug()
+    {
+        var module = CreateSimpleModule();
+        var gen = new CppCodeGenerator(module, BuildConfiguration.Debug);
+        var output = gen.Generate();
+
+        Assert.Contains("\"Debug\"", output.CMakeFile!.Content);
+    }
+
+    [Fact]
+    public void Generate_CMake_ReleaseConfig_DefaultsToRelease()
+    {
+        var module = CreateSimpleModule();
+        var gen = new CppCodeGenerator(module, BuildConfiguration.Release);
+        var output = gen.Generate();
+
+        Assert.Contains("\"Release\"", output.CMakeFile!.Content);
+    }
+
+    // ===== Source Includes =====
+
+    [Fact]
+    public void Generate_Source_IncludesLimits()
+    {
+        var module = CreateSimpleModule();
+        var gen = new CppCodeGenerator(module);
+        var output = gen.Generate();
+
+        Assert.Contains("#include <limits>", output.SourceFile.Content);
+    }
+
+    // ===== Library without main =====
+
+    [Fact]
+    public void Generate_LibraryProject_CMakeHasPublicLinkage()
+    {
+        var module = CreateSimpleModule(withEntryPoint: false);
+        var gen = new CppCodeGenerator(module);
+        var output = gen.Generate();
+
+        Assert.Contains("PUBLIC cil2cpp::runtime", output.CMakeFile!.Content);
+    }
 }

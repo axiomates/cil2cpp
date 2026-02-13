@@ -454,11 +454,33 @@ public class IRBuilder
                 stack.Push($"{(long)instr.Operand!}LL");
                 break;
             case Code.Ldc_R4:
-                stack.Push($"{(float)instr.Operand!}f");
+            {
+                var val = (float)instr.Operand!;
+                if (float.IsNaN(val)) stack.Push("std::numeric_limits<float>::quiet_NaN()");
+                else if (float.IsPositiveInfinity(val)) stack.Push("std::numeric_limits<float>::infinity()");
+                else if (float.IsNegativeInfinity(val)) stack.Push("(-std::numeric_limits<float>::infinity())");
+                else
+                {
+                    var s = val.ToString("R", System.Globalization.CultureInfo.InvariantCulture);
+                    if (!s.Contains('.') && !s.Contains('E') && !s.Contains('e')) s += ".0";
+                    stack.Push(s + "f");
+                }
                 break;
+            }
             case Code.Ldc_R8:
-                stack.Push($"{(double)instr.Operand!}");
+            {
+                var val = (double)instr.Operand!;
+                if (double.IsNaN(val)) stack.Push("std::numeric_limits<double>::quiet_NaN()");
+                else if (double.IsPositiveInfinity(val)) stack.Push("std::numeric_limits<double>::infinity()");
+                else if (double.IsNegativeInfinity(val)) stack.Push("(-std::numeric_limits<double>::infinity())");
+                else
+                {
+                    var s = val.ToString("R", System.Globalization.CultureInfo.InvariantCulture);
+                    if (!s.Contains('.') && !s.Contains('E') && !s.Contains('e')) s += ".0";
+                    stack.Push(s);
+                }
                 break;
+            }
 
             // ===== Load String =====
             case Code.Ldstr:
@@ -1136,16 +1158,9 @@ public class IRBuilder
         {
             var tmp = $"__t{tempCounter++}";
             irCall.ResultVar = tmp;
-            block.Instructions.Add(new IRRawCpp
-            {
-                Code = $"auto {tmp} = {irCall.FunctionName}({string.Join(", ", irCall.Arguments)});"
-            });
             stack.Push(tmp);
         }
-        else
-        {
-            block.Instructions.Add(irCall);
-        }
+        block.Instructions.Add(irCall);
     }
 
     private void EmitNewObj(IRBasicBlock block, Stack<string> stack, MethodReference ctorRef,
@@ -1188,20 +1203,7 @@ public class IRBuilder
         {
             if (name == "WriteLine")
             {
-                if (methodRef.Parameters.Count == 0)
-                    return "cil2cpp::System::Console_WriteLine";
-                var paramType = methodRef.Parameters[0].ParameterType.FullName;
-                return paramType switch
-                {
-                    "System.String" => "cil2cpp::System::Console_WriteLine",
-                    "System.Int32" => "cil2cpp::System::Console_WriteLine",
-                    "System.Int64" => "cil2cpp::System::Console_WriteLine",
-                    "System.Single" => "cil2cpp::System::Console_WriteLine",
-                    "System.Double" => "cil2cpp::System::Console_WriteLine",
-                    "System.Boolean" => "cil2cpp::System::Console_WriteLine",
-                    "System.Object" => "cil2cpp::System::Console_WriteLine",
-                    _ => "cil2cpp::System::Console_WriteLine"
-                };
+                return "cil2cpp::System::Console_WriteLine";
             }
             if (name == "Write")
             {

@@ -312,4 +312,132 @@ public class IRInstructionTests
         var bb = new IRBasicBlock { Id = 3 };
         Assert.Equal("BB_3", bb.Label);
     }
+
+    // ===== Missing ToCpp() tests =====
+
+    [Fact]
+    public void IRSwitch_ToCpp_GeneratesSwitch()
+    {
+        var sw = new IRSwitch { ValueExpr = "val" };
+        sw.CaseLabels.Add("IL_0010");
+        sw.CaseLabels.Add("IL_0020");
+        sw.CaseLabels.Add("IL_0030");
+        var code = sw.ToCpp();
+        Assert.Contains("switch (val)", code);
+        Assert.Contains("case 0: goto IL_0010;", code);
+        Assert.Contains("case 1: goto IL_0020;", code);
+        Assert.Contains("case 2: goto IL_0030;", code);
+    }
+
+    [Fact]
+    public void IRSwitch_Empty_ToCpp()
+    {
+        var sw = new IRSwitch { ValueExpr = "val" };
+        var code = sw.ToCpp();
+        Assert.Contains("switch (val)", code);
+        Assert.Contains("}", code);
+    }
+
+    [Fact]
+    public void IRInitObj_ToCpp()
+    {
+        var instr = new IRInitObj { AddressExpr = "addr", TypeCppName = "MyStruct" };
+        Assert.Equal("std::memset(addr, 0, sizeof(MyStruct));", instr.ToCpp());
+    }
+
+    [Fact]
+    public void IRBox_ToCpp()
+    {
+        var instr = new IRBox
+        {
+            ValueExpr = "val",
+            ValueTypeCppName = "System_Int32",
+            ResultVar = "__t0"
+        };
+        Assert.Equal("__t0 = cil2cpp::box<System_Int32>(val, &System_Int32_TypeInfo);", instr.ToCpp());
+    }
+
+    [Fact]
+    public void IRUnbox_UnboxAny_ToCpp()
+    {
+        var instr = new IRUnbox
+        {
+            ObjectExpr = "obj",
+            ValueTypeCppName = "System_Int32",
+            ResultVar = "__t0",
+            IsUnboxAny = true
+        };
+        Assert.Equal("__t0 = cil2cpp::unbox<System_Int32>(obj);", instr.ToCpp());
+    }
+
+    [Fact]
+    public void IRUnbox_UnboxPtr_ToCpp()
+    {
+        var instr = new IRUnbox
+        {
+            ObjectExpr = "obj",
+            ValueTypeCppName = "System_Int32",
+            ResultVar = "__t0",
+            IsUnboxAny = false
+        };
+        Assert.Equal("__t0 = cil2cpp::unbox_ptr<System_Int32>(obj);", instr.ToCpp());
+    }
+
+    [Fact]
+    public void IRStaticCtorGuard_ToCpp()
+    {
+        var instr = new IRStaticCtorGuard { TypeCppName = "MyClass" };
+        Assert.Equal("MyClass_ensure_cctor();", instr.ToCpp());
+    }
+
+    [Fact]
+    public void IRTryBegin_ToCpp()
+    {
+        var instr = new IRTryBegin();
+        Assert.Equal("CIL2CPP_TRY", instr.ToCpp());
+    }
+
+    [Fact]
+    public void IRCatchBegin_WithType_ToCpp()
+    {
+        var instr = new IRCatchBegin { ExceptionTypeCppName = "System_Exception" };
+        Assert.Equal("CIL2CPP_CATCH(System_Exception)", instr.ToCpp());
+    }
+
+    [Fact]
+    public void IRCatchBegin_CatchAll_ToCpp()
+    {
+        var instr = new IRCatchBegin { ExceptionTypeCppName = null };
+        Assert.Equal("CIL2CPP_CATCH_ALL", instr.ToCpp());
+    }
+
+    [Fact]
+    public void IRFinallyBegin_ToCpp()
+    {
+        var instr = new IRFinallyBegin();
+        Assert.Equal("CIL2CPP_FINALLY", instr.ToCpp());
+    }
+
+    [Fact]
+    public void IRTryEnd_ToCpp()
+    {
+        var instr = new IRTryEnd();
+        Assert.Equal("CIL2CPP_END_TRY", instr.ToCpp());
+    }
+
+    [Fact]
+    public void IRThrow_ToCpp()
+    {
+        var instr = new IRThrow { ExceptionExpr = "ex" };
+        var code = instr.ToCpp();
+        Assert.Contains("throw_exception", code);
+        Assert.Contains("static_cast<cil2cpp::Exception*>(ex)", code);
+    }
+
+    [Fact]
+    public void IRRethrow_ToCpp()
+    {
+        var instr = new IRRethrow();
+        Assert.Equal("CIL2CPP_RETHROW;", instr.ToCpp());
+    }
 }

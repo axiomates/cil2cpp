@@ -190,6 +190,48 @@ public class CppNameMapperTests
 
     // ===== GetDefaultValue =====
 
+    // ===== IsCompilerGeneratedType =====
+
+    [Theory]
+    [InlineData("<PrivateImplementationDetails>", true)]
+    [InlineData("<PrivateImplementationDetails>/__StaticArrayInitTypeSize=20", true)]
+    [InlineData("MyClass", false)]
+    [InlineData("System.Object", false)]
+    public void IsCompilerGeneratedType_ReturnsExpected(string typeName, bool expected)
+    {
+        Assert.Equal(expected, CppNameMapper.IsCompilerGeneratedType(typeName));
+    }
+
+    // ===== MangleTypeName edge cases =====
+
+    [Fact]
+    public void MangleTypeName_EqualSign_Replaced()
+    {
+        Assert.Equal("__StaticArrayInitTypeSize_20", CppNameMapper.MangleTypeName("__StaticArrayInitTypeSize=20"));
+    }
+
+    [Fact]
+    public void MangleTypeName_Dash_Replaced()
+    {
+        Assert.Equal("My_Type", CppNameMapper.MangleTypeName("My-Type"));
+    }
+
+    // ===== GetCppTypeForDecl edge cases =====
+
+    [Fact]
+    public void GetCppTypeForDecl_Array_ReturnsArrayPointer()
+    {
+        Assert.Equal("cil2cpp::Array*", CppNameMapper.GetCppTypeForDecl("System.Int32[]"));
+    }
+
+    [Fact]
+    public void GetCppTypeForDecl_Object_ReturnsPointer()
+    {
+        Assert.Equal("cil2cpp::Object*", CppNameMapper.GetCppTypeForDecl("System.Object"));
+    }
+
+    // ===== GetDefaultValue =====
+
     [Theory]
     // IL type names
     [InlineData("System.Boolean", "false")]

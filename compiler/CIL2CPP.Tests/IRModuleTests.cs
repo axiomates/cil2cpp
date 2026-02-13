@@ -86,4 +86,69 @@ public class IRModuleTests
         var module = new IRModule();
         Assert.Null(module.EntryPoint);
     }
+
+    // ===== RegisterArrayInitData =====
+
+    [Fact]
+    public void RegisterArrayInitData_ReturnsUniqueId()
+    {
+        var module = new IRModule { Name = "Test" };
+        var id = module.RegisterArrayInitData(new byte[] { 1, 2, 3 });
+        Assert.Equal("__arr_init_0", id);
+    }
+
+    [Fact]
+    public void RegisterArrayInitData_MultipleCalls_IncrementId()
+    {
+        var module = new IRModule { Name = "Test" };
+        var id1 = module.RegisterArrayInitData(new byte[] { 1 });
+        var id2 = module.RegisterArrayInitData(new byte[] { 2 });
+        Assert.Equal("__arr_init_0", id1);
+        Assert.Equal("__arr_init_1", id2);
+    }
+
+    [Fact]
+    public void RegisterArrayInitData_StoresDataCorrectly()
+    {
+        var module = new IRModule { Name = "Test" };
+        var data = new byte[] { 0xAA, 0xBB, 0xCC };
+        module.RegisterArrayInitData(data);
+        Assert.Single(module.ArrayInitDataBlobs);
+        Assert.Equal(data, module.ArrayInitDataBlobs[0].Data);
+        Assert.Equal("__arr_init_0", module.ArrayInitDataBlobs[0].Id);
+    }
+
+    // ===== RegisterPrimitiveTypeInfo =====
+
+    [Fact]
+    public void RegisterPrimitiveTypeInfo_Int32_RegistersCorrectly()
+    {
+        var module = new IRModule { Name = "Test" };
+        module.RegisterPrimitiveTypeInfo("System.Int32");
+
+        Assert.Single(module.PrimitiveTypeInfos);
+        var entry = module.PrimitiveTypeInfos["System.Int32"];
+        Assert.Equal("System.Int32", entry.ILFullName);
+        Assert.Equal("System_Int32", entry.CppMangledName);
+        Assert.Equal("int32_t", entry.CppTypeName);
+    }
+
+    [Fact]
+    public void RegisterPrimitiveTypeInfo_Duplicate_NoOp()
+    {
+        var module = new IRModule { Name = "Test" };
+        module.RegisterPrimitiveTypeInfo("System.Int32");
+        module.RegisterPrimitiveTypeInfo("System.Int32");
+        Assert.Single(module.PrimitiveTypeInfos);
+    }
+
+    [Fact]
+    public void RegisterPrimitiveTypeInfo_Boolean_RegistersCorrectly()
+    {
+        var module = new IRModule { Name = "Test" };
+        module.RegisterPrimitiveTypeInfo("System.Boolean");
+        var entry = module.PrimitiveTypeInfos["System.Boolean"];
+        Assert.Equal("bool", entry.CppTypeName);
+        Assert.Equal("System_Boolean", entry.CppMangledName);
+    }
 }

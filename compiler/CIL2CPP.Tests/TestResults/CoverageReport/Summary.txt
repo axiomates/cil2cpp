@@ -1,66 +1,80 @@
 Summary
-  Generated on: 2026/2/13 - 14:43:41
-  Coverage date: 2026/2/13 - 14:43:28
+  Generated on: 2026/2/13 - 21:28:38
+  Coverage date: 2026/2/13 - 21:28:26
   Parser: Cobertura
   Assemblies: 1
-  Classes: 44
+  Classes: 58
   Files: 11
-  Line coverage: 39.9%
-  Covered lines: 696
-  Uncovered lines: 1046
-  Coverable lines: 1742
-  Total lines: 2729
-  Branch coverage: 30.4% (343 of 1128)
-  Covered branches: 343
-  Total branches: 1128
-  Method coverage: 55.6% (158 of 284)
-  Full method coverage: 54.2% (154 of 284)
-  Covered methods: 158
-  Fully covered methods: 154
-  Total methods: 284
+  Line coverage: 74.6%
+  Covered lines: 1657
+  Uncovered lines: 564
+  Coverable lines: 2221
+  Total lines: 3427
+  Branch coverage: 61.9% (894 of 1444)
+  Covered branches: 894
+  Total branches: 1444
+  Method coverage: 89.5% (301 of 336)
+  Full method coverage: 83.3% (280 of 336)
+  Covered methods: 301
+  Fully covered methods: 280
+  Total methods: 336
 
-CIL2CPP.Core                              39.9%
-  CIL2CPP.Core.BuildConfiguration          100%
-  CIL2CPP.Core.CodeGen.CppCodeGenerator   93.5%
-  CIL2CPP.Core.CodeGen.GeneratedFile       100%
-  CIL2CPP.Core.CodeGen.GeneratedOutput     100%
-  CIL2CPP.Core.IL.AssemblyReader             0%
-  CIL2CPP.Core.IL.FieldInfo                  0%
-  CIL2CPP.Core.IL.ILInstruction              0%
-  CIL2CPP.Core.IL.ILInstructionCategory      0%
-  CIL2CPP.Core.IL.LocalVariableInfo          0%
-  CIL2CPP.Core.IL.MethodInfo                 0%
-  CIL2CPP.Core.IL.ParameterInfo              0%
-  CIL2CPP.Core.IL.SequencePointInfo          0%
-  CIL2CPP.Core.IL.TypeDefinitionInfo         0%
-  CIL2CPP.Core.IR.CppNameMapper            100%
-  CIL2CPP.Core.IR.IRArrayAccess            100%
-  CIL2CPP.Core.IR.IRAssign                 100%
-  CIL2CPP.Core.IR.IRBasicBlock             100%
-  CIL2CPP.Core.IR.IRBinaryOp               100%
-  CIL2CPP.Core.IR.IRBranch                 100%
-  CIL2CPP.Core.IR.IRBuilder                  0%
-  CIL2CPP.Core.IR.IRCall                   100%
-  CIL2CPP.Core.IR.IRCast                   100%
-  CIL2CPP.Core.IR.IRComment                100%
-  CIL2CPP.Core.IR.IRConditionalBranch      100%
-  CIL2CPP.Core.IR.IRConversion             100%
-  CIL2CPP.Core.IR.IRDeclareLocal           100%
-  CIL2CPP.Core.IR.IRField                   50%
-  CIL2CPP.Core.IR.IRFieldAccess            100%
-  CIL2CPP.Core.IR.IRInstruction            100%
-  CIL2CPP.Core.IR.IRLabel                  100%
-  CIL2CPP.Core.IR.IRLocal                    0%
-  CIL2CPP.Core.IR.IRMethod                88.4%
-  CIL2CPP.Core.IR.IRModule                 100%
-  CIL2CPP.Core.IR.IRNewObj                 100%
-  CIL2CPP.Core.IR.IRNullCheck              100%
-  CIL2CPP.Core.IR.IRParameter               60%
-  CIL2CPP.Core.IR.IRRawCpp                 100%
-  CIL2CPP.Core.IR.IRReturn                 100%
-  CIL2CPP.Core.IR.IRStaticFieldAccess      100%
-  CIL2CPP.Core.IR.IRStringLiteral          100%
-  CIL2CPP.Core.IR.IRType                  90.4%
-  CIL2CPP.Core.IR.IRUnaryOp                100%
-  CIL2CPP.Core.IR.IRVTableEntry              0%
-  CIL2CPP.Core.IR.SourceLocation           100%
+CIL2CPP.Core                               74.6%
+  CIL2CPP.Core.BuildConfiguration           100%
+  CIL2CPP.Core.CodeGen.CppCodeGenerator      97%
+  CIL2CPP.Core.CodeGen.GeneratedFile        100%
+  CIL2CPP.Core.CodeGen.GeneratedOutput      100%
+  CIL2CPP.Core.IL.AssemblyReader           88.7%
+  CIL2CPP.Core.IL.ExceptionHandlerInfo        0%
+  CIL2CPP.Core.IL.FieldInfo                81.8%
+  CIL2CPP.Core.IL.ILInstruction            23.3%
+  CIL2CPP.Core.IL.ILInstructionCategory     100%
+  CIL2CPP.Core.IL.LocalVariableInfo         100%
+  CIL2CPP.Core.IL.MethodInfo               82.3%
+  CIL2CPP.Core.IL.ParameterInfo             100%
+  CIL2CPP.Core.IL.SequencePointInfo        94.1%
+  CIL2CPP.Core.IL.TypeDefinitionInfo       90.3%
+  CIL2CPP.Core.IR.CppNameMapper             100%
+  CIL2CPP.Core.IR.IRArrayAccess             100%
+  CIL2CPP.Core.IR.IRArrayInitData           100%
+  CIL2CPP.Core.IR.IRAssign                  100%
+  CIL2CPP.Core.IR.IRBasicBlock              100%
+  CIL2CPP.Core.IR.IRBinaryOp                100%
+  CIL2CPP.Core.IR.IRBox                     100%
+  CIL2CPP.Core.IR.IRBranch                  100%
+  CIL2CPP.Core.IR.IRBuilder                  51%
+  CIL2CPP.Core.IR.IRCall                    100%
+  CIL2CPP.Core.IR.IRCast                    100%
+  CIL2CPP.Core.IR.IRCatchBegin              100%
+  CIL2CPP.Core.IR.IRComment                 100%
+  CIL2CPP.Core.IR.IRConditionalBranch       100%
+  CIL2CPP.Core.IR.IRConversion              100%
+  CIL2CPP.Core.IR.IRDeclareLocal            100%
+  CIL2CPP.Core.IR.IRField                   100%
+  CIL2CPP.Core.IR.IRFieldAccess             100%
+  CIL2CPP.Core.IR.IRFinallyBegin            100%
+  CIL2CPP.Core.IR.IRInitObj                 100%
+  CIL2CPP.Core.IR.IRInstruction             100%
+  CIL2CPP.Core.IR.IRLabel                   100%
+  CIL2CPP.Core.IR.IRLocal                    75%
+  CIL2CPP.Core.IR.IRMethod                 96.2%
+  CIL2CPP.Core.IR.IRModule                  100%
+  CIL2CPP.Core.IR.IRNewObj                  100%
+  CIL2CPP.Core.IR.IRNullCheck               100%
+  CIL2CPP.Core.IR.IRParameter                80%
+  CIL2CPP.Core.IR.IRRawCpp                  100%
+  CIL2CPP.Core.IR.IRRethrow                 100%
+  CIL2CPP.Core.IR.IRReturn                  100%
+  CIL2CPP.Core.IR.IRStaticCtorGuard         100%
+  CIL2CPP.Core.IR.IRStaticFieldAccess       100%
+  CIL2CPP.Core.IR.IRStringLiteral           100%
+  CIL2CPP.Core.IR.IRSwitch                  100%
+  CIL2CPP.Core.IR.IRThrow                   100%
+  CIL2CPP.Core.IR.IRTryBegin                100%
+  CIL2CPP.Core.IR.IRTryEnd                  100%
+  CIL2CPP.Core.IR.IRType                    100%
+  CIL2CPP.Core.IR.IRUnaryOp                 100%
+  CIL2CPP.Core.IR.IRUnbox                   100%
+  CIL2CPP.Core.IR.IRVTableEntry               0%
+  CIL2CPP.Core.IR.PrimitiveTypeInfoEntry    100%
+  CIL2CPP.Core.IR.SourceLocation            100%

@@ -162,14 +162,15 @@ public class CppCodeGenerator
             sb.AppendLine($"    cil2cpp::TypeInfo* __type_info;");
             sb.AppendLine($"    cil2cpp::UInt32 __sync_block;");
 
-            // Base type fields (if not Object)
-            if (type.BaseType != null && type.BaseType.ILFullName != "System.Object")
+            // Base type fields (walk full inheritance chain)
+            var inheritedFields = CollectInheritedFields(type);
+            if (inheritedFields.Count > 0)
             {
-                sb.AppendLine($"    // Base type fields ({type.BaseType.ILFullName})");
-                foreach (var field in type.BaseType.Fields)
+                sb.AppendLine($"    // Inherited fields");
+                foreach (var (field, fromType) in inheritedFields)
                 {
                     var cppType = CppNameMapper.GetCppTypeForDecl(field.FieldTypeName);
-                    sb.AppendLine($"    {cppType} {field.CppName}; // inherited");
+                    sb.AppendLine($"    {cppType} {field.CppName}; // from {fromType.ILFullName}");
                 }
             }
         }
@@ -183,6 +184,25 @@ public class CppCodeGenerator
 
         sb.AppendLine("};");
         sb.AppendLine();
+    }
+
+    private static List<(IRField Field, IRType FromType)> CollectInheritedFields(IRType type)
+    {
+        var result = new List<(IRField, IRType)>();
+        var ancestors = new List<IRType>();
+        var current = type.BaseType;
+        while (current != null && current.ILFullName != "System.Object")
+        {
+            ancestors.Add(current);
+            current = current.BaseType;
+        }
+        ancestors.Reverse(); // furthest ancestor first
+        foreach (var ancestor in ancestors)
+        {
+            foreach (var field in ancestor.Fields)
+                result.Add((field, ancestor));
+        }
+        return result;
     }
 
     private GeneratedFile GenerateSource()
@@ -202,6 +222,7 @@ public class CppCodeGenerator
         sb.AppendLine("#include <cmath>");
         sb.AppendLine("#include <cstring>");
         sb.AppendLine("#include <algorithm>");
+        sb.AppendLine("#include <limits>");
         sb.AppendLine();
 
         // String literals
@@ -474,7 +495,7 @@ public class CppCodeGenerator
             {
                 var varName = code[..eqIdx].Trim();
                 // Must be a simple temp var name like __t0, __t1, etc.
-                if (varName.StartsWith("__t") && varName.Length <= 8 &&
+                if (varName.StartsWith("__t") &&
                     varName.All(c => c == '_' || char.IsLetterOrDigit(c)) &&
                     !declaredTemps.Contains(varName))
                 {
