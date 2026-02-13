@@ -1,0 +1,43 @@
+# === .NET (compiler/) ===
+**/bin/
+**/obj/
+
+# === CMake 构建产物 ===
+build/
+build_*/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+
+# === CIL2CPP 生成的输出 ===
+output/
+output_*/
+
+# === C/C++ 编译产物 ===
+*.obj
+*.o
+*.lib
+*.a
+*.exe
+*.dll
+*.pdb
+*.ilk
+*.exp
+*.pch
+
+# === IDE ===
+.vs/
+.vscode/
+*.user
+*.suo
+
+# === NuGet ===
+packages/
+
+# === OS ===
+Thumbs.db
+.DS_Store
+
+# === Claude Code ===
+.claude/

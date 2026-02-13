@@ -1,0 +1,185 @@
+using Mono.Cecil;
+
+namespace CIL2CPP.Core.IL;
+
+/// <summary>
+/// Represents type information extracted from IL.
+/// </summary>
+public class TypeDefinitionInfo
+{
+    private readonly TypeDefinition _type;
+
+    public string Name => _type.Name;
+    public string Namespace => _type.Namespace;
+    public string FullName => _type.FullName;
+    public string? BaseTypeName => _type.BaseType?.FullName;
+
+    public bool IsClass => _type.IsClass;
+    public bool IsInterface => _type.IsInterface;
+    public bool IsValueType => _type.IsValueType;
+    public bool IsEnum => _type.IsEnum;
+    public bool IsAbstract => _type.IsAbstract;
+    public bool IsSealed => _type.IsSealed;
+    public bool IsPublic => _type.IsPublic;
+    public bool IsNested => _type.IsNested;
+
+    public bool HasGenericParameters => _type.HasGenericParameters;
+    public IReadOnlyList<string> GenericParameterNames =>
+        _type.GenericParameters.Select(p => p.Name).ToList();
+
+    public IReadOnlyList<FieldInfo> Fields { get; }
+    public IReadOnlyList<MethodInfo> Methods { get; }
+    public IReadOnlyList<string> InterfaceNames { get; }
+
+    public TypeDefinitionInfo(TypeDefinition type)
+    {
+        _type = type;
+
+        Fields = type.Fields
+            .Select(f => new FieldInfo(f))
+            .ToList();
+
+        Methods = type.Methods
+            .Select(m => new MethodInfo(m))
+            .ToList();
+
+        InterfaceNames = type.Interfaces
+            .Select(i => i.InterfaceType.FullName)
+            .ToList();
+    }
+
+    /// <summary>
+    /// Gets the Cecil TypeDefinition for advanced operations.
+    /// </summary>
+    internal TypeDefinition GetCecilType() => _type;
+}
+
+/// <summary>
+/// Represents field information extracted from IL.
+/// </summary>
+public class FieldInfo
+{
+    private readonly FieldDefinition _field;
+
+    public string Name => _field.Name;
+    public string TypeName => _field.FieldType.FullName;
+    public bool IsStatic => _field.IsStatic;
+    public bool IsPublic => _field.IsPublic;
+    public bool IsPrivate => _field.IsPrivate;
+    public bool IsInitOnly => _field.IsInitOnly;
+
+    public FieldInfo(FieldDefinition field)
+    {
+        _field = field;
+    }
+
+    internal FieldDefinition GetCecilField() => _field;
+}
+
+/// <summary>
+/// Represents method information extracted from IL.
+/// </summary>
+public class MethodInfo
+{
+    private readonly MethodDefinition _method;
+
+    public string Name => _method.Name;
+    public string ReturnTypeName => _method.ReturnType.FullName;
+    public bool IsStatic => _method.IsStatic;
+    public bool IsPublic => _method.IsPublic;
+    public bool IsPrivate => _method.IsPrivate;
+    public bool IsVirtual => _method.IsVirtual;
+    public bool IsAbstract => _method.IsAbstract;
+    public bool IsConstructor => _method.IsConstructor;
+    public bool HasBody => _method.HasBody;
+
+    public bool HasGenericParameters => _method.HasGenericParameters;
+    public IReadOnlyList<string> GenericParameterNames =>
+        _method.GenericParameters.Select(p => p.Name).ToList();
+
+    public IReadOnlyList<ParameterInfo> Parameters { get; }
+
+    public MethodInfo(MethodDefinition method)
+    {
+        _method = method;
+        Parameters = method.Parameters
+            .Select(p => new ParameterInfo(p))
+            .ToList();
+    }
+
+    /// <summary>
+    /// Gets the IL instructions of this method.
+    /// </summary>
+    public IEnumerable<ILInstruction> GetInstructions()
+    {
+        if (!_method.HasBody)
+            yield break;
+
+        foreach (var instr in _method.Body.Instructions)
+        {
+            yield return new ILInstruction(instr);
+        }
+    }
+
+    /// <summary>
+    /// Gets local variables defined in this method.
+    /// </summary>
+    public IEnumerable<LocalVariableInfo> GetLocalVariables()
+    {
+        if (!_method.HasBody)
+            yield break;
+
+        foreach (var local in _method.Body.Variables)
+        {
+            yield return new LocalVariableInfo(local);
+        }
+    }
+
+    /// <summary>
+    /// Gets the sequence points for this method (debug symbols required).
+    /// Returns empty if no debug symbols are available.
+    /// </summary>
+    public IReadOnlyList<SequencePointInfo> GetSequencePoints()
+    {
+        if (!_method.HasBody || !_method.DebugInformation.HasSequencePoints)
+            return Array.Empty<SequencePointInfo>();
+
+        return _method.DebugInformation.SequencePoints
+            .Select(sp => new SequencePointInfo(sp))
+            .ToList();
+    }
+
+    internal MethodDefinition GetCecilMethod() => _method;
+}
+
+/// <summary>
+/// Represents parameter information.
+/// </summary>
+public class ParameterInfo
+{
+    public string Name { get; }
+    public string TypeName { get; }
+    public int Index { get; }
+
+    public ParameterInfo(ParameterDefinition param)
+    {
+        Name = param.Name;
+        TypeName = param.ParameterType.FullName;
+        Index = param.Index;
+    }
+}
+
+/// <summary>
+/// Represents local variable information.
+/// </summary>
+public class LocalVariableInfo
+{
+    public int Index { get; }
+    public string TypeName { get; }
+
+    public LocalVariableInfo(Mono.Cecil.Cil.VariableDefinition variable)
+    {
+        Index = variable.Index;
+        TypeName = variable.VariableType.FullName;
+    }
+}
