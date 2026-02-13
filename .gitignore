@@ -42,5 +42,14 @@ packages/
 Thumbs.db
 .DS_Store
 
+# === Python ===
+__pycache__/
+
+# === Test results & coverage ===
+TestResults/
+CoverageResults/
+CoverageReport/
+LastCoverageResults.log
+
 # === Claude Code ===
 .claude/

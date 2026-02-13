@@ -61,7 +61,7 @@ void* alloc_array(TypeInfo* element_type, size_t length) {
     }
     size_t total_size = sizeof(Array) + (element_size * length);
 
-    Array* arr = static_cast<Array*>(alloc(total_size, nullptr));
+    Array* arr = static_cast<Array*>(alloc(total_size, element_type));
     if (arr) {
         arr->element_type = element_type;
         arr->length = static_cast<Int32>(length);

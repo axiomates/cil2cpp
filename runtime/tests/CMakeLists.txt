@@ -37,6 +37,10 @@ target_link_libraries(cil2cpp_tests
         GTest::gtest_main
 )
 
+# Expose BoehmGC headers for tests that directly call GC APIs (e.g. GC_invoke_finalizers)
+# gc_SOURCE_DIR is set by bdwgc's project() command (cache variable)
+target_include_directories(cil2cpp_tests PRIVATE "${gc_SOURCE_DIR}/include")
+
 # Ensure debug defines are set for tests
 target_compile_definitions(cil2cpp_tests PRIVATE CIL2CPP_DEBUG)
 

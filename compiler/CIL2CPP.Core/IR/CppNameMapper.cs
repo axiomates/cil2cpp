@@ -116,7 +116,18 @@ public static class CppNameMapper
             .Replace(",", "_")
             .Replace("`", "_")
             .Replace(" ", "")
-            .Replace("+", "_");
+            .Replace("+", "_")
+            .Replace("=", "_")  // e.g. __StaticArrayInitTypeSize=20
+            .Replace("-", "_");
+    }
+
+    /// <summary>
+    /// Whether a type is a compiler-generated implementation detail (e.g. &lt;PrivateImplementationDetails&gt;).
+    /// These should be filtered from C++ code generation.
+    /// </summary>
+    public static bool IsCompilerGeneratedType(string ilFullName)
+    {
+        return ilFullName.StartsWith("<PrivateImplementationDetails>");
     }
 
     /// <summary>

@@ -31,8 +31,8 @@ cil2cpp/
 │   ├── include/cil2cpp/        #   头文件
 │   ├── src/                    #   GC、类型系统、异常、BCL
 │   └── tests/                  #   运行时单元测试 (Google Test)
-└── tests/
-    └── integration/            # 端到端集成测试 (PowerShell)
+└── tools/
+    └── dev.py                  # 开发者 CLI (build/test/coverage/codegen/integration)
 ```
 
 ## 前置要求
@@ -43,6 +43,20 @@ cil2cpp/
   - Windows: MSVC 2022 (Visual Studio 17.0+)
   - Linux: GCC 12+ 或 Clang 15+
   - macOS: Apple Clang 14+ (Xcode 14+)
+
+**开发环境额外依赖（可选，用于覆盖率报告）：**
+
+> **快速安装：** `python tools/dev.py setup` 会自动检测并安装以下可选依赖。
+
+- **[OpenCppCoverage](https://github.com/OpenCppCoverage/OpenCppCoverage)** — C++ 代码覆盖率收集（Windows）
+  ```bash
+  winget install OpenCppCoverage.OpenCppCoverage
+  ```
+- **[ReportGenerator](https://github.com/danielpalme/ReportGenerator)** — 合并 C#/C++ 覆盖率并生成 HTML 报告
+  ```bash
+  dotnet tool install -g dotnet-reportgenerator-globaltool
+  ```
+- Linux 用户：`lcov` + `lcov_cobertura`（替代 OpenCppCoverage）
 
 ---
 
@@ -97,6 +111,7 @@ cmake --install build --config Debug --prefix <安装路径>
 │   ├── gc.h                    #   GC 接口（BoehmGC 封装：alloc / collect）
 │   ├── exception.h             #   异常处理（setjmp/longjmp）
 │   ├── type_info.h             #   TypeInfo / VTable / MethodInfo / FieldInfo
+│   ├── boxing.h                #   装箱/拆箱模板（box<T> / unbox<T>）
 │   └── bcl/                    #   BCL 实现头文件
 │       ├── System.Object.h
 │       ├── System.String.h
@@ -335,9 +350,10 @@ void Program_Main() {
 | char | ✅ | UTF-16 (char16_t) |
 | string | ✅ | 不可变，UTF-16 编码，字面量驻留池 |
 | IntPtr, UIntPtr | ✅ | 映射到 intptr_t, uintptr_t |
-| 类型转换 (int→long 等) | ✅ | Conv_I4, Conv_I8, Conv_R4, Conv_R8 |
-| struct (值类型) | ⚠️ | 识别 IsValueType 标志，但当作引用类型处理（无栈分配、无拷贝语义） |
+| 类型转换 (全部) | ✅ | Conv_I1/I2/I4/I8/U1/U2/U4/U8/I/U/R4/R8/R_Un（共 13 种） |
+| struct (值类型) | ⚠️ | 结构体定义 + initobj + 装箱/拆箱已支持；无完整拷贝语义 |
 | enum | ⚠️ | 识别 IsEnum 标志，但无 ToString/Parse 等特殊处理 |
+| 装箱 / 拆箱 | ✅ | box / unbox / unbox.any → `cil2cpp::box<T>()` / `cil2cpp::unbox<T>()` |
 | Nullable\<T\> | ❌ | 需要泛型支持 |
 | Tuple (ValueTuple) | ❌ | 需要泛型支持 |
 | record | ❌ | |
@@ -348,6 +364,7 @@ void Program_Main() {
 |------|------|------|
 | 类定义 | ✅ | 实例字段 + 静态字段 + 方法 |
 | 构造函数 | ✅ | 默认构造和参数化构造（newobj IL 指令） |
+| 静态构造函数 (.cctor) | ✅ | 自动检测 + `_ensure_cctor()` once-guard，访问静态字段/创建实例前自动调用 |
 | 实例方法 | ✅ | 编译为 C 函数，`this` 作为第一个参数 |
 | 静态方法 | ✅ | |
 | 实例字段 | ✅ | ldfld / stfld |
@@ -361,7 +378,6 @@ void Program_Main() {
 | 泛型 | ❌ | |
 | 运算符重载 | ❌ | |
 | 索引器 | ❌ | |
-| 静态构造函数 (.cctor) | ❌ | |
 | 终结器 / 析构函数 | ❌ | 运行时支持 BoehmGC finalizer 注册，但编译器未检测 `~Destructor()` / `Finalize()` 方法 |
 
 ### 控制流
@@ -371,9 +387,9 @@ void Program_Main() {
 | if / else | ✅ | 全部条件分支指令：beq, bne, bge, bgt, ble, blt 及短形式 |
 | while / for / do-while | ✅ | C# 编译器编译为条件分支，CIL2CPP 正常处理 |
 | goto (无条件分支) | ✅ | br / br.s |
-| 比较运算 (==, !=, <, >, <=, >=) | ✅ | ceq, cgt, clt + 条件分支 |
-| switch (IL switch 表) | ❌ | |
-| 模式匹配 (switch 表达式) | ❌ | |
+| 比较运算 (==, !=, <, >, <=, >=) | ✅ | ceq, cgt, cgt.un, clt, clt.un + 条件分支 |
+| switch (IL switch 表) | ✅ | 编译为 C++ switch/goto 跳转表 |
+| 模式匹配 (switch 表达式) | ⚠️ | C# 编译器将简单模式编译为 if/switch，CIL2CPP 可处理；复杂模式可能失败 |
 | Range / Index (..) | ❌ | |
 
 ### 算术与位运算
@@ -381,7 +397,7 @@ void Program_Main() {
 | 功能 | 状态 | 备注 |
 |------|------|------|
 | +, -, *, /, % | ✅ | add, sub, mul, div, rem |
-| &, \|, ^, <<, >> | ✅ | and, or, xor, shl, shr |
+| &, \|, ^, <<, >> | ✅ | and, or, xor, shl, shr, shr.un |
 | 一元 - (取负) | ✅ | neg |
 | 一元 ~ (按位取反) | ✅ | not |
 | 溢出检查 (checked) | ❌ | Add_Ovf, Mul_Ovf 等未处理 |
@@ -390,11 +406,13 @@ void Program_Main() {
 
 | 功能 | 状态 | 备注 |
 |------|------|------|
-| 创建 (`new T[n]`) | ✅ | newarr 指令 |
-| Length 属性 | ✅ | ldlen 指令 |
-| 元素读写 (`arr[i]`) | ❌ | ldelem / stelem 未处理；运行时的 `array_get<T>` / `array_set<T>` 已就绪 |
+| 创建 (`new T[n]`) | ✅ | newarr → `array_create()`，正确设置 `__type_info` + `element_type`；基本类型自动生成 TypeInfo |
+| Length 属性 | ✅ | ldlen → `array_length()` |
+| 元素读写 (`arr[i]`) | ✅ | ldelem/stelem 全类型：I1/I2/I4/I8/U1/U2/U4/R4/R8/Ref/I/Any → `array_get<T>()` / `array_set<T>()` |
+| 元素地址 (`ref arr[i]`) | ✅ | ldelema → `array_get_element_ptr()` + 类型转换（带越界检查） |
+| 数组初始化器 (`new int[] {1,2,3}`) | ✅ | ldtoken + `RuntimeHelpers.InitializeArray` → 静态字节数组 + `memcpy`；`<PrivateImplementationDetails>` 类型自动过滤 |
+| 越界检查 | ✅ | `array_bounds_check()` → 抛出 IndexOutOfRangeException |
 | 多维数组 | ❌ | |
-| 数组初始化器 | ❌ | |
 | Span\<T\> / Memory\<T\> | ❌ | |
 
 ### 异常处理
@@ -402,12 +420,13 @@ void Program_Main() {
 | 功能 | 状态 | 备注 |
 |------|------|------|
 | 异常类型 | ✅ | NullReferenceException, IndexOutOfRangeException, InvalidCastException, ArgumentException 等 |
-| throw | ✅ | throw_exception(), throw_null_reference() 等 |
-| 自动 null 检查 | ✅ | null_check() 内联函数 |
-| 栈回溯 | ⚠️ | capture_stack_trace() — Windows: DbgHelp, POSIX: backtrace；仅 Debug |
-| try / catch / finally | ❌ | 运行时有 CIL2CPP_TRY / CIL2CPP_CATCH / CIL2CPP_FINALLY 宏（setjmp/longjmp），但编译器未从 IL 异常处理器生成对应代码 |
-| using 语句 | ❌ | 需要 try/finally + IDisposable |
-| throw 表达式 | ❌ | |
+| throw | ✅ | throw → `cil2cpp::throw_exception()`；运行时 `throw_null_reference()` 等便捷函数 |
+| try / catch / finally | ✅ | 编译器读取 IL ExceptionHandler 元数据 → 生成 `CIL2CPP_TRY` / `CIL2CPP_CATCH` / `CIL2CPP_FINALLY` 宏调用 |
+| rethrow | ✅ | `CIL2CPP_RETHROW` |
+| 自动 null 检查 | ✅ | `null_check()` 内联函数 |
+| 栈回溯 | ⚠️ | `capture_stack_trace()` — Windows: DbgHelp, POSIX: backtrace；仅 Debug |
+| using 语句 | ❌ | 需要 IDisposable 接口分派 |
+| 嵌套 try/catch/finally | ⚠️ | 宏基于 setjmp/longjmp，支持嵌套但复杂场景可能有限 |
 
 ### 标准库 (BCL)
 
@@ -417,11 +436,10 @@ void Program_Main() {
 | 功能 | 状态 | 备注 |
 |------|------|------|
 | System.Object (ToString, GetHashCode, Equals, GetType) | ✅ | 手写映射 |
-| System.String (Concat, IsNullOrEmpty, Length, Substring) | ✅ | 手写映射 |
+| System.String (Concat, IsNullOrEmpty, Length) | ✅ | 手写映射 |
 | Console.WriteLine (全部重载) | ✅ | 手写映射，String, Int32, Int64, Single, Double, Boolean, Object |
-| Console.Write (全部重载) | ✅ | 手写映射 |
-| Console.ReadLine / Read | ✅ | 手写映射 |
-| System.Math | ❌ | Phase 1: 手写映射 → Phase 4: BCL 自动翻译 + `<cmath>` icall |
+| Console.Write / ReadLine | ✅ | 手写映射 |
+| System.Math | ✅ | Abs, Max, Min, Sqrt, Floor, Ceil, Round, Pow, Sin, Cos, Tan, Asin, Acos, Atan, Atan2, Log, Log10, Exp → `<cmath>` |
 | 集合类 (List, Dictionary, HashSet 等) | ❌ | Phase 4: BCL IL 自动翻译（需要 Phase 3 泛型） |
 | System.IO (File, Stream) | ❌ | Phase 4: BCL IL 自动翻译 + 文件系统 icall |
 | System.Net | ❌ | Phase 5 |
@@ -430,7 +448,7 @@ void Program_Main() {
 
 | 功能 | 状态 | 备注 |
 |------|------|------|
-| 委托 (Delegate) | ❌ | |
+| 委托 (Delegate) | ❌ | 需要 Ldftn / Ldvirtftn / Calli |
 | 事件 (event) | ❌ | |
 | 多播委托 | ❌ | |
 | Lambda / 匿名方法 | ❌ | |
@@ -444,7 +462,7 @@ void Program_Main() {
 | 多线程 (Thread, Task, lock) | ❌ | |
 | 反射 (Type.GetMethods 等) | ❌ | TypeInfo 有 MethodInfo/FieldInfo 数组但未填充 |
 | 特性 (Attribute) | ❌ | |
-| unsafe 代码 (指针, fixed, stackalloc) | ❌ | |
+| unsafe 代码 (指针, fixed, stackalloc) | ❌ | Ldind_*/Stind_* 未处理 |
 | P/Invoke / DllImport | ❌ | |
 | 默认参数 / 命名参数 | ❌ | |
 | ref struct / ref return | ❌ | |
@@ -458,8 +476,9 @@ void Program_Main() {
 | TypeInfo / VTable | ✅ | 完整类型元数据 |
 | 对象模型 | ✅ | Object 基类 + __type_info + __sync_block |
 | 字符串 (UTF-16) | ✅ | 不可变，驻留池，FNV-1a 哈希 |
-| 数组（类型化 + 越界检查） | ⚠️ | 运行时 array_get/set 模板就绪，编译器未生成元素访问 |
-| 异常处理 (setjmp/longjmp) | ⚠️ | CIL2CPP_TRY/CATCH/FINALLY 宏已定义，编译器未生成 |
+| 数组（类型化 + 越界检查） | ✅ | `array_get<T>` / `array_set<T>` / `array_get_element_ptr` + 编译器完整 ldelem/stelem/ldelema + 数组初始化器 |
+| 装箱/拆箱 | ✅ | `boxing.h` 模板：`box<T>()`, `unbox<T>()`, `unbox_ptr<T>()` |
+| 异常处理 (setjmp/longjmp) | ✅ | CIL2CPP_TRY/CATCH/FINALLY 宏 + 编译器完整生成 |
 | 增量/并发 GC | ❌ | BoehmGC 支持增量模式，未启用 |
 
 ---
@@ -469,13 +488,14 @@ void Program_Main() {
 基于功能依赖关系的分阶段实现计划。每个阶段产出可用的增量：
 
 ```
-Phase 1 (基础)        Phase 2 (对象模型)       Phase 3 (泛型/委托)
-  数组元素访问          接口分派                 泛型
-  try/catch/finally     装箱/拆箱               委托 → 事件
-  switch                枚举完整支持              Lambda/闭包
-  值类型语义            运算符重载               集合类 (List<T>)
-  静态构造函数          终结器                   IEnumerable<T> / foreach
-  System.Math (icall)
+Phase 1 (基础) ✅     Phase 2 (对象模型)       Phase 3 (泛型/委托)
+  数组 (全功能)         接口分派                 泛型
+  try/catch/finally     枚举完整支持              委托 → 事件
+  switch                运算符重载               Lambda/闭包
+  值类型+装箱/拆箱      终结器                   集合类 (List<T>)
+  静态构造函数                                   IEnumerable<T> / foreach
+  System.Math
+  类型转换 (全部)
        │                    │                        │
        └────────────────────┘────────────────────────┘
                                                      │
@@ -513,18 +533,21 @@ Phase 1 (基础)        Phase 2 (对象模型)       Phase 3 (泛型/委托)
 | Phase 4 | **BCL IL 自动翻译** + icall 层 | mscorlib.dll 中大部分类型 |
 | Phase 5 | 完整 BCL 翻译 | System.dll, System.IO, System.Net 等 |
 
-### Phase 1：基础完善
+### Phase 1：基础完善 ✅ 已完成
 
-完成核心缺失功能，解锁后续所有阶段的前置条件。
+核心功能已全部实现，解锁后续所有阶段的前置条件。
 
-| 功能 | 说明 |
-|------|------|
-| **数组元素读写** | 运行时 `array_get<T>` / `array_set<T>` 已就绪，需在 IRBuilder 中处理 ldelem / stelem 系列指令 |
-| **try / catch / finally** | **最关键**。运行时已有 `CIL2CPP_TRY` / `CIL2CPP_CATCH` / `CIL2CPP_FINALLY` 宏（基于 setjmp/longjmp），需从 Mono.Cecil 的 ExceptionHandler 生成对应代码。using、foreach、LINQ、async 全部依赖此功能 |
-| **switch 语句** | 处理 IL switch 指令，生成 C++ switch/case |
-| **值类型 (struct) 语义** | 栈分配、拷贝语义、无 GC 头部 |
-| **静态构造函数 (.cctor)** | 在类型首次使用前自动调用 |
-| **System.Math** | 临时方案：`MapBclMethod()` 映射 + icall 风格的 C++ 封装（`Math.Abs` → `std::abs` 等）。Phase 4 自动翻译后此映射将被淘汰 |
+| 功能 | 状态 | 说明 |
+|------|------|------|
+| **数组** | ✅ | 创建 / 元素读写 / 长度 / 越界检查 / 元素地址 / 数组初始化器 (`RuntimeHelpers.InitializeArray`) |
+| **try / catch / finally** | ✅ | IL ExceptionHandler 元数据 → `CIL2CPP_TRY` / `CIL2CPP_CATCH` / `CIL2CPP_FINALLY` 宏 |
+| **switch 语句** | ✅ | IL switch 跳转表 → C++ switch/goto |
+| **值类型 (struct) 语义** | ✅ | initobj + box/unbox/unbox.any |
+| **静态构造函数 (.cctor)** | ✅ | 自动检测 + `_ensure_cctor()` once-guard |
+| **System.Math** | ✅ | `MapBclMethod()` 映射 → `<cmath>` / `<algorithm>` |
+| **类型转换** | ✅ | 全部 13 种 Conv_* 指令 |
+| **编译器内部类型过滤** | ✅ | `<PrivateImplementationDetails>` 自动过滤不生成 C++ 代码 |
+| **goto/label 作用域** | ✅ | 自动为 label 间代码生成 `{}` 作用域，避免 C++ goto 跨声明错误 |
 
 ### Phase 2：对象模型完善
 
@@ -533,7 +556,6 @@ Phase 1 (基础)        Phase 2 (对象模型)       Phase 3 (泛型/委托)
 | 功能 | 说明 |
 |------|------|
 | **接口分派** | 生成接口方法表，实现接口方法调用。IDisposable、IEnumerable、IComparable 等关键接口需要此功能 |
-| **装箱 / 拆箱** | 值类型作为 object 引用使用时的包装/解包。许多 BCL 模式和隐式转换依赖此功能 |
 | **枚举完整支持** | 底层整数类型、ToString、Parse、Flags 特性 |
 | **运算符重载** | 映射到 op_Addition / op_Equality 等方法 |
 | **终结器** | 编译器检测 `Finalize()` 方法并填充 TypeInfo.finalizer 字段（运行时的 BoehmGC finalizer 注册已就绪） |
@@ -641,7 +663,7 @@ runtime/CMakeLists.txt
 | 功能 | 状态 | 说明 |
 |------|------|------|
 | 对象分配 + TypeInfo | ✅ | `gc::alloc()` → `GC_MALLOC()` + 设置 `__type_info` |
-| 数组分配 | ⚠️ | 可工作，但数组自身的 `__type_info` 为 nullptr |
+| 数组分配 | ✅ | `alloc_array()` → `GC_MALLOC()` + 正确设置 `__type_info` 和 `element_type` |
 | 自动根扫描 | ✅ | BoehmGC 保守扫描，无需 shadow stack / add_root |
 | Finalizer 注册 | ✅ | `GC_register_finalizer_no_order()`，运行时已就绪 |
 | Finalizer 检测 | ❌ | 编译器未检测 `~Destructor()` / `Finalize()` 方法，TypeInfo.finalizer 始终为 nullptr |
@@ -674,8 +696,9 @@ dotnet test compiler/CIL2CPP.Tests --collect:"XPlat Code Coverage"
 | IRModule | 8 | 100% |
 | IRMethod / IRType | 7 | 100% |
 | IR Instructions (全部) | 27 | 100% |
-| CppCodeGenerator | 20 | 93.5% |
-| **合计** | **89** | |
+| CppCodeGenerator | 20 | 81.1% |
+| 其他 | 77 | |
+| **合计** | **166** | **33.1% 行覆盖率** |
 
 ### 运行时单元测试 (C++ / Google Test)
 
@@ -700,16 +723,12 @@ ctest --test-dir runtime/tests/build -C Debug --output-on-failure
 | Exception | 11 (1 disabled) |
 | **合计** | **109** |
 
-### 端到端集成测试 (PowerShell)
+### 端到端集成测试
 
 测试完整编译流水线：C# `.csproj` → codegen → CMake configure → C++ build → run → 验证输出。
 
-```powershell
-# 运行集成测试（需要先安装运行时到 C:/cil2cpp_test）
-powershell -ExecutionPolicy Bypass -File tests/integration/run_pipeline.ps1
-
-# 指定运行时路径
-powershell -ExecutionPolicy Bypass -File tests/integration/run_pipeline.ps1 -RuntimePrefix C:/cil2cpp_test
+```bash
+python tools/dev.py integration
 ```
 
 | Phase | 测试内容 | 测试数 |
@@ -724,15 +743,54 @@ powershell -ExecutionPolicy Bypass -File tests/integration/run_pipeline.ps1 -Run
 ### 全部运行
 
 ```bash
-# 1. 编译器单元测试
+# 推荐：使用 dev.py 一键运行全部测试
+python tools/dev.py test --all
+
+# 或手动执行：
 dotnet test compiler/CIL2CPP.Tests
+cmake --build runtime/tests/build --config Debug && ctest --test-dir runtime/tests/build -C Debug --output-on-failure
+python tools/dev.py integration
+```
 
-# 2. 运行时单元测试
-cmake --build runtime/tests/build --config Debug
-ctest --test-dir runtime/tests/build -C Debug --output-on-failure
+---
 
-# 3. 集成测试
-powershell -ExecutionPolicy Bypass -File tests/integration/run_pipeline.ps1
+## 开发者工具 (`tools/dev.py`)
+
+Python3 交互式 CLI（仅标准库），统一所有构建/测试/覆盖率/代码生成操作，避免记忆多个命令和参数。
+
+### 子命令模式
+
+```bash
+python tools/dev.py build                  # 编译 compiler + runtime
+python tools/dev.py build --compiler       # 仅编译 compiler
+python tools/dev.py build --runtime        # 仅编译 runtime
+python tools/dev.py test --all             # 运行全部测试（编译器 + 运行时 + 集成）
+python tools/dev.py test --compiler        # 仅编译器测试 (166 xUnit)
+python tools/dev.py test --runtime         # 仅运行时测试 (109 GTest)
+python tools/dev.py test --coverage        # 测试 + 覆盖率 HTML 报告
+python tools/dev.py install                # 安装 runtime (Debug + Release)
+python tools/dev.py codegen HelloWorld     # 快速代码生成测试
+python tools/dev.py integration            # 集成测试（完整编译流水线）
+python tools/dev.py setup                  # 检查前置 + 安装可选依赖
+```
+
+### 交互式菜单
+
+无参数运行时进入交互式菜单：
+
+```bash
+python tools/dev.py
+```
+
+### 覆盖率报告（C# + C++ 统一）
+
+```bash
+python tools/dev.py test --coverage
+# 1. C# 覆盖率 (coverlet) — dotnet test --collect:"XPlat Code Coverage"
+# 2. C++ 覆盖率 (OpenCppCoverage) — 收集 runtime 测试覆盖
+# 3. 合并两份 Cobertura XML → ReportGenerator → 统一 HTML 报告
+# → 自动打开浏览器查看报告（含图表）
+# → 报告路径: CoverageResults/CoverageReport/index.html
 ```
 
 ---
@@ -749,7 +807,8 @@ powershell -ExecutionPolicy Bypass -File tests/integration/run_pipeline.ps1
 | 运行时分发 | CMake install + find_package | |
 | 编译器测试 | xUnit + coverlet | xUnit 2.9, coverlet 6.0 |
 | 运行时测试 | Google Test | v1.15.2 (FetchContent) |
-| 集成测试 | PowerShell | 跨平台 |
+| 集成测试 | Python3 (`tools/dev.py integration`) | 跨平台 |
+| 开发者工具 | Python3 (`tools/dev.py`) | stdlib only |
 
 ## 参考
 

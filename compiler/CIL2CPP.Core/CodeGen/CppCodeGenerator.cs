@@ -54,9 +54,14 @@ public class CppCodeGenerator
         sb.AppendLine("#include <cil2cpp/cil2cpp.h>");
         sb.AppendLine();
 
+        // Filter out compiler-generated types
+        var userTypes = _module.Types
+            .Where(t => !CppNameMapper.IsCompilerGeneratedType(t.ILFullName))
+            .ToList();
+
         // Forward declarations
         sb.AppendLine("// ===== Forward Declarations =====");
-        foreach (var type in _module.Types)
+        foreach (var type in userTypes)
         {
             if (type.IsInterface) continue;
             sb.AppendLine($"struct {type.CppName};");
@@ -65,23 +70,28 @@ public class CppCodeGenerator
 
         // Type info declarations
         sb.AppendLine("// ===== Type Info Declarations =====");
-        foreach (var type in _module.Types)
+        foreach (var type in userTypes)
         {
             if (type.IsInterface) continue;
             sb.AppendLine($"extern cil2cpp::TypeInfo {type.CppName}_TypeInfo;");
+        }
+        // Primitive type TypeInfo declarations (for array element types)
+        foreach (var entry in _module.PrimitiveTypeInfos.Values)
+        {
+            sb.AppendLine($"extern cil2cpp::TypeInfo {entry.CppMangledName}_TypeInfo;");
         }
         sb.AppendLine();
 
         // Struct definitions
         sb.AppendLine("// ===== Type Definitions =====");
-        foreach (var type in _module.Types)
+        foreach (var type in userTypes)
         {
             if (type.IsInterface) continue;
             GenerateStructDefinition(sb, type);
         }
 
         // Static field storage declarations
-        foreach (var type in _module.Types)
+        foreach (var type in userTypes)
         {
             if (type.StaticFields.Count > 0)
             {
@@ -100,7 +110,7 @@ public class CppCodeGenerator
 
         // Method declarations
         sb.AppendLine("// ===== Method Declarations =====");
-        foreach (var type in _module.Types)
+        foreach (var type in userTypes)
         {
             if (type.IsInterface) continue;
 
@@ -111,6 +121,17 @@ public class CppCodeGenerator
             }
             sb.AppendLine();
         }
+
+        // Static constructor guard declarations
+        foreach (var type in userTypes)
+        {
+            if (type.HasCctor)
+            {
+                sb.AppendLine($"void {type.CppName}_ensure_cctor();");
+            }
+        }
+        if (userTypes.Any(t => t.HasCctor))
+            sb.AppendLine();
 
         // String literal initializer declaration
         if (_module.StringLiterals.Count > 0)
@@ -178,6 +199,9 @@ public class CppCodeGenerator
         sb.AppendLine($"#include \"{_module.Name}.h\"");
         sb.AppendLine();
         sb.AppendLine("#include <cstdio>");
+        sb.AppendLine("#include <cmath>");
+        sb.AppendLine("#include <cstring>");
+        sb.AppendLine("#include <algorithm>");
         sb.AppendLine();
 
         // String literals
@@ -202,31 +226,96 @@ public class CppCodeGenerator
             sb.AppendLine();
         }
 
+        // Array initializer data blobs
+        if (_module.ArrayInitDataBlobs.Count > 0)
+        {
+            sb.AppendLine("// ===== Array Initializer Data =====");
+            foreach (var blob in _module.ArrayInitDataBlobs)
+            {
+                var bytes = string.Join(", ", blob.Data.Select(b => $"0x{b:X2}"));
+                sb.AppendLine($"static const unsigned char {blob.Id}[] = {{ {bytes} }};");
+            }
+            sb.AppendLine();
+        }
+
+        // Filter out compiler-generated types
+        var userTypes = _module.Types
+            .Where(t => !CppNameMapper.IsCompilerGeneratedType(t.ILFullName))
+            .ToList();
+
         // Static field storage
-        foreach (var type in _module.Types)
+        foreach (var type in userTypes)
         {
             if (type.StaticFields.Count > 0)
             {
                 sb.AppendLine($"{type.CppName}_Statics {type.CppName}_statics = {{}};");
             }
         }
-        if (_module.Types.Any(t => t.StaticFields.Count > 0))
+        if (userTypes.Any(t => t.StaticFields.Count > 0))
         {
+            sb.AppendLine();
+        }
+
+        // Primitive type TypeInfo definitions (for array element types)
+        if (_module.PrimitiveTypeInfos.Count > 0)
+        {
+            sb.AppendLine("// ===== Primitive Type Info (array element types) =====");
+            foreach (var entry in _module.PrimitiveTypeInfos.Values)
+            {
+                sb.AppendLine($"cil2cpp::TypeInfo {entry.CppMangledName}_TypeInfo = {{");
+                sb.AppendLine($"    .name = \"{entry.ILFullName.Split('.').Last()}\",");
+                sb.AppendLine($"    .namespace_name = \"{entry.ILFullName[..entry.ILFullName.LastIndexOf('.')]}\",");
+                sb.AppendLine($"    .full_name = \"{entry.ILFullName}\",");
+                sb.AppendLine($"    .base_type = nullptr,");
+                sb.AppendLine($"    .interfaces = nullptr,");
+                sb.AppendLine($"    .interface_count = 0,");
+                sb.AppendLine($"    .instance_size = sizeof({entry.CppTypeName}),");
+                sb.AppendLine($"    .element_size = sizeof({entry.CppTypeName}),");
+                sb.AppendLine($"    .flags = cil2cpp::TypeFlags::ValueType,");
+                sb.AppendLine($"    .vtable = nullptr,");
+                sb.AppendLine($"    .fields = nullptr,");
+                sb.AppendLine($"    .field_count = 0,");
+                sb.AppendLine($"    .methods = nullptr,");
+                sb.AppendLine($"    .method_count = 0,");
+                sb.AppendLine($"    .default_ctor = nullptr,");
+                sb.AppendLine($"    .finalizer = nullptr,");
+                sb.AppendLine($"}};");
+            }
             sb.AppendLine();
         }
 
         // Type info definitions
         sb.AppendLine("// ===== Type Info =====");
-        foreach (var type in _module.Types)
+        foreach (var type in userTypes)
         {
             if (type.IsInterface) continue;
             GenerateTypeInfo(sb, type);
         }
         sb.AppendLine();
 
+        // Static constructor guards
+        foreach (var type in userTypes)
+        {
+            if (type.HasCctor)
+            {
+                var cctorMethod = type.Methods.FirstOrDefault(m => m.IsStaticConstructor);
+                if (cctorMethod != null)
+                {
+                    sb.AppendLine($"static bool {type.CppName}_cctor_called = false;");
+                    sb.AppendLine($"void {type.CppName}_ensure_cctor() {{");
+                    sb.AppendLine($"    if (!{type.CppName}_cctor_called) {{");
+                    sb.AppendLine($"        {type.CppName}_cctor_called = true;");
+                    sb.AppendLine($"        {cctorMethod.CppName}();");
+                    sb.AppendLine($"    }}");
+                    sb.AppendLine($"}}");
+                    sb.AppendLine();
+                }
+            }
+        }
+
         // Method implementations
         sb.AppendLine("// ===== Method Implementations =====");
-        foreach (var type in _module.Types)
+        foreach (var type in userTypes)
         {
             if (type.IsInterface) continue;
 
@@ -291,11 +380,29 @@ public class CppCodeGenerator
         var declaredTemps = new HashSet<string>();
         string? lastLineDirective = null;
 
+        // Check if method has any labels (branch targets)
+        var allInstructions = method.BasicBlocks.SelectMany(b => b.Instructions).ToList();
+        bool hasLabels = allInstructions.Any(i => i is IRLabel);
+        bool inLabelScope = false;
+
         // Emit basic blocks
         foreach (var block in method.BasicBlocks)
         {
             foreach (var instr in block.Instructions)
             {
+                // When entering a label, close previous scope and open new one
+                // This prevents goto from crossing auto declarations (C++ error C2362)
+                if (hasLabels && instr is IRLabel)
+                {
+                    if (inLabelScope)
+                        sb.AppendLine("    }");
+                    // Emit the label at function scope
+                    sb.AppendLine($"    {instr.ToCpp()}");
+                    sb.AppendLine("    {");
+                    inLabelScope = true;
+                    continue;
+                }
+
                 // Emit IL offset comment in Debug mode
                 if (_config.EmitILOffsetComments && instr.DebugInfo != null && instr.DebugInfo.ILOffset >= 0
                     && instr is not IRComment && instr is not IRLabel)
@@ -326,9 +433,14 @@ public class CppCodeGenerator
                 // For instructions that assign to temp vars, add 'auto' on first use
                 code = AddAutoDeclarations(code, declaredTemps);
 
-                sb.AppendLine($"    {code}");
+                var indent = inLabelScope ? "        " : "    ";
+                sb.AppendLine($"{indent}{code}");
             }
         }
+
+        // Close last label scope
+        if (inLabelScope)
+            sb.AppendLine("    }");
 
         // In C++, there is no "#line default" like in C#.
         // We simply stop emitting #line directives; the compiler continues

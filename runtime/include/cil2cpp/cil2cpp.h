@@ -12,6 +12,7 @@
 #include "gc.h"
 #include "exception.h"
 #include "type_info.h"
+#include "boxing.h"
 
 // BCL types
 #include "bcl/System.Object.h"

@@ -34,6 +34,7 @@ public class IRMethod
     public bool IsVirtual { get; set; }
     public bool IsAbstract { get; set; }
     public bool IsConstructor { get; set; }
+    public bool IsStaticConstructor { get; set; }
     public bool IsEntryPoint { get; set; }
     public int VTableSlot { get; set; } = -1;
 
@@ -239,6 +240,22 @@ public class IRLabel : IRInstruction
     public override string ToCpp() => $"{LabelName}:";
 }
 
+public class IRSwitch : IRInstruction
+{
+    public string ValueExpr { get; set; } = "";
+    public List<string> CaseLabels { get; } = new();
+
+    public override string ToCpp()
+    {
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine($"switch ({ValueExpr}) {{");
+        for (int i = 0; i < CaseLabels.Count; i++)
+            sb.AppendLine($"        case {i}: goto {CaseLabels[i]};");
+        sb.Append("    }");
+        return sb.ToString();
+    }
+}
+
 public class IRFieldAccess : IRInstruction
 {
     public string ObjectExpr { get; set; } = "";
@@ -316,6 +333,76 @@ public class IRNullCheck : IRInstruction
 {
     public string Expr { get; set; } = "";
     public override string ToCpp() => $"cil2cpp::null_check({Expr});";
+}
+
+public class IRInitObj : IRInstruction
+{
+    public string AddressExpr { get; set; } = "";
+    public string TypeCppName { get; set; } = "";
+    public override string ToCpp() =>
+        $"std::memset({AddressExpr}, 0, sizeof({TypeCppName}));";
+}
+
+public class IRBox : IRInstruction
+{
+    public string ValueExpr { get; set; } = "";
+    public string ValueTypeCppName { get; set; } = "";
+    public string ResultVar { get; set; } = "";
+    public override string ToCpp() =>
+        $"{ResultVar} = cil2cpp::box<{ValueTypeCppName}>({ValueExpr}, &{ValueTypeCppName}_TypeInfo);";
+}
+
+public class IRUnbox : IRInstruction
+{
+    public string ObjectExpr { get; set; } = "";
+    public string ValueTypeCppName { get; set; } = "";
+    public string ResultVar { get; set; } = "";
+    public bool IsUnboxAny { get; set; }
+    public override string ToCpp() => IsUnboxAny
+        ? $"{ResultVar} = cil2cpp::unbox<{ValueTypeCppName}>({ObjectExpr});"
+        : $"{ResultVar} = cil2cpp::unbox_ptr<{ValueTypeCppName}>({ObjectExpr});";
+}
+
+public class IRStaticCtorGuard : IRInstruction
+{
+    public string TypeCppName { get; set; } = "";
+    public override string ToCpp() => $"{TypeCppName}_ensure_cctor();";
+}
+
+// ============ Exception Handling Instructions ============
+
+public class IRTryBegin : IRInstruction
+{
+    public override string ToCpp() => "CIL2CPP_TRY";
+}
+
+public class IRCatchBegin : IRInstruction
+{
+    public string? ExceptionTypeCppName { get; set; }
+    public override string ToCpp() => ExceptionTypeCppName != null
+        ? $"CIL2CPP_CATCH({ExceptionTypeCppName})" : "CIL2CPP_CATCH_ALL";
+}
+
+public class IRFinallyBegin : IRInstruction
+{
+    public override string ToCpp() => "CIL2CPP_FINALLY";
+}
+
+public class IRTryEnd : IRInstruction
+{
+    public override string ToCpp() => "CIL2CPP_END_TRY";
+}
+
+public class IRThrow : IRInstruction
+{
+    public string ExceptionExpr { get; set; } = "";
+    public override string ToCpp() =>
+        $"cil2cpp::throw_exception(static_cast<cil2cpp::Exception*>({ExceptionExpr}));";
+}
+
+public class IRRethrow : IRInstruction
+{
+    public override string ToCpp() => "CIL2CPP_RETHROW;";
 }
 
 public class IRRawCpp : IRInstruction

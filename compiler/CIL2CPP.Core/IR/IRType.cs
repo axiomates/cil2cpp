@@ -44,6 +44,7 @@ public class IRType
     public bool IsAbstract { get; set; }
     public bool IsSealed { get; set; }
     public bool IsEnum { get; set; }
+    public bool HasCctor { get; set; }
 
     /// <summary>
     /// Get the C++ type name for use in declarations.

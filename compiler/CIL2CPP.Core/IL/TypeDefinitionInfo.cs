@@ -149,7 +149,45 @@ public class MethodInfo
             .ToList();
     }
 
+    /// <summary>
+    /// Whether this method has exception handlers.
+    /// </summary>
+    public bool HasExceptionHandlers =>
+        _method.HasBody && _method.Body.HasExceptionHandlers;
+
+    /// <summary>
+    /// Gets the exception handlers for this method.
+    /// </summary>
+    public IReadOnlyList<ExceptionHandlerInfo> GetExceptionHandlers()
+    {
+        if (!HasExceptionHandlers)
+            return Array.Empty<ExceptionHandlerInfo>();
+        return _method.Body.ExceptionHandlers
+            .Select(h => new ExceptionHandlerInfo(h))
+            .ToList();
+    }
+
     internal MethodDefinition GetCecilMethod() => _method;
+}
+
+/// <summary>
+/// Represents an exception handler region from IL metadata.
+/// </summary>
+public class ExceptionHandlerInfo
+{
+    private readonly Mono.Cecil.Cil.ExceptionHandler _handler;
+
+    public Mono.Cecil.Cil.ExceptionHandlerType HandlerType => _handler.HandlerType;
+    public int TryStart => _handler.TryStart.Offset;
+    public int TryEnd => _handler.TryEnd.Offset;
+    public int HandlerStart => _handler.HandlerStart.Offset;
+    public int HandlerEnd => _handler.HandlerEnd.Offset;
+    public string? CatchTypeName => _handler.CatchType?.FullName;
+
+    public ExceptionHandlerInfo(Mono.Cecil.Cil.ExceptionHandler handler)
+    {
+        _handler = handler;
+    }
 }
 
 /// <summary>
