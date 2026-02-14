@@ -448,7 +448,9 @@ public partial class IRBuilder
             case Code.Sub: EmitBinaryOp(block, stack, "-", ref tempCounter); break;
             case Code.Mul: EmitBinaryOp(block, stack, "*", ref tempCounter); break;
             case Code.Div: EmitBinaryOp(block, stack, "/", ref tempCounter); break;
+            case Code.Div_Un: EmitBinaryOp(block, stack, "/", ref tempCounter); break;
             case Code.Rem: EmitBinaryOp(block, stack, "%", ref tempCounter); break;
+            case Code.Rem_Un: EmitBinaryOp(block, stack, "%", ref tempCounter); break;
             case Code.And: EmitBinaryOp(block, stack, "&", ref tempCounter); break;
             case Code.Or: EmitBinaryOp(block, stack, "|", ref tempCounter); break;
             case Code.Xor: EmitBinaryOp(block, stack, "^", ref tempCounter); break;
@@ -584,6 +586,25 @@ public partial class IRBuilder
                 break;
             case Code.Blt:
             case Code.Blt_S:
+                EmitComparisonBranch(block, stack, "<", instr);
+                break;
+            // Unsigned branches (ECMA-335 III.3.6-3.12): treat operands as unsigned
+            // C++ types from our codegen are already unsigned for uint/ulong/char,
+            // so the standard operators work correctly for the common C# patterns.
+            case Code.Bge_Un:
+            case Code.Bge_Un_S:
+                EmitComparisonBranch(block, stack, ">=", instr);
+                break;
+            case Code.Bgt_Un:
+            case Code.Bgt_Un_S:
+                EmitComparisonBranch(block, stack, ">", instr);
+                break;
+            case Code.Ble_Un:
+            case Code.Ble_Un_S:
+                EmitComparisonBranch(block, stack, "<=", instr);
+                break;
+            case Code.Blt_Un:
+            case Code.Blt_Un_S:
                 EmitComparisonBranch(block, stack, "<", instr);
                 break;
 
@@ -780,6 +801,7 @@ public partial class IRBuilder
             case Code.Stind_I8:
             case Code.Stind_R4:
             case Code.Stind_R8:
+            case Code.Stind_I:
             {
                 var cppType = GetIndirectType(instr.OpCode);
                 var val = stack.Count > 0 ? stack.Pop() : "0";
@@ -1274,7 +1296,7 @@ public partial class IRBuilder
         Code.Ldind_U4 => "uint32_t",
         Code.Ldind_R4 or Code.Stind_R4 => "float",
         Code.Ldind_R8 or Code.Stind_R8 => "double",
-        Code.Ldind_I => "intptr_t",
+        Code.Ldind_I or Code.Stind_I => "intptr_t",
         _ => "int32_t"
     };
 

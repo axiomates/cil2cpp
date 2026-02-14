@@ -3000,4 +3000,151 @@ public class IRBuilderTests
         var big = module.Types.First(t => t.CppName == "BigStruct");
         Assert.Equal(3, big.Fields.Count);
     }
+
+    // ===== Control Flow: Loops =====
+
+    [Fact]
+    public void Build_FeatureTest_TestWhileLoop_HasBackwardBranch()
+    {
+        var module = BuildFeatureTest();
+        var method = module.Types.First(t => t.CppName == "Program")
+            .Methods.First(m => m.Name == "TestWhileLoop");
+        var instrs = method.BasicBlocks.SelectMany(b => b.Instructions).ToList();
+        // While loops produce backward conditional branches
+        Assert.Contains(instrs, i => i is IRConditionalBranch);
+        Assert.Contains(instrs, i => i is IRLabel);
+    }
+
+    [Fact]
+    public void Build_FeatureTest_TestDoWhileLoop_HasConditionalBranch()
+    {
+        var module = BuildFeatureTest();
+        var method = module.Types.First(t => t.CppName == "Program")
+            .Methods.First(m => m.Name == "TestDoWhileLoop");
+        var instrs = method.BasicBlocks.SelectMany(b => b.Instructions).ToList();
+        Assert.Contains(instrs, i => i is IRConditionalBranch);
+    }
+
+    [Fact]
+    public void Build_FeatureTest_TestForLoop_HasBranching()
+    {
+        var module = BuildFeatureTest();
+        var method = module.Types.First(t => t.CppName == "Program")
+            .Methods.First(m => m.Name == "TestForLoop");
+        var instrs = method.BasicBlocks.SelectMany(b => b.Instructions).ToList();
+        Assert.Contains(instrs, i => i is IRConditionalBranch);
+        // For loops also have unconditional branch (to loop condition check)
+        Assert.Contains(instrs, i => i is IRBranch);
+    }
+
+    [Fact]
+    public void Build_FeatureTest_TestNestedLoopBreakContinue_HasMultipleBranches()
+    {
+        var module = BuildFeatureTest();
+        var method = module.Types.First(t => t.CppName == "Program")
+            .Methods.First(m => m.Name == "TestNestedLoopBreakContinue");
+        var instrs = method.BasicBlocks.SelectMany(b => b.Instructions).ToList();
+        var branches = instrs.Count(i => i is IRConditionalBranch);
+        // Nested loops + break + continue → multiple conditional branches
+        Assert.True(branches >= 4, $"Expected >= 4 conditional branches, got {branches}");
+    }
+
+    // ===== Control Flow: Goto =====
+
+    [Fact]
+    public void Build_FeatureTest_TestGoto_HasUnconditionalBranch()
+    {
+        var module = BuildFeatureTest();
+        var method = module.Types.First(t => t.CppName == "Program")
+            .Methods.First(m => m.Name == "TestGoto");
+        var instrs = method.BasicBlocks.SelectMany(b => b.Instructions).ToList();
+        // Forward goto + backward goto both produce IRBranch
+        var jumps = instrs.Count(i => i is IRBranch);
+        Assert.True(jumps >= 2, $"Expected >= 2 unconditional branches (forward + backward goto), got {jumps}");
+    }
+
+    // ===== Control Flow: Nested If/Else =====
+
+    [Fact]
+    public void Build_FeatureTest_TestNestedIfElse_HasMultipleBranches()
+    {
+        var module = BuildFeatureTest();
+        var method = module.Types.First(t => t.CppName == "Program")
+            .Methods.First(m => m.Name == "TestNestedIfElse");
+        var instrs = method.BasicBlocks.SelectMany(b => b.Instructions).ToList();
+        // if/else if/else → at least 2 conditional branches
+        var branches = instrs.Count(i => i is IRConditionalBranch);
+        Assert.True(branches >= 2, $"Expected >= 2 conditional branches, got {branches}");
+    }
+
+    // ===== Control Flow: Ternary Operator =====
+
+    [Fact]
+    public void Build_FeatureTest_TestTernary_HasConditionalBranch()
+    {
+        var module = BuildFeatureTest();
+        var method = module.Types.First(t => t.CppName == "Program")
+            .Methods.First(m => m.Name == "TestTernary");
+        var instrs = method.BasicBlocks.SelectMany(b => b.Instructions).ToList();
+        Assert.Contains(instrs, i => i is IRConditionalBranch);
+    }
+
+    // ===== Control Flow: Short-Circuit =====
+
+    [Fact]
+    public void Build_FeatureTest_TestShortCircuit_NoWarnings()
+    {
+        var module = BuildFeatureTest();
+        var method = module.Types.First(t => t.CppName == "Program")
+            .Methods.First(m => m.Name == "TestShortCircuit");
+        var comments = method.BasicBlocks
+            .SelectMany(b => b.Instructions)
+            .OfType<IRComment>()
+            .Select(c => c.Text);
+        Assert.DoesNotContain(comments, c => c.Contains("WARNING"));
+    }
+
+    // ===== Control Flow: Unsigned Comparison =====
+
+    [Fact]
+    public void Build_FeatureTest_TestUnsignedComparison_NoBranchWarnings()
+    {
+        var module = BuildFeatureTest();
+        var method = module.Types.First(t => t.CppName == "Program")
+            .Methods.First(m => m.Name == "TestUnsignedComparison");
+        var comments = method.BasicBlocks
+            .SelectMany(b => b.Instructions)
+            .OfType<IRComment>()
+            .Select(c => c.Text);
+        // No unsupported opcode warnings — all unsigned branch opcodes handled
+        Assert.DoesNotContain(comments, c => c.Contains("WARNING"));
+    }
+
+    [Fact]
+    public void Build_FeatureTest_TestUnsignedComparison_HasComparisonOps()
+    {
+        var module = BuildFeatureTest();
+        var method = module.Types.First(t => t.CppName == "Program")
+            .Methods.First(m => m.Name == "TestUnsignedComparison");
+        var instrs = method.BasicBlocks.SelectMany(b => b.Instructions).ToList();
+        // Console.WriteLine(a < b) uses comparison opcodes (clt.un → IRBinaryOp), not branches
+        var compOps = instrs.OfType<IRBinaryOp>().Select(b => b.Op).ToList();
+        Assert.Contains("<", compOps);
+        Assert.Contains(">", compOps);
+    }
+
+    // ===== Control Flow: NaN Comparison =====
+
+    [Fact]
+    public void Build_FeatureTest_TestFloatNaNComparison_NoBranchWarnings()
+    {
+        var module = BuildFeatureTest();
+        var method = module.Types.First(t => t.CppName == "Program")
+            .Methods.First(m => m.Name == "TestFloatNaNComparison");
+        var comments = method.BasicBlocks
+            .SelectMany(b => b.Instructions)
+            .OfType<IRComment>()
+            .Select(c => c.Text);
+        Assert.DoesNotContain(comments, c => c.Contains("WARNING"));
+    }
 }

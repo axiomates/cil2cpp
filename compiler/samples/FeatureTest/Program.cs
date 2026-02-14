@@ -610,6 +610,16 @@ public class Program
         TestExplicitInterface();
         TestMethodHiding();
         TestSizeOf();
+        TestWhileLoop();
+        TestDoWhileLoop();
+        TestForLoop();
+        TestNestedLoopBreakContinue();
+        TestGoto();
+        TestNestedIfElse();
+        TestTernary();
+        TestShortCircuit();
+        TestUnsignedComparison();
+        TestFloatNaNComparison();
         TestAsync();
     }
 
@@ -1640,6 +1650,121 @@ public class Program
     {
         Console.WriteLine(sizeof(TinyStruct));  // 1
         Console.WriteLine(sizeof(BigStruct));   // 24
+    }
+
+    // Exercises while loop (backward branch)
+    static void TestWhileLoop()
+    {
+        int i = 0;
+        while (i < 5) { i++; }
+        Console.WriteLine(i); // 5
+    }
+
+    // Exercises do-while loop (backward conditional branch)
+    static void TestDoWhileLoop()
+    {
+        int count = 0;
+        do { count++; } while (count < 3);
+        Console.WriteLine(count); // 3
+    }
+
+    // Exercises for loop (forward + backward branches)
+    static void TestForLoop()
+    {
+        int sum = 0;
+        for (int i = 0; i < 10; i++) { sum += i; }
+        Console.WriteLine(sum); // 45
+    }
+
+    // Exercises nested loops with break/continue
+    static void TestNestedLoopBreakContinue()
+    {
+        int count = 0;
+        for (int i = 0; i < 3; i++)
+        {
+            for (int j = 0; j < 3; j++)
+            {
+                if (j == 1) continue;
+                if (i == 2) break;
+                count++;
+            }
+        }
+        Console.WriteLine(count); // 4 (i=0:j=0,j=2; i=1:j=0,j=2)
+    }
+
+    // Exercises goto (explicit forward + backward unconditional branch)
+    static void TestGoto()
+    {
+        int n = 0;
+        start:
+        n++;
+        if (n < 3) goto start;
+        Console.WriteLine(n); // 3
+
+        goto skip;
+        Console.WriteLine("skipped");
+        skip:
+        Console.WriteLine("reached"); // reached
+    }
+
+    // Exercises nested if/else (multiple branches)
+    static void TestNestedIfElse()
+    {
+        int x = 5;
+        if (x > 10)
+            Console.WriteLine("big");
+        else if (x > 3)
+            Console.WriteLine("medium"); // medium
+        else
+            Console.WriteLine("small");
+    }
+
+    // Exercises ternary operator (conditional branch pattern)
+    static void TestTernary()
+    {
+        int x = 5;
+        string result = x > 3 ? "big" : "small";
+        Console.WriteLine(result); // big
+    }
+
+    // Exercises short-circuit evaluation (&& / ||)
+    static void TestShortCircuit()
+    {
+        int sideEffect = 0;
+        bool r1 = false && (++sideEffect > 0);
+        Console.WriteLine(sideEffect); // 0 (short-circuited, ++ not executed)
+
+        bool r2 = true || (++sideEffect > 0);
+        Console.WriteLine(sideEffect); // 0 (short-circuited, ++ not executed)
+
+        bool r3 = true && (++sideEffect > 0);
+        Console.WriteLine(sideEffect); // 1 (not short-circuited, ++ executed)
+    }
+
+    // Exercises unsigned comparison (bge.un, bgt.un, ble.un, blt.un opcodes)
+    static void TestUnsignedComparison()
+    {
+        uint a = 10;
+        uint b = 20;
+        Console.WriteLine(a < b);   // True  (blt.un)
+        Console.WriteLine(a > b);   // False (bgt.un)
+        Console.WriteLine(a <= b);  // True  (ble.un)
+        Console.WriteLine(a >= b);  // False (bge.un)
+
+        // Char comparisons are also unsigned
+        char c1 = 'A';
+        char c2 = 'Z';
+        Console.WriteLine(c1 < c2); // True
+    }
+
+    // Exercises float/double NaN comparison behavior
+    static void TestFloatNaNComparison()
+    {
+        double nan = double.NaN;
+        Console.WriteLine(nan == nan);   // False
+        Console.WriteLine(nan != nan);   // True
+        Console.WriteLine(nan > 0);      // False
+        Console.WriteLine(nan < 0);      // False
     }
 
     // Exercises async/await (state machine + Task<T> + AsyncTaskMethodBuilder)

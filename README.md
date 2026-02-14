@@ -403,10 +403,10 @@ void Program_Main() {
 
 | 功能 | 状态 | 备注 |
 |------|------|------|
-| if / else | ✅ | 全部条件分支指令：beq, bne, bge, bgt, ble, blt 及短形式 |
-| while / for / do-while | ✅ | C# 编译器编译为条件分支，CIL2CPP 正常处理 |
-| goto (无条件分支) | ✅ | br / br.s |
-| 比较运算 (==, !=, <, >, <=, >=) | ✅ | ceq, cgt, cgt.un, clt, clt.un + 条件分支 |
+| if / else | ✅ | 全部条件分支指令：beq, bne, bge, bgt, ble, blt + 无符号变体 bge.un, bgt.un, ble.un, blt.un + 全部短形式 |
+| while / for / do-while | ✅ | C# 编译器编译为条件分支，CIL2CPP 正常处理（含嵌套循环 + break/continue） |
+| goto (无条件分支) | ✅ | br / br.s（前向 + 后向跳转） |
+| 比较运算 (==, !=, <, >, <=, >=) | ✅ | ceq, cgt, cgt.un, clt, clt.un + 有符号/无符号条件分支 |
 | switch (IL switch 表) | ✅ | 编译为 C++ switch/goto 跳转表 |
 | 模式匹配 (switch 表达式) | ⚠️ | C# 编译器将简单模式编译为 if/switch，CIL2CPP 可处理；复杂模式可能失败 |
 | Range / Index (..) | ❌ | |
