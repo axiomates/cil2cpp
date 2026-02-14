@@ -443,31 +443,35 @@ public partial class IRBuilder
                 break;
             }
 
+            case Code.Conv_Ovf_I:
             case Code.Conv_Ovf_I1:
             case Code.Conv_Ovf_I2:
             case Code.Conv_Ovf_I4:
             case Code.Conv_Ovf_I8:
+            case Code.Conv_Ovf_U:
             case Code.Conv_Ovf_U1:
             case Code.Conv_Ovf_U2:
             case Code.Conv_Ovf_U4:
             case Code.Conv_Ovf_U8:
+            case Code.Conv_Ovf_I_Un:
             case Code.Conv_Ovf_I1_Un:
             case Code.Conv_Ovf_I2_Un:
             case Code.Conv_Ovf_I4_Un:
             case Code.Conv_Ovf_I8_Un:
+            case Code.Conv_Ovf_U_Un:
             case Code.Conv_Ovf_U1_Un:
             case Code.Conv_Ovf_U2_Un:
             case Code.Conv_Ovf_U4_Un:
             case Code.Conv_Ovf_U8_Un:
             {
-                // Checked conversions — for now treat as regular casts
-                // (overflow checking on conversions would require range checks)
                 var cppType = GetCheckedConvType(instr.OpCode);
+                var isUn = IsUnsignedCheckedConv(instr.OpCode);
+                var func = isUn ? "cil2cpp::checked_conv_un" : "cil2cpp::checked_conv";
                 var val = stack.Count > 0 ? stack.Pop() : "0";
                 var tmp = $"__t{tempCounter++}";
                 block.Instructions.Add(new IRRawCpp
                 {
-                    Code = $"auto {tmp} = ({cppType}){val};"
+                    Code = $"{tmp} = {func}<{cppType}>({val});"
                 });
                 stack.Push(tmp);
                 break;
@@ -817,7 +821,21 @@ public partial class IRBuilder
             case Code.Conv_U:   EmitConversion(block, stack, "uintptr_t", ref tempCounter); break;
             case Code.Conv_R4:  EmitConversion(block, stack, "float", ref tempCounter); break;
             case Code.Conv_R8:  EmitConversion(block, stack, "double", ref tempCounter); break;
-            case Code.Conv_R_Un: EmitConversion(block, stack, "double", ref tempCounter); break;
+            case Code.Conv_R_Un:
+            {
+                // ECMA-335 III.3.19: convert unsigned integer to float
+                // Must reinterpret as unsigned before converting to double
+                var val = stack.Count > 0 ? stack.Pop() : "0";
+                var tmp = $"__t{tempCounter++}";
+                block.Instructions.Add(new IRConversion
+                {
+                    SourceExpr = $"static_cast<uint64_t>({val})",
+                    TargetType = "double",
+                    ResultVar = tmp
+                });
+                stack.Push(tmp);
+                break;
+            }
 
             // ===== Stack Operations =====
             case Code.Dup:
@@ -1170,14 +1188,25 @@ public partial class IRBuilder
 
     internal static string GetCheckedConvType(Code code) => code switch
     {
+        Code.Conv_Ovf_I or Code.Conv_Ovf_I_Un => "intptr_t",
         Code.Conv_Ovf_I1 or Code.Conv_Ovf_I1_Un => "int8_t",
         Code.Conv_Ovf_I2 or Code.Conv_Ovf_I2_Un => "int16_t",
         Code.Conv_Ovf_I4 or Code.Conv_Ovf_I4_Un => "int32_t",
         Code.Conv_Ovf_I8 or Code.Conv_Ovf_I8_Un => "int64_t",
+        Code.Conv_Ovf_U or Code.Conv_Ovf_U_Un => "uintptr_t",
         Code.Conv_Ovf_U1 or Code.Conv_Ovf_U1_Un => "uint8_t",
         Code.Conv_Ovf_U2 or Code.Conv_Ovf_U2_Un => "uint16_t",
         Code.Conv_Ovf_U4 or Code.Conv_Ovf_U4_Un => "uint32_t",
         Code.Conv_Ovf_U8 or Code.Conv_Ovf_U8_Un => "uint64_t",
         _ => "int32_t"
+    };
+
+    internal static bool IsUnsignedCheckedConv(Code code) => code switch
+    {
+        Code.Conv_Ovf_I_Un or Code.Conv_Ovf_I1_Un or Code.Conv_Ovf_I2_Un or
+        Code.Conv_Ovf_I4_Un or Code.Conv_Ovf_I8_Un or Code.Conv_Ovf_U_Un or
+        Code.Conv_Ovf_U1_Un or Code.Conv_Ovf_U2_Un or Code.Conv_Ovf_U4_Un or
+        Code.Conv_Ovf_U8_Un => true,
+        _ => false
     };
 }

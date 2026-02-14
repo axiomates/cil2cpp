@@ -769,6 +769,27 @@ public class IRBuilderTests
         Assert.Contains("uint32_t", convs);
     }
 
+    [Fact]
+    public void Build_FeatureTest_TestMoreConversions_HasIntPtrConversion()
+    {
+        var module = BuildFeatureTest();
+        var instrs = GetMethodInstructions(module, "Program", "TestMoreConversions");
+        var convs = instrs.OfType<IRConversion>().Select(c => c.TargetType).ToList();
+        Assert.Contains("intptr_t", convs);
+    }
+
+    [Fact]
+    public void Build_FeatureTest_TestMoreConversions_ConvRUn_CastsToUnsigned()
+    {
+        var module = BuildFeatureTest();
+        var instrs = GetMethodInstructions(module, "Program", "TestMoreConversions");
+        var convs = instrs.OfType<IRConversion>().ToList();
+        // Conv_R_Un should produce static_cast<double>(static_cast<uint64_t>(val))
+        var rUnConv = convs.FirstOrDefault(c =>
+            c.TargetType == "double" && c.SourceExpr.Contains("uint64_t"));
+        Assert.NotNull(rUnConv);
+    }
+
     // ===== FeatureTest: ModifyArg =====
 
     [Fact]
@@ -2126,21 +2147,68 @@ public class IRBuilderTests
         Assert.Contains(rawCpps, r => r.Code.Contains("cil2cpp::checked_mul"));
     }
 
+    // ===== Checked conversions (conv.ovf.*) =====
+
+    [Fact]
+    public void Build_FeatureTest_CheckedToByte_HasCheckedConv()
+    {
+        var module = BuildFeatureTest();
+        var instrs = GetMethodInstructions(module, "Program", "CheckedToByte");
+        var rawCpps = instrs.OfType<IRRawCpp>().ToList();
+        Assert.Contains(rawCpps, r => r.Code.Contains("cil2cpp::checked_conv<uint8_t>"));
+    }
+
+    [Fact]
+    public void Build_FeatureTest_CheckedToSByte_HasCheckedConv()
+    {
+        var module = BuildFeatureTest();
+        var instrs = GetMethodInstructions(module, "Program", "CheckedToSByte");
+        var rawCpps = instrs.OfType<IRRawCpp>().ToList();
+        Assert.Contains(rawCpps, r => r.Code.Contains("cil2cpp::checked_conv<int8_t>"));
+    }
+
+    [Fact]
+    public void Build_FeatureTest_CheckedToUInt_HasCheckedConv()
+    {
+        var module = BuildFeatureTest();
+        var instrs = GetMethodInstructions(module, "Program", "CheckedToUInt");
+        var rawCpps = instrs.OfType<IRRawCpp>().ToList();
+        Assert.Contains(rawCpps, r => r.Code.Contains("cil2cpp::checked_conv<uint32_t>"));
+    }
+
+    [Theory]
+    [InlineData(Code.Conv_Ovf_I_Un, true)]
+    [InlineData(Code.Conv_Ovf_I1_Un, true)]
+    [InlineData(Code.Conv_Ovf_U_Un, true)]
+    [InlineData(Code.Conv_Ovf_U8_Un, true)]
+    [InlineData(Code.Conv_Ovf_I, false)]
+    [InlineData(Code.Conv_Ovf_I1, false)]
+    [InlineData(Code.Conv_Ovf_U, false)]
+    [InlineData(Code.Conv_Ovf_U8, false)]
+    public void IsUnsignedCheckedConv_ReturnsCorrect(Code code, bool expected)
+    {
+        Assert.Equal(expected, IRBuilder.IsUnsignedCheckedConv(code));
+    }
+
     // ===== GetCheckedConvType =====
 
     [Theory]
+    [InlineData(Code.Conv_Ovf_I, "intptr_t")]
     [InlineData(Code.Conv_Ovf_I1, "int8_t")]
     [InlineData(Code.Conv_Ovf_I2, "int16_t")]
     [InlineData(Code.Conv_Ovf_I4, "int32_t")]
     [InlineData(Code.Conv_Ovf_I8, "int64_t")]
+    [InlineData(Code.Conv_Ovf_U, "uintptr_t")]
     [InlineData(Code.Conv_Ovf_U1, "uint8_t")]
     [InlineData(Code.Conv_Ovf_U2, "uint16_t")]
     [InlineData(Code.Conv_Ovf_U4, "uint32_t")]
     [InlineData(Code.Conv_Ovf_U8, "uint64_t")]
+    [InlineData(Code.Conv_Ovf_I_Un, "intptr_t")]
     [InlineData(Code.Conv_Ovf_I1_Un, "int8_t")]
     [InlineData(Code.Conv_Ovf_I2_Un, "int16_t")]
     [InlineData(Code.Conv_Ovf_I4_Un, "int32_t")]
     [InlineData(Code.Conv_Ovf_I8_Un, "int64_t")]
+    [InlineData(Code.Conv_Ovf_U_Un, "uintptr_t")]
     [InlineData(Code.Conv_Ovf_U1_Un, "uint8_t")]
     [InlineData(Code.Conv_Ovf_U2_Un, "uint16_t")]
     [InlineData(Code.Conv_Ovf_U4_Un, "uint32_t")]

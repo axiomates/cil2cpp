@@ -200,7 +200,8 @@ public static class CppNameMapper
             "System.Byte" or "System.SByte" or
             "System.Int16" or "System.UInt16" or
             "System.Int32" or "System.UInt32" or
-            "System.Int64" or "System.UInt64" => "0",
+            "System.Int64" or "System.UInt64" or
+            "System.IntPtr" or "System.UIntPtr" => "0",
             "System.Single" => "0.0f",
             "System.Double" => "0.0",
             "System.Char" => "u'\\0'",
@@ -209,7 +210,8 @@ public static class CppNameMapper
             "uint8_t" or "int8_t" or
             "int16_t" or "uint16_t" or
             "int32_t" or "uint32_t" or
-            "int64_t" or "uint64_t" => "0",
+            "int64_t" or "uint64_t" or
+            "intptr_t" or "uintptr_t" => "0",
             "float" => "0.0f",
             "double" => "0.0",
             "char16_t" => "u'\\0'",

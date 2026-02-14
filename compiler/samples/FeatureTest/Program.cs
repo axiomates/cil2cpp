@@ -656,6 +656,18 @@ public class Program
         ulong ul = (ulong)l;                // conv.u8
         Console.WriteLine(u);
         Console.WriteLine(us);
+
+        // IntPtr / UIntPtr conversions (conv.i / conv.u)
+        int x = 42;
+        IntPtr ip = (IntPtr)x;
+        UIntPtr uip = (UIntPtr)(uint)x;
+        int back = (int)ip;
+        Console.WriteLine(back);
+
+        // conv.r.un — unsigned to float
+        ulong bigUnsigned = 1000UL;
+        double d = (double)bigUnsigned;      // conv.r.un
+        Console.WriteLine(d);
     }
 
     static void ModifyArg(int x)
@@ -1108,6 +1120,12 @@ public class Program
     static int CheckedSub(int a, int b) { return checked(a - b); }
     static int CheckedMul(int a, int b) { return checked(a * b); }
 
+    // Helper methods that force checked conversions in IL (conv.ovf.*)
+    static byte CheckedToByte(int x) { return checked((byte)x); }
+    static sbyte CheckedToSByte(int x) { return checked((sbyte)x); }
+    static short CheckedToShort(long x) { return checked((short)x); }
+    static uint CheckedToUInt(int x) { return checked((uint)x); }
+
     // Exercises checked arithmetic (Add_Ovf, Sub_Ovf, Mul_Ovf IL opcodes)
     static void TestCheckedOverflow()
     {
@@ -1125,6 +1143,34 @@ public class Program
         catch (OverflowException)
         {
             Console.WriteLine("Overflow caught");
+        }
+
+        // Checked conversions — valid
+        Console.WriteLine(CheckedToByte(200));    // 200
+        Console.WriteLine(CheckedToSByte(100));   // 100
+        Console.WriteLine(CheckedToShort(30000L));// 30000
+        Console.WriteLine(CheckedToUInt(42));     // 42
+
+        // Checked conversion — overflow
+        try
+        {
+            byte b = CheckedToByte(300); // OverflowException: 300 > 255
+            Console.WriteLine(b);
+        }
+        catch (OverflowException)
+        {
+            Console.WriteLine("Conv overflow caught");
+        }
+
+        // Checked conversion — negative to unsigned
+        try
+        {
+            uint u = CheckedToUInt(-1); // OverflowException: -1 < 0
+            Console.WriteLine(u);
+        }
+        catch (OverflowException)
+        {
+            Console.WriteLine("Conv negative overflow caught");
         }
     }
 

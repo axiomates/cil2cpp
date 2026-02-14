@@ -743,9 +743,9 @@ dotnet test compiler/CIL2CPP.Tests --collect:"XPlat Code Coverage"
 
 | 模块 | 测试数 |
 |------|--------|
-| IRBuilder | 241 |
-| ILInstructionCategory | 159 |
-| CppNameMapper | 100 |
+| IRBuilder | 258 |
+| ILInstructionCategory | 173 |
+| CppNameMapper | 104 |
 | CppCodeGenerator | 70 |
 | TypeDefinitionInfo | 65 |
 | IR Instructions (全部) | 54 |
@@ -762,7 +762,7 @@ dotnet test compiler/CIL2CPP.Tests --collect:"XPlat Code Coverage"
 | AssemblyReader | 12 |
 | IRField / IRVTableEntry / IRInterfaceImpl | 7 |
 | SequencePointInfo | 5 |
-| **合计** | **981** |
+| **合计** | **1016** |
 
 ### 运行时单元测试 (C++ / Google Test)
 
@@ -784,11 +784,11 @@ ctest --test-dir runtime/tests/build -C Debug --output-on-failure
 | Object | 28 |
 | Console | 27 |
 | Boxing | 26 |
-| Exception | 24 (1 disabled) |
+| Exception | 55 (1 disabled) |
 | Array | 21 |
 | Delegate | 18 |
 | GC | 14 |
-| **合计** | **249** |
+| **合计** | **280** |
 
 ### 端到端集成测试
 
@@ -833,8 +833,8 @@ python tools/dev.py build                  # 编译 compiler + runtime
 python tools/dev.py build --compiler       # 仅编译 compiler
 python tools/dev.py build --runtime        # 仅编译 runtime
 python tools/dev.py test --all             # 运行全部测试（编译器 + 运行时 + 集成）
-python tools/dev.py test --compiler        # 仅编译器测试 (981 xUnit)
-python tools/dev.py test --runtime         # 仅运行时测试 (249 GTest)
+python tools/dev.py test --compiler        # 仅编译器测试 (1016 xUnit)
+python tools/dev.py test --runtime         # 仅运行时测试 (280 GTest)
 python tools/dev.py test --coverage        # 测试 + 覆盖率 HTML 报告
 python tools/dev.py install                # 安装 runtime (Debug + Release)
 python tools/dev.py codegen HelloWorld     # 快速代码生成测试

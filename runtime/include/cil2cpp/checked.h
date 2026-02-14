@@ -75,4 +75,66 @@ T checked_mul_un(T a, T b) {
     return a * b;
 }
 
+// ======== Checked conversions (conv.ovf.*) ========
+
+/**
+ * checked_conv: convert with overflow check (source treated as its natural signedness).
+ * ECMA-335 III.3.18: conv.ovf.* (without _Un suffix)
+ */
+template<typename TTarget, typename TSource>
+TTarget checked_conv(TSource value) {
+    if constexpr (std::is_signed_v<TSource> && std::is_signed_v<TTarget>) {
+        // signed -> signed
+        if constexpr (sizeof(TTarget) < sizeof(TSource)) {
+            if (value < static_cast<TSource>(std::numeric_limits<TTarget>::min()) ||
+                value > static_cast<TSource>(std::numeric_limits<TTarget>::max()))
+                throw_overflow();
+        }
+    } else if constexpr (std::is_signed_v<TSource> && !std::is_signed_v<TTarget>) {
+        // signed -> unsigned: value must be >= 0
+        if (value < 0) throw_overflow();
+        if constexpr (sizeof(TTarget) < sizeof(TSource)) {
+            if (static_cast<std::make_unsigned_t<TSource>>(value) >
+                static_cast<std::make_unsigned_t<TSource>>(std::numeric_limits<TTarget>::max()))
+                throw_overflow();
+        }
+    } else if constexpr (!std::is_signed_v<TSource> && std::is_signed_v<TTarget>) {
+        // unsigned -> signed: check <= TTarget::max
+        if constexpr (sizeof(TSource) >= sizeof(TTarget)) {
+            if (value > static_cast<TSource>(std::numeric_limits<TTarget>::max()))
+                throw_overflow();
+        }
+    } else {
+        // unsigned -> unsigned
+        if constexpr (sizeof(TTarget) < sizeof(TSource)) {
+            if (value > static_cast<TSource>(std::numeric_limits<TTarget>::max()))
+                throw_overflow();
+        }
+    }
+    return static_cast<TTarget>(value);
+}
+
+/**
+ * checked_conv_un: convert with overflow check (source reinterpreted as unsigned).
+ * ECMA-335 III.3.18: conv.ovf.*_Un suffix
+ */
+template<typename TTarget, typename TSource>
+TTarget checked_conv_un(TSource value) {
+    using USource = std::make_unsigned_t<TSource>;
+    auto uval = static_cast<USource>(value);
+
+    if constexpr (std::is_signed_v<TTarget>) {
+        // unsigned -> signed target: check uval <= TTarget::max
+        if (uval > static_cast<USource>(std::numeric_limits<TTarget>::max()))
+            throw_overflow();
+    } else {
+        // unsigned -> unsigned target
+        if constexpr (sizeof(TTarget) < sizeof(USource)) {
+            if (uval > static_cast<USource>(std::numeric_limits<TTarget>::max()))
+                throw_overflow();
+        }
+    }
+    return static_cast<TTarget>(uval);
+}
+
 } // namespace cil2cpp

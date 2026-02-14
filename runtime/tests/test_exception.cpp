@@ -596,3 +596,149 @@ TEST_F(ExceptionTest, ThrowInvalidOperation_HasCorrectMessage) {
         free(msg);
     CIL2CPP_END_TRY
 }
+
+// ===== Checked Conversions (conv.ovf.*) =====
+
+// --- checked_conv: signed source ---
+
+TEST_F(ExceptionTest, CheckedConv_SignedToSigned_Narrowing_Normal) {
+    EXPECT_EQ((checked_conv<int8_t>(int32_t(127))), 127);
+    EXPECT_EQ((checked_conv<int8_t>(int32_t(-128))), -128);
+    EXPECT_EQ((checked_conv<int16_t>(int32_t(32767))), 32767);
+    EXPECT_EQ((checked_conv<int16_t>(int32_t(-32768))), -32768);
+}
+
+TEST_F(ExceptionTest, CheckedConv_SignedToSigned_Narrowing_Overflow) {
+    bool caught = false;
+    CIL2CPP_TRY
+        checked_conv<int8_t>(int32_t(128));
+        FAIL() << "Should have thrown";
+    CIL2CPP_CATCH_ALL
+        caught = true;
+    CIL2CPP_END_TRY
+    EXPECT_TRUE(caught);
+}
+
+TEST_F(ExceptionTest, CheckedConv_SignedToSigned_Narrowing_Underflow) {
+    bool caught = false;
+    CIL2CPP_TRY
+        checked_conv<int8_t>(int32_t(-129));
+        FAIL() << "Should have thrown";
+    CIL2CPP_CATCH_ALL
+        caught = true;
+    CIL2CPP_END_TRY
+    EXPECT_TRUE(caught);
+}
+
+TEST_F(ExceptionTest, CheckedConv_SignedToSigned_Widening_AlwaysSucceeds) {
+    EXPECT_EQ((checked_conv<int64_t>(int32_t(-1))), -1LL);
+    EXPECT_EQ((checked_conv<int64_t>(int32_t(INT32_MAX))), (int64_t)INT32_MAX);
+}
+
+TEST_F(ExceptionTest, CheckedConv_SignedToUnsigned_Normal) {
+    EXPECT_EQ((checked_conv<uint8_t>(int32_t(255))), 255u);
+    EXPECT_EQ((checked_conv<uint8_t>(int32_t(0))), 0u);
+    EXPECT_EQ((checked_conv<uint64_t>(int64_t(42))), 42ull);
+}
+
+TEST_F(ExceptionTest, CheckedConv_SignedToUnsigned_NegativeThrows) {
+    bool caught = false;
+    CIL2CPP_TRY
+        checked_conv<uint8_t>(int32_t(-1));
+        FAIL() << "Should have thrown";
+    CIL2CPP_CATCH_ALL
+        caught = true;
+    CIL2CPP_END_TRY
+    EXPECT_TRUE(caught);
+}
+
+TEST_F(ExceptionTest, CheckedConv_SignedToUnsigned_TooLargeThrows) {
+    bool caught = false;
+    CIL2CPP_TRY
+        checked_conv<uint8_t>(int32_t(256));
+        FAIL() << "Should have thrown";
+    CIL2CPP_CATCH_ALL
+        caught = true;
+    CIL2CPP_END_TRY
+    EXPECT_TRUE(caught);
+}
+
+TEST_F(ExceptionTest, CheckedConv_UnsignedToSigned_Normal) {
+    EXPECT_EQ((checked_conv<int8_t>(uint32_t(127))), 127);
+    EXPECT_EQ((checked_conv<int32_t>(uint32_t(42))), 42);
+}
+
+TEST_F(ExceptionTest, CheckedConv_UnsignedToSigned_Overflow) {
+    bool caught = false;
+    CIL2CPP_TRY
+        checked_conv<int8_t>(uint32_t(128));
+        FAIL() << "Should have thrown";
+    CIL2CPP_CATCH_ALL
+        caught = true;
+    CIL2CPP_END_TRY
+    EXPECT_TRUE(caught);
+}
+
+TEST_F(ExceptionTest, CheckedConv_UnsignedToUnsigned_Narrowing_Normal) {
+    EXPECT_EQ((checked_conv<uint8_t>(uint32_t(255))), 255u);
+}
+
+TEST_F(ExceptionTest, CheckedConv_UnsignedToUnsigned_Narrowing_Overflow) {
+    bool caught = false;
+    CIL2CPP_TRY
+        checked_conv<uint8_t>(uint32_t(256));
+        FAIL() << "Should have thrown";
+    CIL2CPP_CATCH_ALL
+        caught = true;
+    CIL2CPP_END_TRY
+    EXPECT_TRUE(caught);
+}
+
+// --- checked_conv_un: source reinterpreted as unsigned ---
+
+TEST_F(ExceptionTest, CheckedConvUn_ToSignedTarget_Normal) {
+    EXPECT_EQ((checked_conv_un<int8_t>(int32_t(100))), 100);
+    EXPECT_EQ((checked_conv_un<int64_t>(uint64_t(42))), 42LL);
+}
+
+TEST_F(ExceptionTest, CheckedConvUn_ToSignedTarget_Overflow) {
+    // -1 as int32 → reinterpreted as 0xFFFFFFFF (unsigned) → too large for int8
+    bool caught = false;
+    CIL2CPP_TRY
+        checked_conv_un<int8_t>(int32_t(-1));
+        FAIL() << "Should have thrown";
+    CIL2CPP_CATCH_ALL
+        caught = true;
+    CIL2CPP_END_TRY
+    EXPECT_TRUE(caught);
+}
+
+TEST_F(ExceptionTest, CheckedConvUn_ToUnsignedTarget_Normal) {
+    EXPECT_EQ((checked_conv_un<uint8_t>(int32_t(200))), 200u);
+    // -1 as int64 → reinterpreted as UINT64_MAX → fits in uint64_t
+    EXPECT_EQ((checked_conv_un<uint64_t>(int64_t(-1))), UINT64_MAX);
+}
+
+TEST_F(ExceptionTest, CheckedConvUn_ToUnsignedTarget_Overflow) {
+    // -1 as int32 → reinterpreted as 0xFFFFFFFF → too large for uint8
+    bool caught = false;
+    CIL2CPP_TRY
+        checked_conv_un<uint8_t>(int32_t(-1));
+        FAIL() << "Should have thrown";
+    CIL2CPP_CATCH_ALL
+        caught = true;
+    CIL2CPP_END_TRY
+    EXPECT_TRUE(caught);
+}
+
+TEST_F(ExceptionTest, CheckedConvUn_Int64ToInt64_LargeOverflow) {
+    // UINT64_MAX (as unsigned reinterpretation) → too large for int64_t
+    bool caught = false;
+    CIL2CPP_TRY
+        checked_conv_un<int64_t>(uint64_t(UINT64_MAX));
+        FAIL() << "Should have thrown";
+    CIL2CPP_CATCH_ALL
+        caught = true;
+    CIL2CPP_END_TRY
+    EXPECT_TRUE(caught);
+}
