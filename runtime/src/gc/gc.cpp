@@ -11,6 +11,7 @@
 #include <cil2cpp/object.h>
 #include <cil2cpp/type_info.h>
 #include <cil2cpp/array.h>
+#include <cil2cpp/exception.h>
 
 #include <gc.h>
 
@@ -44,7 +45,14 @@ void* alloc(size_t size, TypeInfo* type) {
             [](void* p, void*) {
                 Object* o = static_cast<Object*>(p);
                 if (o->__type_info && o->__type_info->finalizer) {
-                    o->__type_info->finalizer(o);
+                    // Guard against exceptions escaping the finalizer.
+                    // CIL2CPP uses setjmp/longjmp; an unguarded throw would
+                    // longjmp through the BoehmGC callback stack (UB).
+                    CIL2CPP_TRY
+                        o->__type_info->finalizer(o);
+                    CIL2CPP_CATCH_ALL
+                        // Swallow: ECMA-335 - exceptions in finalizers are ignored
+                    CIL2CPP_END_TRY
                 }
             },
             nullptr, nullptr, nullptr

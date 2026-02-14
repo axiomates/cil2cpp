@@ -40,8 +40,15 @@ public class IRMethod
     public bool IsOperator { get; set; }
     public bool IsGenericInstance { get; set; }
     public bool IsInternalCall { get; set; }
+    public bool IsNewSlot { get; set; }
     public string? OperatorName { get; set; }
     public int VTableSlot { get; set; } = -1;
+
+    /// <summary>
+    /// Explicit interface overrides (from Cecil's .override directive).
+    /// Each entry is (InterfaceTypeName, MethodName) — e.g. ("IFoo", "Method").
+    /// </summary>
+    public List<(string InterfaceTypeName, string MethodName)> ExplicitOverrides { get; } = new();
 
     /// <summary>
     /// Generate the C++ function signature.
@@ -74,6 +81,7 @@ public class IRParameter
     public string CppName { get; set; } = "";
     public IRType? ParameterType { get; set; }
     public string CppTypeName { get; set; } = "";
+    public string ILTypeName { get; set; } = "";
     public int Index { get; set; }
 }
 

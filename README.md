@@ -357,13 +357,14 @@ void Program_Main() {
 | enum | ✅ | typedef 到底层整数类型 + constexpr 命名常量 + TypeInfo (Enum\|ValueType 标志) |
 | 装箱 / 拆箱 | ✅ | box / unbox / unbox.any，值类型→`box<T>()`/`unbox<T>()`，引用类型 unbox.any→castclass，Nullable\<T\> box 拆包 |
 | Nullable\<T\> | ✅ | BCL 方法拦截（get_HasValue/get_Value/GetValueOrDefault/.ctor），box 拆包（HasValue→box\<T\>/null），泛型单态化 |
-| Tuple (ValueTuple) | ✅ | BCL 方法拦截（.ctor/Equals/GetHashCode/ToString/字段访问），支持 1-8+ 元素（嵌套 TRest），解构赋值 |
+| Tuple (ValueTuple) | ✅ | BCL 方法拦截（.ctor/Equals/GetHashCode/ToString/字段访问），支持任意元素数（>7 通过嵌套 TRest），解构赋值 |
 | record / record struct | ✅ | 编译器生成方法合成（ToString/Equals/GetHashCode/Clone），`with` 表达式，`==`/`!=`，值类型 record struct |
 
 ### 面向对象
 
 | 功能 | 状态 | 备注 |
 |------|------|------|
+| object (System.Object) | ✅ | 所有引用类型基类，运行时提供 ToString/GetHashCode/Equals/GetType |
 | 类定义 | ✅ | 实例字段 + 静态字段 + 方法 |
 | 构造函数 | ✅ | 默认构造和参数化构造（newobj IL 指令） |
 | 静态构造函数 (.cctor) | ✅ | 自动检测 + `_ensure_cctor()` once-guard，访问静态字段/创建实例前自动调用 |
@@ -375,13 +376,28 @@ void Program_Main() {
 | 虚方法 / 多态 | ✅ | 完整 VTable 分派：`obj->__type_info->vtable->methods[slot]` 函数指针调用 |
 | 属性 | ✅ | C# 编译器生成的 get_/set_ 方法调用可工作（auto-property + 手动 property） |
 | 类型转换 (is / as) | ✅ | isinst → object_as()，castclass → object_cast() |
-| 抽象类/方法 | ⚠️ | 识别 IsAbstract 标志，抽象方法跳过代码生成 |
+| 抽象类/方法 | ✅ | 识别 IsAbstract，抽象方法跳过代码生成，VTable 正确分配槽位由子类覆盖 |
 | 接口 | ✅ | InterfaceVTable 分派：编译器生成接口方法表，运行时 `type_get_interface_vtable()` 查找 |
 | 泛型类 | ✅ | 单态化（monomorphization）：`Wrapper<int>` → `Wrapper_1_System_Int32` 独立 C++ 类型 |
 | 泛型方法 | ✅ | 单态化：`Identity<int>()` → `GenericUtils_Identity_System_Int32()` 独立函数 |
 | 运算符重载 | ✅ | C# 编译为 `op_Addition` 等静态方法调用，编译器自动识别并标记 |
 | 索引器 | ✅ | C# 编译为 `get_Item`/`set_Item` 普通方法调用，无需特殊处理 |
 | 终结器 / 析构函数 | ✅ | 编译器检测 `Finalize()` 方法，生成 finalizer wrapper → TypeInfo.finalizer，BoehmGC 自动注册 |
+| 显式接口实现 | ✅ | Cecil `.override` 指令解析，`void IFoo.Method()` 映射到正确的接口 VTable 槽位 |
+| 方法隐藏 (`new`) | ✅ | `newslot` 标志检测，`new virtual` 创建新 VTable 槽位而非覆盖父类 |
+
+### CIL 指令与前缀
+
+| 功能 | 状态 | 备注 |
+|------|------|------|
+| `constrained.` 前缀 | ✅ | 泛型虚方法调用前缀，单态化后安全跳过（no-op） |
+| `sizeof` 操作码 | ✅ | 值类型大小查询 → C++ `sizeof()` |
+| `calli` 操作码 | ✅ | 间接函数调用（函数指针），支持 `delegate*` 场景 |
+| `ldtoken` / `typeof` | ⚠️ | 数组初始化 + 类型 token → `&TypeInfo` 指针；完整反射需 Phase 5 |
+| `tail.` 前缀 | ✅ | 尾调用优化提示，AOT 编译中安全跳过（no-op） |
+| `readonly.` 前缀 | ✅ | `ldelema` 只读提示，AOT 编译中安全跳过（no-op） |
+| `volatile.` 前缀 | ✅ | 内存排序提示，单线程模型中安全跳过（no-op） |
+| `unaligned.` 前缀 | ✅ | 对齐提示，安全跳过（no-op） |
 
 ### 控制流
 
@@ -508,6 +524,8 @@ void Program_Main() {
 | `using` 语句 | try/finally 已支持，需要 `IDisposable` 接口映射 | Phase 5 |
 | 增量/并发 GC | BoehmGC 支持增量模式，当前未启用 | Phase 5 |
 | SIMD / `System.Numerics.Vector` | 无平台内联函数 (intrinsics) 支持 | Phase 5+ |
+| 泛型协变/逆变 (`out T` / `in T`) | `IEnumerable<out T>` 等协变接口，需要运行时类型兼容性检查 | Phase 5 |
+| 默认接口方法 (C# 8+) | 接口中带默认实现的方法，需要 DIM 分派逻辑 | Phase 5 |
 
 ### 实现层面的已知限制
 

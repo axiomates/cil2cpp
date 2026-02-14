@@ -87,10 +87,17 @@ public partial class IRBuilder
         CalculateInstanceSize(irType);
     }
 
+    // Object header: TypeInfo* (8 bytes) + sync_block UInt32 (4 bytes) + padding (4 bytes) = 16
+    private const int ObjectHeaderSize = 16;
+    private const int PointerAlignment = 8;
+
+    private static int Align(int offset, int alignment) =>
+        (offset + alignment - 1) & ~(alignment - 1);
+
     private void CalculateInstanceSize(IRType irType)
     {
-        // Start with object header (vtable pointer + GC mark + sync block)
-        int size = irType.IsValueType ? 0 : 16; // sizeof(Object)
+        // Start with object header for reference types
+        int size = irType.IsValueType ? 0 : ObjectHeaderSize;
 
         // Add base type fields
         if (irType.BaseType != null)
@@ -104,14 +111,13 @@ public partial class IRBuilder
             int fieldSize = GetFieldSize(field.FieldTypeName);
             int alignment = GetFieldAlignment(field.FieldTypeName);
 
-            // Align
-            size = (size + alignment - 1) & ~(alignment - 1);
+            size = Align(size, alignment);
             field.Offset = size;
             size += fieldSize;
         }
 
-        // Align to pointer size
-        size = (size + 7) & ~7;
+        // Align total size to pointer boundary
+        size = Align(size, PointerAlignment);
         irType.InstanceSize = size;
     }
 

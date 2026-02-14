@@ -23,6 +23,20 @@ public partial class IRBuilder
             IsStaticConstructor = methodDef.IsConstructor && methodDef.IsStatic,
         };
 
+        // Detect newslot (C# 'new virtual')
+        if (methodDef.IsNewSlot)
+            irMethod.IsNewSlot = true;
+
+        // Detect explicit interface overrides (Cecil .override directive)
+        var cecilMethod = methodDef.GetCecilMethod();
+        if (cecilMethod.HasOverrides)
+        {
+            foreach (var ovr in cecilMethod.Overrides)
+            {
+                irMethod.ExplicitOverrides.Add((ovr.DeclaringType.FullName, ovr.Name));
+            }
+        }
+
         // Detect finalizer
         if (methodDef.Name == "Finalize" && !methodDef.IsStatic && methodDef.IsVirtual
             && methodDef.Parameters.Count == 0 && methodDef.ReturnTypeName == "System.Void")
@@ -53,6 +67,7 @@ public partial class IRBuilder
                 Name = paramDef.Name,
                 CppName = paramDef.Name.Length > 0 ? paramDef.Name : $"p{paramDef.Index}",
                 CppTypeName = ResolveTypeForDecl(paramDef.TypeName),
+                ILTypeName = paramDef.TypeName,
                 Index = paramDef.Index,
             };
 
@@ -334,6 +349,16 @@ public partial class IRBuilder
                     {
                         stack.Push("0 /* ldtoken field */");
                     }
+                }
+                else if (instr.Operand is TypeReference typeRef)
+                {
+                    // ldtoken <type> → push pointer to TypeInfo (RuntimeTypeHandle)
+                    var typeCpp = GetMangledTypeNameForRef(typeRef);
+                    stack.Push($"&{typeCpp}_TypeInfo");
+                }
+                else if (instr.Operand is MethodReference)
+                {
+                    stack.Push("0 /* ldtoken method */");
                 }
                 else
                 {
@@ -855,6 +880,12 @@ public partial class IRBuilder
             }
 
             case Code.Nop:
+            // IL prefix opcodes — safe to ignore in AOT monomorphized code
+            case Code.Constrained:  // constrained. prefix: monomorphization resolves concrete types
+            case Code.Tail:         // tail. prefix: tail call hint, not required for correctness
+            case Code.Readonly:     // readonly. prefix: ldelema advisory, no semantic effect
+            case Code.Volatile:     // volatile. prefix: memory ordering hint
+            case Code.Unaligned:    // unaligned. prefix: alignment hint
                 break;
 
             // ===== Array Operations =====
@@ -1172,6 +1203,56 @@ public partial class IRBuilder
                     VTableSlot = vtableSlot
                 });
                 stack.Push(tmp);
+                break;
+            }
+
+            case Code.Sizeof:
+            {
+                var typeRef = (TypeReference)instr.Operand!;
+                var typeCpp = CppNameMapper.MangleTypeName(typeRef.FullName);
+                var tmp = $"__t{tempCounter++}";
+                block.Instructions.Add(new IRRawCpp
+                {
+                    Code = $"auto {tmp} = static_cast<int32_t>(sizeof({typeCpp}));"
+                });
+                stack.Push(tmp);
+                break;
+            }
+
+            case Code.Calli:
+            {
+                // Indirect function call via function pointer
+                var callSite = (CallSite)instr.Operand!;
+                var args = new List<string>();
+                for (int i = 0; i < callSite.Parameters.Count; i++)
+                    args.Add(stack.Count > 0 ? stack.Pop() : "0");
+                args.Reverse();
+                var fptr = stack.Count > 0 ? stack.Pop() : "nullptr";
+
+                // Build function pointer type: ReturnType(*)(ParamTypes...)
+                var retType = CppNameMapper.GetCppTypeForDecl(callSite.ReturnType.FullName);
+                var paramTypes = callSite.Parameters.Select(p =>
+                    CppNameMapper.GetCppTypeForDecl(p.ParameterType.FullName)).ToList();
+                var paramTypeStr = string.Join(", ", paramTypes);
+                var castExpr = $"reinterpret_cast<{retType}(*)({paramTypeStr})>({fptr})";
+                var argStr = string.Join(", ", args);
+
+                if (callSite.ReturnType.FullName != "System.Void")
+                {
+                    var tmp = $"__t{tempCounter++}";
+                    block.Instructions.Add(new IRRawCpp
+                    {
+                        Code = $"auto {tmp} = {castExpr}({argStr});"
+                    });
+                    stack.Push(tmp);
+                }
+                else
+                {
+                    block.Instructions.Add(new IRRawCpp
+                    {
+                        Code = $"{castExpr}({argStr});"
+                    });
+                }
                 break;
             }
 

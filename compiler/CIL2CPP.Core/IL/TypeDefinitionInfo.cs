@@ -99,6 +99,7 @@ public class MethodInfo
     public bool IsPrivate => _method.IsPrivate;
     public bool IsVirtual => _method.IsVirtual;
     public bool IsAbstract => _method.IsAbstract;
+    public bool IsNewSlot => _method.IsNewSlot;
     public bool IsConstructor => _method.IsConstructor;
     public bool HasBody => _method.HasBody;
 

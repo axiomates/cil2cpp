@@ -100,6 +100,14 @@ public partial class IRBuilder
             return;
         }
 
+        // Emit cctor guard for static method calls (ECMA-335 II.10.5.3.1)
+        if (!methodRef.HasThis)
+        {
+            var declaringTypeName = ResolveCacheKey(methodRef.DeclaringType);
+            var typeCpp = GetMangledTypeNameForRef(methodRef.DeclaringType);
+            EmitCctorGuardIfNeeded(block, declaringTypeName, typeCpp);
+        }
+
         var irCall = new IRCall();
 
         // Map known BCL methods (hardcoded priority mappings)
@@ -180,13 +188,13 @@ public partial class IRBuilder
 
             if (resolved != null && resolved.IsInterface)
             {
-                // Interface dispatch — find slot by name (skipping constructors)
+                // Interface dispatch — find slot by name and parameter types
                 int ifaceSlot = 0;
                 bool found = false;
                 foreach (var m in resolved.Methods)
                 {
                     if (m.IsConstructor || m.IsStaticConstructor) continue;
-                    if (m.Name == methodRef.Name && m.Parameters.Count == methodRef.Parameters.Count) { found = true; break; }
+                    if (m.Name == methodRef.Name && ParameterTypesMatchRef(m, methodRef)) { found = true; break; }
                     ifaceSlot++;
                 }
                 if (found)
@@ -201,9 +209,9 @@ public partial class IRBuilder
             }
             else if (resolved != null && !resolved.IsValueType)
             {
-                // Class virtual dispatch
+                // Class virtual dispatch — match by name and parameter types
                 var entry = resolved.VTable.FirstOrDefault(e => e.MethodName == methodRef.Name
-                    && (e.Method == null || e.Method.Parameters.Count == methodRef.Parameters.Count));
+                    && (e.Method == null || ParameterTypesMatchRef(e.Method, methodRef)));
                 if (entry != null)
                 {
                     irCall.IsVirtual = true;
@@ -348,6 +356,8 @@ public partial class IRBuilder
                 "GetHashCode" => "cil2cpp::object_get_hash_code",
                 "Equals" => "cil2cpp::object_equals",
                 "GetType" => "cil2cpp::object_get_type",
+                "ReferenceEquals" => "cil2cpp::object_reference_equals",
+                "MemberwiseClone" => "cil2cpp::object_memberwise_clone",
                 ".ctor" => null, // Object ctor is a no-op
                 _ => null
             };
@@ -448,8 +458,17 @@ public partial class IRBuilder
         // Override or add virtual methods
         foreach (var method in irType.Methods.Where(m => m.IsVirtual))
         {
-            var existing = irType.VTable.FirstOrDefault(e => e.MethodName == method.Name
-                && (e.Method == null || e.Method.Parameters.Count == method.Parameters.Count));
+            // newslot methods always create a new vtable slot (C# 'new virtual')
+            // Non-newslot methods attempt to override an existing slot
+            IRVTableEntry? existing = null;
+            if (!method.IsNewSlot)
+            {
+                // Use LastOrDefault: when method hiding creates duplicate-named entries,
+                // 'override' targets the most-derived slot (added last)
+                existing = irType.VTable.LastOrDefault(e => e.MethodName == method.Name
+                    && (e.Method == null || ParameterTypesMatch(e.Method, method)));
+            }
+
             if (existing != null)
             {
                 // Override
@@ -459,7 +478,7 @@ public partial class IRBuilder
             }
             else
             {
-                // New virtual method
+                // New virtual method (or newslot override)
                 var slot = irType.VTable.Count;
                 irType.VTable.Add(new IRVTableEntry
                 {
@@ -482,20 +501,46 @@ public partial class IRBuilder
             {
                 // Skip constructors — only map actual interface methods
                 if (ifaceMethod.IsConstructor || ifaceMethod.IsStaticConstructor) continue;
-                var implMethod = FindImplementingMethod(irType, ifaceMethod.Name, ifaceMethod.Parameters.Count);
+
+                // First: check explicit interface overrides (.override directive)
+                var implMethod = FindExplicitOverride(irType, iface, ifaceMethod);
+
+                // Fallback: implicit name + parameter matching
+                implMethod ??= FindImplementingMethod(irType, ifaceMethod);
+
                 impl.MethodImpls.Add(implMethod); // null if not found — keeps slot alignment
             }
             irType.InterfaceImpls.Add(impl);
         }
     }
 
-    private static IRMethod? FindImplementingMethod(IRType type, string methodName, int paramCount)
+    /// <summary>
+    /// Searches for a method that explicitly implements the given interface method
+    /// via the .override directive (C# explicit interface implementation: void IFoo.Method()).
+    /// </summary>
+    private static IRMethod? FindExplicitOverride(IRType type, IRType iface, IRMethod ifaceMethod)
     {
         var current = type;
         while (current != null)
         {
-            var method = current.Methods.FirstOrDefault(m => m.Name == methodName && !m.IsAbstract && !m.IsStatic
-                && m.Parameters.Count == paramCount);
+            var method = current.Methods.FirstOrDefault(m =>
+                m.ExplicitOverrides.Any(o =>
+                    o.InterfaceTypeName == iface.ILFullName && o.MethodName == ifaceMethod.Name)
+                && !m.IsAbstract && !m.IsStatic
+                && ParameterTypesMatch(m, ifaceMethod));
+            if (method != null) return method;
+            current = current.BaseType;
+        }
+        return null;
+    }
+
+    private static IRMethod? FindImplementingMethod(IRType type, IRMethod ifaceMethod)
+    {
+        var current = type;
+        while (current != null)
+        {
+            var method = current.Methods.FirstOrDefault(m => m.Name == ifaceMethod.Name && !m.IsAbstract && !m.IsStatic
+                && ParameterTypesMatch(m, ifaceMethod));
             if (method != null) return method;
             current = current.BaseType;
         }
@@ -550,6 +595,36 @@ public partial class IRBuilder
         var tmp = $"__t{tempCounter++}";
         block.Instructions.Add(new IRConversion { SourceExpr = val, TargetType = targetType, ResultVar = tmp });
         stack.Push(tmp);
+    }
+
+    /// <summary>
+    /// Check if two IR methods have matching parameter types (for vtable override resolution).
+    /// </summary>
+    private static bool ParameterTypesMatch(IRMethod a, IRMethod b)
+    {
+        if (a.Parameters.Count != b.Parameters.Count) return false;
+        for (int i = 0; i < a.Parameters.Count; i++)
+        {
+            if (a.Parameters[i].CppTypeName != b.Parameters[i].CppTypeName)
+                return false;
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// Check if an IR method matches a Cecil MethodReference by parameter types
+    /// (for vtable dispatch slot lookup).
+    /// </summary>
+    private static bool ParameterTypesMatchRef(IRMethod irMethod, MethodReference methodRef)
+    {
+        if (irMethod.Parameters.Count != methodRef.Parameters.Count) return false;
+        for (int i = 0; i < irMethod.Parameters.Count; i++)
+        {
+            var irTypeName = irMethod.Parameters[i].ILTypeName;
+            var refTypeName = methodRef.Parameters[i].ParameterType.FullName;
+            if (irTypeName != refTypeName) return false;
+        }
+        return true;
     }
 
     private void EmitCctorGuardIfNeeded(IRBasicBlock block, string ilTypeName, string typeCppName)

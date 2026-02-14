@@ -163,6 +163,7 @@ public partial class IRBuilder
                     Name = paramDef.Name.Length > 0 ? paramDef.Name : $"p{paramDef.Index}",
                     CppName = paramDef.Name.Length > 0 ? paramDef.Name : $"p{paramDef.Index}",
                     CppTypeName = CppNameMapper.GetCppTypeForDecl(paramTypeName),
+                    ILTypeName = paramTypeName,
                     Index = paramDef.Index,
                 });
             }
@@ -319,6 +320,7 @@ public partial class IRBuilder
                             Name = paramDef.Name.Length > 0 ? paramDef.Name : $"p{paramDef.Index}",
                             CppName = paramDef.Name.Length > 0 ? paramDef.Name : $"p{paramDef.Index}",
                             CppTypeName = CppNameMapper.GetCppTypeForDecl(paramTypeName),
+                            ILTypeName = paramTypeName,
                             Index = paramDef.Index,
                         });
                     }
@@ -354,6 +356,42 @@ public partial class IRBuilder
 
             _module.Types.Add(irType);
             _typeCache[key] = irType;
+        }
+
+        // Second pass: resolve base types, interfaces, HasCctor for generic specializations.
+        // Done after all specializations are in the cache so cross-references work
+        // (e.g., SpecialWrapper<int> : Wrapper<int> needs Wrapper<int> already cached).
+        foreach (var (key, info) in _genericInstantiations)
+        {
+            if (info.CecilOpenType == null) continue;
+            if (!_typeCache.TryGetValue(key, out var irType)) continue;
+
+            var openType = info.CecilOpenType;
+            var typeParamMap = new Dictionary<string, string>();
+            for (int i = 0; i < openType.GenericParameters.Count && i < info.TypeArguments.Count; i++)
+                typeParamMap[openType.GenericParameters[i].Name] = info.TypeArguments[i];
+
+            // Base type
+            if (openType.BaseType != null && !irType.IsValueType)
+            {
+                var baseName = ResolveGenericTypeName(openType.BaseType, typeParamMap);
+                if (_typeCache.TryGetValue(baseName, out var baseType))
+                    irType.BaseType = baseType;
+            }
+
+            // Interfaces (Cecil flattens the list)
+            foreach (var iface in openType.Interfaces)
+            {
+                var ifaceName = ResolveGenericTypeName(iface.InterfaceType, typeParamMap);
+                if (_typeCache.TryGetValue(ifaceName, out var ifaceType))
+                    irType.Interfaces.Add(ifaceType);
+            }
+
+            // Static constructor flag
+            irType.HasCctor = openType.Methods.Any(m => m.IsConstructor && m.IsStatic);
+
+            // Recalculate instance size (BaseType may contribute inherited fields)
+            CalculateInstanceSize(irType);
         }
     }
 

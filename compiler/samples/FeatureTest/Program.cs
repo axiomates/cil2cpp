@@ -347,8 +347,187 @@ public class AllFieldTypes
 // Record type (exercises compiler-generated ToString, Equals, GetHashCode, <Clone>$)
 public record PersonRecord(string Name, int Age);
 
+// Abstract class with multi-level inheritance chain (exercises abstract methods + vtable dispatch)
+public abstract class Shape
+{
+    public abstract double Area();
+    public virtual string Describe() => "Shape";
+}
+
+public class Circle : Shape
+{
+    public double Radius;
+    public Circle(double r) { Radius = r; }
+    public override double Area() => 3.14159 * Radius * Radius;
+    public override string Describe() => "Circle";
+}
+
+public class UnitCircle : Circle
+{
+    public UnitCircle() : base(1.0) { }
+    // Inherits Area() and Describe() from Circle
+}
+
+// Value type with implicit/explicit conversion operators
+public struct Celsius
+{
+    public double Value;
+    public Celsius(double v) { Value = v; }
+    public static implicit operator double(Celsius c) => c.Value;
+    public static explicit operator Celsius(double d) => new Celsius(d);
+}
+
+// Class that exposes MemberwiseClone (protected on System.Object)
+public class Cloneable
+{
+    public int Value;
+    public Cloneable(int v) { Value = v; }
+    public Cloneable ShallowCopy() => (Cloneable)MemberwiseClone();
+}
+
+// Overloaded virtual methods with same name but different param types (vtable correctness)
+public class Formatter
+{
+    public virtual string Format(int x) => x.ToString();
+    public virtual string Format(string s) => s;
+}
+
+public class PrefixFormatter : Formatter
+{
+    public override string Format(int x) => x.ToString();
+    public override string Format(string s) => s;
+}
+
+// Class with static constructor triggered by static method call (ECMA-335 II.10.5.3.1)
+public class LazyInit
+{
+    private static int _value;
+    static LazyInit() { _value = 42; }
+    public static int GetValue() => _value;
+}
+
 // Record struct (value type record — no <Clone>$, uses value copy semantics)
 public record struct PointRecord(int X, int Y);
+
+// Interface inheritance: IB : IA (exercises flattened interface list in Cecil metadata)
+public interface IBase
+{
+    string BaseMethod();
+}
+
+public interface IDerived : IBase
+{
+    string DerivedMethod();
+}
+
+public class InterfaceInheritImpl : IDerived
+{
+    public string BaseMethod() => "base";
+    public string DerivedMethod() => "derived";
+}
+
+// Overloaded interface methods: same name, different parameter types
+public interface IProcess
+{
+    void Process(int x);
+    void Process(string s);
+}
+
+public class Processor : IProcess
+{
+    public int LastInt;
+    public string LastString;
+
+    public void Process(int x) { LastInt = x; }
+    public void Process(string s) { LastString = s; }
+}
+
+// Multi-parameter generic type (exercises >1 generic param substitution)
+public class KeyValue<K, V>
+{
+    public K Key;
+    public V Value;
+    public KeyValue(K key, V value) { Key = key; Value = value; }
+}
+
+// Generic type inheriting from another generic type (exercises BaseType resolution)
+public class SpecialWrapper<T> : Wrapper<T>
+{
+    public string Tag;
+    public SpecialWrapper(T value, string tag) : base(value) { Tag = tag; }
+}
+
+// Generic type with static constructor (exercises HasCctor per specialization)
+public class GenericCache<T>
+{
+    private static int _initCount;
+    static GenericCache() { _initCount++; }
+    public static int GetInitCount() => _initCount;
+    public T Item;
+    public GenericCache(T item) { Item = item; }
+}
+
+// ===== Explicit Interface Implementation =====
+public interface ILogger
+{
+    void Log(string message);
+}
+
+public interface IFormatter
+{
+    string Format(int value);
+}
+
+// Implements ILogger explicitly: void ILogger.Log() has mangled name in IL
+public class FileLogger : ILogger, IFormatter
+{
+    public int LogCount;
+
+    void ILogger.Log(string message)
+    {
+        LogCount++;
+    }
+
+    // Implicit implementation of IFormatter
+    public string Format(int value)
+    {
+        return value.ToString();
+    }
+}
+
+// ===== Method Hiding (newslot / new keyword) =====
+public class BaseDisplay
+{
+    public virtual string Show() => "BaseDisplay";
+    public virtual int Value() => 1;
+}
+
+public class DerivedDisplay : BaseDisplay
+{
+    // 'new virtual' hides base Show() — creates new vtable slot
+    public new virtual string Show() => "DerivedDisplay";
+    // Normal override — reuses base vtable slot
+    public override int Value() => 2;
+}
+
+public class FinalDisplay : DerivedDisplay
+{
+    // Overrides DerivedDisplay.Show (the hidden slot)
+    public override string Show() => "FinalDisplay";
+}
+
+// ===== sizeof test =====
+public struct TinyStruct
+{
+    public byte A;
+}
+
+public struct BigStruct
+{
+    public long X;
+    public long Y;
+    public long Z;
+}
 
 public class Program
 {
@@ -416,6 +595,21 @@ public class Program
         TestUnboxAnyRefType();
         TestRecord();
         TestRecordStruct();
+        TestAbstractInheritance();
+        TestConversionOperators();
+        TestStaticMethodCctor();
+        TestReferenceEquals();
+        TestMemberwiseClone();
+        TestOverloadedVirtual();
+        TestInterfaceInheritance();
+        TestOverloadedInterface();
+        TestMultiParamGeneric();
+        TestGenericInheritance();
+        TestNestedGeneric();
+        TestGenericCctor();
+        TestExplicitInterface();
+        TestMethodHiding();
+        TestSizeOf();
         TestAsync();
     }
 
@@ -1252,6 +1446,119 @@ public class Program
         Console.WriteLine(val);           // 42
     }
 
+    // Exercises abstract class with 3-level inheritance chain (vtable dispatch)
+    static void TestAbstractInheritance()
+    {
+        Shape s = new UnitCircle();
+        Console.WriteLine(s.Area());     // 3.14159 (inherited from Circle)
+        Console.WriteLine(s.Describe()); // Circle  (inherited from Circle)
+
+        Shape c = new Circle(2.0);
+        Console.WriteLine(c.Area());     // 12.56636 (Circle.Area)
+    }
+
+    // Exercises implicit/explicit conversion operators (op_Implicit, op_Explicit)
+    static void TestConversionOperators()
+    {
+        Celsius temp = new Celsius(100.0);
+        double d = temp;                    // implicit operator double
+        Console.WriteLine(d);               // 100
+
+        Celsius back = (Celsius)36.6;       // explicit operator Celsius
+        Console.WriteLine(back.Value);      // 36.6
+    }
+
+    // Exercises static method triggering cctor (ECMA-335 II.10.5.3.1)
+    static void TestStaticMethodCctor()
+    {
+        // LazyInit.GetValue() is a static method call — must trigger cctor first
+        int val = LazyInit.GetValue();
+        Console.WriteLine(val);             // 42
+    }
+
+    // Exercises Object.ReferenceEquals (static method on System.Object)
+    static void TestReferenceEquals()
+    {
+        var a = new Dog("Rex");
+        var b = a;
+        var c = new Dog("Rex");
+        Console.WriteLine(Object.ReferenceEquals(a, b));  // True  (same reference)
+        Console.WriteLine(Object.ReferenceEquals(a, c));  // False (different objects)
+        Console.WriteLine(Object.ReferenceEquals(null, null));  // True
+    }
+
+    // Exercises Object.MemberwiseClone (protected method on System.Object)
+    static void TestMemberwiseClone()
+    {
+        var orig = new Cloneable(42);
+        var clone = orig.ShallowCopy();
+        Console.WriteLine(clone.Value);                         // 42
+        Console.WriteLine(Object.ReferenceEquals(orig, clone)); // False
+    }
+
+    // Exercises overloaded virtual methods with same name, different param types
+    static void TestOverloadedVirtual()
+    {
+        Formatter f = new PrefixFormatter();
+        Console.WriteLine(f.Format(42));       // 42 (calls Format(int) override)
+        Console.WriteLine(f.Format("hello"));  // hello (calls Format(string) override)
+    }
+
+    // Exercises interface inheritance (IB : IA): dispatch through base interface
+    static void TestInterfaceInheritance()
+    {
+        IDerived d = new InterfaceInheritImpl();
+        Console.WriteLine(d.BaseMethod());    // "base" — dispatched via IBase vtable
+        Console.WriteLine(d.DerivedMethod()); // "derived" — dispatched via IDerived vtable
+
+        // Also call through IBase reference
+        IBase b = d;
+        Console.WriteLine(b.BaseMethod());    // "base"
+    }
+
+    // Exercises overloaded interface methods: same name, different param types
+    static void TestOverloadedInterface()
+    {
+        var proc = new Processor();
+        IProcess ip = proc;
+        ip.Process(42);
+        ip.Process("hello");
+        Console.WriteLine(proc.LastInt);     // 42
+        Console.WriteLine(proc.LastString);  // hello
+    }
+
+    // Exercises multi-parameter generic type (KeyValue<K,V>)
+    static void TestMultiParamGeneric()
+    {
+        var kv = new KeyValue<int, string>(42, "hello");
+        Console.WriteLine(kv.Key);    // 42
+        Console.WriteLine(kv.Value);  // hello
+    }
+
+    // Exercises generic type inheriting from another generic type
+    static void TestGenericInheritance()
+    {
+        var sw = new SpecialWrapper<int>(42, "tagged");
+        Console.WriteLine(sw.GetValue());  // 42 (inherited from Wrapper<int>)
+        Console.WriteLine(sw.Tag);         // tagged (own field)
+    }
+
+    // Exercises nested generic instantiation (Wrapper<Wrapper<int>>)
+    static void TestNestedGeneric()
+    {
+        var inner = new Wrapper<int>(99);
+        var outer = new Wrapper<Wrapper<int>>(inner);
+        Console.WriteLine(outer.GetValue().GetValue());  // 99
+    }
+
+    // Exercises generic type with static constructor (cctor per specialization)
+    static void TestGenericCctor()
+    {
+        var intCache = new GenericCache<int>(42);
+        Console.WriteLine(intCache.Item);  // 42
+        Console.WriteLine(GenericCache<int>.GetInitCount());  // 1
+    }
+
     // Exercises record types (compiler-generated ToString, Equals, <Clone>$)
     static void TestRecord()
     {
@@ -1288,6 +1595,51 @@ public class Program
     {
         await Task.CompletedTask;
         return x * 2;
+    }
+
+    // Exercises explicit interface implementation (.override directive)
+    static void TestExplicitInterface()
+    {
+        var logger = new FileLogger();
+
+        // Call through interface — explicit impl
+        ILogger ilog = logger;
+        ilog.Log("test");
+        Console.WriteLine(logger.LogCount);  // 1
+
+        // Call through interface — implicit impl
+        IFormatter fmt = logger;
+        Console.WriteLine(fmt.Format(42));   // 42
+    }
+
+    // Exercises method hiding (new virtual / newslot)
+    static void TestMethodHiding()
+    {
+        BaseDisplay b = new BaseDisplay();
+        Console.WriteLine(b.Show());      // BaseDisplay
+        Console.WriteLine(b.Value());     // 1
+
+        DerivedDisplay d = new DerivedDisplay();
+        Console.WriteLine(d.Show());      // DerivedDisplay
+        Console.WriteLine(d.Value());     // 2
+
+        // Through BaseDisplay reference: Show() should dispatch to BaseDisplay's slot
+        // because DerivedDisplay.Show is 'new virtual' (not override)
+        BaseDisplay bd = d;
+        Console.WriteLine(bd.Show());     // BaseDisplay  (method hiding!)
+        Console.WriteLine(bd.Value());    // 2  (normal override)
+
+        // FinalDisplay overrides DerivedDisplay.Show
+        FinalDisplay f = new FinalDisplay();
+        DerivedDisplay df = f;
+        Console.WriteLine(df.Show());     // FinalDisplay  (override of hidden slot)
+    }
+
+    // Exercises sizeof opcode (only user-defined structs emit sizeof IL; Roslyn constants for builtins)
+    static unsafe void TestSizeOf()
+    {
+        Console.WriteLine(sizeof(TinyStruct));  // 1
+        Console.WriteLine(sizeof(BigStruct));   // 24
     }
 
     // Exercises async/await (state machine + Task<T> + AsyncTaskMethodBuilder)

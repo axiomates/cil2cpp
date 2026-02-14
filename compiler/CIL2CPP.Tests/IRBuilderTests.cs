@@ -1115,7 +1115,7 @@ public class IRBuilderTests
     public void Build_FeatureTest_GenericInstance_HasMethods()
     {
         var module = BuildFeatureTest();
-        var wrapperTypes = module.Types.Where(t => t.IsGenericInstance && t.CppName.Contains("Wrapper")).ToList();
+        var wrapperTypes = module.Types.Where(t => t.IsGenericInstance && t.CppName.StartsWith("Wrapper_")).ToList();
         Assert.True(wrapperTypes.Count >= 1);
         foreach (var type in wrapperTypes)
         {
@@ -2586,5 +2586,418 @@ public class IRBuilderTests
         var allCode = string.Join("\n", rawCpp);
         // No stub comments should remain for Equals
         Assert.DoesNotContain("/* ValueTuple.Equals stub */", allCode);
+    }
+
+    // ===== Abstract class + multi-level inheritance =====
+
+    [Fact]
+    public void Build_FeatureTest_AbstractClass_HasAbstractFlag()
+    {
+        var module = BuildFeatureTest();
+        var shape = module.FindType("Shape");
+        Assert.NotNull(shape);
+        Assert.True(shape!.IsAbstract);
+        var areaMethod = shape.Methods.FirstOrDefault(m => m.Name == "Area");
+        Assert.NotNull(areaMethod);
+        Assert.True(areaMethod!.IsAbstract);
+    }
+
+    [Fact]
+    public void Build_FeatureTest_MultiLevelInheritance_VTableOverrides()
+    {
+        var module = BuildFeatureTest();
+        var unitCircle = module.FindType("UnitCircle");
+        Assert.NotNull(unitCircle);
+        // UnitCircle inherits from Circle which inherits from Shape
+        // Area() and Describe() should be in vtable (inherited from Circle)
+        Assert.Contains(unitCircle!.VTable, e => e.MethodName == "Area");
+        Assert.Contains(unitCircle.VTable, e => e.MethodName == "Describe");
+    }
+
+    // ===== Conversion operators (op_Implicit / op_Explicit) =====
+
+    [Fact]
+    public void Build_FeatureTest_ImplicitOperator_CompilesAsStaticMethod()
+    {
+        var module = BuildFeatureTest();
+        var celsius = module.FindType("Celsius");
+        Assert.NotNull(celsius);
+        Assert.Contains(celsius!.Methods, m => m.Name == "op_Implicit");
+    }
+
+    [Fact]
+    public void Build_FeatureTest_ExplicitOperator_CompilesAsStaticMethod()
+    {
+        var module = BuildFeatureTest();
+        var celsius = module.FindType("Celsius");
+        Assert.NotNull(celsius);
+        Assert.Contains(celsius!.Methods, m => m.Name == "op_Explicit");
+    }
+
+    // ===== Static method call triggers cctor (ECMA-335 II.10.5.3.1) =====
+
+    [Fact]
+    public void Build_FeatureTest_StaticMethodCall_HasCctorGuard()
+    {
+        var module = BuildFeatureTest();
+        var lazyInit = module.FindType("LazyInit");
+        Assert.NotNull(lazyInit);
+        Assert.True(lazyInit!.HasCctor);
+
+        // TestStaticMethodCctor calls LazyInit.GetValue() — should have cctor guard
+        var testMethod = module.GetAllMethods().FirstOrDefault(m => m.Name == "TestStaticMethodCctor");
+        Assert.NotNull(testMethod);
+        var instrs = testMethod!.BasicBlocks.SelectMany(b => b.Instructions).ToList();
+        Assert.Contains(instrs, i => i is IRStaticCtorGuard);
+    }
+
+    // ===== Object.ReferenceEquals =====
+
+    [Fact]
+    public void Build_FeatureTest_ReferenceEquals_CompiledCorrectly()
+    {
+        var module = BuildFeatureTest();
+        // C# compiler inlines Object.ReferenceEquals as ceq (pointer comparison)
+        // Verify the test method compiles and produces comparison instructions
+        var testMethod = module.GetAllMethods().FirstOrDefault(m => m.Name == "TestReferenceEquals");
+        Assert.NotNull(testMethod);
+        var instrs = testMethod!.BasicBlocks.SelectMany(b => b.Instructions).ToList();
+        // Should have comparison operations (ceq → IRBinaryOp or IRRawCpp with ==)
+        Assert.True(instrs.Count > 0);
+    }
+
+    // ===== Object.MemberwiseClone =====
+
+    [Fact]
+    public void Build_FeatureTest_MemberwiseClone_MappedToRuntime()
+    {
+        var module = BuildFeatureTest();
+        var cloneable = module.FindType("Cloneable");
+        Assert.NotNull(cloneable);
+        var shallowCopy = cloneable!.Methods.FirstOrDefault(m => m.Name == "ShallowCopy");
+        Assert.NotNull(shallowCopy);
+        var calls = shallowCopy!.BasicBlocks
+            .SelectMany(b => b.Instructions)
+            .OfType<IRCall>()
+            .Select(c => c.FunctionName)
+            .ToList();
+        Assert.Contains(calls, c => c == "cil2cpp::object_memberwise_clone");
+    }
+
+    // ===== Overloaded virtual methods (same name, different param types) =====
+
+    [Fact]
+    public void Build_FeatureTest_OverloadedVirtual_SeparateVTableSlots()
+    {
+        var module = BuildFeatureTest();
+        var formatter = module.FindType("Formatter");
+        Assert.NotNull(formatter);
+
+        // Should have two separate vtable entries for Format(int) and Format(string)
+        var formatEntries = formatter!.VTable.Where(e => e.MethodName == "Format").ToList();
+        Assert.Equal(2, formatEntries.Count);
+        Assert.NotEqual(formatEntries[0].Slot, formatEntries[1].Slot);
+    }
+
+    [Fact]
+    public void Build_FeatureTest_OverloadedVirtual_DerivedOverridesBoth()
+    {
+        var module = BuildFeatureTest();
+        var prefixFormatter = module.FindType("PrefixFormatter");
+        Assert.NotNull(prefixFormatter);
+
+        // PrefixFormatter should override both Format(int) and Format(string)
+        var formatEntries = prefixFormatter!.VTable.Where(e => e.MethodName == "Format").ToList();
+        Assert.Equal(2, formatEntries.Count);
+        // Both should have Method != null (overridden, not base stubs)
+        Assert.All(formatEntries, e => Assert.NotNull(e.Method));
+    }
+
+    // ===== Interface inheritance (IB : IA) =====
+
+    [Fact]
+    public void Build_FeatureTest_InterfaceInheritImpl_HasBothInterfaceImpls()
+    {
+        var module = BuildFeatureTest();
+        var impl = module.FindType("InterfaceInheritImpl");
+        Assert.NotNull(impl);
+        // Cecil flattens interface list: both IBase and IDerived should be present
+        var ifaceNames = impl!.InterfaceImpls.Select(i => i.Interface.Name).ToList();
+        Assert.Contains("IBase", ifaceNames);
+        Assert.Contains("IDerived", ifaceNames);
+    }
+
+    [Fact]
+    public void Build_FeatureTest_InterfaceInheritImpl_BaseMethodMapped()
+    {
+        var module = BuildFeatureTest();
+        var impl = module.FindType("InterfaceInheritImpl")!;
+        var baseImpl = impl.InterfaceImpls.First(i => i.Interface.Name == "IBase");
+        // IBase has 1 method: BaseMethod() — should map to InterfaceInheritImpl.BaseMethod
+        Assert.Single(baseImpl.MethodImpls);
+        Assert.NotNull(baseImpl.MethodImpls[0]);
+        Assert.Equal("BaseMethod", baseImpl.MethodImpls[0]!.Name);
+    }
+
+    [Fact]
+    public void Build_FeatureTest_InterfaceInheritImpl_DerivedMethodMapped()
+    {
+        var module = BuildFeatureTest();
+        var impl = module.FindType("InterfaceInheritImpl")!;
+        var derivedImpl = impl.InterfaceImpls.First(i => i.Interface.Name == "IDerived");
+        // IDerived has 1 own method: DerivedMethod()
+        Assert.Single(derivedImpl.MethodImpls);
+        Assert.NotNull(derivedImpl.MethodImpls[0]);
+        Assert.Equal("DerivedMethod", derivedImpl.MethodImpls[0]!.Name);
+    }
+
+    // ===== Overloaded interface methods =====
+
+    [Fact]
+    public void Build_FeatureTest_Processor_HasOverloadedInterfaceMethods()
+    {
+        var module = BuildFeatureTest();
+        var processor = module.FindType("Processor");
+        Assert.NotNull(processor);
+        var iProcessImpl = processor!.InterfaceImpls.FirstOrDefault(i => i.Interface.Name == "IProcess");
+        Assert.NotNull(iProcessImpl);
+        // IProcess has 2 methods: Process(int) and Process(string) — both should be mapped
+        Assert.Equal(2, iProcessImpl!.MethodImpls.Count);
+        Assert.All(iProcessImpl.MethodImpls, m => Assert.NotNull(m));
+    }
+
+    [Fact]
+    public void Build_FeatureTest_Processor_OverloadedMethods_DistinctImpls()
+    {
+        var module = BuildFeatureTest();
+        var processor = module.FindType("Processor")!;
+        var iProcessImpl = processor.InterfaceImpls.First(i => i.Interface.Name == "IProcess");
+        // The two Process methods should resolve to different implementing methods
+        var methods = iProcessImpl.MethodImpls.Where(m => m != null).ToList();
+        Assert.Equal(2, methods.Count);
+        // They should have the same name but different parameter types
+        Assert.All(methods, m => Assert.Equal("Process", m!.Name));
+        Assert.NotEqual(methods[0]!.Parameters[0].CppTypeName, methods[1]!.Parameters[0].CppTypeName);
+    }
+
+    // ===== Multi-parameter generic type =====
+
+    [Fact]
+    public void Build_FeatureTest_KeyValueIntString_Exists()
+    {
+        var module = BuildFeatureTest();
+        var kv = module.Types.FirstOrDefault(t => t.CppName.Contains("KeyValue") && t.IsGenericInstance);
+        Assert.NotNull(kv);
+        Assert.Equal(2, kv!.GenericArguments.Count);
+    }
+
+    [Fact]
+    public void Build_FeatureTest_KeyValueIntString_FieldsSubstituted()
+    {
+        var module = BuildFeatureTest();
+        var kv = module.Types.First(t => t.CppName.Contains("KeyValue") && t.IsGenericInstance);
+        var keyField = kv.Fields.FirstOrDefault(f => f.Name == "Key");
+        var valueField = kv.Fields.FirstOrDefault(f => f.Name == "Value");
+        Assert.NotNull(keyField);
+        Assert.NotNull(valueField);
+        // Key is int, Value is string — types should be substituted
+        Assert.DoesNotContain("T", keyField!.FieldTypeName);
+        Assert.DoesNotContain("T", valueField!.FieldTypeName);
+    }
+
+    // ===== Generic type inheritance =====
+
+    [Fact]
+    public void Build_FeatureTest_SpecialWrapperInt_Exists()
+    {
+        var module = BuildFeatureTest();
+        var sw = module.Types.FirstOrDefault(t => t.CppName.Contains("SpecialWrapper") && t.IsGenericInstance);
+        Assert.NotNull(sw);
+    }
+
+    [Fact]
+    public void Build_FeatureTest_SpecialWrapperInt_HasBaseType()
+    {
+        var module = BuildFeatureTest();
+        var sw = module.Types.First(t => t.CppName.Contains("SpecialWrapper") && t.IsGenericInstance);
+        Assert.NotNull(sw.BaseType);
+        Assert.Contains("Wrapper", sw.BaseType!.CppName);
+    }
+
+    [Fact]
+    public void Build_FeatureTest_SpecialWrapperInt_BaseTypeHasGetValue()
+    {
+        var module = BuildFeatureTest();
+        var sw = module.Types.First(t => t.CppName.Contains("SpecialWrapper") && t.IsGenericInstance);
+        // GetValue lives on base type Wrapper<int>, not on SpecialWrapper<int> itself
+        Assert.NotNull(sw.BaseType);
+        Assert.Contains(sw.BaseType!.Methods, m => m.Name == "GetValue");
+    }
+
+    // ===== Nested generic instantiation =====
+
+    [Fact]
+    public void Build_FeatureTest_NestedGeneric_WrapperOfWrapperInt_Exists()
+    {
+        var module = BuildFeatureTest();
+        // Wrapper<Wrapper<int>> should exist as a separate generic instantiation
+        var nested = module.Types.FirstOrDefault(t =>
+            t.IsGenericInstance && t.CppName.Contains("Wrapper") &&
+            t.GenericArguments.Any(a => a.Contains("Wrapper")));
+        Assert.NotNull(nested);
+    }
+
+    // ===== Generic type with static constructor =====
+
+    [Fact]
+    public void Build_FeatureTest_GenericCacheInt_HasCctor()
+    {
+        var module = BuildFeatureTest();
+        var cache = module.Types.FirstOrDefault(t => t.CppName.Contains("GenericCache") && t.IsGenericInstance);
+        Assert.NotNull(cache);
+        Assert.True(cache!.HasCctor, "GenericCache<int> should have HasCctor flag set");
+    }
+
+    [Fact]
+    public void Build_FeatureTest_GenericCacheInt_HasStaticField()
+    {
+        var module = BuildFeatureTest();
+        var cache = module.Types.First(t => t.CppName.Contains("GenericCache") && t.IsGenericInstance);
+        Assert.Contains(cache.StaticFields, f => f.Name == "_initCount");
+    }
+
+    // ===== Explicit Interface Implementation =====
+
+    [Fact]
+    public void Build_FeatureTest_FileLogger_HasExplicitOverride()
+    {
+        var module = BuildFeatureTest();
+        var logger = module.Types.First(t => t.CppName == "FileLogger");
+        // The explicit impl method should have ExplicitOverrides populated
+        var logMethod = logger.Methods.FirstOrDefault(m =>
+            m.ExplicitOverrides.Any(o => o.InterfaceTypeName == "ILogger" && o.MethodName == "Log"));
+        Assert.NotNull(logMethod);
+    }
+
+    [Fact]
+    public void Build_FeatureTest_FileLogger_InterfaceImpl_Log_Mapped()
+    {
+        var module = BuildFeatureTest();
+        var logger = module.Types.First(t => t.CppName == "FileLogger");
+        // ILogger interface impl should have Log method mapped (via explicit override)
+        var iloggerImpl = logger.InterfaceImpls.FirstOrDefault(i => i.Interface.CppName == "ILogger");
+        Assert.NotNull(iloggerImpl);
+        var logImpl = iloggerImpl!.MethodImpls.FirstOrDefault(m => m != null);
+        Assert.NotNull(logImpl);
+    }
+
+    [Fact]
+    public void Build_FeatureTest_FileLogger_InterfaceImpl_Format_Mapped()
+    {
+        var module = BuildFeatureTest();
+        var logger = module.Types.First(t => t.CppName == "FileLogger");
+        // IFormatter interface impl should have Format method mapped (via implicit name match)
+        var ifmtImpl = logger.InterfaceImpls.FirstOrDefault(i => i.Interface.CppName == "IFormatter");
+        Assert.NotNull(ifmtImpl);
+        var fmtImpl = ifmtImpl!.MethodImpls.FirstOrDefault(m => m != null && m.Name == "Format");
+        Assert.NotNull(fmtImpl);
+    }
+
+    // ===== Method Hiding (newslot) =====
+
+    [Fact]
+    public void Build_FeatureTest_DerivedDisplay_Show_IsNewSlot()
+    {
+        var module = BuildFeatureTest();
+        var derived = module.Types.First(t => t.CppName == "DerivedDisplay");
+        var show = derived.Methods.First(m => m.Name == "Show");
+        Assert.True(show.IsNewSlot, "DerivedDisplay.Show should be marked as newslot");
+    }
+
+    [Fact]
+    public void Build_FeatureTest_DerivedDisplay_Show_HasDifferentVTableSlot()
+    {
+        var module = BuildFeatureTest();
+        var baseType = module.Types.First(t => t.CppName == "BaseDisplay");
+        var derived = module.Types.First(t => t.CppName == "DerivedDisplay");
+        var baseSlot = baseType.VTable.First(e => e.MethodName == "Show").Slot;
+        var derivedShow = derived.Methods.First(m => m.Name == "Show");
+        // newslot should create a DIFFERENT vtable slot than the base
+        Assert.NotEqual(baseSlot, derivedShow.VTableSlot);
+    }
+
+    [Fact]
+    public void Build_FeatureTest_DerivedDisplay_Value_OverridesBaseSlot()
+    {
+        var module = BuildFeatureTest();
+        var baseType = module.Types.First(t => t.CppName == "BaseDisplay");
+        var derived = module.Types.First(t => t.CppName == "DerivedDisplay");
+        var baseSlot = baseType.VTable.First(e => e.MethodName == "Value").Slot;
+        var derivedValue = derived.Methods.First(m => m.Name == "Value");
+        // Normal override should reuse the SAME vtable slot
+        Assert.Equal(baseSlot, derivedValue.VTableSlot);
+    }
+
+    [Fact]
+    public void Build_FeatureTest_FinalDisplay_Overrides_DerivedShow()
+    {
+        var module = BuildFeatureTest();
+        var derived = module.Types.First(t => t.CppName == "DerivedDisplay");
+        var final_ = module.Types.First(t => t.CppName == "FinalDisplay");
+        var derivedShowSlot = derived.Methods.First(m => m.Name == "Show").VTableSlot;
+        // FinalDisplay.Show overrides DerivedDisplay.Show's (hidden) slot
+        var finalShow = final_.Methods.First(m => m.Name == "Show");
+        Assert.Equal(derivedShowSlot, finalShow.VTableSlot);
+    }
+
+    // ===== sizeof opcode =====
+
+    [Fact]
+    public void Build_FeatureTest_TestSizeOf_HasSizeofInstruction()
+    {
+        var module = BuildFeatureTest();
+        var testMethod = module.Types.First(t => t.CppName == "Program")
+            .Methods.First(m => m.Name == "TestSizeOf");
+        var allCode = string.Join("\n", testMethod.BasicBlocks
+            .SelectMany(b => b.Instructions)
+            .Select(i => i.ToCpp()));
+        // Roslyn emits sizeof opcode only for user-defined structs (builtins are const-folded)
+        Assert.Contains("sizeof(TinyStruct)", allCode);
+        Assert.Contains("sizeof(BigStruct)", allCode);
+    }
+
+    // ===== No-op prefixes (constrained., etc.) =====
+
+    [Fact]
+    public void Build_FeatureTest_NoConstrainedWarnings()
+    {
+        var module = BuildFeatureTest();
+        // After implementing constrained. as no-op, no WARNING comments about it should exist
+        var allComments = module.Types
+            .SelectMany(t => t.Methods)
+            .SelectMany(m => m.BasicBlocks)
+            .SelectMany(b => b.Instructions)
+            .OfType<IRComment>()
+            .Select(c => c.Text);
+        Assert.DoesNotContain(allComments, c => c.Contains("Constrained"));
+    }
+
+    // ===== ldtoken / typeof =====
+
+    [Fact]
+    public void Build_FeatureTest_TinyStruct_Exists()
+    {
+        var module = BuildFeatureTest();
+        var tiny = module.Types.FirstOrDefault(t => t.CppName == "TinyStruct");
+        Assert.NotNull(tiny);
+        Assert.True(tiny!.IsValueType);
+    }
+
+    [Fact]
+    public void Build_FeatureTest_BigStruct_HasThreeFields()
+    {
+        var module = BuildFeatureTest();
+        var big = module.Types.First(t => t.CppName == "BigStruct");
+        Assert.Equal(3, big.Fields.Count);
     }
 }

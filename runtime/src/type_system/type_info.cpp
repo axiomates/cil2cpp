@@ -123,6 +123,7 @@ TypeInfo* object_get_type(Object* obj) {
 }
 
 Int32 object_get_hash_code(Object* obj) {
+    if (!obj) return 0;
     // Default: use object address
     return static_cast<Int32>(reinterpret_cast<IntPtr>(obj));
 }
@@ -151,6 +152,18 @@ Object* object_cast(Object* obj, TypeInfo* type) {
         return obj;
     }
     throw_invalid_cast();
+}
+
+Boolean object_reference_equals(Object* a, Object* b) {
+    return a == b;
+}
+
+Object* object_memberwise_clone(Object* obj) {
+    if (!obj) throw_null_reference();
+    auto* type = obj->__type_info;
+    auto* clone = static_cast<Object*>(gc::alloc(type->instance_size, type));
+    std::memcpy(clone, obj, type->instance_size);
+    return clone;
 }
 
 } // namespace cil2cpp

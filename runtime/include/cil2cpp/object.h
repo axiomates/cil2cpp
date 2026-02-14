@@ -72,4 +72,14 @@ Object* object_as(Object* obj, TypeInfo* type);
  */
 Object* object_cast(Object* obj, TypeInfo* type);
 
+/**
+ * Object.ReferenceEquals(object a, object b) - reference equality.
+ */
+Boolean object_reference_equals(Object* a, Object* b);
+
+/**
+ * Object.MemberwiseClone() - shallow copy of an object.
+ */
+Object* object_memberwise_clone(Object* obj);
+
 } // namespace cil2cpp
