@@ -452,3 +452,147 @@ TEST_F(ExceptionTest, ExceptionContext_State0InTry) {
         FAIL() << "Should not catch";
     CIL2CPP_END_TRY
 }
+
+// ===== Checked arithmetic =====
+
+TEST_F(ExceptionTest, CheckedAdd_Normal_ReturnsSum) {
+    EXPECT_EQ(checked_add<int32_t>(100, 200), 300);
+    EXPECT_EQ(checked_add<int32_t>(-50, 50), 0);
+    EXPECT_EQ(checked_add<int64_t>(1000000000LL, 2000000000LL), 3000000000LL);
+}
+
+TEST_F(ExceptionTest, CheckedAdd_Overflow_Throws) {
+    bool caught = false;
+    CIL2CPP_TRY
+        checked_add<int32_t>(INT32_MAX, 1);
+        FAIL() << "Should have thrown";
+    CIL2CPP_CATCH_ALL
+        caught = true;
+    CIL2CPP_END_TRY
+    EXPECT_TRUE(caught);
+}
+
+TEST_F(ExceptionTest, CheckedAdd_NegativeOverflow_Throws) {
+    bool caught = false;
+    CIL2CPP_TRY
+        checked_add<int32_t>(INT32_MIN, -1);
+        FAIL() << "Should have thrown";
+    CIL2CPP_CATCH_ALL
+        caught = true;
+    CIL2CPP_END_TRY
+    EXPECT_TRUE(caught);
+}
+
+TEST_F(ExceptionTest, CheckedSub_Normal_ReturnsDifference) {
+    EXPECT_EQ(checked_sub<int32_t>(500, 200), 300);
+    EXPECT_EQ(checked_sub<int32_t>(0, 0), 0);
+}
+
+TEST_F(ExceptionTest, CheckedSub_Overflow_Throws) {
+    bool caught = false;
+    CIL2CPP_TRY
+        checked_sub<int32_t>(INT32_MIN, 1);
+        FAIL() << "Should have thrown";
+    CIL2CPP_CATCH_ALL
+        caught = true;
+    CIL2CPP_END_TRY
+    EXPECT_TRUE(caught);
+}
+
+TEST_F(ExceptionTest, CheckedMul_Normal_ReturnsProduct) {
+    EXPECT_EQ(checked_mul<int32_t>(15, 20), 300);
+    EXPECT_EQ(checked_mul<int32_t>(-5, 3), -15);
+    EXPECT_EQ(checked_mul<int32_t>(0, INT32_MAX), 0);
+}
+
+TEST_F(ExceptionTest, CheckedMul_Overflow_Throws) {
+    bool caught = false;
+    CIL2CPP_TRY
+        checked_mul<int32_t>(INT32_MAX, 2);
+        FAIL() << "Should have thrown";
+    CIL2CPP_CATCH_ALL
+        caught = true;
+    CIL2CPP_END_TRY
+    EXPECT_TRUE(caught);
+}
+
+TEST_F(ExceptionTest, CheckedAddUn_Normal_ReturnsSum) {
+    EXPECT_EQ(checked_add_un<uint32_t>(100u, 200u), 300u);
+}
+
+TEST_F(ExceptionTest, CheckedAddUn_Overflow_Throws) {
+    bool caught = false;
+    CIL2CPP_TRY
+        checked_add_un<uint32_t>(UINT32_MAX, 1u);
+        FAIL() << "Should have thrown";
+    CIL2CPP_CATCH_ALL
+        caught = true;
+    CIL2CPP_END_TRY
+    EXPECT_TRUE(caught);
+}
+
+TEST_F(ExceptionTest, CheckedSubUn_Normal_ReturnsDifference) {
+    EXPECT_EQ(checked_sub_un<uint32_t>(500u, 200u), 300u);
+}
+
+TEST_F(ExceptionTest, CheckedSubUn_Underflow_Throws) {
+    bool caught = false;
+    CIL2CPP_TRY
+        checked_sub_un<uint32_t>(0u, 1u);
+        FAIL() << "Should have thrown";
+    CIL2CPP_CATCH_ALL
+        caught = true;
+    CIL2CPP_END_TRY
+    EXPECT_TRUE(caught);
+}
+
+TEST_F(ExceptionTest, CheckedMulUn_Normal_ReturnsProduct) {
+    EXPECT_EQ(checked_mul_un<uint32_t>(15u, 20u), 300u);
+    EXPECT_EQ(checked_mul_un<uint32_t>(0u, UINT32_MAX), 0u);
+}
+
+TEST_F(ExceptionTest, CheckedMulUn_Overflow_Throws) {
+    bool caught = false;
+    CIL2CPP_TRY
+        checked_mul_un<uint32_t>(UINT32_MAX, 2u);
+        FAIL() << "Should have thrown";
+    CIL2CPP_CATCH_ALL
+        caught = true;
+    CIL2CPP_END_TRY
+    EXPECT_TRUE(caught);
+}
+
+TEST_F(ExceptionTest, ThrowOverflow_CaughtByContext) {
+    bool caught = false;
+    CIL2CPP_TRY
+        throw_overflow();
+        FAIL() << "Should have thrown";
+    CIL2CPP_CATCH_ALL
+        caught = true;
+    CIL2CPP_END_TRY
+    EXPECT_TRUE(caught);
+}
+
+TEST_F(ExceptionTest, ThrowInvalidOperation_CaughtByContext) {
+    bool caught = false;
+    CIL2CPP_TRY
+        throw_invalid_operation();
+        FAIL() << "Should have thrown";
+    CIL2CPP_CATCH_ALL
+        caught = true;
+    CIL2CPP_END_TRY
+    EXPECT_TRUE(caught);
+}
+
+TEST_F(ExceptionTest, ThrowInvalidOperation_HasCorrectMessage) {
+    CIL2CPP_TRY
+        throw_invalid_operation();
+    CIL2CPP_CATCH_ALL
+        auto ex = get_current_exception();
+        ASSERT_NE(ex, nullptr);
+        ASSERT_NE(ex->message, nullptr);
+        auto msg = string_to_utf8(ex->message);
+        EXPECT_NE(std::string(msg).find("Operation is not valid"), std::string::npos);
+        free(msg);
+    CIL2CPP_END_TRY
+}

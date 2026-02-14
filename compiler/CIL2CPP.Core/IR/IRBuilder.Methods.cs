@@ -431,6 +431,48 @@ public partial class IRBuilder
             case Code.Shr: EmitBinaryOp(block, stack, ">>", ref tempCounter); break;
             case Code.Shr_Un: EmitBinaryOp(block, stack, ">>", ref tempCounter); break; // C++ unsigned >> is logical shift
 
+            // ===== Checked Arithmetic =====
+            case Code.Add_Ovf:
+            case Code.Add_Ovf_Un:
+            case Code.Sub_Ovf:
+            case Code.Sub_Ovf_Un:
+            case Code.Mul_Ovf:
+            case Code.Mul_Ovf_Un:
+            {
+                EmitCheckedBinaryOp(block, stack, instr.OpCode, ref tempCounter);
+                break;
+            }
+
+            case Code.Conv_Ovf_I1:
+            case Code.Conv_Ovf_I2:
+            case Code.Conv_Ovf_I4:
+            case Code.Conv_Ovf_I8:
+            case Code.Conv_Ovf_U1:
+            case Code.Conv_Ovf_U2:
+            case Code.Conv_Ovf_U4:
+            case Code.Conv_Ovf_U8:
+            case Code.Conv_Ovf_I1_Un:
+            case Code.Conv_Ovf_I2_Un:
+            case Code.Conv_Ovf_I4_Un:
+            case Code.Conv_Ovf_I8_Un:
+            case Code.Conv_Ovf_U1_Un:
+            case Code.Conv_Ovf_U2_Un:
+            case Code.Conv_Ovf_U4_Un:
+            case Code.Conv_Ovf_U8_Un:
+            {
+                // Checked conversions — for now treat as regular casts
+                // (overflow checking on conversions would require range checks)
+                var cppType = GetCheckedConvType(instr.OpCode);
+                var val = stack.Count > 0 ? stack.Pop() : "0";
+                var tmp = $"__t{tempCounter++}";
+                block.Instructions.Add(new IRRawCpp
+                {
+                    Code = $"auto {tmp} = ({cppType}){val};"
+                });
+                stack.Push(tmp);
+                break;
+            }
+
             case Code.Neg:
             {
                 var val = stack.Count > 0 ? stack.Pop() : "0";
@@ -627,10 +669,21 @@ public partial class IRBuilder
                 var typeRef = (TypeReference)instr.Operand!;
                 var addr = stack.Count > 0 ? stack.Pop() : "nullptr";
                 var tmp = $"__t{tempCounter++}";
-                block.Instructions.Add(new IRRawCpp
+                if (CppNameMapper.IsValueType(typeRef.FullName))
                 {
-                    Code = $"auto {tmp} = *{addr};"
-                });
+                    var cppType = CppNameMapper.GetCppTypeName(typeRef.FullName);
+                    block.Instructions.Add(new IRRawCpp
+                    {
+                        Code = $"auto {tmp} = *({cppType}*){addr};"
+                    });
+                }
+                else
+                {
+                    block.Instructions.Add(new IRRawCpp
+                    {
+                        Code = $"auto {tmp} = *{addr};"
+                    });
+                }
                 stack.Push(tmp);
                 break;
             }
@@ -640,20 +693,41 @@ public partial class IRBuilder
                 var typeRef = (TypeReference)instr.Operand!;
                 var val = stack.Count > 0 ? stack.Pop() : "0";
                 var addr = stack.Count > 0 ? stack.Pop() : "nullptr";
-                block.Instructions.Add(new IRRawCpp
+                if (CppNameMapper.IsValueType(typeRef.FullName))
                 {
-                    Code = $"*{addr} = {val};"
-                });
+                    var cppType = CppNameMapper.GetCppTypeName(typeRef.FullName);
+                    block.Instructions.Add(new IRRawCpp
+                    {
+                        Code = $"*({cppType}*){addr} = ({cppType}){val};"
+                    });
+                }
+                else
+                {
+                    block.Instructions.Add(new IRRawCpp
+                    {
+                        Code = $"*{addr} = {val};"
+                    });
+                }
                 break;
             }
 
+            case Code.Ldind_I1:
+            case Code.Ldind_I2:
             case Code.Ldind_I4:
+            case Code.Ldind_I8:
+            case Code.Ldind_U1:
+            case Code.Ldind_U2:
+            case Code.Ldind_U4:
+            case Code.Ldind_R4:
+            case Code.Ldind_R8:
+            case Code.Ldind_I:
             {
+                var cppType = GetIndirectType(instr.OpCode);
                 var addr = stack.Count > 0 ? stack.Pop() : "nullptr";
                 var tmp = $"__t{tempCounter++}";
                 block.Instructions.Add(new IRRawCpp
                 {
-                    Code = $"auto {tmp} = *(int32_t*){addr};"
+                    Code = $"auto {tmp} = *({cppType}*){addr};"
                 });
                 stack.Push(tmp);
                 break;
@@ -671,6 +745,23 @@ public partial class IRBuilder
                 break;
             }
 
+            case Code.Stind_I1:
+            case Code.Stind_I2:
+            case Code.Stind_I4:
+            case Code.Stind_I8:
+            case Code.Stind_R4:
+            case Code.Stind_R8:
+            {
+                var cppType = GetIndirectType(instr.OpCode);
+                var val = stack.Count > 0 ? stack.Pop() : "0";
+                var addr = stack.Count > 0 ? stack.Pop() : "nullptr";
+                block.Instructions.Add(new IRRawCpp
+                {
+                    Code = $"*({cppType}*){addr} = ({cppType}){val};"
+                });
+                break;
+            }
+
             case Code.Stind_Ref:
             {
                 var val = stack.Count > 0 ? stack.Pop() : "nullptr";
@@ -678,17 +769,6 @@ public partial class IRBuilder
                 block.Instructions.Add(new IRRawCpp
                 {
                     Code = $"*(cil2cpp::Object**){addr} = (cil2cpp::Object*){val};"
-                });
-                break;
-            }
-
-            case Code.Stind_I4:
-            {
-                var val = stack.Count > 0 ? stack.Pop() : "0";
-                var addr = stack.Count > 0 ? stack.Pop() : "nullptr";
-                block.Instructions.Add(new IRRawCpp
-                {
-                    Code = $"*(int32_t*){addr} = (int32_t){val};"
                 });
                 break;
             }
@@ -936,7 +1016,7 @@ public partial class IRBuilder
             {
                 var typeRef = (TypeReference)instr.Operand!;
                 var addr = stack.Count > 0 ? stack.Pop() : "nullptr";
-                var typeCpp = CppNameMapper.MangleTypeName(typeRef.FullName);
+                var typeCpp = GetMangledTypeNameForRef(typeRef);
                 block.Instructions.Add(new IRInitObj
                 {
                     AddressExpr = addr,
@@ -1048,4 +1128,56 @@ public partial class IRBuilder
                 break;
         }
     }
+
+    internal static string GetIndirectType(Code code) => code switch
+    {
+        Code.Ldind_I1 or Code.Stind_I1 => "int8_t",
+        Code.Ldind_I2 or Code.Stind_I2 => "int16_t",
+        Code.Ldind_I4 or Code.Stind_I4 => "int32_t",
+        Code.Ldind_I8 or Code.Stind_I8 => "int64_t",
+        Code.Ldind_U1 => "uint8_t",
+        Code.Ldind_U2 => "uint16_t",
+        Code.Ldind_U4 => "uint32_t",
+        Code.Ldind_R4 or Code.Stind_R4 => "float",
+        Code.Ldind_R8 or Code.Stind_R8 => "double",
+        Code.Ldind_I => "intptr_t",
+        _ => "int32_t"
+    };
+
+    private static void EmitCheckedBinaryOp(IRBasicBlock block, Stack<string> stack, Code code, ref int tempCounter)
+    {
+        var b = stack.Count > 0 ? stack.Pop() : "0";
+        var a = stack.Count > 0 ? stack.Pop() : "0";
+        var tmp = $"__t{tempCounter++}";
+
+        var (func, type) = code switch
+        {
+            Code.Add_Ovf => ("cil2cpp::checked_add", "int32_t"),
+            Code.Add_Ovf_Un => ("cil2cpp::checked_add_un", "uint32_t"),
+            Code.Sub_Ovf => ("cil2cpp::checked_sub", "int32_t"),
+            Code.Sub_Ovf_Un => ("cil2cpp::checked_sub_un", "uint32_t"),
+            Code.Mul_Ovf => ("cil2cpp::checked_mul", "int32_t"),
+            Code.Mul_Ovf_Un => ("cil2cpp::checked_mul_un", "uint32_t"),
+            _ => ("cil2cpp::checked_add", "int32_t")
+        };
+
+        block.Instructions.Add(new IRRawCpp
+        {
+            Code = $"auto {tmp} = {func}<{type}>(({type}){a}, ({type}){b});"
+        });
+        stack.Push(tmp);
+    }
+
+    internal static string GetCheckedConvType(Code code) => code switch
+    {
+        Code.Conv_Ovf_I1 or Code.Conv_Ovf_I1_Un => "int8_t",
+        Code.Conv_Ovf_I2 or Code.Conv_Ovf_I2_Un => "int16_t",
+        Code.Conv_Ovf_I4 or Code.Conv_Ovf_I4_Un => "int32_t",
+        Code.Conv_Ovf_I8 or Code.Conv_Ovf_I8_Un => "int64_t",
+        Code.Conv_Ovf_U1 or Code.Conv_Ovf_U1_Un => "uint8_t",
+        Code.Conv_Ovf_U2 or Code.Conv_Ovf_U2_Un => "uint16_t",
+        Code.Conv_Ovf_U4 or Code.Conv_Ovf_U4_Un => "uint32_t",
+        Code.Conv_Ovf_U8 or Code.Conv_Ovf_U8_Un => "uint64_t",
+        _ => "int32_t"
+    };
 }

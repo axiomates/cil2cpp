@@ -353,12 +353,12 @@ void Program_Main() {
 | string | ✅ | 不可变，UTF-16 编码，字面量驻留池 |
 | IntPtr, UIntPtr | ✅ | 映射到 intptr_t, uintptr_t |
 | 类型转换 (全部) | ✅ | Conv_I1/I2/I4/I8/U1/U2/U4/U8/I/U/R4/R8/R_Un（共 13 种） |
-| struct (值类型) | ⚠️ | 结构体定义 + initobj + 装箱/拆箱已支持；无完整拷贝语义 |
+| struct (值类型) | ✅ | 结构体定义 + initobj/ldobj/stobj + 装箱/拆箱 + 拷贝语义 + ldind/stind |
 | enum | ✅ | typedef 到底层整数类型 + constexpr 命名常量 + TypeInfo (Enum\|ValueType 标志) |
 | 装箱 / 拆箱 | ✅ | box / unbox / unbox.any → `cil2cpp::box<T>()` / `cil2cpp::unbox<T>()` |
-| Nullable\<T\> | ⚠️ | 泛型 + 多程序集基础设施已就绪，需要 BCL 结构体翻译完善 |
-| Tuple (ValueTuple) | ⚠️ | 同上 |
-| record | ❌ | |
+| Nullable\<T\> | ✅ | BCL 方法拦截（get_HasValue/get_Value/GetValueOrDefault/.ctor），泛型单态化 |
+| Tuple (ValueTuple) | ✅ | BCL 方法拦截（.ctor/字段访问），支持 2-8+ 元素（嵌套 TRest），解构赋值 |
+| record / record struct | ✅ | 编译器生成方法合成（ToString/Equals/GetHashCode/Clone），`with` 表达式，`==`/`!=`，值类型 record struct |
 
 ### 面向对象
 
@@ -380,7 +380,7 @@ void Program_Main() {
 | 泛型类 | ✅ | 单态化（monomorphization）：`Wrapper<int>` → `Wrapper_1_System_Int32` 独立 C++ 类型 |
 | 泛型方法 | ✅ | 单态化：`Identity<int>()` → `GenericUtils_Identity_System_Int32()` 独立函数 |
 | 运算符重载 | ✅ | C# 编译为 `op_Addition` 等静态方法调用，编译器自动识别并标记 |
-| 索引器 | ❌ | |
+| 索引器 | ✅ | C# 编译为 `get_Item`/`set_Item` 普通方法调用，无需特殊处理 |
 | 终结器 / 析构函数 | ✅ | 编译器检测 `Finalize()` 方法，生成 finalizer wrapper → TypeInfo.finalizer，BoehmGC 自动注册 |
 
 ### 控制流
@@ -403,7 +403,7 @@ void Program_Main() {
 | &, \|, ^, <<, >> | ✅ | and, or, xor, shl, shr, shr.un |
 | 一元 - (取负) | ✅ | neg |
 | 一元 ~ (按位取反) | ✅ | not |
-| 溢出检查 (checked) | ❌ | Add_Ovf, Mul_Ovf 等未处理 |
+| 溢出检查 (checked) | ⚠️ | 算术运算（add/sub/mul）有溢出检查；类型转换（`Conv_Ovf_*`）**无**溢出检查（静默截断） |
 
 ### 数组
 
@@ -422,7 +422,7 @@ void Program_Main() {
 
 | 功能 | 状态 | 备注 |
 |------|------|------|
-| 异常类型 | ✅ | NullReferenceException, IndexOutOfRangeException, InvalidCastException, ArgumentException 等 |
+| 异常类型 | ⚠️ | 仅 7 种：NullReference / IndexOutOfRange / InvalidCast / InvalidOperation / Overflow / Argument / ArgumentNull |
 | throw | ✅ | throw → `cil2cpp::throw_exception()`；运行时 `throw_null_reference()` 等便捷函数 |
 | try / catch / finally | ✅ | 编译器读取 IL ExceptionHandler 元数据 → 生成 `CIL2CPP_TRY` / `CIL2CPP_CATCH` / `CIL2CPP_FINALLY` 宏调用 |
 | rethrow | ✅ | `CIL2CPP_RETHROW` |
@@ -466,11 +466,11 @@ void Program_Main() {
 | 多线程 (Thread, Task, lock) | ❌ | |
 | 反射 (Type.GetMethods 等) | ❌ | TypeInfo 有 MethodInfo/FieldInfo 数组但未填充 |
 | 特性 (Attribute) | ❌ | |
-| unsafe 代码 (指针, fixed, stackalloc) | ⚠️ | Ldobj/Stobj/Ldflda/Ldsflda/Ldind_I4/Ldind_Ref/Stind_I4/Stind_Ref 已支持；fixed/stackalloc 未处理 |
+| unsafe 代码 (指针, fixed, stackalloc) | ⚠️ | Ldobj/Stobj（类型化解引用）/Ldflda/Ldsflda/全 Ldind/Stind 变体已支持；fixed/stackalloc 未处理 |
 | P/Invoke / DllImport | ❌ | |
-| 默认参数 / 命名参数 | ❌ | |
+| 默认参数 / 命名参数 | ✅ | C# 编译器在调用点填充默认值，IL 中无可选参数语义 |
 | ref struct / ref return | ❌ | |
-| init-only setter | ❌ | |
+| init-only setter | ✅ | 编译为普通 setter + `modreq(IsExternalInit)`，CIL2CPP 忽略 modreq |
 
 ### 运行时
 
@@ -495,27 +495,33 @@ void Program_Main() {
 
 | 限制 | 说明 | 计划阶段 |
 |------|------|---------|
-| 溢出检查算术 (`checked`) | `add.ovf` / `mul.ovf` 等 IL 指令未处理，不抛 `OverflowException` | Phase 5 |
-| 部分间接操作 (`ldind_*` / `stind_*`) | 仅支持 `ldind_i4` / `ldind_ref` / `stind_i4` / `stind_ref`，其他变体缺失 | Phase 5 |
 | `Span<T>` / `Memory<T>` / `ref struct` | 需要 byref 语义和栈分配支持 | Phase 5 |
 | 多维数组 (`T[,]`) | 仅支持一维数组 (`T[]`)，多维数组需要不同的内存布局 | Phase 5 |
-| `Nullable<T>` | 需要 BCL 泛型结构体翻译（基础设施已在 Phase 4 就绪） | Phase 5 |
 | `async` / `await` | 需要状态机生成 + `Task<T>` BCL 翻译 | Phase 5 |
 | 多线程 (`Thread`, `Task`, `lock`) | `Monitor.Enter/Exit` 当前为空操作 stub，需要真正的同步原语 | Phase 5 |
 | 反射 (`Type.GetMethods` 等) | TypeInfo 结构已有 MethodInfo/FieldInfo 数组但尚未填充 | Phase 5 |
 | 特性 (`Attribute`) | 元数据存储和运行时查询 | Phase 5 |
 | P/Invoke / DllImport | 原生互操作，需要 marshaling 层 | Phase 5 |
-| `unsafe` 代码 (`fixed`, `stackalloc`) | 部分 `ldobj`/`stobj` 已支持；`fixed`/`stackalloc` 未处理 | Phase 5 |
+| `unsafe` 代码 (`fixed`, `stackalloc`) | `ldobj`/`stobj`（类型化）+ 全 `ldind`/`stind` 已支持；`fixed`/`stackalloc` 未处理 | Phase 5 |
 | LINQ | 需要 `IEnumerable<T>` BCL 翻译（基础设施已在 Phase 4 就绪） | Phase 5 |
 | 集合类 (`List<T>`, `Dictionary<K,V>`) | 需要 BCL 泛型类翻译（基础设施已在 Phase 4 就绪） | Phase 5 |
-| 索引器 | 编译器未识别 `get_Item`/`set_Item` 属性模式 | Phase 5 |
-| `record` 类型 | 需要编译器生成的 `Equals`/`GetHashCode`/`ToString` 支持 | Phase 5 |
-| `Tuple` / `ValueTuple` | 需要 BCL 泛型结构体翻译 | Phase 5 |
 | `using` 语句 | try/finally 已支持，需要 `IDisposable` 接口映射 | Phase 5 |
-| 默认参数 / 命名参数 | 编译器未处理 IL 中的可选参数元数据 | Phase 5 |
-| `init`-only setter | 需要 `modreq` 元数据识别 | Phase 5 |
 | 增量/并发 GC | BoehmGC 支持增量模式，当前未启用 | Phase 5 |
 | SIMD / `System.Numerics.Vector` | 无平台内联函数 (intrinsics) 支持 | Phase 5+ |
+
+### 实现层面的已知限制
+
+以下是当前实现中已知的部分支持或行为差异，不影响大多数程序，但在特定场景下需注意：
+
+| 限制 | 说明 |
+|------|------|
+| 异常类型有限 | 仅支持 7 种异常类型（NullReference / IndexOutOfRange / InvalidCast / InvalidOperation / Overflow / Argument / ArgumentNull）。抛出或捕获其他异常类型会导致链接失败 |
+| `checked` 类型转换 | `Conv_Ovf_*` 系列 IL 指令（如 `checked((byte)largeInt)`）实际执行**无溢出检查**的截断转换。仅 `checked` 算术运算（add/sub/mul）有正确的溢出检查 |
+| 泛型约束不验证 | `where T : IComparable` 等泛型约束在编译期不验证。不满足约束的代码可以编译，但运行时可能产生未定义行为 |
+| 未识别的 IL 指令 | 遇到未处理的 IL 操作码时生成 `/* WARNING: unsupported opcode */` 注释占位符，不会报错。可能导致运行时行为不正确 |
+| 字符串方法有限 | 单程序集模式仅支持 `Concat`、`IsNullOrEmpty`、`Length`、`Contains`、`Substring`、`Replace`、`ToUpper`、`ToLower` 等少量方法。`string.Format`、`string.Join`、插值字符串（非 Concat 编译形式）等不支持 |
+| 模式匹配有限 | C# 编译器将简单模式（常量、类型）编译为 if/switch，CIL2CPP 可处理。复杂模式（列表模式、属性模式嵌套）可能生成不支持的 IL 序列 |
+| `using` 语句 | try/finally 结构已支持，但需要 `IDisposable` 接口在运行时可解析。单程序集模式下缺少 BCL 接口定义 |
 
 ### AOT 架构根本限制
 
@@ -737,25 +743,26 @@ dotnet test compiler/CIL2CPP.Tests --collect:"XPlat Code Coverage"
 
 | 模块 | 测试数 |
 |------|--------|
+| IRBuilder | 235 |
 | ILInstructionCategory | 159 |
-| IRBuilder | 159 |
 | CppNameMapper | 100 |
 | CppCodeGenerator | 70 |
 | TypeDefinitionInfo | 65 |
 | IR Instructions (全部) | 54 |
 | IRModule | 44 |
+| ICallRegistry | 38 |
 | IRMethod | 30 |
+| AssemblySet | 28 |
+| RuntimeLocator | 27 + 5 (集成) |
 | IRType | 23 |
-| AssemblySet | 16 |
-| ReachabilityAnalyzer | 16 |
+| ReachabilityAnalyzer | 22 |
+| DepsJsonParser | 18 |
+| AssemblyResolver | 18 |
 | BuildConfiguration | 15 |
 | AssemblyReader | 12 |
-| AssemblyResolver | 12 |
-| DepsJsonParser | 10 |
-| RuntimeLocator | 7 |
 | IRField / IRVTableEntry / IRInterfaceImpl | 7 |
 | SequencePointInfo | 5 |
-| **合计** | **814** |
+| **合计** | **975** |
 
 ### 运行时单元测试 (C++ / Google Test)
 
@@ -826,7 +833,7 @@ python tools/dev.py build                  # 编译 compiler + runtime
 python tools/dev.py build --compiler       # 仅编译 compiler
 python tools/dev.py build --runtime        # 仅编译 runtime
 python tools/dev.py test --all             # 运行全部测试（编译器 + 运行时 + 集成）
-python tools/dev.py test --compiler        # 仅编译器测试 (814 xUnit)
+python tools/dev.py test --compiler        # 仅编译器测试 (975 xUnit)
 python tools/dev.py test --runtime         # 仅运行时测试 (249 GTest)
 python tools/dev.py test --coverage        # 测试 + 覆盖率 HTML 报告
 python tools/dev.py install                # 安装 runtime (Debug + Release)

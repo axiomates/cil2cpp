@@ -226,9 +226,13 @@ public partial class IRBuilder
                 GenericArguments = info.TypeArguments,
             };
 
-            // Register value types
+            // Register value types — both IL key and C++ mangled name
+            // so IsValueType and GetDefaultValue both work correctly
             if (openType.IsValueType)
+            {
                 CppNameMapper.RegisterValueType(key);
+                CppNameMapper.RegisterValueType(info.MangledName);
+            }
 
             // Fields: substitute generic parameters
             foreach (var fieldDef in openType.Fields)
@@ -302,7 +306,11 @@ public partial class IRBuilder
                 irType.Methods.Add(irMethod);
 
                 // Convert method body with generic substitution context
-                if (methodDef.HasBody && !methodDef.IsAbstract)
+                // Skip BCL generic types (Nullable<T>, ValueTuple) — their method calls
+                // are intercepted in EmitMethodCall/EmitNewObj instead
+                var isBclGeneric = info.OpenTypeName.StartsWith("System.Nullable`")
+                    || info.OpenTypeName.StartsWith("System.ValueTuple`");
+                if (!isBclGeneric && methodDef.HasBody && !methodDef.IsAbstract)
                 {
                     var methodInfo = new IL.MethodInfo(methodDef);
                     ConvertMethodBodyWithGenerics(methodInfo, irMethod, typeParamMap);

@@ -52,6 +52,7 @@ public class IRType
     public bool HasCctor { get; set; }
     public bool IsDelegate { get; set; }
     public bool IsGenericInstance { get; set; }
+    public bool IsRecord { get; set; }
 
     /// <summary>Concrete type argument names for generic instances (e.g., ["System.Int32"])</summary>
     public List<string> GenericArguments { get; set; } = new();

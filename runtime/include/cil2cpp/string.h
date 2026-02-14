@@ -78,4 +78,14 @@ inline Int32 string_length(String* str) {
     return str ? str->length : 0;
 }
 
+/**
+ * Convert an int32 to a string.
+ */
+String* string_from_int32(Int32 value);
+
+/**
+ * Convert a double to a string.
+ */
+String* string_from_double(Double value);
+
 } // namespace cil2cpp

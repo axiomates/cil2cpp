@@ -1,4 +1,5 @@
 using Xunit;
+using Mono.Cecil.Cil;
 using CIL2CPP.Core;
 using CIL2CPP.Core.IL;
 using CIL2CPP.Core.IR;
@@ -1110,7 +1111,7 @@ public class IRBuilderTests
         var module = BuildFeatureTest();
         // Find a Wrapper instance that uses int (System.Int32)
         var wrapperInt = module.Types.FirstOrDefault(t =>
-            t.IsGenericInstance && t.GenericArguments.Contains("System.Int32"));
+            t.IsGenericInstance && t.CppName.Contains("Wrapper") && t.GenericArguments.Contains("System.Int32"));
         Assert.NotNull(wrapperInt);
         // _value field should have type int32_t, not "T"
         var valueField = wrapperInt!.Fields.FirstOrDefault(f => f.Name == "_value");
@@ -1795,6 +1796,31 @@ public class IRBuilderTests
         Assert.Contains(rawCpps, r => r.Code.Contains("*(cil2cpp::Object**)") && r.Code.Contains("="));
     }
 
+    // ===== GetIndirectType covers all ldind/stind variants =====
+
+    [Theory]
+    [InlineData(Code.Ldind_I1, "int8_t")]
+    [InlineData(Code.Ldind_I2, "int16_t")]
+    [InlineData(Code.Ldind_I4, "int32_t")]
+    [InlineData(Code.Ldind_I8, "int64_t")]
+    [InlineData(Code.Ldind_U1, "uint8_t")]
+    [InlineData(Code.Ldind_U2, "uint16_t")]
+    [InlineData(Code.Ldind_U4, "uint32_t")]
+    [InlineData(Code.Ldind_R4, "float")]
+    [InlineData(Code.Ldind_R8, "double")]
+    [InlineData(Code.Ldind_I, "intptr_t")]
+    [InlineData(Code.Stind_I1, "int8_t")]
+    [InlineData(Code.Stind_I2, "int16_t")]
+    [InlineData(Code.Stind_I4, "int32_t")]
+    [InlineData(Code.Stind_I8, "int64_t")]
+    [InlineData(Code.Stind_R4, "float")]
+    [InlineData(Code.Stind_R8, "double")]
+    public void GetIndirectType_ReturnsCorrectCppType(Code code, string expectedCppType)
+    {
+        var result = IRBuilder.GetIndirectType(code);
+        Assert.Equal(expectedCppType, result);
+    }
+
     // ===== TestRefParams calls SwapInt and SwapObj =====
 
     [Fact]
@@ -1989,5 +2015,323 @@ public class IRBuilderTests
         var module = builder.Build(set, reachability);
 
         Assert.NotNull(module.EntryPoint);
+    }
+
+    // ===== Indexer (get_Item/set_Item) =====
+
+    [Fact]
+    public void Build_FeatureTest_IntList_HasGetItem()
+    {
+        var module = BuildFeatureTest();
+        var type = module.Types.First(t => t.Name == "IntList");
+        Assert.Contains(type.Methods, m => m.Name == "get_Item");
+    }
+
+    [Fact]
+    public void Build_FeatureTest_IntList_HasSetItem()
+    {
+        var module = BuildFeatureTest();
+        var type = module.Types.First(t => t.Name == "IntList");
+        Assert.Contains(type.Methods, m => m.Name == "set_Item");
+    }
+
+    [Fact]
+    public void Build_FeatureTest_TestIndexer_CallsGetSetItem()
+    {
+        var module = BuildFeatureTest();
+        var instrs = GetMethodInstructions(module, "Program", "TestIndexer");
+        var calls = instrs.OfType<IRCall>().ToList();
+        Assert.Contains(calls, c => c.FunctionName.Contains("get_Item"));
+        Assert.Contains(calls, c => c.FunctionName.Contains("set_Item"));
+    }
+
+    // ===== Default parameters =====
+
+    [Fact]
+    public void Build_FeatureTest_TestDefaultParameters_CallsAdd()
+    {
+        var module = BuildFeatureTest();
+        var instrs = GetMethodInstructions(module, "Program", "TestDefaultParameters");
+        var calls = instrs.OfType<IRCall>().ToList();
+        // Both calls to Add should be present (with default and explicit)
+        var addCalls = calls.Where(c => c.FunctionName.Contains("Add")).ToList();
+        Assert.True(addCalls.Count >= 2);
+    }
+
+    [Fact]
+    public void Build_FeatureTest_DefaultParamHelper_AddHasTwoParams()
+    {
+        var module = BuildFeatureTest();
+        var type = module.Types.First(t => t.Name == "DefaultParamHelper");
+        var addMethod = type.Methods.First(m => m.Name == "Add");
+        // In IL, default params are just regular params
+        Assert.Equal(2, addMethod.Parameters.Count);
+    }
+
+    // ===== Init-only setter =====
+
+    [Fact]
+    public void Build_FeatureTest_ImmutablePoint_HasSetX()
+    {
+        var module = BuildFeatureTest();
+        var type = module.Types.First(t => t.Name == "ImmutablePoint");
+        // init setter compiles to set_X method
+        Assert.Contains(type.Methods, m => m.Name == "set_X");
+    }
+
+    [Fact]
+    public void Build_FeatureTest_ImmutablePoint_HasSetY()
+    {
+        var module = BuildFeatureTest();
+        var type = module.Types.First(t => t.Name == "ImmutablePoint");
+        Assert.Contains(type.Methods, m => m.Name == "set_Y");
+    }
+
+    [Fact]
+    public void Build_FeatureTest_TestInitOnlySetter_CallsSetters()
+    {
+        var module = BuildFeatureTest();
+        var instrs = GetMethodInstructions(module, "Program", "TestInitOnlySetter");
+        var calls = instrs.OfType<IRCall>().ToList();
+        Assert.Contains(calls, c => c.FunctionName.Contains("set_X"));
+        Assert.Contains(calls, c => c.FunctionName.Contains("set_Y"));
+    }
+
+    // ===== Checked arithmetic =====
+
+    [Fact]
+    public void Build_FeatureTest_CheckedAdd_HasCheckedAdd()
+    {
+        var module = BuildFeatureTest();
+        var instrs = GetMethodInstructions(module, "Program", "CheckedAdd");
+        var rawCpps = instrs.OfType<IRRawCpp>().ToList();
+        Assert.Contains(rawCpps, r => r.Code.Contains("cil2cpp::checked_add"));
+    }
+
+    [Fact]
+    public void Build_FeatureTest_CheckedSub_HasCheckedSub()
+    {
+        var module = BuildFeatureTest();
+        var instrs = GetMethodInstructions(module, "Program", "CheckedSub");
+        var rawCpps = instrs.OfType<IRRawCpp>().ToList();
+        Assert.Contains(rawCpps, r => r.Code.Contains("cil2cpp::checked_sub"));
+    }
+
+    [Fact]
+    public void Build_FeatureTest_CheckedMul_HasCheckedMul()
+    {
+        var module = BuildFeatureTest();
+        var instrs = GetMethodInstructions(module, "Program", "CheckedMul");
+        var rawCpps = instrs.OfType<IRRawCpp>().ToList();
+        Assert.Contains(rawCpps, r => r.Code.Contains("cil2cpp::checked_mul"));
+    }
+
+    // ===== GetCheckedConvType =====
+
+    [Theory]
+    [InlineData(Code.Conv_Ovf_I1, "int8_t")]
+    [InlineData(Code.Conv_Ovf_I2, "int16_t")]
+    [InlineData(Code.Conv_Ovf_I4, "int32_t")]
+    [InlineData(Code.Conv_Ovf_I8, "int64_t")]
+    [InlineData(Code.Conv_Ovf_U1, "uint8_t")]
+    [InlineData(Code.Conv_Ovf_U2, "uint16_t")]
+    [InlineData(Code.Conv_Ovf_U4, "uint32_t")]
+    [InlineData(Code.Conv_Ovf_U8, "uint64_t")]
+    [InlineData(Code.Conv_Ovf_I1_Un, "int8_t")]
+    [InlineData(Code.Conv_Ovf_I2_Un, "int16_t")]
+    [InlineData(Code.Conv_Ovf_I4_Un, "int32_t")]
+    [InlineData(Code.Conv_Ovf_I8_Un, "int64_t")]
+    [InlineData(Code.Conv_Ovf_U1_Un, "uint8_t")]
+    [InlineData(Code.Conv_Ovf_U2_Un, "uint16_t")]
+    [InlineData(Code.Conv_Ovf_U4_Un, "uint32_t")]
+    [InlineData(Code.Conv_Ovf_U8_Un, "uint64_t")]
+    public void GetCheckedConvType_ReturnsCorrectCppType(Code code, string expectedCppType)
+    {
+        var result = IRBuilder.GetCheckedConvType(code);
+        Assert.Equal(expectedCppType, result);
+    }
+
+    // ===== Nullable<T> =====
+
+    [Fact]
+    public void Build_FeatureTest_Nullable_MonomorphizesStruct()
+    {
+        var module = BuildFeatureTest();
+        // Nullable<int> should be monomorphized with correct fields
+        var nullable = module.Types.FirstOrDefault(t =>
+            t.IsGenericInstance && t.CppName.Contains("Nullable"));
+        Assert.NotNull(nullable);
+        Assert.True(nullable!.IsValueType);
+        var fieldNames = nullable.Fields.Select(f => f.Name).ToList();
+        Assert.Contains("hasValue", fieldNames);
+        Assert.Contains("value", fieldNames);
+    }
+
+    [Fact]
+    public void Build_FeatureTest_Nullable_MethodsAreIntercepted()
+    {
+        var module = BuildFeatureTest();
+        // TestNullable method should contain HasValue inline code (not IRCall to BCL)
+        var testMethod = module.GetAllMethods().FirstOrDefault(m => m.Name == "TestNullable");
+        Assert.NotNull(testMethod);
+        var allInstructions = testMethod!.BasicBlocks.SelectMany(b => b.Instructions).ToList();
+        // Should contain inline field access, not unresolved BCL call
+        var rawCppInstructions = allInstructions.OfType<IRRawCpp>().ToList();
+        Assert.True(rawCppInstructions.Any(r => r.Code.Contains("f_hasValue")),
+            "Nullable.HasValue should be intercepted as inline field access");
+    }
+
+    [Fact]
+    public void Build_FeatureTest_Nullable_NoUnresolvedCalls()
+    {
+        var module = BuildFeatureTest();
+        var testMethod = module.GetAllMethods().FirstOrDefault(m => m.Name == "TestNullable");
+        Assert.NotNull(testMethod);
+        var allInstructions = testMethod!.BasicBlocks.SelectMany(b => b.Instructions).ToList();
+        // There should be no IRCall to Nullable methods (they should all be intercepted)
+        var calls = allInstructions.OfType<IRCall>()
+            .Where(c => c.FunctionName.Contains("Nullable"))
+            .ToList();
+        Assert.Empty(calls);
+    }
+
+    // ===== ValueTuple =====
+
+    [Fact]
+    public void Build_FeatureTest_ValueTuple_MonomorphizesStruct()
+    {
+        var module = BuildFeatureTest();
+        // ValueTuple<int,int> should be monomorphized with Item1, Item2 fields
+        var tuple = module.Types.FirstOrDefault(t =>
+            t.IsGenericInstance && t.CppName.Contains("ValueTuple"));
+        Assert.NotNull(tuple);
+        Assert.True(tuple!.IsValueType);
+        var fieldNames = tuple.Fields.Select(f => f.Name).ToList();
+        Assert.Contains("Item1", fieldNames);
+        Assert.Contains("Item2", fieldNames);
+    }
+
+    [Fact]
+    public void Build_FeatureTest_ValueTuple_ConstructorIntercepted()
+    {
+        var module = BuildFeatureTest();
+        var testMethod = module.GetAllMethods().FirstOrDefault(m => m.Name == "TestValueTuple");
+        Assert.NotNull(testMethod);
+        var allInstructions = testMethod!.BasicBlocks.SelectMany(b => b.Instructions).ToList();
+        // Should contain inline field assignments for tuple construction
+        var rawCpp = allInstructions.OfType<IRRawCpp>().ToList();
+        Assert.True(rawCpp.Any(r => r.Code.Contains("f_Item1")),
+            "ValueTuple constructor should be intercepted with inline field assignments");
+    }
+
+    // ===== record =====
+
+    [Fact]
+    public void Build_FeatureTest_Record_DetectedAsRecord()
+    {
+        var module = BuildFeatureTest();
+        var recordType = module.Types.FirstOrDefault(t => t.Name == "PersonRecord");
+        Assert.NotNull(recordType);
+        Assert.True(recordType!.IsRecord, "PersonRecord should be detected as a record type");
+    }
+
+    [Fact]
+    public void Build_FeatureTest_Record_HasSynthesizedMethods()
+    {
+        var module = BuildFeatureTest();
+        var recordType = module.Types.FirstOrDefault(t => t.Name == "PersonRecord");
+        Assert.NotNull(recordType);
+        var methodNames = recordType!.Methods.Select(m => m.Name).ToList();
+        Assert.Contains("ToString", methodNames);
+        Assert.Contains("Equals", methodNames);
+        Assert.Contains("GetHashCode", methodNames);
+        Assert.Contains("<Clone>$", methodNames);
+    }
+
+    [Fact]
+    public void Build_FeatureTest_Record_ToStringHasBody()
+    {
+        var module = BuildFeatureTest();
+        var recordType = module.Types.FirstOrDefault(t => t.Name == "PersonRecord");
+        Assert.NotNull(recordType);
+        var toString = recordType!.Methods.FirstOrDefault(m => m.Name == "ToString");
+        Assert.NotNull(toString);
+        Assert.True(toString!.BasicBlocks.Count > 0, "Synthesized ToString should have a body");
+        // Should contain string_concat calls for field formatting
+        var allCode = string.Join("\n", toString.BasicBlocks
+            .SelectMany(b => b.Instructions).Select(i => i.ToCpp()));
+        Assert.Contains("string_concat", allCode);
+    }
+
+    [Fact]
+    public void Build_FeatureTest_Record_EqualsHasFieldComparison()
+    {
+        var module = BuildFeatureTest();
+        var recordType = module.Types.FirstOrDefault(t => t.Name == "PersonRecord");
+        Assert.NotNull(recordType);
+        // Find the typed Equals (takes PersonRecord* parameter)
+        var typedEquals = recordType!.Methods.FirstOrDefault(m =>
+            m.Name == "Equals" && m.Parameters.Count == 1
+            && m.Parameters[0].CppTypeName.Contains(recordType.CppName));
+        Assert.NotNull(typedEquals);
+        Assert.True(typedEquals!.BasicBlocks.Count > 0, "Typed Equals should have a synthesized body");
+    }
+
+    // ===== record struct =====
+
+    [Fact]
+    public void Build_FeatureTest_RecordStruct_DetectedAsRecord()
+    {
+        var module = BuildFeatureTest();
+        var pointRecord = module.Types.FirstOrDefault(t => t.Name == "PointRecord");
+        Assert.NotNull(pointRecord);
+        Assert.True(pointRecord!.IsRecord, "PointRecord should be detected as a record type");
+        Assert.True(pointRecord.IsValueType, "PointRecord should be a value type");
+    }
+
+    [Fact]
+    public void Build_FeatureTest_RecordStruct_HasSynthesizedMethods()
+    {
+        var module = BuildFeatureTest();
+        var pointRecord = module.Types.FirstOrDefault(t => t.Name == "PointRecord");
+        Assert.NotNull(pointRecord);
+        var methodNames = pointRecord!.Methods.Select(m => m.Name).ToList();
+        Assert.Contains("ToString", methodNames);
+        Assert.Contains("Equals", methodNames);
+        Assert.Contains("GetHashCode", methodNames);
+        Assert.Contains("op_Equality", methodNames);
+    }
+
+    [Fact]
+    public void Build_FeatureTest_RecordStruct_EqualsUsesValueAccessor()
+    {
+        var module = BuildFeatureTest();
+        var pointRecord = module.Types.FirstOrDefault(t => t.Name == "PointRecord");
+        Assert.NotNull(pointRecord);
+        // Find typed Equals (takes PointRecord parameter — value, not pointer)
+        var typedEquals = pointRecord!.Methods.FirstOrDefault(m =>
+            m.Name == "Equals" && m.Parameters.Count == 1
+            && m.Parameters[0].CppTypeName.Contains(pointRecord.CppName));
+        Assert.NotNull(typedEquals);
+        Assert.True(typedEquals!.BasicBlocks.Count > 0);
+        // Value type should NOT have null check in typed Equals
+        var code = string.Join("\n", typedEquals.BasicBlocks
+            .SelectMany(b => b.Instructions)
+            .OfType<IRRawCpp>()
+            .Select(i => i.Code));
+        Assert.DoesNotContain("== nullptr", code);
+        // Should use "." accessor for value-type other param, not "->"
+        Assert.Contains(".", code);
+    }
+
+    [Fact]
+    public void Build_FeatureTest_RecordStruct_NoCloneMethod()
+    {
+        var module = BuildFeatureTest();
+        var pointRecord = module.Types.FirstOrDefault(t => t.Name == "PointRecord");
+        Assert.NotNull(pointRecord);
+        var cloneMethod = pointRecord!.Methods.FirstOrDefault(m => m.Name == "<Clone>$");
+        // record struct doesn't have <Clone>$ method
+        Assert.Null(cloneMethod);
     }
 }

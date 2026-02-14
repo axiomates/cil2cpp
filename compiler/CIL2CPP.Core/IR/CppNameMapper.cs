@@ -88,8 +88,19 @@ public static class CppNameMapper
         }
 
         // User-defined types - mangle the name
-        var mangled = MangleTypeName(ilTypeName);
-        return mangled;
+        // For generic instance types (e.g. "Foo`1<System.Int32>"), use the dedicated mangler
+        // to avoid trailing underscores from the closing '>'
+        var backtickIdx = ilTypeName.IndexOf('`');
+        if (backtickIdx > 0 && ilTypeName.Contains('<'))
+        {
+            var angleBracket = ilTypeName.IndexOf('<');
+            var openTypeName = ilTypeName[..angleBracket];
+            var argsStr = ilTypeName[(angleBracket + 1)..^1];
+            var args = argsStr.Split(',').Select(a => a.Trim()).ToList();
+            return MangleGenericInstanceTypeName(openTypeName, args);
+        }
+
+        return MangleTypeName(ilTypeName);
     }
 
     /// <summary>

@@ -51,6 +51,11 @@ struct ArgumentException : Exception {};
 struct ArgumentNullException : ArgumentException {};
 
 /**
+ * Overflow exception (thrown by checked arithmetic).
+ */
+struct OverflowException : Exception {};
+
+/**
  * Exception handling context.
  */
 struct ExceptionContext {
@@ -84,6 +89,16 @@ extern thread_local ExceptionContext* g_exception_context;
  * Create and throw an InvalidCastException.
  */
 [[noreturn]] void throw_invalid_cast();
+
+/**
+ * Create and throw an InvalidOperationException.
+ */
+[[noreturn]] void throw_invalid_operation();
+
+/**
+ * Create and throw an OverflowException.
+ */
+[[noreturn]] void throw_overflow();
 
 /**
  * Get current exception (in catch block).

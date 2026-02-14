@@ -190,6 +190,15 @@ public partial class IRBuilder
                     if (methodDef.HasBody && !methodDef.IsAbstract && !irMethod.IsInternalCall)
                         methodBodies.Add((methodDef, irMethod));
                 }
+
+                // Detect record types:
+                // - reference record: has <Clone>$ method
+                // - value record struct: value type with PrintMembers (unique to records)
+                bool isRefRecord = irType.Methods.Any(m => m.Name == "<Clone>$");
+                bool isValRecord = irType.IsValueType
+                    && irType.Methods.Any(m => m.Name == "PrintMembers");
+                if (isRefRecord || isValRecord)
+                    irType.IsRecord = true;
             }
         }
 
@@ -212,9 +221,28 @@ public partial class IRBuilder
         // Pass 6: Convert method bodies (vtables are now available for virtual dispatch)
         foreach (var (methodDef, irMethod) in methodBodies)
         {
+            // Skip record compiler-generated methods — Pass 7 synthesizes replacements
+            if (irMethod.DeclaringType?.IsRecord == true && IsRecordSynthesizedMethod(irMethod.Name))
+                continue;
+
             ConvertMethodBody(methodDef, irMethod);
+        }
+
+        // Pass 7: Synthesize record method bodies (replace compiler-generated bodies
+        // that reference unsupported BCL types like StringBuilder, EqualityComparer<T>)
+        foreach (var irType in _module.Types)
+        {
+            if (irType.IsRecord)
+                SynthesizeRecordMethods(irType);
         }
 
         return _module;
     }
+
+    /// <summary>
+    /// Methods that are compiler-generated for records and need synthesized replacements.
+    /// </summary>
+    private static bool IsRecordSynthesizedMethod(string name) => name is
+        "ToString" or "GetHashCode" or "Equals" or "PrintMembers"
+        or "<Clone>$" or "op_Equality" or "op_Inequality" or "get_EqualityContract";
 }

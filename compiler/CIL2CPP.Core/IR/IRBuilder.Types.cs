@@ -29,8 +29,12 @@ public partial class IRBuilder
             irType.IsDelegate = true;
 
         // Register value types for CppNameMapper so it doesn't add pointer suffix
+        // Register both IL name (for IsValueType lookups) and C++ name (for GetDefaultValue)
         if (typeDef.IsValueType)
+        {
             CppNameMapper.RegisterValueType(typeDef.FullName);
+            CppNameMapper.RegisterValueType(cppName);
+        }
 
         return irType;
     }

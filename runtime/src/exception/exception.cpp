@@ -29,6 +29,8 @@ thread_local ExceptionContext* g_exception_context = nullptr;
 extern TypeInfo NullReferenceException_TypeInfo;
 extern TypeInfo IndexOutOfRangeException_TypeInfo;
 extern TypeInfo InvalidCastException_TypeInfo;
+extern TypeInfo InvalidOperationException_TypeInfo;
+extern TypeInfo OverflowException_TypeInfo;
 
 [[noreturn]] void throw_exception(Exception* ex) {
     if (g_exception_context) {
@@ -82,6 +84,18 @@ static Exception* create_exception(TypeInfo* type, const char* message) {
 [[noreturn]] void throw_invalid_cast() {
     Exception* ex = create_exception(&InvalidCastException_TypeInfo,
                                       "Specified cast is not valid.");
+    throw_exception(ex);
+}
+
+[[noreturn]] void throw_invalid_operation() {
+    Exception* ex = create_exception(&InvalidOperationException_TypeInfo,
+                                      "Operation is not valid due to the current state of the object.");
+    throw_exception(ex);
+}
+
+[[noreturn]] void throw_overflow() {
+    Exception* ex = create_exception(&OverflowException_TypeInfo,
+                                      "Arithmetic operation resulted in an overflow.");
     throw_exception(ex);
 }
 
@@ -244,6 +258,48 @@ TypeInfo InvalidCastException_TypeInfo = {
     .interfaces = nullptr,
     .interface_count = 0,
     .instance_size = sizeof(InvalidCastException),
+    .element_size = 0,
+    .flags = TypeFlags::None,
+    .vtable = nullptr,
+    .fields = nullptr,
+    .field_count = 0,
+    .methods = nullptr,
+    .method_count = 0,
+    .default_ctor = nullptr,
+    .finalizer = nullptr,
+    .interface_vtables = nullptr,
+    .interface_vtable_count = 0,
+};
+
+TypeInfo InvalidOperationException_TypeInfo = {
+    .name = "InvalidOperationException",
+    .namespace_name = "System",
+    .full_name = "System.InvalidOperationException",
+    .base_type = nullptr,
+    .interfaces = nullptr,
+    .interface_count = 0,
+    .instance_size = sizeof(InvalidOperationException),
+    .element_size = 0,
+    .flags = TypeFlags::None,
+    .vtable = nullptr,
+    .fields = nullptr,
+    .field_count = 0,
+    .methods = nullptr,
+    .method_count = 0,
+    .default_ctor = nullptr,
+    .finalizer = nullptr,
+    .interface_vtables = nullptr,
+    .interface_vtable_count = 0,
+};
+
+TypeInfo OverflowException_TypeInfo = {
+    .name = "OverflowException",
+    .namespace_name = "System",
+    .full_name = "System.OverflowException",
+    .base_type = nullptr,
+    .interfaces = nullptr,
+    .interface_count = 0,
+    .instance_size = sizeof(OverflowException),
     .element_size = 0,
     .flags = TypeFlags::None,
     .vtable = nullptr,

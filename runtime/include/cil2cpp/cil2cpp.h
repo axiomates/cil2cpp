@@ -15,6 +15,7 @@
 #include "boxing.h"
 #include "delegate.h"
 #include "icall.h"
+#include "checked.h"
 
 // BCL types
 #include "bcl/System.Object.h"

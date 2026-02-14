@@ -43,6 +43,14 @@ public partial class IRBuilder
     private void EmitMethodCall(IRBasicBlock block, Stack<string> stack, MethodReference methodRef,
         bool isVirtual, ref int tempCounter)
     {
+        // Special: Nullable<T> methods — emit inline C++ instead of unresolved BCL calls
+        if (TryEmitNullableCall(block, stack, methodRef, ref tempCounter))
+            return;
+
+        // Special: ValueTuple methods — emit inline C++ instead of unresolved BCL calls
+        if (TryEmitValueTupleCall(block, stack, methodRef, ref tempCounter))
+            return;
+
         // Special: Delegate.Invoke — emit IRDelegateInvoke instead of normal call
         var declaringCacheKey = ResolveCacheKey(methodRef.DeclaringType);
         if (methodRef.Name == "Invoke" && methodRef.HasThis
@@ -233,6 +241,14 @@ public partial class IRBuilder
     private void EmitNewObj(IRBasicBlock block, Stack<string> stack, MethodReference ctorRef,
         ref int tempCounter)
     {
+        // Special: Nullable<T> constructor (newobj pattern — rare, usually ldloca+call)
+        if (TryEmitNullableNewObj(block, stack, ctorRef, ref tempCounter))
+            return;
+
+        // Special: ValueTuple constructor (newobj pattern — value type, can't use gc::alloc)
+        if (TryEmitValueTupleNewObj(block, stack, ctorRef, ref tempCounter))
+            return;
+
         var cacheKey = ResolveCacheKey(ctorRef.DeclaringType);
         var typeCpp = GetMangledTypeNameForRef(ctorRef.DeclaringType);
         var tmp = $"__t{tempCounter++}";

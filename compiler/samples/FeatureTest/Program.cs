@@ -279,6 +279,46 @@ public class GenericUtils
     }
 }
 
+// Indexer class (exercises get_Item/set_Item ordinary method calls)
+public class IntList
+{
+    private int[] _items;
+
+    public IntList(int size)
+    {
+        _items = new int[size];
+    }
+
+    public int this[int index]
+    {
+        get { return _items[index]; }
+        set { _items[index] = value; }
+    }
+
+    public int Count => _items.Length;
+}
+
+// Init-only setter (exercises modreq(IsExternalInit) which CIL2CPP ignores)
+public class ImmutablePoint
+{
+    public int X { get; init; }
+    public int Y { get; init; }
+}
+
+// Default parameter helper (C# compiler fills defaults at call site in IL)
+public class DefaultParamHelper
+{
+    public static int Add(int a, int b = 10)
+    {
+        return a + b;
+    }
+
+    public static string Greet(string name, string greeting = "Hello")
+    {
+        return string.Concat(greeting, ", ", name);
+    }
+}
+
 // Generic value type (exercises RegisterValueType for generic instances)
 public struct Pair<T>
 {
@@ -302,6 +342,12 @@ public class AllFieldTypes
     public byte ByteField;
     public float FloatField;
 }
+
+// Record type (exercises compiler-generated ToString, Equals, GetHashCode, <Clone>$)
+public record PersonRecord(string Name, int Age);
+
+// Record struct (value type record — no <Clone>$, uses value copy semantics)
+public record struct PointRecord(int X, int Y);
 
 public class Program
 {
@@ -358,6 +404,14 @@ public class Program
         TestStaticFieldRef();
         TestVirtualDelegate();
         TestGenericStruct();
+        TestIndexer();
+        TestDefaultParameters();
+        TestInitOnlySetter();
+        TestCheckedOverflow();
+        TestNullable();
+        TestValueTuple();
+        TestRecord();
+        TestRecordStruct();
     }
 
     static void TestArithmetic()
@@ -1011,5 +1065,125 @@ public class Program
         var p = new Pair<int>(10, 20);
         Console.WriteLine(p.First);  // 10
         Console.WriteLine(p.Second); // 20
+    }
+
+    // Exercises indexer (get_Item / set_Item are just ordinary method calls in IL)
+    static void TestIndexer()
+    {
+        var list = new IntList(3);
+        list[0] = 10;    // set_Item
+        list[1] = 20;
+        list[2] = 30;
+        Console.WriteLine(list[0]); // get_Item → 10
+        Console.WriteLine(list[1]); // 20
+        Console.WriteLine(list[2]); // 30
+    }
+
+    // Exercises default parameters (C# compiler fills defaults at call site — no IL semantics)
+    static void TestDefaultParameters()
+    {
+        int r1 = DefaultParamHelper.Add(5);        // b defaults to 10 → 15
+        int r2 = DefaultParamHelper.Add(5, 20);    // explicit → 25
+        Console.WriteLine(r1); // 15
+        Console.WriteLine(r2); // 25
+
+        string g1 = DefaultParamHelper.Greet("World");             // "Hello, World"
+        string g2 = DefaultParamHelper.Greet("World", "Goodbye");  // "Goodbye, World"
+        Console.WriteLine(g1);
+        Console.WriteLine(g2);
+    }
+
+    // Exercises init-only setter (modreq(IsExternalInit) — CIL2CPP ignores modreq)
+    static void TestInitOnlySetter()
+    {
+        var point = new ImmutablePoint { X = 42, Y = 99 };
+        Console.WriteLine(point.X); // 42
+        Console.WriteLine(point.Y); // 99
+    }
+
+    // Helper methods that force checked arithmetic in IL
+    static int CheckedAdd(int a, int b) { return checked(a + b); }
+    static int CheckedSub(int a, int b) { return checked(a - b); }
+    static int CheckedMul(int a, int b) { return checked(a * b); }
+
+    // Exercises checked arithmetic (Add_Ovf, Sub_Ovf, Mul_Ovf IL opcodes)
+    static void TestCheckedOverflow()
+    {
+        Console.WriteLine(CheckedAdd(100, 200)); // 300
+        Console.WriteLine(CheckedSub(500, 200)); // 300
+        Console.WriteLine(CheckedMul(15, 20));   // 300
+
+        // Overflow that gets caught
+        try
+        {
+            int x = int.MaxValue;
+            int y = CheckedAdd(x, 1); // OverflowException
+            Console.WriteLine(y);
+        }
+        catch (OverflowException)
+        {
+            Console.WriteLine("Overflow caught");
+        }
+    }
+
+    // Exercises Nullable<T> (System.Nullable`1 — BCL generic struct)
+    static void TestNullable()
+    {
+        int? a = 42;
+        Console.WriteLine(a.HasValue);           // True
+        Console.WriteLine(a.Value);              // 42
+        Console.WriteLine(a.GetValueOrDefault()); // 42
+
+        int? b = null;
+        Console.WriteLine(b.HasValue);            // False
+        Console.WriteLine(b.GetValueOrDefault(99)); // 99
+
+        // Test nullable with value access
+        int? c = 10;
+        if (c.HasValue)
+            Console.WriteLine(c.Value);           // 10
+    }
+
+    // Exercises ValueTuple (tuple literal syntax → System.ValueTuple`N)
+    static void TestValueTuple()
+    {
+        var t = (1, 2);
+        Console.WriteLine(t.Item1);  // 1
+        Console.WriteLine(t.Item2);  // 2
+
+        (int x, int y) = (10, 20);
+        Console.WriteLine(x);  // 10
+        Console.WriteLine(y);  // 20
+    }
+
+    // Exercises record types (compiler-generated ToString, Equals, <Clone>$)
+    static void TestRecord()
+    {
+        var p1 = new PersonRecord("Alice", 30);
+        Console.WriteLine(p1.Name);     // Alice
+        Console.WriteLine(p1.Age);      // 30
+
+        var p2 = new PersonRecord("Alice", 30);
+        Console.WriteLine(p1 == p2);    // True
+        Console.WriteLine(p1 != p2);    // False
+
+        var p3 = p1 with { Age = 31 };
+        Console.WriteLine(p3.Age);      // 31
+        Console.WriteLine(p1 == p3);    // False
+    }
+
+    // Exercises record struct (value type record — no Clone, uses value copy)
+    static void TestRecordStruct()
+    {
+        var p1 = new PointRecord(10, 20);
+        Console.WriteLine(p1.X);        // 10
+        Console.WriteLine(p1.Y);        // 20
+
+        var p2 = new PointRecord(10, 20);
+        Console.WriteLine(p1 == p2);    // True
+        Console.WriteLine(p1 != p2);    // False
+
+        var p3 = new PointRecord(30, 40);
+        Console.WriteLine(p1 == p3);    // False
     }
 }

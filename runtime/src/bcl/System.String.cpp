@@ -236,4 +236,16 @@ char* string_to_utf8(String* str) {
     return utf8;
 }
 
+String* string_from_int32(Int32 value) {
+    char buf[16];
+    snprintf(buf, sizeof(buf), "%d", value);
+    return string_create_utf8(buf);
+}
+
+String* string_from_double(Double value) {
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%g", value);
+    return string_create_utf8(buf);
+}
+
 } // namespace cil2cpp
