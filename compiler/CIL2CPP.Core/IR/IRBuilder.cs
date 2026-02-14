@@ -120,6 +120,12 @@ public partial class IRBuilder
         CppNameMapper.RegisterValueType("System.Runtime.CompilerServices.AsyncTaskMethodBuilder");
         CppNameMapper.RegisterValueType("System_Runtime_CompilerServices_AsyncTaskMethodBuilder");
 
+        // Register Index/Range BCL value types
+        CppNameMapper.RegisterValueType("System.Index");
+        CppNameMapper.RegisterValueType("System_Index");
+        CppNameMapper.RegisterValueType("System.Range");
+        CppNameMapper.RegisterValueType("System_Range");
+
         // Pass 0: Scan for generic instantiations in all method bodies
         ScanGenericInstantiations();
 
@@ -142,6 +148,9 @@ public partial class IRBuilder
             _module.Types.Add(irType);
             _typeCache[typeDef.FullName] = irType;
         }
+
+        // Pass 1.5a: Create synthetic types for BCL value types (Index, Range)
+        CreateIndexRangeSyntheticTypes();
 
         // Pass 1.5: Create specialized types for each generic instantiation
         CreateGenericSpecializations();

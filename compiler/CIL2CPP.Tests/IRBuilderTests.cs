@@ -3147,4 +3147,141 @@ public class IRBuilderTests
             .Select(c => c.Text);
         Assert.DoesNotContain(comments, c => c.Contains("WARNING"));
     }
+
+    // ===== Index / Range =====
+
+    [Fact]
+    public void Build_FeatureTest_SystemIndex_SyntheticType()
+    {
+        var module = BuildFeatureTest();
+        var indexType = module.FindType("System.Index");
+        Assert.NotNull(indexType);
+        Assert.True(indexType!.IsValueType);
+        Assert.Equal("System_Index", indexType.CppName);
+        Assert.Single(indexType.Fields); // _value
+        Assert.Equal("f__value", indexType.Fields[0].CppName);
+    }
+
+    [Fact]
+    public void Build_FeatureTest_SystemRange_SyntheticType()
+    {
+        var module = BuildFeatureTest();
+        var rangeType = module.FindType("System.Range");
+        Assert.NotNull(rangeType);
+        Assert.True(rangeType!.IsValueType);
+        Assert.Equal("System_Range", rangeType.CppName);
+        Assert.Equal(2, rangeType.Fields.Count); // _start, _end
+        Assert.Equal("f__start", rangeType.Fields[0].CppName);
+        Assert.Equal("f__end", rangeType.Fields[1].CppName);
+    }
+
+    [Fact]
+    public void Build_FeatureTest_TestIndexFromEnd_NoWarnings()
+    {
+        var module = BuildFeatureTest();
+        var method = module.Types.First(t => t.CppName == "Program")
+            .Methods.First(m => m.Name == "TestIndexFromEnd");
+        var comments = method.BasicBlocks
+            .SelectMany(b => b.Instructions)
+            .OfType<IRComment>()
+            .Select(c => c.Text);
+        Assert.DoesNotContain(comments, c => c.Contains("WARNING"));
+    }
+
+    [Fact]
+    public void Build_FeatureTest_TestRangeSlice_HasGetSubArray()
+    {
+        var module = BuildFeatureTest();
+        var method = module.Types.First(t => t.CppName == "Program")
+            .Methods.First(m => m.Name == "TestRangeSlice");
+        var rawCpps = method.BasicBlocks
+            .SelectMany(b => b.Instructions)
+            .OfType<IRRawCpp>()
+            .Select(r => r.Code)
+            .ToList();
+        // arr[1..3] uses RuntimeHelpers.GetSubArray → array_get_subarray
+        Assert.Contains(rawCpps, c => c.Contains("array_get_subarray"));
+    }
+
+    [Fact]
+    public void Build_FeatureTest_TestStringSlice_HasSubstring()
+    {
+        var module = BuildFeatureTest();
+        var method = module.Types.First(t => t.CppName == "Program")
+            .Methods.First(m => m.Name == "TestStringSlice");
+        var calls = method.BasicBlocks
+            .SelectMany(b => b.Instructions)
+            .OfType<IRCall>()
+            .Select(c => c.FunctionName)
+            .ToList();
+        // s[1..4] compiles to String.Substring → cil2cpp::string_substring
+        Assert.Contains(calls, c => c.Contains("string_substring"));
+    }
+
+    [Fact]
+    public void Build_FeatureTest_TestIndexProperties_HasIndexAccess()
+    {
+        var module = BuildFeatureTest();
+        var method = module.Types.First(t => t.CppName == "Program")
+            .Methods.First(m => m.Name == "TestIndexProperties");
+        var rawCpps = method.BasicBlocks
+            .SelectMany(b => b.Instructions)
+            .OfType<IRRawCpp>()
+            .Select(r => r.Code)
+            .ToList();
+        // Index constructor sets f__value
+        Assert.Contains(rawCpps, c => c.Contains("f__value"));
+        // No warnings
+        var comments = method.BasicBlocks
+            .SelectMany(b => b.Instructions)
+            .OfType<IRComment>()
+            .Select(c => c.Text);
+        Assert.DoesNotContain(comments, c => c.Contains("WARNING"));
+    }
+
+    [Fact]
+    public void Build_FeatureTest_TestRangeGetOffsetAndLength_NoWarnings()
+    {
+        var module = BuildFeatureTest();
+        var method = module.Types.First(t => t.CppName == "Program")
+            .Methods.First(m => m.Name == "TestRangeGetOffsetAndLength");
+        var comments = method.BasicBlocks
+            .SelectMany(b => b.Instructions)
+            .OfType<IRComment>()
+            .Select(c => c.Text);
+        Assert.DoesNotContain(comments, c => c.Contains("WARNING"));
+    }
+
+    [Fact]
+    public void Build_FeatureTest_IndexRangeHelper_GetFromEnd_HasIndexGetOffset()
+    {
+        var module = BuildFeatureTest();
+        var method = module.Types.First(t => t.CppName == "IndexRangeHelper")
+            .Methods.First(m => m.Name == "GetFromEnd");
+        var rawCpps = method.BasicBlocks
+            .SelectMany(b => b.Instructions)
+            .OfType<IRRawCpp>()
+            .Select(r => r.Code)
+            .ToList();
+        // Index.ctor sets f__value with ternary (fromEnd ? ~value : value)
+        Assert.Contains(rawCpps, c => c.Contains("f__value") && c.Contains("~"));
+        // GetOffset computes offset based on f__value < 0
+        Assert.Contains(rawCpps, c => c.Contains("f__value < 0"));
+    }
+
+    [Fact]
+    public void Build_FeatureTest_IndexRangeHelper_SliceLength_HasGetOffsetAndLength()
+    {
+        var module = BuildFeatureTest();
+        var method = module.Types.First(t => t.CppName == "IndexRangeHelper")
+            .Methods.First(m => m.Name == "SliceLength");
+        var rawCpps = method.BasicBlocks
+            .SelectMany(b => b.Instructions)
+            .OfType<IRRawCpp>()
+            .Select(r => r.Code)
+            .ToList();
+        // GetOffsetAndLength accesses f__start and f__end of Range
+        Assert.Contains(rawCpps, c => c.Contains("f__start"));
+        Assert.Contains(rawCpps, c => c.Contains("f__end"));
+    }
 }

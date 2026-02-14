@@ -56,6 +56,12 @@ void* array_get_element_ptr(Array* arr, Int32 index);
  */
 void array_bounds_check(Array* arr, Int32 index);
 
+/**
+ * Create a subarray (slice) from source array.
+ * Copies elements from [start, start+length) into a new array.
+ */
+Array* array_get_subarray(Array* source, Int32 start, Int32 length);
+
 // Typed array access templates
 template<typename T>
 inline T& array_get(Array* arr, Int32 index) {

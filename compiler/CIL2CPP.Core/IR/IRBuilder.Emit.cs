@@ -55,6 +55,18 @@ public partial class IRBuilder
         if (TryEmitAsyncCall(block, stack, methodRef, ref tempCounter))
             return;
 
+        // Special: System.Index methods
+        if (TryEmitIndexCall(block, stack, methodRef, ref tempCounter))
+            return;
+
+        // Special: System.Range methods
+        if (TryEmitRangeCall(block, stack, methodRef, ref tempCounter))
+            return;
+
+        // Special: RuntimeHelpers.GetSubArray<T>
+        if (TryEmitGetSubArray(block, stack, methodRef, ref tempCounter))
+            return;
+
         // Special: Delegate.Invoke — emit IRDelegateInvoke instead of normal call
         var declaringCacheKey = ResolveCacheKey(methodRef.DeclaringType);
         if (methodRef.Name == "Invoke" && methodRef.HasThis
@@ -265,6 +277,14 @@ public partial class IRBuilder
         if (TryEmitAsyncNewObj(block, stack, ctorRef, ref tempCounter))
             return;
 
+        // Special: System.Index constructor
+        if (TryEmitIndexNewObj(block, stack, ctorRef, ref tempCounter))
+            return;
+
+        // Special: System.Range constructor
+        if (TryEmitRangeNewObj(block, stack, ctorRef, ref tempCounter))
+            return;
+
         var cacheKey = ResolveCacheKey(ctorRef.DeclaringType);
         var typeCpp = GetMangledTypeNameForRef(ctorRef.DeclaringType);
         var tmp = $"__t{tempCounter++}";
@@ -343,6 +363,7 @@ public partial class IRBuilder
                 "Concat" => "cil2cpp::string_concat",
                 "IsNullOrEmpty" => "cil2cpp::string_is_null_or_empty",
                 "get_Length" => "cil2cpp::string_length",
+                "Substring" => "cil2cpp::string_substring",
                 _ => null
             };
         }

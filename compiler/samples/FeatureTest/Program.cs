@@ -529,6 +529,25 @@ public struct BigStruct
     public long Z;
 }
 
+// Helper class for Index/Range tests with GetOffset usage
+public class IndexRangeHelper
+{
+    // Exercises explicit Index constructor and GetOffset
+    public static int GetFromEnd(int[] arr, int fromEndValue)
+    {
+        var idx = new Index(fromEndValue, true);
+        int offset = idx.GetOffset(arr.Length);
+        return arr[offset];
+    }
+
+    // Exercises Range.GetOffsetAndLength
+    public static int SliceLength(int totalLength, Range range)
+    {
+        var (offset, length) = range.GetOffsetAndLength(totalLength);
+        return length;
+    }
+}
+
 public class Program
 {
     // Static field (exercises ldsfld/stsfld)
@@ -621,6 +640,11 @@ public class Program
         TestUnsignedComparison();
         TestFloatNaNComparison();
         TestAsync();
+        TestIndexFromEnd();
+        TestRangeSlice();
+        TestStringSlice();
+        TestIndexProperties();
+        TestRangeGetOffsetAndLength();
     }
 
     static void TestArithmetic()
@@ -1772,5 +1796,90 @@ public class Program
     {
         var task = ComputeAsync(21);
         Console.WriteLine(task.Result);  // 42
+    }
+
+    // Exercises arr[^1] — Roslyn inlines to arr[arr.Length - 1] (no System.Index)
+    // Also exercises explicit Index constructor and GetOffset
+    static void TestIndexFromEnd()
+    {
+        int[] arr = new int[] { 10, 20, 30, 40, 50 };
+
+        // arr[^1] — Roslyn optimizes: arr[arr.Length - 1]
+        int last = arr[^1];
+        Console.WriteLine(last);  // 50
+
+        // arr[^2]
+        int secondLast = arr[^2];
+        Console.WriteLine(secondLast);  // 40
+
+        // Explicit Index construction + GetOffset
+        int val = IndexRangeHelper.GetFromEnd(arr, 3);
+        Console.WriteLine(val);  // 30 (arr[2])
+    }
+
+    // Exercises arr[1..3] — uses RuntimeHelpers.GetSubArray<T>
+    static void TestRangeSlice()
+    {
+        int[] arr = new int[] { 10, 20, 30, 40, 50 };
+
+        // arr[1..3] — slice from index 1 to 3 (exclusive)
+        int[] slice = arr[1..3];
+        Console.WriteLine(slice.Length);  // 2
+        Console.WriteLine(slice[0]);      // 20
+        Console.WriteLine(slice[1]);      // 30
+
+        // arr[..2] — from start to 2
+        int[] first2 = arr[..2];
+        Console.WriteLine(first2.Length);  // 2
+        Console.WriteLine(first2[0]);      // 10
+
+        // arr[3..] — from 3 to end
+        int[] last2 = arr[3..];
+        Console.WriteLine(last2.Length);  // 2
+        Console.WriteLine(last2[0]);      // 40
+    }
+
+    // Exercises string[1..4] — Roslyn compiles to String.Substring(start, length)
+    static void TestStringSlice()
+    {
+        string s = "hello world";
+
+        // s[1..4] → s.Substring(1, 3) = "ell"
+        string sub = s[1..4];
+        Console.WriteLine(sub);  // ell
+
+        // s[6..] → s.Substring(6) or s.Substring(6, 5) = "world"
+        string end = s[6..];
+        Console.WriteLine(end);  // world
+    }
+
+    // Exercises Index.Value and Index.IsFromEnd properties
+    static void TestIndexProperties()
+    {
+        Index fromStart = new Index(3, false);
+        Console.WriteLine(fromStart.Value);      // 3
+        Console.WriteLine(fromStart.IsFromEnd);  // False
+
+        Index fromEnd = new Index(2, true);
+        Console.WriteLine(fromEnd.Value);        // 2
+        Console.WriteLine(fromEnd.IsFromEnd);    // True
+
+        // GetOffset with known length
+        int offset = fromEnd.GetOffset(10);
+        Console.WriteLine(offset);  // 8 (10 - 2)
+    }
+
+    // Exercises Range.GetOffsetAndLength (returns ValueTuple<int,int>)
+    static void TestRangeGetOffsetAndLength()
+    {
+        // 1..^1 on length 5 → (1, 3)
+        Range r = 1..^1;
+        var (startOffset, length) = r.GetOffsetAndLength(5);
+        Console.WriteLine(startOffset);  // 1
+        Console.WriteLine(length);       // 3
+
+        // Helper method that uses Range parameter
+        int len = IndexRangeHelper.SliceLength(10, 2..8);
+        Console.WriteLine(len);  // 6
     }
 }

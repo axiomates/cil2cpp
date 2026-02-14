@@ -408,7 +408,7 @@ void Program_Main() {
 | goto (无条件分支) | ✅ | br / br.s（前向 + 后向跳转） |
 | 比较运算 (==, !=, <, >, <=, >=) | ✅ | ceq, cgt, cgt.un, clt, clt.un + 有符号/无符号条件分支 |
 | switch (IL switch 表) | ✅ | 编译为 C++ switch/goto 跳转表 |
-| 模式匹配 (switch 表达式) | ⚠️ | C# 编译器将简单模式编译为 if/switch，CIL2CPP 可处理；复杂模式可能失败 |
+| 模式匹配 (switch 表达式) | ✅ | Roslyn 将所有模式编译为标准 IL（isinst/ceq/switch/分支链），CIL2CPP 全部支持；字符串模式需 `String.op_Equality` BCL 映射 |
 | Range / Index (..) | ❌ | |
 
 ### 算术与位运算
@@ -538,7 +538,7 @@ void Program_Main() {
 | 泛型约束不验证 | `where T : IComparable` 等泛型约束在编译期不验证。不满足约束的代码可以编译，但运行时可能产生未定义行为 |
 | 未识别的 IL 指令 | 遇到未处理的 IL 操作码时生成 `/* WARNING: unsupported opcode */` 注释占位符，不会报错。可能导致运行时行为不正确 |
 | 字符串方法有限 | 单程序集模式仅支持 `Concat`、`IsNullOrEmpty`、`Length`、`Contains`、`Substring`、`Replace`、`ToUpper`、`ToLower` 等少量方法。`string.Format`、`string.Join`、插值字符串（非 Concat 编译形式）等不支持 |
-| 模式匹配有限 | C# 编译器将简单模式（常量、类型）编译为 if/switch，CIL2CPP 可处理。复杂模式（列表模式、属性模式嵌套）可能生成不支持的 IL 序列 |
+| 字符串模式匹配 | 模式匹配 IL 层面全部支持（Roslyn 编译为 isinst/ceq/switch/分支链）。但字符串 `switch` / `is "literal"` 需要 `String.op_Equality` BCL 映射（单程序集模式未映射） |
 | `using` 语句 | try/finally 结构已支持，但需要 `IDisposable` 接口在运行时可解析。单程序集模式下缺少 BCL 接口定义 |
 
 ### AOT 架构根本限制
