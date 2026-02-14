@@ -218,3 +218,237 @@ TEST_F(ExceptionTest, ThrownException_HasStackTrace) {
 
     g_exception_context = ctx.previous;
 }
+
+// ===== Exception message field =====
+
+TEST_F(ExceptionTest, NullReferenceException_HasMessage) {
+    ExceptionContext ctx;
+    ctx.previous = g_exception_context;
+    ctx.current_exception = nullptr;
+    ctx.state = 0;
+    g_exception_context = &ctx;
+
+    if (setjmp(ctx.jump_buffer) == 0) {
+        throw_null_reference();
+    } else {
+        ASSERT_NE(ctx.current_exception, nullptr);
+        EXPECT_NE(ctx.current_exception->message, nullptr);
+    }
+
+    g_exception_context = ctx.previous;
+}
+
+TEST_F(ExceptionTest, IndexOutOfRangeException_HasMessage) {
+    ExceptionContext ctx;
+    ctx.previous = g_exception_context;
+    ctx.current_exception = nullptr;
+    ctx.state = 0;
+    g_exception_context = &ctx;
+
+    if (setjmp(ctx.jump_buffer) == 0) {
+        throw_index_out_of_range();
+    } else {
+        ASSERT_NE(ctx.current_exception, nullptr);
+        EXPECT_NE(ctx.current_exception->message, nullptr);
+    }
+
+    g_exception_context = ctx.previous;
+}
+
+TEST_F(ExceptionTest, Exception_InnerException_IsNull) {
+    ExceptionContext ctx;
+    ctx.previous = g_exception_context;
+    ctx.current_exception = nullptr;
+    ctx.state = 0;
+    g_exception_context = &ctx;
+
+    if (setjmp(ctx.jump_buffer) == 0) {
+        throw_null_reference();
+    } else {
+        ASSERT_NE(ctx.current_exception, nullptr);
+        // Default inner_exception should be null
+        EXPECT_EQ(ctx.current_exception->inner_exception, nullptr);
+    }
+
+    g_exception_context = ctx.previous;
+}
+
+// ===== CIL2CPP_FINALLY =====
+
+TEST_F(ExceptionTest, TryFinally_NormalFlow_FinallyRuns) {
+    bool try_executed = false;
+    bool finally_ran = false;
+
+    CIL2CPP_TRY
+        try_executed = true;
+    CIL2CPP_FINALLY
+        finally_ran = true;
+    CIL2CPP_END_TRY
+
+    EXPECT_TRUE(try_executed);
+    EXPECT_TRUE(finally_ran);
+}
+
+TEST_F(ExceptionTest, TryFinally_WithException_FinallyRuns) {
+    bool finally_ran = false;
+    bool outer_caught = false;
+
+    // Outer handler catches the propagated exception from inner try-finally
+    CIL2CPP_TRY
+        CIL2CPP_TRY
+            throw_null_reference();
+        CIL2CPP_FINALLY
+            finally_ran = true;
+        CIL2CPP_END_TRY
+    CIL2CPP_CATCH_ALL
+        outer_caught = true;
+    CIL2CPP_END_TRY
+
+    EXPECT_TRUE(finally_ran);
+    EXPECT_TRUE(outer_caught);
+}
+
+TEST_F(ExceptionTest, TryCatchFinally_AllRun) {
+    bool caught = false;
+    bool finally_ran = false;
+
+    CIL2CPP_TRY
+        throw_null_reference();
+    CIL2CPP_CATCH_ALL
+        caught = true;
+    CIL2CPP_FINALLY
+        finally_ran = true;
+    CIL2CPP_END_TRY
+
+    EXPECT_TRUE(caught);
+    EXPECT_TRUE(finally_ran);
+}
+
+TEST_F(ExceptionTest, TryCatchFinally_NoException_FinallyStillRuns) {
+    bool caught = false;
+    bool finally_ran = false;
+
+    CIL2CPP_TRY
+        // no exception
+    CIL2CPP_CATCH_ALL
+        caught = true;
+    CIL2CPP_FINALLY
+        finally_ran = true;
+    CIL2CPP_END_TRY
+
+    EXPECT_FALSE(caught);
+    EXPECT_TRUE(finally_ran);
+}
+
+// ===== CIL2CPP_RETHROW =====
+
+TEST_F(ExceptionTest, Rethrow_CaughtByOuterHandler) {
+    bool inner_caught = false;
+    bool outer_caught = false;
+
+    CIL2CPP_TRY
+        CIL2CPP_TRY
+            throw_null_reference();
+        CIL2CPP_CATCH_ALL
+            inner_caught = true;
+            CIL2CPP_RETHROW;
+        CIL2CPP_END_TRY
+    CIL2CPP_CATCH_ALL
+        outer_caught = true;
+    CIL2CPP_END_TRY
+
+    EXPECT_TRUE(inner_caught);
+    EXPECT_TRUE(outer_caught);
+}
+
+TEST_F(ExceptionTest, Rethrow_PreservesException) {
+    Exception* inner_ex = nullptr;
+    Exception* outer_ex = nullptr;
+
+    CIL2CPP_TRY
+        CIL2CPP_TRY
+            throw_null_reference();
+        CIL2CPP_CATCH_ALL
+            inner_ex = get_current_exception();
+            CIL2CPP_RETHROW;
+        CIL2CPP_END_TRY
+    CIL2CPP_CATCH_ALL
+        outer_ex = get_current_exception();
+    CIL2CPP_END_TRY
+
+    ASSERT_NE(inner_ex, nullptr);
+    ASSERT_NE(outer_ex, nullptr);
+    EXPECT_EQ(inner_ex, outer_ex);  // Same exception object
+}
+
+// ===== throw_exception with custom exception =====
+
+TEST_F(ExceptionTest, ThrowException_CustomException) {
+    // Manually create an exception
+    static TypeInfo CustomExType = {
+        .name = "CustomException",
+        .namespace_name = "Test",
+        .full_name = "Test.CustomException",
+        .base_type = nullptr,
+        .interfaces = nullptr,
+        .interface_count = 0,
+        .instance_size = sizeof(Exception),
+        .element_size = 0,
+        .flags = TypeFlags::None,
+        .vtable = nullptr,
+        .fields = nullptr,
+        .field_count = 0,
+        .methods = nullptr,
+        .method_count = 0,
+        .default_ctor = nullptr,
+        .finalizer = nullptr,
+        .interface_vtables = nullptr,
+        .interface_vtable_count = 0,
+    };
+
+    Exception* ex = static_cast<Exception*>(gc::alloc(sizeof(Exception), &CustomExType));
+    ex->message = string_create_utf8("Custom error");
+    ex->inner_exception = nullptr;
+    ex->stack_trace = nullptr;
+
+    CIL2CPP_TRY
+        throw_exception(ex);
+        FAIL() << "Should have thrown";
+    CIL2CPP_CATCH_ALL
+        Exception* caught = get_current_exception();
+        ASSERT_NE(caught, nullptr);
+        EXPECT_EQ(caught, ex);
+        EXPECT_EQ(caught->__type_info, &CustomExType);
+    CIL2CPP_END_TRY
+}
+
+// ===== Nested try-catch: inner doesn't catch, outer does =====
+
+TEST_F(ExceptionTest, NestedTryCatch_InnerDoesNotCatch_OuterCatches) {
+    bool outer_caught = false;
+
+    CIL2CPP_TRY
+        CIL2CPP_TRY
+            throw_null_reference();
+        CIL2CPP_FINALLY
+            // finally runs but doesn't catch
+        CIL2CPP_END_TRY
+    CIL2CPP_CATCH_ALL
+        outer_caught = true;
+    CIL2CPP_END_TRY
+
+    EXPECT_TRUE(outer_caught);
+}
+
+// ===== Exception context state =====
+
+TEST_F(ExceptionTest, ExceptionContext_State0InTry) {
+    CIL2CPP_TRY
+        // In try block, state should be 0 (set by macro)
+        // We can't directly access __exc_ctx here due to macro scoping,
+        // but we verify the context is properly set up
+        EXPECT_NE(g_exception_context, nullptr);
+    CIL2CPP_CATCH_ALL
+        FAIL() << "Should not catch";
+    CIL2CPP_END_TRY
+}

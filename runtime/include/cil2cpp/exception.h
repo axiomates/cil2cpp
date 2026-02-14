@@ -110,6 +110,7 @@ inline void null_check(void* ptr) {
 #define CIL2CPP_TRY \
     { \
         cil2cpp::ExceptionContext __exc_ctx; \
+        bool __exc_caught = false; \
         __exc_ctx.previous = cil2cpp::g_exception_context; \
         __exc_ctx.current_exception = nullptr; \
         __exc_ctx.state = 0; \
@@ -118,13 +119,15 @@ inline void null_check(void* ptr) {
 
 #define CIL2CPP_CATCH_ALL \
         } else { \
-            __exc_ctx.state = 1;
+            __exc_ctx.state = 1; \
+            __exc_caught = true;
 
 #define CIL2CPP_CATCH(ExceptionType) \
         } else if (cil2cpp::object_is_instance_of( \
             reinterpret_cast<cil2cpp::Object*>(__exc_ctx.current_exception), \
             &ExceptionType##_TypeInfo)) { \
-            __exc_ctx.state = 1;
+            __exc_ctx.state = 1; \
+            __exc_caught = true;
 
 #define CIL2CPP_FINALLY \
         } \
@@ -133,8 +136,18 @@ inline void null_check(void* ptr) {
 
 #define CIL2CPP_END_TRY \
         } \
-        cil2cpp::g_exception_context = __exc_ctx.previous; \
+        { \
+            cil2cpp::Exception* __pending = __exc_ctx.current_exception; \
+            cil2cpp::g_exception_context = __exc_ctx.previous; \
+            if (__pending && !__exc_caught) { \
+                cil2cpp::throw_exception(__pending); \
+            } \
+        } \
     }
 
 #define CIL2CPP_RETHROW \
-    cil2cpp::throw_exception(cil2cpp::g_exception_context->current_exception)
+    do { \
+        cil2cpp::Exception* __rethrow_ex = cil2cpp::g_exception_context->current_exception; \
+        cil2cpp::g_exception_context = cil2cpp::g_exception_context->previous; \
+        cil2cpp::throw_exception(__rethrow_ex); \
+    } while(0)

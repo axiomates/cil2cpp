@@ -243,3 +243,155 @@ TEST_F(StringTest, Length_NonNull) {
 TEST_F(StringTest, Length_Null_ReturnsZero) {
     EXPECT_EQ(string_length(nullptr), 0);
 }
+
+// ===== String::get_length() member function =====
+
+TEST_F(StringTest, MemberGetLength_ReturnsLength) {
+    String* str = string_create_utf8("Hello");
+    EXPECT_EQ(str->get_length(), 5);
+}
+
+TEST_F(StringTest, MemberGetLength_Empty) {
+    String* str = string_create_utf8("");
+    EXPECT_EQ(str->get_length(), 0);
+}
+
+// ===== String::get_char() member function =====
+
+TEST_F(StringTest, MemberGetChar_ReturnsCorrectChar) {
+    String* str = string_create_utf8("ABC");
+    EXPECT_EQ(str->get_char(0), u'A');
+    EXPECT_EQ(str->get_char(1), u'B');
+    EXPECT_EQ(str->get_char(2), u'C');
+}
+
+// ===== UTF-8 3-byte characters (CJK) =====
+
+TEST_F(StringTest, CreateUtf8_ThreeByte_CJK) {
+    // UTF-8 for U+4F60 is E4 BD A0 (3 bytes)
+    String* str = string_create_utf8("\xE4\xBD\xA0");
+    ASSERT_NE(str, nullptr);
+    EXPECT_EQ(str->length, 1);
+    EXPECT_EQ(str->chars[0], 0x4F60);
+}
+
+TEST_F(StringTest, CreateUtf8_ThreeByte_Mixed) {
+    // "A" + 3-byte CJK + "B"
+    String* str = string_create_utf8("A\xE4\xBD\xA0\x42");
+    ASSERT_NE(str, nullptr);
+    EXPECT_EQ(str->length, 3);
+    EXPECT_EQ(str->chars[0], u'A');
+    EXPECT_EQ(str->chars[1], 0x4F60);
+    EXPECT_EQ(str->chars[2], u'B');
+}
+
+// ===== UTF-8 4-byte characters (emoji/supplementary plane) =====
+
+TEST_F(StringTest, CreateUtf8_FourByte_Emoji) {
+    // UTF-8 for U+1F600 is F0 9F 98 80 (4 bytes)
+    // In UTF-16 this becomes a surrogate pair: D83D DE00
+    String* str = string_create_utf8("\xF0\x9F\x98\x80");
+    ASSERT_NE(str, nullptr);
+    EXPECT_EQ(str->length, 2);  // Surrogate pair = 2 UTF-16 code units
+    EXPECT_EQ(str->chars[0], 0xD83D);  // High surrogate
+    EXPECT_EQ(str->chars[1], 0xDE00);  // Low surrogate
+}
+
+// ===== string_concat edge cases =====
+
+TEST_F(StringTest, Concat_BothEmpty) {
+    String* a = string_create_utf8("");
+    String* b = string_create_utf8("");
+    String* result = string_concat(a, b);
+    ASSERT_NE(result, nullptr);
+    EXPECT_EQ(result->length, 0);
+}
+
+TEST_F(StringTest, Concat_EmptyAndNonEmpty) {
+    String* a = string_create_utf8("");
+    String* b = string_create_utf8("test");
+    String* result = string_concat(a, b);
+    ASSERT_NE(result, nullptr);
+    EXPECT_EQ(result->length, 4);
+}
+
+TEST_F(StringTest, Concat_BothNull_ReturnsNull) {
+    EXPECT_EQ(string_concat(nullptr, nullptr), nullptr);
+}
+
+// ===== string_substring edge cases =====
+
+TEST_F(StringTest, Substring_FromStart) {
+    String* str = string_create_utf8("Hello, World!");
+    String* sub = string_substring(str, 0, 5);
+    ASSERT_NE(sub, nullptr);
+
+    char* utf8 = string_to_utf8(sub);
+    EXPECT_STREQ(utf8, "Hello");
+    std::free(utf8);
+}
+
+TEST_F(StringTest, Substring_EntireString) {
+    String* str = string_create_utf8("Hi");
+    String* sub = string_substring(str, 0, 2);
+    ASSERT_NE(sub, nullptr);
+    EXPECT_EQ(sub->length, 2);
+}
+
+TEST_F(StringTest, Substring_ZeroLength) {
+    String* str = string_create_utf8("Hi");
+    String* sub = string_substring(str, 0, 0);
+    ASSERT_NE(sub, nullptr);
+    EXPECT_EQ(sub->length, 0);
+}
+
+TEST_F(StringTest, Substring_NegativeLength_ReturnsNull) {
+    String* str = string_create_utf8("Hi");
+    EXPECT_EQ(string_substring(str, 0, -1), nullptr);
+}
+
+// ===== string_get_hash_code edge cases =====
+
+TEST_F(StringTest, HashCode_EmptyString_NonZero) {
+    String* str = string_create_utf8("");
+    // Empty string hash should be the FNV1a offset basis, which is non-zero
+    EXPECT_NE(string_get_hash_code(str), 0);
+}
+
+// ===== string_to_utf8 with multibyte =====
+
+TEST_F(StringTest, ToUtf8_RoundTrip_MultiByte) {
+    const char* original = "caf\xC3\xA9";  // 2-byte UTF-8
+    String* str = string_create_utf8(original);
+    char* result = string_to_utf8(str);
+    ASSERT_NE(result, nullptr);
+    EXPECT_STREQ(result, original);
+    std::free(result);
+}
+
+TEST_F(StringTest, ToUtf8_RoundTrip_ThreeByte) {
+    const char* original = "\xE4\xBD\xA0\xE5\xA5\xBD";  // 3-byte UTF-8
+    String* str = string_create_utf8(original);
+    char* result = string_to_utf8(str);
+    ASSERT_NE(result, nullptr);
+    EXPECT_STREQ(result, original);
+    std::free(result);
+}
+
+// ===== string_literal caching =====
+
+TEST_F(StringTest, Literal_MultipleCalls_StayInterned) {
+    String* a = string_literal("cached_str");
+    String* b = string_literal("cached_str");
+    String* c = string_literal("cached_str");
+    EXPECT_EQ(a, b);
+    EXPECT_EQ(b, c);
+}
+
+// ===== string_equals edge cases =====
+
+TEST_F(StringTest, Equals_EmptyStrings_True) {
+    String* a = string_create_utf8("");
+    String* b = string_create_utf8("");
+    EXPECT_TRUE(string_equals(a, b));
+}

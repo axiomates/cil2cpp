@@ -127,3 +127,90 @@ TEST_F(DelegateTest, Remove_NullValue_ReturnsSource) {
     auto* result = delegate_remove((Object*)del, nullptr);
     EXPECT_EQ(result, (Object*)del);
 }
+
+// ===== Invoke through function pointer =====
+
+static int32_t test_static_sub(int32_t a, int32_t b) {
+    return a - b;
+}
+
+TEST_F(DelegateTest, Invoke_DifferentFunctions) {
+    auto* addDel = delegate_create(&DelegateTypeInfo, nullptr, (void*)test_static_add);
+    auto* mulDel = delegate_create(&DelegateTypeInfo, nullptr, (void*)test_static_mul);
+    auto* subDel = delegate_create(&DelegateTypeInfo, nullptr, (void*)test_static_sub);
+
+    auto addFn = (int32_t(*)(int32_t, int32_t))addDel->method_ptr;
+    auto mulFn = (int32_t(*)(int32_t, int32_t))mulDel->method_ptr;
+    auto subFn = (int32_t(*)(int32_t, int32_t))subDel->method_ptr;
+
+    EXPECT_EQ(addFn(10, 3), 13);
+    EXPECT_EQ(mulFn(10, 3), 30);
+    EXPECT_EQ(subFn(10, 3), 7);
+}
+
+// ===== Multiple sequential creates =====
+
+TEST_F(DelegateTest, Create_Multiple_AllDistinct) {
+    auto* d1 = delegate_create(&DelegateTypeInfo, nullptr, (void*)test_static_add);
+    auto* d2 = delegate_create(&DelegateTypeInfo, nullptr, (void*)test_static_add);
+    auto* d3 = delegate_create(&DelegateTypeInfo, nullptr, (void*)test_static_add);
+
+    EXPECT_NE(d1, d2);
+    EXPECT_NE(d2, d3);
+    EXPECT_NE(d1, d3);
+}
+
+// ===== Combine null+null =====
+
+TEST_F(DelegateTest, Combine_BothNull_ReturnsNull) {
+    auto* result = delegate_combine(nullptr, nullptr);
+    EXPECT_EQ(result, nullptr);
+}
+
+// ===== Remove both null =====
+
+TEST_F(DelegateTest, Remove_BothNull_ReturnsNull) {
+    auto* result = delegate_remove(nullptr, nullptr);
+    EXPECT_EQ(result, nullptr);
+}
+
+// ===== Instance delegate with target =====
+
+static TypeInfo TargetTypeInfo = {
+    .name = "Target",
+    .namespace_name = "Tests",
+    .full_name = "Tests.Target",
+    .base_type = nullptr,
+    .interfaces = nullptr,
+    .interface_count = 0,
+    .instance_size = sizeof(Object) + 8,
+    .element_size = 0,
+    .flags = TypeFlags::None,
+    .vtable = nullptr,
+    .fields = nullptr,
+    .field_count = 0,
+    .methods = nullptr,
+    .method_count = 0,
+    .default_ctor = nullptr,
+    .finalizer = nullptr,
+    .interface_vtables = nullptr,
+    .interface_vtable_count = 0,
+};
+
+TEST_F(DelegateTest, InstanceDelegate_TargetPreserved) {
+    auto* target = object_alloc(&TargetTypeInfo);
+    auto* del = delegate_create(&DelegateTypeInfo, target, (void*)test_static_add);
+
+    EXPECT_EQ(del->target, target);
+    EXPECT_NE(del->target, nullptr);
+}
+
+TEST_F(DelegateTest, Remove_SameMethodPtr_Matches) {
+    auto* target = object_alloc(&TargetTypeInfo);
+    auto* del1 = delegate_create(&DelegateTypeInfo, target, (void*)test_static_add);
+    auto* del2 = delegate_create(&DelegateTypeInfo, target, (void*)test_static_add);
+
+    // Same method_ptr → match → remove returns null
+    auto* result = delegate_remove((Object*)del1, (Object*)del2);
+    EXPECT_EQ(result, nullptr);
+}

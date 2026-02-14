@@ -230,3 +230,82 @@ TEST_F(ObjectTest, ToString_Null_ReturnsNullString) {
     EXPECT_STREQ(utf8, "null");
     std::free(utf8);
 }
+
+// ===== System_Object__ctor =====
+
+// Defined in runtime.cpp outside cil2cpp namespace
+extern void System_Object__ctor(void* obj);
+
+TEST_F(ObjectTest, ObjectCtor_DoesNotCrash) {
+    Object* obj = object_alloc(&TestObjType);
+    ASSERT_NE(obj, nullptr);
+    // Should be a no-op but must not crash
+    System_Object__ctor(obj);
+    SUCCEED();
+}
+
+TEST_F(ObjectTest, ObjectCtor_NullDoesNotCrash) {
+    System_Object__ctor(nullptr);
+    SUCCEED();
+}
+
+// ===== object_equals edge cases =====
+
+TEST_F(ObjectTest, Equals_NullNull_True) {
+    EXPECT_TRUE(object_equals(nullptr, nullptr));
+}
+
+TEST_F(ObjectTest, Equals_NullAndNonNull_False) {
+    Object* obj = object_alloc(&TestObjType);
+    EXPECT_FALSE(object_equals(nullptr, obj));
+    EXPECT_FALSE(object_equals(obj, nullptr));
+}
+
+// ===== object_get_hash_code =====
+
+TEST_F(ObjectTest, GetHashCode_SameObject_SameHash) {
+    Object* obj = object_alloc(&TestObjType);
+    EXPECT_EQ(object_get_hash_code(obj), object_get_hash_code(obj));
+}
+
+TEST_F(ObjectTest, GetHashCode_Null_ReturnsZero) {
+    EXPECT_EQ(object_get_hash_code(nullptr), 0);
+}
+
+// ===== object_is_instance_of null type =====
+
+TEST_F(ObjectTest, IsInstanceOf_NullType_False) {
+    Object* obj = object_alloc(&TestObjType);
+    EXPECT_FALSE(object_is_instance_of(obj, nullptr));
+}
+
+TEST_F(ObjectTest, IsInstanceOf_BothNull_False) {
+    EXPECT_FALSE(object_is_instance_of(nullptr, nullptr));
+}
+
+// ===== object_as with null =====
+
+TEST_F(ObjectTest, As_NullObject_ReturnsNull) {
+    Object* result = object_as(nullptr, &TestObjType);
+    EXPECT_EQ(result, nullptr);
+}
+
+// ===== object_cast with null =====
+
+TEST_F(ObjectTest, Cast_NullObject_Throws) {
+    ExceptionContext ctx;
+    ctx.previous = g_exception_context;
+    ctx.current_exception = nullptr;
+    ctx.state = 0;
+    g_exception_context = &ctx;
+
+    if (setjmp(ctx.jump_buffer) == 0) {
+        object_cast(nullptr, &TestObjType);
+        g_exception_context = ctx.previous;
+        FAIL() << "Expected InvalidCastException";
+    } else {
+        g_exception_context = ctx.previous;
+        ASSERT_NE(ctx.current_exception, nullptr);
+        SUCCEED();
+    }
+}

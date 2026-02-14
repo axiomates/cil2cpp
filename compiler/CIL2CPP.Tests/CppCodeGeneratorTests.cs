@@ -1081,4 +1081,305 @@ public class CppCodeGeneratorTests
         Assert.DoesNotContain("MathOp_vtable_methods", output.SourceFile.Content);
         Assert.DoesNotContain("MathOp_VTable", output.SourceFile.Content);
     }
+
+    // ===== Phase 3: Generic instance type code generation =====
+
+    private static IRModule CreateModuleWithGenericInstance()
+    {
+        var module = new IRModule { Name = "Test" };
+        var type = new IRType
+        {
+            ILFullName = "Wrapper`1<System.Int32>",
+            CppName = "Wrapper_1_System_Int32",
+            Name = "Wrapper_1_System_Int32",
+            Namespace = "",
+            IsGenericInstance = true,
+            IsValueType = false
+        };
+        type.GenericArguments.Add("System.Int32");
+        type.Fields.Add(new IRField
+        {
+            Name = "_value",
+            CppName = "f__value",
+            FieldTypeName = "System.Int32",
+            IsStatic = false
+        });
+
+        var getMethod = new IRMethod
+        {
+            Name = "GetValue",
+            CppName = "Wrapper_1_System_Int32_GetValue",
+            DeclaringType = type,
+            IsStatic = false,
+            ReturnTypeCpp = "int32_t"
+        };
+        var bb = new IRBasicBlock { Id = 0 };
+        bb.Instructions.Add(new IRFieldAccess
+        {
+            ObjectExpr = "__this",
+            FieldCppName = "f__value",
+            ResultVar = "__t0",
+            IsStore = false
+        });
+        bb.Instructions.Add(new IRReturn { Value = "__t0" });
+        getMethod.BasicBlocks.Add(bb);
+        type.Methods.Add(getMethod);
+        module.Types.Add(type);
+        return module;
+    }
+
+    [Fact]
+    public void Generate_GenericInstance_EmitsStruct()
+    {
+        var module = CreateModuleWithGenericInstance();
+        var gen = new CppCodeGenerator(module);
+        var output = gen.Generate();
+
+        Assert.Contains("struct Wrapper_1_System_Int32", output.HeaderFile.Content);
+    }
+
+    [Fact]
+    public void Generate_GenericInstance_HasField()
+    {
+        var module = CreateModuleWithGenericInstance();
+        var gen = new CppCodeGenerator(module);
+        var output = gen.Generate();
+
+        Assert.Contains("f__value", output.HeaderFile.Content);
+    }
+
+    [Fact]
+    public void Generate_GenericInstance_HasTypeInfo()
+    {
+        var module = CreateModuleWithGenericInstance();
+        var gen = new CppCodeGenerator(module);
+        var output = gen.Generate();
+
+        Assert.Contains("extern cil2cpp::TypeInfo Wrapper_1_System_Int32_TypeInfo;", output.HeaderFile.Content);
+        Assert.Contains("cil2cpp::TypeInfo Wrapper_1_System_Int32_TypeInfo = {", output.SourceFile.Content);
+    }
+
+    [Fact]
+    public void Generate_GenericInstance_HasMethod()
+    {
+        var module = CreateModuleWithGenericInstance();
+        var gen = new CppCodeGenerator(module);
+        var output = gen.Generate();
+
+        Assert.Contains("Wrapper_1_System_Int32_GetValue", output.SourceFile.Content);
+    }
+
+    [Fact]
+    public void Generate_GenericInstance_HasForwardDecl()
+    {
+        var module = CreateModuleWithGenericInstance();
+        var gen = new CppCodeGenerator(module);
+        var output = gen.Generate();
+
+        Assert.Contains("struct Wrapper_1_System_Int32;", output.HeaderFile.Content);
+    }
+
+    // ===== Empty module edge case =====
+
+    [Fact]
+    public void Generate_EmptyModule_NoTypes()
+    {
+        var module = new IRModule { Name = "Empty" };
+        var gen = new CppCodeGenerator(module);
+        var output = gen.Generate();
+
+        Assert.NotNull(output.HeaderFile);
+        Assert.NotNull(output.SourceFile);
+        Assert.NotNull(output.CMakeFile);
+    }
+
+    [Fact]
+    public void Generate_EmptyModule_NoCrash()
+    {
+        var module = new IRModule { Name = "Empty" };
+        var gen = new CppCodeGenerator(module);
+        var exception = Record.Exception(() => gen.Generate());
+        Assert.Null(exception);
+    }
+
+    // ===== Multiple delegates =====
+
+    [Fact]
+    public void Generate_MultipleDelegates_AllEmitUsingAlias()
+    {
+        var module = new IRModule { Name = "Test" };
+        module.Types.Add(new IRType
+        {
+            ILFullName = "ActionInt",
+            CppName = "ActionInt",
+            Name = "ActionInt",
+            Namespace = "",
+            IsDelegate = true,
+            IsSealed = true
+        });
+        module.Types.Add(new IRType
+        {
+            ILFullName = "FuncBool",
+            CppName = "FuncBool",
+            Name = "FuncBool",
+            Namespace = "",
+            IsDelegate = true,
+            IsSealed = true
+        });
+        var gen = new CppCodeGenerator(module);
+        var output = gen.Generate();
+
+        Assert.Contains("using ActionInt = cil2cpp::Delegate;", output.HeaderFile.Content);
+        Assert.Contains("using FuncBool = cil2cpp::Delegate;", output.HeaderFile.Content);
+    }
+
+    // ===== Delegate with TypeInfo flags =====
+
+    [Fact]
+    public void Generate_DelegateType_TypeInfoHasSealedFlag()
+    {
+        var module = CreateModuleWithDelegate();
+        var gen = new CppCodeGenerator(module);
+        var output = gen.Generate();
+
+        // Delegate types have IsSealed = true, so the TypeInfo should have Sealed flag
+        Assert.Contains("cil2cpp::TypeFlags::Sealed", output.SourceFile.Content);
+    }
+
+    // ===== Type with HasCctor =====
+
+    [Fact]
+    public void Generate_TypeWithCctor_EmitsEnsureCctor()
+    {
+        var module = new IRModule { Name = "Test" };
+        var type = new IRType
+        {
+            ILFullName = "MyClass",
+            CppName = "MyClass",
+            Name = "MyClass",
+            Namespace = "",
+            HasCctor = true
+        };
+        type.StaticFields.Add(new IRField
+        {
+            Name = "Value",
+            CppName = "f_Value",
+            FieldTypeName = "System.Int32",
+            IsStatic = true
+        });
+        // Add a static constructor method
+        var cctor = new IRMethod
+        {
+            Name = ".cctor",
+            CppName = "MyClass__cctor",
+            DeclaringType = type,
+            IsStatic = true,
+            IsStaticConstructor = true,
+            ReturnTypeCpp = "void"
+        };
+        var bb = new IRBasicBlock { Id = 0 };
+        bb.Instructions.Add(new IRStaticFieldAccess
+        {
+            TypeCppName = "MyClass",
+            FieldCppName = "f_Value",
+            IsStore = true,
+            StoreValue = "42"
+        });
+        bb.Instructions.Add(new IRReturn());
+        cctor.BasicBlocks.Add(bb);
+        type.Methods.Add(cctor);
+        module.Types.Add(type);
+
+        var gen = new CppCodeGenerator(module);
+        var output = gen.Generate();
+
+        Assert.Contains("ensure_cctor", output.SourceFile.Content);
+    }
+
+    // ===== Enum type with multiple constants =====
+
+    [Fact]
+    public void Generate_EnumType_MultipleConstants_AllPresent()
+    {
+        var module = new IRModule { Name = "Test" };
+        var type = new IRType
+        {
+            ILFullName = "Color",
+            CppName = "Color",
+            Name = "Color",
+            Namespace = "",
+            IsEnum = true,
+            IsValueType = true,
+            EnumUnderlyingType = "System.Int32"
+        };
+        type.StaticFields.Add(new IRField
+        {
+            Name = "Red",
+            CppName = "f_Red",
+            FieldTypeName = "Color",
+            IsStatic = true,
+            ConstantValue = 0
+        });
+        type.StaticFields.Add(new IRField
+        {
+            Name = "Green",
+            CppName = "f_Green",
+            FieldTypeName = "Color",
+            IsStatic = true,
+            ConstantValue = 1
+        });
+        type.StaticFields.Add(new IRField
+        {
+            Name = "Blue",
+            CppName = "f_Blue",
+            FieldTypeName = "Color",
+            IsStatic = true,
+            ConstantValue = 2
+        });
+        module.Types.Add(type);
+
+        var gen = new CppCodeGenerator(module);
+        var output = gen.Generate();
+
+        Assert.Contains("Color", output.HeaderFile.Content);
+        Assert.Contains("Red", output.HeaderFile.Content);
+        Assert.Contains("Green", output.HeaderFile.Content);
+        Assert.Contains("Blue", output.HeaderFile.Content);
+    }
+
+    // ===== Type with finalizer =====
+
+    [Fact]
+    public void Generate_TypeWithFinalizer_EmitsFinalizerWrapper()
+    {
+        var module = new IRModule { Name = "Test" };
+        var type = new IRType
+        {
+            ILFullName = "MyResource",
+            CppName = "MyResource",
+            Name = "MyResource",
+            Namespace = ""
+        };
+        var finMethod = new IRMethod
+        {
+            Name = "Finalize",
+            CppName = "MyResource_Finalize",
+            DeclaringType = type,
+            IsStatic = false,
+            IsFinalizer = true,
+            ReturnTypeCpp = "void"
+        };
+        var bb = new IRBasicBlock { Id = 0 };
+        bb.Instructions.Add(new IRReturn());
+        finMethod.BasicBlocks.Add(bb);
+        type.Methods.Add(finMethod);
+        type.Finalizer = finMethod;
+        module.Types.Add(type);
+
+        var gen = new CppCodeGenerator(module);
+        var output = gen.Generate();
+
+        Assert.Contains("MyResource_Finalize", output.SourceFile.Content);
+        Assert.Contains("finalizer", output.SourceFile.Content);
+    }
 }

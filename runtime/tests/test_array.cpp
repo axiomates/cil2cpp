@@ -198,3 +198,183 @@ TEST_F(ArrayTest, GetElementPtr_ReturnsCorrectOffset) {
     void* elem1 = array_get_element_ptr(arr, 1);
     EXPECT_EQ(elem1, static_cast<char*>(elem0) + sizeof(int32_t));
 }
+
+// ===== Double arrays =====
+
+static TypeInfo DoubleElementType = {
+    .name = "Double",
+    .namespace_name = "System",
+    .full_name = "System.Double",
+    .base_type = nullptr,
+    .interfaces = nullptr,
+    .interface_count = 0,
+    .instance_size = sizeof(double),
+    .element_size = sizeof(double),
+    .flags = TypeFlags::ValueType | TypeFlags::Primitive,
+    .vtable = nullptr,
+    .fields = nullptr,
+    .field_count = 0,
+    .methods = nullptr,
+    .method_count = 0,
+    .default_ctor = nullptr,
+    .finalizer = nullptr,
+    .interface_vtables = nullptr,
+    .interface_vtable_count = 0,
+};
+
+TEST_F(ArrayTest, DoubleArray_SetAndGet) {
+    Array* arr = array_create(&DoubleElementType, 3);
+    ASSERT_NE(arr, nullptr);
+
+    array_set<double>(arr, 0, 1.5);
+    array_set<double>(arr, 1, 2.718);
+    array_set<double>(arr, 2, 3.14);
+
+    EXPECT_DOUBLE_EQ(array_get<double>(arr, 0), 1.5);
+    EXPECT_DOUBLE_EQ(array_get<double>(arr, 1), 2.718);
+    EXPECT_DOUBLE_EQ(array_get<double>(arr, 2), 3.14);
+}
+
+// ===== Boolean arrays =====
+
+static TypeInfo BoolElementType = {
+    .name = "Boolean",
+    .namespace_name = "System",
+    .full_name = "System.Boolean",
+    .base_type = nullptr,
+    .interfaces = nullptr,
+    .interface_count = 0,
+    .instance_size = sizeof(bool),
+    .element_size = sizeof(bool),
+    .flags = TypeFlags::ValueType | TypeFlags::Primitive,
+    .vtable = nullptr,
+    .fields = nullptr,
+    .field_count = 0,
+    .methods = nullptr,
+    .method_count = 0,
+    .default_ctor = nullptr,
+    .finalizer = nullptr,
+    .interface_vtables = nullptr,
+    .interface_vtable_count = 0,
+};
+
+TEST_F(ArrayTest, BoolArray_SetAndGet) {
+    Array* arr = array_create(&BoolElementType, 4);
+    ASSERT_NE(arr, nullptr);
+
+    array_set<bool>(arr, 0, true);
+    array_set<bool>(arr, 1, false);
+    array_set<bool>(arr, 2, true);
+    array_set<bool>(arr, 3, false);
+
+    EXPECT_TRUE(array_get<bool>(arr, 0));
+    EXPECT_FALSE(array_get<bool>(arr, 1));
+    EXPECT_TRUE(array_get<bool>(arr, 2));
+    EXPECT_FALSE(array_get<bool>(arr, 3));
+}
+
+// ===== Int64 arrays =====
+
+static TypeInfo Int64ElementType = {
+    .name = "Int64",
+    .namespace_name = "System",
+    .full_name = "System.Int64",
+    .base_type = nullptr,
+    .interfaces = nullptr,
+    .interface_count = 0,
+    .instance_size = sizeof(int64_t),
+    .element_size = sizeof(int64_t),
+    .flags = TypeFlags::ValueType | TypeFlags::Primitive,
+    .vtable = nullptr,
+    .fields = nullptr,
+    .field_count = 0,
+    .methods = nullptr,
+    .method_count = 0,
+    .default_ctor = nullptr,
+    .finalizer = nullptr,
+    .interface_vtables = nullptr,
+    .interface_vtable_count = 0,
+};
+
+TEST_F(ArrayTest, Int64Array_SetAndGet) {
+    Array* arr = array_create(&Int64ElementType, 2);
+    ASSERT_NE(arr, nullptr);
+
+    array_set<int64_t>(arr, 0, 123456789012345LL);
+    array_set<int64_t>(arr, 1, -999999999999LL);
+
+    EXPECT_EQ(array_get<int64_t>(arr, 0), 123456789012345LL);
+    EXPECT_EQ(array_get<int64_t>(arr, 1), -999999999999LL);
+}
+
+// ===== Reference type (Object*) arrays =====
+
+static TypeInfo ObjectElementType = {
+    .name = "Object",
+    .namespace_name = "System",
+    .full_name = "System.Object",
+    .base_type = nullptr,
+    .interfaces = nullptr,
+    .interface_count = 0,
+    .instance_size = sizeof(Object),
+    .element_size = sizeof(Object*),
+    .flags = TypeFlags::None,
+    .vtable = nullptr,
+    .fields = nullptr,
+    .field_count = 0,
+    .methods = nullptr,
+    .method_count = 0,
+    .default_ctor = nullptr,
+    .finalizer = nullptr,
+    .interface_vtables = nullptr,
+    .interface_vtable_count = 0,
+};
+
+TEST_F(ArrayTest, ObjectArray_SetAndGet) {
+    Array* arr = array_create(&ObjectElementType, 3);
+    ASSERT_NE(arr, nullptr);
+
+    Object* obj1 = object_alloc(&ObjectElementType);
+    Object* obj2 = object_alloc(&ObjectElementType);
+
+    array_set<Object*>(arr, 0, obj1);
+    array_set<Object*>(arr, 1, obj2);
+    array_set<Object*>(arr, 2, nullptr);
+
+    EXPECT_EQ(array_get<Object*>(arr, 0), obj1);
+    EXPECT_EQ(array_get<Object*>(arr, 1), obj2);
+    EXPECT_EQ(array_get<Object*>(arr, 2), nullptr);
+}
+
+TEST_F(ArrayTest, ObjectArray_ZeroInitialized) {
+    Array* arr = array_create(&ObjectElementType, 3);
+    ASSERT_NE(arr, nullptr);
+
+    // Reference type array should be zero-initialized (all nulls)
+    EXPECT_EQ(array_get<Object*>(arr, 0), nullptr);
+    EXPECT_EQ(array_get<Object*>(arr, 1), nullptr);
+    EXPECT_EQ(array_get<Object*>(arr, 2), nullptr);
+}
+
+// ===== Array with single element =====
+
+TEST_F(ArrayTest, SingleElement_SetAndGet) {
+    Array* arr = array_create(&Int32ElementType, 1);
+    ASSERT_NE(arr, nullptr);
+    EXPECT_EQ(arr->length, 1);
+
+    array_set<int32_t>(arr, 0, 42);
+    EXPECT_EQ(array_get<int32_t>(arr, 0), 42);
+}
+
+// ===== Array element_type is set correctly =====
+
+TEST_F(ArrayTest, Create_DifferentTypes_CorrectElementType) {
+    Array* intArr = array_create(&Int32ElementType, 1);
+    Array* dblArr = array_create(&DoubleElementType, 1);
+    Array* objArr = array_create(&ObjectElementType, 1);
+
+    EXPECT_EQ(intArr->element_type, &Int32ElementType);
+    EXPECT_EQ(dblArr->element_type, &DoubleElementType);
+    EXPECT_EQ(objArr->element_type, &ObjectElementType);
+}
