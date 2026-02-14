@@ -410,7 +410,10 @@ public class Program
         TestInitOnlySetter();
         TestCheckedOverflow();
         TestNullable();
+        TestNullableBoxing();
         TestValueTuple();
+        TestValueTupleEquals();
+        TestUnboxAnyRefType();
         TestRecord();
         TestRecordStruct();
         TestAsync();
@@ -1192,6 +1195,24 @@ public class Program
             Console.WriteLine(c.Value);           // 10
     }
 
+    // Exercises Nullable<T> boxing (ECMA-335 III.4.1: box Nullable<T> unwraps)
+    static void TestNullableBoxing()
+    {
+        // Boxing null Nullable<T> should produce null reference
+        int? nullVal = null;
+        object boxedNull = nullVal;
+        Console.WriteLine(boxedNull == null);  // True
+
+        // Boxing non-null Nullable<T> should box the inner T value
+        int? hasVal = 42;
+        object boxedVal = hasVal;
+        Console.WriteLine(boxedVal != null);   // True
+
+        // Unbox back to int (not Nullable<int>) should work
+        int unboxed = (int)boxedVal;
+        Console.WriteLine(unboxed);            // 42
+    }
+
     // Exercises ValueTuple (tuple literal syntax → System.ValueTuple`N)
     static void TestValueTuple()
     {
@@ -1202,6 +1223,33 @@ public class Program
         (int x, int y) = (10, 20);
         Console.WriteLine(x);  // 10
         Console.WriteLine(y);  // 20
+    }
+
+    // Exercises ValueTuple.Equals and GetHashCode (proper field comparison)
+    static void TestValueTupleEquals()
+    {
+        var a = (1, 2);
+        var b = (1, 2);
+        var c = (3, 4);
+
+        // Equals via boxing (ValueTuple<T1,T2>.Equals(object))
+        Console.WriteLine(a.Equals(b));  // True
+        Console.WriteLine(a.Equals(c));  // False
+
+        // GetHashCode: equal tuples should have equal hashes
+        Console.WriteLine(a.GetHashCode() == b.GetHashCode());  // True
+    }
+
+    // Exercises unbox.any on reference types (ECMA-335 III.4.33: castclass semantics)
+    static void TestUnboxAnyRefType()
+    {
+        object obj = "hello";
+        string s = (string)obj;          // unbox.any with reference type → castclass
+        Console.WriteLine(s);            // hello
+
+        object boxedInt = 42;
+        int val = (int)boxedInt;          // unbox.any with value type → unbox
+        Console.WriteLine(val);           // 42
     }
 
     // Exercises record types (compiler-generated ToString, Equals, <Clone>$)

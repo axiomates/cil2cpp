@@ -355,9 +355,9 @@ void Program_Main() {
 | 类型转换 (全部) | ✅ | Conv_I1/I2/I4/I8/U1/U2/U4/U8/I/U/R4/R8/R_Un（共 13 种） |
 | struct (值类型) | ✅ | 结构体定义 + initobj/ldobj/stobj + 装箱/拆箱 + 拷贝语义 + ldind/stind |
 | enum | ✅ | typedef 到底层整数类型 + constexpr 命名常量 + TypeInfo (Enum\|ValueType 标志) |
-| 装箱 / 拆箱 | ✅ | box / unbox / unbox.any → `cil2cpp::box<T>()` / `cil2cpp::unbox<T>()` |
-| Nullable\<T\> | ✅ | BCL 方法拦截（get_HasValue/get_Value/GetValueOrDefault/.ctor），泛型单态化 |
-| Tuple (ValueTuple) | ✅ | BCL 方法拦截（.ctor/字段访问），支持 2-8+ 元素（嵌套 TRest），解构赋值 |
+| 装箱 / 拆箱 | ✅ | box / unbox / unbox.any，值类型→`box<T>()`/`unbox<T>()`，引用类型 unbox.any→castclass，Nullable\<T\> box 拆包 |
+| Nullable\<T\> | ✅ | BCL 方法拦截（get_HasValue/get_Value/GetValueOrDefault/.ctor），box 拆包（HasValue→box\<T\>/null），泛型单态化 |
+| Tuple (ValueTuple) | ✅ | BCL 方法拦截（.ctor/Equals/GetHashCode/ToString/字段访问），支持 1-8+ 元素（嵌套 TRest），解构赋值 |
 | record / record struct | ✅ | 编译器生成方法合成（ToString/Equals/GetHashCode/Clone），`with` 表达式，`==`/`!=`，值类型 record struct |
 
 ### 面向对象
@@ -403,7 +403,7 @@ void Program_Main() {
 | &, \|, ^, <<, >> | ✅ | and, or, xor, shl, shr, shr.un |
 | 一元 - (取负) | ✅ | neg |
 | 一元 ~ (按位取反) | ✅ | not |
-| 溢出检查 (checked) | ⚠️ | 算术运算（add/sub/mul）有溢出检查；类型转换（`Conv_Ovf_*`）**无**溢出检查（静默截断） |
+| 溢出检查 (checked) | ✅ | 算术运算（add/sub/mul）+ 类型转换（全 20 种 `Conv_Ovf_*`）均有溢出检查，抛 OverflowException |
 
 ### 数组
 
@@ -516,7 +516,7 @@ void Program_Main() {
 | 限制 | 说明 |
 |------|------|
 | 异常类型有限 | 仅支持 7 种异常类型（NullReference / IndexOutOfRange / InvalidCast / InvalidOperation / Overflow / Argument / ArgumentNull）。抛出或捕获其他异常类型会导致链接失败 |
-| `checked` 类型转换 | `Conv_Ovf_*` 系列 IL 指令（如 `checked((byte)largeInt)`）实际执行**无溢出检查**的截断转换。仅 `checked` 算术运算（add/sub/mul）有正确的溢出检查 |
+| `System.TypedReference` | `mkrefany`/`refanytype`/`refanyval` 指令不支持（C# 的 `__makeref`/`__reftype`/`__refvalue`）。极少使用，.NET 不鼓励 |
 | 泛型约束不验证 | `where T : IComparable` 等泛型约束在编译期不验证。不满足约束的代码可以编译，但运行时可能产生未定义行为 |
 | 未识别的 IL 指令 | 遇到未处理的 IL 操作码时生成 `/* WARNING: unsupported opcode */` 注释占位符，不会报错。可能导致运行时行为不正确 |
 | 字符串方法有限 | 单程序集模式仅支持 `Concat`、`IsNullOrEmpty`、`Length`、`Contains`、`Substring`、`Replace`、`ToUpper`、`ToLower` 等少量方法。`string.Format`、`string.Join`、插值字符串（非 Concat 编译形式）等不支持 |
@@ -743,7 +743,7 @@ dotnet test compiler/CIL2CPP.Tests --collect:"XPlat Code Coverage"
 
 | 模块 | 测试数 |
 |------|--------|
-| IRBuilder | 258 |
+| IRBuilder | 264 |
 | ILInstructionCategory | 173 |
 | CppNameMapper | 104 |
 | CppCodeGenerator | 70 |
@@ -762,7 +762,7 @@ dotnet test compiler/CIL2CPP.Tests --collect:"XPlat Code Coverage"
 | AssemblyReader | 12 |
 | IRField / IRVTableEntry / IRInterfaceImpl | 7 |
 | SequencePointInfo | 5 |
-| **合计** | **1016** |
+| **合计** | **1022** |
 
 ### 运行时单元测试 (C++ / Google Test)
 
@@ -833,7 +833,7 @@ python tools/dev.py build                  # 编译 compiler + runtime
 python tools/dev.py build --compiler       # 仅编译 compiler
 python tools/dev.py build --runtime        # 仅编译 runtime
 python tools/dev.py test --all             # 运行全部测试（编译器 + 运行时 + 集成）
-python tools/dev.py test --compiler        # 仅编译器测试 (1016 xUnit)
+python tools/dev.py test --compiler        # 仅编译器测试 (1022 xUnit)
 python tools/dev.py test --runtime         # 仅运行时测试 (280 GTest)
 python tools/dev.py test --coverage        # 测试 + 覆盖率 HTML 报告
 python tools/dev.py install                # 安装 runtime (Debug + Release)

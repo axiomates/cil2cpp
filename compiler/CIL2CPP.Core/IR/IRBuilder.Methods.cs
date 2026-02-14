@@ -1047,14 +1047,32 @@ public partial class IRBuilder
             {
                 var typeRef = (TypeReference)instr.Operand!;
                 var val = stack.Count > 0 ? stack.Pop() : "0";
-                var typeCpp = CppNameMapper.MangleTypeName(typeRef.FullName);
                 var tmp = $"__t{tempCounter++}";
-                block.Instructions.Add(new IRBox
+
+                if (IsNullableType(typeRef))
                 {
-                    ValueExpr = val,
-                    ValueTypeCppName = typeCpp,
-                    ResultVar = tmp
-                });
+                    // ECMA-335 III.4.1: box Nullable<T> →
+                    //   if !hasValue → null; else → box the inner T value
+                    var git = (GenericInstanceType)typeRef;
+                    var innerTypeName = git.GenericArguments[0].FullName;
+                    var innerTypeCpp = CppNameMapper.MangleTypeName(innerTypeName);
+                    block.Instructions.Add(new IRRawCpp
+                    {
+                        Code = $"{tmp} = {val}.f_hasValue"
+                            + $" ? (cil2cpp::Object*)cil2cpp::box<{innerTypeCpp}>({val}.f_value, &{innerTypeCpp}_TypeInfo)"
+                            + $" : nullptr;"
+                    });
+                }
+                else
+                {
+                    var typeCpp = CppNameMapper.MangleTypeName(typeRef.FullName);
+                    block.Instructions.Add(new IRBox
+                    {
+                        ValueExpr = val,
+                        ValueTypeCppName = typeCpp,
+                        ResultVar = tmp
+                    });
+                }
                 stack.Push(tmp);
                 break;
             }
@@ -1063,15 +1081,32 @@ public partial class IRBuilder
             {
                 var typeRef = (TypeReference)instr.Operand!;
                 var obj = stack.Count > 0 ? stack.Pop() : "nullptr";
-                var typeCpp = CppNameMapper.MangleTypeName(typeRef.FullName);
                 var tmp = $"__t{tempCounter++}";
-                block.Instructions.Add(new IRUnbox
+
+                if (CppNameMapper.IsValueType(typeRef.FullName))
                 {
-                    ObjectExpr = obj,
-                    ValueTypeCppName = typeCpp,
-                    ResultVar = tmp,
-                    IsUnboxAny = true
-                });
+                    // ECMA-335 III.4.33: for value types, extract a copy
+                    var typeCpp = CppNameMapper.MangleTypeName(typeRef.FullName);
+                    block.Instructions.Add(new IRUnbox
+                    {
+                        ObjectExpr = obj,
+                        ValueTypeCppName = typeCpp,
+                        ResultVar = tmp,
+                        IsUnboxAny = true
+                    });
+                }
+                else
+                {
+                    // ECMA-335 III.4.33: for reference types, equivalent to castclass
+                    var castTargetType = GetMangledTypeNameForRef(typeRef);
+                    block.Instructions.Add(new IRCast
+                    {
+                        SourceExpr = obj,
+                        TargetTypeCpp = castTargetType + "*",
+                        ResultVar = tmp,
+                        IsSafe = false
+                    });
+                }
                 stack.Push(tmp);
                 break;
             }

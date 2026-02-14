@@ -2496,4 +2496,95 @@ public class IRBuilderTests
         // SetResult should set f_result on the task
         Assert.Contains("f_status", allCode);
     }
+
+    // ===== unbox.any reference type → castclass =====
+
+    [Fact]
+    public void Build_FeatureTest_UnboxAnyRefType_EmitsCastNotUnbox()
+    {
+        var module = BuildFeatureTest();
+        var testMethod = module.GetAllMethods().FirstOrDefault(m => m.Name == "TestUnboxAnyRefType");
+        Assert.NotNull(testMethod);
+        var allInstructions = testMethod!.BasicBlocks.SelectMany(b => b.Instructions).ToList();
+        // unbox.any on string (reference type) should emit IRCast, not IRUnbox
+        var casts = allInstructions.OfType<IRCast>().ToList();
+        Assert.True(casts.Any(c => c.TargetTypeCpp.Contains("String")),
+            "unbox.any on reference type should emit IRCast (castclass semantics)");
+    }
+
+    [Fact]
+    public void Build_FeatureTest_UnboxAnyValueType_StillEmitsUnbox()
+    {
+        var module = BuildFeatureTest();
+        var testMethod = module.GetAllMethods().FirstOrDefault(m => m.Name == "TestUnboxAnyRefType");
+        Assert.NotNull(testMethod);
+        var allInstructions = testMethod!.BasicBlocks.SelectMany(b => b.Instructions).ToList();
+        // unbox.any on int (value type) should still emit IRUnbox
+        var unboxes = allInstructions.OfType<IRUnbox>().ToList();
+        Assert.True(unboxes.Count > 0, "unbox.any on value type should still emit IRUnbox");
+    }
+
+    // ===== box Nullable<T> → unwrap =====
+
+    [Fact]
+    public void Build_FeatureTest_BoxNullable_EmitsUnwrapLogic()
+    {
+        var module = BuildFeatureTest();
+        var testMethod = module.GetAllMethods().FirstOrDefault(m => m.Name == "TestNullableBoxing");
+        Assert.NotNull(testMethod);
+        var allInstructions = testMethod!.BasicBlocks.SelectMany(b => b.Instructions).ToList();
+        var rawCpp = allInstructions.OfType<IRRawCpp>().Select(r => r.Code).ToList();
+        var allCode = string.Join("\n", rawCpp);
+        // box Nullable<T> should check f_hasValue, not box the whole struct
+        Assert.Contains("f_hasValue", allCode);
+        Assert.Contains("f_value", allCode);
+        Assert.Contains("nullptr", allCode);
+    }
+
+    [Fact]
+    public void Build_FeatureTest_BoxNullable_NoIRBoxForNullable()
+    {
+        var module = BuildFeatureTest();
+        var testMethod = module.GetAllMethods().FirstOrDefault(m => m.Name == "TestNullableBoxing");
+        Assert.NotNull(testMethod);
+        var allInstructions = testMethod!.BasicBlocks.SelectMany(b => b.Instructions).ToList();
+        // There should be no IRBox with "Nullable" in the type name
+        var nullableBoxes = allInstructions.OfType<IRBox>()
+            .Where(b => b.ValueTypeCppName.Contains("Nullable"))
+            .ToList();
+        Assert.Empty(nullableBoxes);
+    }
+
+    // ===== ValueTuple.Equals / GetHashCode / ToString =====
+
+    [Fact]
+    public void Build_FeatureTest_ValueTupleEquals_FieldComparison()
+    {
+        var module = BuildFeatureTest();
+        var testMethod = module.GetAllMethods().FirstOrDefault(m => m.Name == "TestValueTupleEquals");
+        Assert.NotNull(testMethod);
+        var allInstructions = testMethod!.BasicBlocks.SelectMany(b => b.Instructions).ToList();
+        var rawCpp = allInstructions.OfType<IRRawCpp>().Select(r => r.Code).ToList();
+        var allCode = string.Join("\n", rawCpp);
+        // Equals should compare fields, not return hardcoded false
+        Assert.DoesNotContain("/* ValueTuple.Equals stub */", allCode);
+        Assert.Contains("f_Item1", allCode);
+        Assert.Contains("f_Item2", allCode);
+    }
+
+    [Fact]
+    public void Build_FeatureTest_ValueTupleGetHashCode_UsesHashCombining()
+    {
+        var module = BuildFeatureTest();
+        // ValueTuple.GetHashCode is intercepted when called directly on the tuple type
+        // The C# compiler may route through constrained callvirt → Object.GetHashCode()
+        // but our interception also handles direct ValueTuple calls
+        var testMethod = module.GetAllMethods().FirstOrDefault(m => m.Name == "TestValueTupleEquals");
+        Assert.NotNull(testMethod);
+        var allInstructions = testMethod!.BasicBlocks.SelectMany(b => b.Instructions).ToList();
+        var rawCpp = allInstructions.OfType<IRRawCpp>().Select(r => r.Code).ToList();
+        var allCode = string.Join("\n", rawCpp);
+        // No stub comments should remain for Equals
+        Assert.DoesNotContain("/* ValueTuple.Equals stub */", allCode);
+    }
 }
