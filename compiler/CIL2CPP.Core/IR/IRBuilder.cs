@@ -170,10 +170,12 @@ public partial class IRBuilder
         CreateThreadSyntheticType();
 
         // Pass 1.5c: Create proxy types for well-known BCL interfaces (IDisposable, IEnumerable, etc.)
-        CreateBclInterfaceProxies();
-
-        // Pass 1.5d: Resolve parent interface relationships for BCL proxies
-        ResolveBclProxyInterfaces();
+        // In multi-assembly mode, real BCL interfaces are loaded from assemblies — no proxies needed.
+        if (_assemblySet == null)
+        {
+            CreateBclInterfaceProxies();
+            ResolveBclProxyInterfaces();
+        }
 
         // Pass 1.5: Create specialized types for each generic instantiation
         CreateGenericSpecializations();
@@ -230,8 +232,12 @@ public partial class IRBuilder
                         irType.Finalizer = irMethod;
 
                     // Save for body conversion later (skip abstract and InternalCall)
+                    // In multi-assembly mode, only convert bodies for reachable methods
                     if (methodDef.HasBody && !methodDef.IsAbstract && !irMethod.IsInternalCall)
-                        methodBodies.Add((methodDef, irMethod));
+                    {
+                        if (_reachability == null || _reachability.IsReachable(methodDef.GetCecilMethod()))
+                            methodBodies.Add((methodDef, irMethod));
+                    }
                 }
 
                 // Detect record types:

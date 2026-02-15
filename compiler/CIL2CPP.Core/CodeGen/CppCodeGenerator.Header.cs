@@ -17,53 +17,66 @@ public partial class CppCodeGenerator
         sb.AppendLine("#include <cil2cpp/cil2cpp.h>");
         sb.AppendLine();
 
-        // Filter out compiler-generated types
+        // Filter out compiler-generated types and open generic types with unresolved params
         var userTypes = _module.Types
             .Where(t => !CppNameMapper.IsCompilerGeneratedType(t.ILFullName))
+            .Where(t => !HasUnresolvedGenericParams(t))
             .ToList();
 
         // Forward declarations — all types except enums, delegates, runtime-provided, and cil2cpp:: types
         sb.AppendLine("// ===== Forward Declarations =====");
         var forwardDeclared = new HashSet<string>();
-        // Build set of types that will become using aliases (not struct forward-decls)
-        // Include ALL module types + well-known runtime types
+        // Build set of types that will become using aliases (not struct forward-decls).
+        // This includes delegates and core runtime types with using aliases.
         var aliasedTypes = new HashSet<string>();
         foreach (var type in _module.Types)
         {
-            if (type.IsDelegate || type.IsRuntimeProvided)
+            if (type.IsDelegate)
                 aliasedTypes.Add(type.CppName);
         }
-        // Also add RuntimeProvidedTypes mangled names (may not be in _module.Types)
+        // Core runtime types that get using aliases (Object, String, Array, etc.)
         foreach (var ilName in IRBuilder.RuntimeProvidedTypes)
             aliasedTypes.Add(CppNameMapper.MangleTypeName(ilName));
+        foreach (var (mangled, _) in GetRuntimeProvidedTypeAliases())
+            aliasedTypes.Add(mangled);
         foreach (var type in userTypes)
         {
-            if (type.IsEnum || type.IsDelegate || type.IsRuntimeProvided) continue;
-            // Types already declared in runtime headers (cil2cpp:: namespace)
-            if (type.CppName.Contains("::")) continue;
+            if (type.IsEnum || type.IsDelegate) continue;
+            // Skip types that have using aliases (they're resolved via alias, not forward-decl)
+            if (aliasedTypes.Contains(type.CppName)) continue;
+            if (!IsValidCppIdentifier(type.CppName)) continue;
             sb.AppendLine($"struct {type.CppName};");
             forwardDeclared.Add(type.CppName);
         }
-        // Also forward-declare types referenced by method parameters/return types
-        // that aren't in the module (e.g., BCL interface types used as parameters)
+        // Collect enum type names — can't be forward-declared as struct
+        var enumTypes = new HashSet<string>();
         foreach (var type in userTypes)
         {
-            if (type.IsDelegate || type.IsRuntimeProvided) continue;
+            if (type.IsEnum)
+                enumTypes.Add(type.CppName);
+        }
+        // Also forward-declare types referenced by method parameters, return types, and field types.
+        // Scan ALL types (not just non-runtime-provided) to ensure complete forward declarations.
+        foreach (var type in userTypes)
+        {
+            if (type.IsDelegate) continue;
+            // Collect type names from method signatures
             foreach (var method in type.Methods)
             {
+                var sigTypes = new List<string>();
                 foreach (var param in method.Parameters)
-                {
-                    var raw = param.CppTypeName.TrimEnd('*').Trim();
-                    if (raw.Length == 0 || raw.StartsWith("cil2cpp::") || IsCppPrimitiveType(raw)) continue;
-                    // Don't forward-declare types that become using aliases (delegates, runtime-provided)
-                    if (aliasedTypes.Contains(raw)) continue;
-                    if (!forwardDeclared.Contains(raw))
-                    {
-                        sb.AppendLine($"struct {raw};");
-                        forwardDeclared.Add(raw);
-                    }
-                }
+                    sigTypes.Add(param.CppTypeName);
+                if (!string.IsNullOrEmpty(method.ReturnTypeCpp) && method.ReturnTypeCpp != "void")
+                    sigTypes.Add(method.ReturnTypeCpp);
+
+                foreach (var typeName in sigTypes)
+                    TryForwardDeclare(sb, typeName, forwardDeclared, aliasedTypes, enumTypes);
             }
+            // Collect type names from field types (for pointer fields that aren't sanitized to void*)
+            foreach (var field in type.Fields)
+                TryForwardDeclare(sb, CppNameMapper.GetCppTypeForDecl(field.FieldTypeName), forwardDeclared, aliasedTypes, enumTypes);
+            foreach (var field in type.StaticFields)
+                TryForwardDeclare(sb, CppNameMapper.GetCppTypeForDecl(field.FieldTypeName), forwardDeclared, aliasedTypes, enumTypes);
         }
         // Using aliases for runtime-provided types (mangled name → cil2cpp:: struct)
         // These types are provided by the runtime but their mangled names may appear
@@ -77,47 +90,96 @@ public partial class CppCodeGenerator
 
         // Type info declarations (skip runtime-provided types — declared in runtime headers)
         sb.AppendLine("// ===== Type Info Declarations =====");
+        // Collect types whose TypeInfo is already declared elsewhere (exception aliases or primitive section)
+        var runtimeDeclaredTypeInfos = new HashSet<string>();
+        foreach (var (mangledName, _) in GetExceptionTypeInfoAliases())
+            runtimeDeclaredTypeInfos.Add(mangledName);
+        // Skip System.Object/System.String from main loop only when they'll be declared
+        // in the primitive type section (multi-assembly mode has them in PrimitiveTypeInfos)
+        foreach (var entry in _module.PrimitiveTypeInfos.Values)
+        {
+            if (GetRuntimeTypeInfoAlias(entry.ILFullName) != null)
+                runtimeDeclaredTypeInfos.Add(entry.CppMangledName);
+        }
         foreach (var type in userTypes)
         {
-            if (type.IsRuntimeProvided) continue;
+            // Skip types whose TypeInfo is already declared in runtime headers
+            if (runtimeDeclaredTypeInfos.Contains(type.CppName)) continue;
+            if (!IsValidCppIdentifier(type.CppName)) continue;
             sb.AppendLine($"extern cil2cpp::TypeInfo {type.CppName}_TypeInfo;");
         }
         // Primitive type TypeInfo declarations (for array element types)
         foreach (var entry in _module.PrimitiveTypeInfos.Values)
         {
+            // Runtime-provided reference types: declared as TypeInfo& reference to runtime's TypeInfo
             var runtimeAlias = GetRuntimeTypeInfoAlias(entry.ILFullName);
             if (runtimeAlias != null)
                 sb.AppendLine($"extern cil2cpp::TypeInfo& {entry.CppMangledName}_TypeInfo;");
             else
                 sb.AppendLine($"extern cil2cpp::TypeInfo {entry.CppMangledName}_TypeInfo;");
         }
+        // Exception TypeInfo reference aliases — maps mangled names to runtime-declared TypeInfos
+        // (e.g., System_Exception_TypeInfo → cil2cpp::Exception_TypeInfo)
+        foreach (var (mangledName, runtimeTypeInfoName) in GetExceptionTypeInfoAliases())
+        {
+            sb.AppendLine($"extern cil2cpp::TypeInfo& {mangledName}_TypeInfo;");
+        }
         sb.AppendLine();
 
-        // Struct definitions — emit synthetic BCL types first (async Task<T>, builders, spans, etc.)
-        // These must come before user types that embed them as value fields or reference them.
+        // Build set of all types that will be defined (for field type sanitization)
+        var definedTypeNames = new HashSet<string>();
+        foreach (var type in userTypes)
+            definedTypeNames.Add(type.CppName);
+        // Also include aliased types (they exist as cil2cpp:: types)
+        foreach (var name in aliasedTypes)
+            definedTypeNames.Add(name);
+        foreach (var name in enumTypes)
+            definedTypeNames.Add(name);
+
+        // Type Definitions — ordering: enums first, then delegates, then structs (topologically sorted).
         sb.AppendLine("// ===== Type Definitions =====");
+        var emittedStructs = new HashSet<string>();
+        // Phase 1: Enums (must come first — used as value-type fields in structs)
         foreach (var type in userTypes)
         {
-            if (!type.IsRuntimeProvided || type.Fields.Count == 0) continue;
-            GenerateStructDefinition(sb, type);
+            if (!type.IsEnum || type.IsRuntimeProvided) continue;
+            if (!IsValidCppIdentifier(type.CppName)) continue;
+            GenerateEnumDefinition(sb, type);
+            emittedStructs.Add(type.CppName);
         }
+        // Phase 2: Delegate aliases
         foreach (var type in userTypes)
         {
-            if (type.IsRuntimeProvided) continue;
+            if (!type.IsDelegate || type.IsRuntimeProvided) continue;
+            if (!IsValidCppIdentifier(type.CppName)) continue;
+            sb.AppendLine($"using {type.CppName} = cil2cpp::Delegate;");
+            sb.AppendLine();
+            emittedStructs.Add(type.CppName);
+        }
+        // Phase 3: Emit stub structs for unknown value types referenced as fields
+        var unknownValueTypeStubs = new HashSet<string>();
+        CollectUnknownValueTypeFields(userTypes, definedTypeNames, unknownValueTypeStubs);
+        foreach (var stubName in unknownValueTypeStubs)
+        {
+            sb.AppendLine($"struct {stubName} {{ }}; // opaque BCL internal type");
+            emittedStructs.Add(stubName);
+            definedTypeNames.Add(stubName);
+        }
+        // Phase 4: All struct types — topologically sorted by value-type field dependencies
+        var structTypes = userTypes
+            .Where(t => !t.IsEnum && !t.IsDelegate && IsValidCppIdentifier(t.CppName))
+            .ToList();
+        var sortedStructTypes = TopologicalSortByFieldDeps(structTypes, aliasedTypes);
+        foreach (var type in sortedStructTypes)
+        {
+            if (emittedStructs.Contains(type.CppName)) continue;
+            // Skip types with using aliases (their layout is resolved by the alias target)
+            if (aliasedTypes.Contains(type.CppName)) continue;
+            // Skip runtime-provided types without fields (interfaces, opaque runtime types)
+            if (type.IsRuntimeProvided && type.Fields.Count == 0) continue;
             if (type.IsInterface) continue;
-            if (type.IsEnum)
-            {
-                GenerateEnumDefinition(sb, type);
-                continue;
-            }
-            if (type.IsDelegate)
-            {
-                // Delegates are aliases for cil2cpp::Delegate
-                sb.AppendLine($"using {type.CppName} = cil2cpp::Delegate;");
-                sb.AppendLine();
-                continue;
-            }
-            GenerateStructDefinition(sb, type);
+            GenerateStructDefinition(sb, type, definedTypeNames);
+            emittedStructs.Add(type.CppName);
         }
 
         // Static field storage declarations (skip runtime-provided types)
@@ -128,9 +190,11 @@ public partial class CppCodeGenerator
             {
                 sb.AppendLine($"// Static fields for {type.ILFullName}");
                 sb.AppendLine($"struct {type.CppName}_Statics {{");
+                var emittedStaticFields = new HashSet<string>();
                 foreach (var field in type.StaticFields)
                 {
-                    var cppType = CppNameMapper.GetCppTypeForDecl(field.FieldTypeName);
+                    if (!emittedStaticFields.Add(field.CppName)) continue; // Deduplicate
+                    var cppType = SanitizeFieldType(field.FieldTypeName, definedTypeNames);
                     sb.AppendLine($"    {cppType} {field.CppName};");
                 }
                 sb.AppendLine("};");
@@ -139,15 +203,16 @@ public partial class CppCodeGenerator
             }
         }
 
-        // Build set of known C++ type names (for filtering methods with unknown parameter types)
-        var knownTypeNames = new HashSet<string>();
-        foreach (var type in userTypes)
-        {
-            knownTypeNames.Add(type.CppName);
-        }
+        // Build set of all known C++ type names (defined + forward-declared + stubs)
+        var knownTypeNames = new HashSet<string>(definedTypeNames);
+        foreach (var name in forwardDeclared)
+            knownTypeNames.Add(name);
+        foreach (var name in unknownValueTypeStubs)
+            knownTypeNames.Add(name);
 
         // Method declarations (skip runtime-provided types and InternalCall methods)
         sb.AppendLine("// ===== Method Declarations =====");
+        var emittedMethodDecls = new HashSet<string>();
         foreach (var type in userTypes)
         {
             if (type.IsDelegate || type.IsRuntimeProvided) continue;
@@ -158,6 +223,8 @@ public partial class CppCodeGenerator
                 foreach (var method in type.Methods)
                 {
                     if (method.IsAbstract || method.BasicBlocks.Count == 0) continue;
+                    if (HasUnknownParameterTypes(method, knownTypeNames)) continue;
+                    if (!emittedMethodDecls.Add(method.GetCppSignature())) continue;
                     sb.AppendLine($"{method.GetCppSignature()};");
                 }
                 continue;
@@ -167,8 +234,9 @@ public partial class CppCodeGenerator
             {
                 if (method.IsAbstract || method.IsInternalCall) continue;
                 if (method.BasicBlocks.Count == 0 && !method.IsPInvoke) continue;
-                // Skip methods whose parameter types reference unknown struct types
+                // Skip methods whose parameter/return types reference unknown struct types
                 if (HasUnknownParameterTypes(method, knownTypeNames)) continue;
+                if (!emittedMethodDecls.Add(method.GetCppSignature())) continue;
                 sb.AppendLine($"{method.GetCppSignature()};");
             }
             sb.AppendLine();
@@ -200,7 +268,7 @@ public partial class CppCodeGenerator
         };
     }
 
-    private void GenerateStructDefinition(StringBuilder sb, IRType type)
+    private void GenerateStructDefinition(StringBuilder sb, IRType type, HashSet<string>? definedTypes = null)
     {
         sb.AppendLine($"// {type.ILFullName}");
 
@@ -216,26 +284,185 @@ public partial class CppCodeGenerator
 
             // Base type fields (walk full inheritance chain)
             var inheritedFields = CollectInheritedFields(type);
+            // Track inherited field names to avoid duplicate own fields (C2086)
+            var inheritedFieldNames = new HashSet<string>();
             if (inheritedFields.Count > 0)
             {
                 sb.AppendLine($"    // Inherited fields");
                 foreach (var (field, fromType) in inheritedFields)
                 {
-                    var cppType = CppNameMapper.GetCppTypeForDecl(field.FieldTypeName);
+                    var cppType = SanitizeFieldType(field.FieldTypeName, definedTypes);
                     sb.AppendLine($"    {cppType} {field.CppName}; // from {fromType.ILFullName}");
+                    inheritedFieldNames.Add(field.CppName);
                 }
             }
+
+            // Own fields (skip fields already emitted as inherited)
+            foreach (var field in type.Fields)
+            {
+                if (inheritedFieldNames.Contains(field.CppName)) continue;
+                var cppType = SanitizeFieldType(field.FieldTypeName, definedTypes);
+                sb.AppendLine($"    {cppType} {field.CppName};");
+            }
+
+            sb.AppendLine("};");
+            sb.AppendLine();
+            return;
         }
 
-        // Own fields
+        // Own fields (value types have no inheritance)
         foreach (var field in type.Fields)
         {
-            var cppType = CppNameMapper.GetCppTypeForDecl(field.FieldTypeName);
+            var cppType = SanitizeFieldType(field.FieldTypeName, definedTypes);
             sb.AppendLine($"    {cppType} {field.CppName};");
         }
 
         sb.AppendLine("};");
         sb.AppendLine();
+    }
+
+    /// <summary>
+    /// Try to forward-declare a type name if it's a pointer type to an unknown struct.
+    /// </summary>
+    private static void TryForwardDeclare(StringBuilder sb, string cppTypeName,
+        HashSet<string> forwardDeclared, HashSet<string> aliasedTypes, HashSet<string> enumTypes)
+    {
+        var raw = cppTypeName.TrimEnd('*').Trim();
+        if (raw.Length == 0 || raw.StartsWith("cil2cpp::") || IsCppPrimitiveType(raw)) return;
+        if (aliasedTypes.Contains(raw)) return;
+        if (!IsValidCppIdentifier(raw)) return;
+        if (enumTypes.Contains(raw)) return;
+        if (!forwardDeclared.Contains(raw))
+        {
+            sb.AppendLine($"struct {raw};");
+            forwardDeclared.Add(raw);
+        }
+    }
+
+    /// <summary>
+    /// Sanitize a field type for struct definition.
+    /// If the type is a pointer to an unknown type, replace with void*.
+    /// If the type is a value type not in the known set, it should have been stubbed.
+    /// </summary>
+    private static string SanitizeFieldType(string fieldTypeName, HashSet<string>? definedTypes)
+    {
+        var cppType = CppNameMapper.GetCppTypeForDecl(fieldTypeName);
+        if (definedTypes == null) return cppType;
+
+        // Check if the raw type name (without *) is known
+        var rawType = cppType.TrimEnd('*').Trim();
+        if (rawType.Length == 0 || rawType.StartsWith("cil2cpp::") || IsCppPrimitiveType(rawType))
+            return cppType;
+
+        if (!definedTypes.Contains(rawType))
+        {
+            // Unknown type — replace pointer fields with void*
+            if (cppType.EndsWith("*"))
+                return "void*";
+            // Non-pointer unknown → should have been stubbed, but fallback to void*
+            return "void*";
+        }
+
+        return cppType;
+    }
+
+    /// <summary>
+    /// Collect unknown value types used as non-pointer fields in any struct.
+    /// These need stub struct definitions to avoid C++ errors.
+    /// </summary>
+    private static void CollectUnknownValueTypeFields(
+        List<IRType> types, HashSet<string> definedTypes, HashSet<string> stubs)
+    {
+        foreach (var type in types)
+        {
+            if (type.IsEnum || type.IsDelegate) continue;
+            foreach (var field in type.Fields)
+            {
+                CheckFieldForStub(field.FieldTypeName, definedTypes, stubs);
+            }
+            // Also check inherited fields for reference types
+            if (!type.IsValueType)
+            {
+                var inherited = CollectInheritedFields(type);
+                foreach (var (field, _) in inherited)
+                    CheckFieldForStub(field.FieldTypeName, definedTypes, stubs);
+            }
+            // Check static fields
+            foreach (var field in type.StaticFields)
+                CheckFieldForStub(field.FieldTypeName, definedTypes, stubs);
+        }
+    }
+
+    private static void CheckFieldForStub(string fieldTypeName, HashSet<string> definedTypes, HashSet<string> stubs)
+    {
+        var cppType = CppNameMapper.GetCppTypeForDecl(fieldTypeName);
+        if (cppType.EndsWith("*")) return; // Pointers will be replaced with void*
+        var rawType = cppType.Trim();
+        if (rawType.Length == 0 || rawType.StartsWith("cil2cpp::") || IsCppPrimitiveType(rawType)) return;
+        if (definedTypes.Contains(rawType)) return;
+        if (!IsValidCppIdentifier(rawType)) return;
+        stubs.Add(rawType);
+    }
+
+    /// <summary>
+    /// Topologically sort struct types by value-type field dependencies.
+    /// If struct A has a non-pointer field of type B, B must come before A.
+    /// </summary>
+    private static List<IRType> TopologicalSortByFieldDeps(List<IRType> types, HashSet<string> aliasedTypes)
+    {
+        var typeMap = new Dictionary<string, IRType>();
+        foreach (var t in types)
+            typeMap[t.CppName] = t;
+
+        var visited = new HashSet<string>();
+        var inStack = new HashSet<string>();
+        var result = new List<IRType>();
+
+        foreach (var t in types)
+        {
+            if (!visited.Contains(t.CppName))
+                TopoVisit(t, typeMap, aliasedTypes, visited, inStack, result);
+        }
+
+        return result;
+    }
+
+    private static void TopoVisit(IRType type, Dictionary<string, IRType> typeMap,
+        HashSet<string> aliasedTypes, HashSet<string> visited, HashSet<string> inStack,
+        List<IRType> result)
+    {
+        if (visited.Contains(type.CppName)) return;
+        if (inStack.Contains(type.CppName)) return; // Cycle — break it
+
+        inStack.Add(type.CppName);
+
+        // Collect all field types (own + inherited)
+        var allFields = new List<string>();
+        foreach (var f in type.Fields)
+            allFields.Add(f.FieldTypeName);
+        if (!type.IsValueType)
+        {
+            var inherited = CollectInheritedFields(type);
+            foreach (var (f, _) in inherited)
+                allFields.Add(f.FieldTypeName);
+        }
+        foreach (var f in type.StaticFields)
+            allFields.Add(f.FieldTypeName);
+
+        foreach (var fieldTypeName in allFields)
+        {
+            var cppType = CppNameMapper.GetCppTypeForDecl(fieldTypeName);
+            if (cppType.EndsWith("*")) continue; // Pointers don't need ordering
+            var rawType = cppType.Trim();
+            if (rawType.StartsWith("cil2cpp::") || IsCppPrimitiveType(rawType)) continue;
+            if (aliasedTypes.Contains(rawType)) continue;
+            if (typeMap.TryGetValue(rawType, out var dep))
+                TopoVisit(dep, typeMap, aliasedTypes, visited, inStack, result);
+        }
+
+        inStack.Remove(type.CppName);
+        visited.Add(type.CppName);
+        result.Add(type);
     }
 
     private static List<(IRField Field, IRType FromType)> CollectInheritedFields(IRType type)
@@ -258,15 +485,40 @@ public partial class CppCodeGenerator
     }
 
     /// <summary>
-    /// Returns true if any parameter type references a non-pointer struct not in the known type set.
+    /// Returns true if any parameter or return type references a non-pointer struct not in the known type set.
     /// This filters out BCL methods that reference types not in the compilation unit (e.g. Func&lt;T&gt;).
     /// Pointer-type parameters only need forward declarations, which are generated automatically.
     /// </summary>
     private static bool HasUnknownParameterTypes(IRMethod method, HashSet<string> knownTypeNames)
     {
+        // Check for function pointer types (IL function pointer types have "()" syntax in type names)
+        foreach (var param in method.Parameters)
+        {
+            if (param.CppTypeName.Contains("(") || param.CppTypeName.Contains(")"))
+                return true;
+        }
+        if (method.ReturnTypeCpp.Contains("(") || method.ReturnTypeCpp.Contains(")"))
+            return true;
+
+        // Check return type
+        if (!string.IsNullOrEmpty(method.ReturnTypeCpp))
+        {
+            var retType = method.ReturnTypeCpp;
+            if (!IsValidCppIdentifier(retType.TrimEnd('*').Trim()) && !retType.StartsWith("cil2cpp::"))
+                return true;
+            var retTypeName = retType.TrimEnd('*').Trim();
+            if (retTypeName.Length > 0 && !retTypeName.StartsWith("cil2cpp::") && !IsCppPrimitiveType(retTypeName))
+            {
+                if (!retType.EndsWith("*") && !knownTypeNames.Contains(retTypeName))
+                    return true;
+            }
+        }
         foreach (var param in method.Parameters)
         {
             var rawType = param.CppTypeName;
+            // Filter function pointer types (contain parentheses or "method" prefix)
+            if (!IsValidCppIdentifier(rawType.TrimEnd('*').Trim()) && !rawType.StartsWith("cil2cpp::"))
+                return true;
             var typeName = rawType.TrimEnd('*').Trim();
             // Skip known runtime types (cil2cpp:: namespace, primitive C++ types)
             if (typeName.StartsWith("cil2cpp::") || IsCppPrimitiveType(typeName)) continue;
@@ -291,14 +543,59 @@ public partial class CppCodeGenerator
     /// </summary>
     private static IEnumerable<(string Mangled, string CppAlias)> GetRuntimeProvidedTypeAliases()
     {
+        // Core runtime types
         yield return ("System_Object", "cil2cpp::Object");
         yield return ("System_String", "cil2cpp::String");
         yield return ("System_Array", "cil2cpp::Array");
-        yield return ("System_Exception", "cil2cpp::Exception");
         yield return ("System_Delegate", "cil2cpp::Delegate");
         yield return ("System_MulticastDelegate", "cil2cpp::Delegate");
         yield return ("System_Type", "cil2cpp::Object");  // Type represented as opaque pointer
         yield return ("System_Attribute", "cil2cpp::Object");  // Base class for all attributes
+
+        // System.Threading.Thread — maps to cil2cpp::ManagedThread (opaque runtime type)
+        yield return ("System_Threading_Thread", "cil2cpp::ManagedThread");
+
+        // Exception hierarchy — all map to runtime C++ exception types
+        yield return ("System_Exception", "cil2cpp::Exception");
+        yield return ("System_NullReferenceException", "cil2cpp::NullReferenceException");
+        yield return ("System_IndexOutOfRangeException", "cil2cpp::IndexOutOfRangeException");
+        yield return ("System_InvalidCastException", "cil2cpp::InvalidCastException");
+        yield return ("System_InvalidOperationException", "cil2cpp::InvalidOperationException");
+        yield return ("System_ArgumentException", "cil2cpp::ArgumentException");
+        yield return ("System_ArgumentNullException", "cil2cpp::ArgumentNullException");
+        yield return ("System_OverflowException", "cil2cpp::OverflowException");
+        yield return ("System_ArithmeticException", "cil2cpp::OverflowException");
+        yield return ("System_NotSupportedException", "cil2cpp::InvalidOperationException");
+        yield return ("System_NotImplementedException", "cil2cpp::InvalidOperationException");
+    }
+
+    /// <summary>
+    /// Get TypeInfo reference aliases for runtime exception types.
+    /// Maps mangled IL names (System_Exception) to runtime-declared TypeInfo names (cil2cpp::Exception_TypeInfo).
+    /// Used by castclass/isinst/catch to reference exception TypeInfos by their mangled names.
+    /// </summary>
+    private static IEnumerable<(string MangledName, string RuntimeTypeInfoName)> GetExceptionTypeInfoAliases()
+    {
+        yield return ("System_Exception", "cil2cpp::Exception_TypeInfo");
+        yield return ("System_NullReferenceException", "cil2cpp::NullReferenceException_TypeInfo");
+        yield return ("System_IndexOutOfRangeException", "cil2cpp::IndexOutOfRangeException_TypeInfo");
+        yield return ("System_InvalidCastException", "cil2cpp::InvalidCastException_TypeInfo");
+        yield return ("System_InvalidOperationException", "cil2cpp::InvalidOperationException_TypeInfo");
+        yield return ("System_ArgumentException", "cil2cpp::ArgumentException_TypeInfo");
+        yield return ("System_ArgumentNullException", "cil2cpp::ArgumentNullException_TypeInfo");
+        yield return ("System_OverflowException", "cil2cpp::OverflowException_TypeInfo");
+    }
+
+    /// <summary>
+    /// Runtime-provided base types that need stub TypeInfo definitions in generated code.
+    /// These are referenced as .base_type for value types, enums, and delegates.
+    /// </summary>
+    private static IEnumerable<(string MangledName, string ILFullName)> GetRuntimeBaseTypeInfoStubs()
+    {
+        yield return ("System_ValueType", "System.ValueType");
+        yield return ("System_Enum", "System.Enum");
+        yield return ("System_MulticastDelegate", "System.MulticastDelegate");
+        yield return ("System_Delegate", "System.Delegate");
     }
 
     private void GenerateEnumDefinition(StringBuilder sb, IRType type)

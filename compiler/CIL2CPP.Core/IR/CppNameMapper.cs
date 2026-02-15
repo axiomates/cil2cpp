@@ -128,6 +128,11 @@ public static class CppNameMapper
             return cppName;
         }
 
+        // Runtime exception types — use cil2cpp:: names for type declarations.
+        // (MangleTypeName returns flat identifiers; this returns C++ qualified names.)
+        if (RuntimeExceptionTypeMap.TryGetValue(ilTypeName, out var runtimeExcName))
+            return runtimeExcName;
+
         // User-defined types - mangle the name
         // For generic instance types (e.g. "Foo`1<System.Int32>"), use the dedicated mangler
         // to avoid trailing underscores from the closing '>'
@@ -168,13 +173,11 @@ public static class CppNameMapper
 
     /// <summary>
     /// Mangle a .NET type name into a valid C++ identifier.
+    /// Always produces flat identifiers (no :: or other non-identifier characters).
+    /// For type declarations (where cil2cpp::Exception* is needed), use GetCppTypeName() instead.
     /// </summary>
     public static string MangleTypeName(string ilFullName)
     {
-        // Map BCL exception types to runtime C++ names
-        if (RuntimeExceptionTypeMap.TryGetValue(ilFullName, out var runtimeName))
-            return runtimeName;
-
         return ilFullName
             .Replace(".", "_")
             .Replace("/", "_")  // Nested types
@@ -185,7 +188,9 @@ public static class CppNameMapper
             .Replace(" ", "")
             .Replace("+", "_")
             .Replace("=", "_")  // e.g. __StaticArrayInitTypeSize=20
-            .Replace("-", "_");
+            .Replace("-", "_")
+            .Replace("[", "_")  // Array types (e.g., System.String[])
+            .Replace("]", "_");
     }
 
     /// <summary>
@@ -217,6 +222,9 @@ public static class CppNameMapper
             .Replace(".", "_")
             .Replace("<", "_")
             .Replace(">", "_")
+            .Replace(",", "_")
+            .Replace("`", "_")
+            .Replace(" ", "")
             .Replace("|", "_");
 
         return $"{typeCppName}_{safeName}";
@@ -241,9 +249,30 @@ public static class CppNameMapper
     /// <summary>
     /// Mangle an arbitrary identifier (parameter name, local name) into a valid C++ identifier.
     /// </summary>
+    /// <summary>
+    /// C++ keywords and alternative operator tokens that cannot be used as identifiers.
+    /// </summary>
+    private static readonly HashSet<string> CppKeywords = new()
+    {
+        "and", "and_eq", "bitand", "bitor", "compl", "not", "not_eq",
+        "or", "or_eq", "xor", "xor_eq",
+        "alignas", "alignof", "asm", "auto", "bool", "break", "case", "catch",
+        "char", "class", "const", "constexpr", "continue", "default", "delete",
+        "do", "double", "dynamic_cast", "else", "enum", "explicit", "export",
+        "extern", "false", "float", "for", "friend", "goto", "if", "inline",
+        "int", "long", "mutable", "namespace", "new", "noexcept", "nullptr",
+        "operator", "private", "protected", "public", "register", "return",
+        "short", "signed", "sizeof", "static", "struct", "switch", "template",
+        "this", "throw", "true", "try", "typedef", "typeid", "typename",
+        "union", "unsigned", "using", "virtual", "void", "volatile", "while",
+    };
+
     public static string MangleIdentifier(string name)
     {
-        return name.Replace("<", "_").Replace(">", "_").Replace(".", "_");
+        var mangled = name.Replace("<", "_").Replace(">", "_").Replace(".", "_");
+        if (CppKeywords.Contains(mangled))
+            mangled = "_" + mangled;
+        return mangled;
     }
 
     /// <summary>

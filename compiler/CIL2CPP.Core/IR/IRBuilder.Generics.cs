@@ -88,12 +88,38 @@ public partial class IRBuilder
         }
     }
 
+    /// <summary>
+    /// Namespaces whose generic specializations should be skipped (BCL internal).
+    /// These types can't be usefully compiled to C++.
+    /// </summary>
+    private static readonly HashSet<string> FilteredGenericNamespaces =
+    [
+        "System.Runtime.Intrinsics",
+        "System.Runtime.InteropServices",
+        "System.Reflection",
+        "System.Diagnostics",
+        "System.Diagnostics.Tracing",
+        "System.Globalization",
+        "System.Resources",
+        "System.Security",
+        "System.IO",
+        "System.Net",
+        "Internal",
+    ];
+
     private void CollectGenericType(TypeReference typeRef)
     {
         if (typeRef is not GenericInstanceType git) return;
 
-        // Skip if any type argument is still a generic parameter (unresolved)
-        if (git.GenericArguments.Any(a => a is GenericParameter))
+        // Skip if any type argument contains an unresolved generic parameter
+        // (e.g., TResult, TResult[], Task<TResult> — all contain GenericParameter)
+        if (git.GenericArguments.Any(ContainsGenericParameter))
+            return;
+
+        // Skip generic types from BCL internal namespaces
+        var elemNs = git.ElementType.Namespace;
+        if (!string.IsNullOrEmpty(elemNs) &&
+            FilteredGenericNamespaces.Any(f => elemNs.StartsWith(f)))
             return;
 
         var openTypeName = git.ElementType.FullName;
@@ -115,8 +141,8 @@ public partial class IRBuilder
         var declaringType = elementMethod.DeclaringType.FullName;
         var methodName = elementMethod.Name;
 
-        // Skip if any type argument is still a generic parameter (unresolved)
-        if (gim.GenericArguments.Any(a => a is GenericParameter))
+        // Skip if any type argument contains an unresolved generic parameter
+        if (gim.GenericArguments.Any(ContainsGenericParameter))
             return;
 
         var typeArgs = gim.GenericArguments.Select(a => a.FullName).ToList();
@@ -299,6 +325,10 @@ public partial class IRBuilder
                 IsGenericInstance = true,
                 GenericArguments = info.TypeArguments,
                 IsRuntimeProvided = isSyntheticBcl && !isCollectionBcl,
+                SourceKind = isSyntheticBcl ? AssemblyKind.BCL
+                    : (openType != null && _assemblySet != null
+                        ? _assemblySet.ClassifyAssembly(openType.Module.Assembly.Name.Name)
+                        : AssemblyKind.User),
             };
 
             // Propagate generic parameter variances from open type definition
@@ -381,6 +411,9 @@ public partial class IRBuilder
                 {
                     var returnTypeName = ResolveGenericTypeName(methodDef.ReturnType, typeParamMap);
                     var cppName = CppNameMapper.MangleMethodName(info.MangledName, methodDef.Name);
+                    // op_Explicit/op_Implicit: disambiguate by return type (C++ can't overload by return type)
+                    if (methodDef.Name is "op_Explicit" or "op_Implicit")
+                        cppName = $"{cppName}_{CppNameMapper.MangleTypeName(returnTypeName)}";
 
                     var irMethod = new IRMethod
                     {
@@ -481,6 +514,22 @@ public partial class IRBuilder
             // Recalculate instance size (BaseType may contribute inherited fields)
             CalculateInstanceSize(irType);
         }
+    }
+
+    /// <summary>
+    /// Check if a TypeReference contains unresolved generic parameters (recursively).
+    /// Handles GenericParameter, ArrayType (TResult[]), ByReferenceType, PointerType,
+    /// and nested GenericInstanceType (Task&lt;TResult&gt;).
+    /// </summary>
+    private static bool ContainsGenericParameter(TypeReference typeRef)
+    {
+        if (typeRef is GenericParameter) return true;
+        if (typeRef is ArrayType at) return ContainsGenericParameter(at.ElementType);
+        if (typeRef is ByReferenceType brt) return ContainsGenericParameter(brt.ElementType);
+        if (typeRef is PointerType pt) return ContainsGenericParameter(pt.ElementType);
+        if (typeRef is GenericInstanceType git)
+            return git.GenericArguments.Any(ContainsGenericParameter);
+        return false;
     }
 
     /// <summary>
@@ -615,6 +664,11 @@ public partial class IRBuilder
     /// </summary>
     private string ResolveTypeForDecl(string ilTypeName)
     {
+        // Primitive types always map to C++ primitives (int32_t, bool, void, etc.)
+        // regardless of whether BCL struct definitions exist in the type cache
+        if (CppNameMapper.IsPrimitive(ilTypeName))
+            return CppNameMapper.GetCppTypeForDecl(ilTypeName);
+
         if (_typeCache.TryGetValue(ilTypeName, out var cached))
         {
             if (cached.IsValueType)

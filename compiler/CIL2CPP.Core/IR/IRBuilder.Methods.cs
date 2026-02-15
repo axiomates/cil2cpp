@@ -9,6 +9,13 @@ public partial class IRBuilder
     private IRMethod ConvertMethod(IL.MethodInfo methodDef, IRType declaringType)
     {
         var cppName = CppNameMapper.MangleMethodName(declaringType.CppName, methodDef.Name);
+        // op_Explicit/op_Implicit: C# allows return-type overloading, C++ doesn't.
+        // Append return type to disambiguate.
+        if (methodDef.Name is "op_Explicit" or "op_Implicit")
+        {
+            var retMangled = CppNameMapper.MangleTypeName(methodDef.ReturnTypeName);
+            cppName = $"{cppName}_{retMangled}";
+        }
 
         var irMethod = new IRMethod
         {
@@ -227,8 +234,11 @@ public partial class IRBuilder
                             }
                             break;
                         case ExceptionEventKind.CatchBegin:
+                            // Use GetCppTypeName (not MangleTypeName) so that runtime exception types
+                            // resolve to cil2cpp::Exception etc. — the CIL2CPP_CATCH macro appends
+                            // _TypeInfo which must match the runtime-declared TypeInfo names.
                             var catchTypeCpp = evt.CatchTypeName != null
-                                ? CppNameMapper.MangleTypeName(evt.CatchTypeName) : null;
+                                ? CppNameMapper.GetCppTypeName(evt.CatchTypeName) : null;
                             block.Instructions.Add(new IRCatchBegin { ExceptionTypeCppName = catchTypeCpp });
                             // IL pushes exception onto stack at catch entry
                             stack.Push("__exc_ctx.current_exception");

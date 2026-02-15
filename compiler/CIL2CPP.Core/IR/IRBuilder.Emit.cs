@@ -93,55 +93,42 @@ public partial class IRBuilder
             }
         }
 
-        // Special: Nullable<T> methods — emit inline C++ instead of unresolved BCL calls
+        // ===== BCL Type Interceptions =====
+        // These intercept BCL method calls and emit inline C++ instead of normal method calls.
+        // In single-assembly mode, ALL interceptions are active (BCL IL is not available).
+        // In multi-assembly mode, interceptions are still active because BCL methods are currently
+        // compiled as stubs. When BCL IL compilation is fully implemented, interceptions for simple
+        // value types (Nullable, ValueTuple, Index, Range) can be bypassed.
+        //
+        // Future bypass candidates (when BCL IL compiles correctly):
+        //   Nullable, ValueTuple, Index, Range
+        // Must always intercept (runtime-tied / no IL):
+        //   Async, Thread, Type, Span, MdArray, EqualityComparer, List, Dictionary
+
         if (TryEmitNullableCall(block, stack, methodRef, ref tempCounter))
             return;
-
-        // Special: ValueTuple methods — emit inline C++ instead of unresolved BCL calls
         if (TryEmitValueTupleCall(block, stack, methodRef, ref tempCounter))
             return;
-
-        // Special: Async BCL types (Task, TaskAwaiter, AsyncTaskMethodBuilder)
         if (TryEmitAsyncCall(block, stack, methodRef, ref tempCounter))
             return;
-
-        // Special: System.Index methods
         if (TryEmitIndexCall(block, stack, methodRef, ref tempCounter))
             return;
-
-        // Special: System.Range methods
         if (TryEmitRangeCall(block, stack, methodRef, ref tempCounter))
             return;
-
-        // Special: RuntimeHelpers.GetSubArray<T>
         if (TryEmitGetSubArray(block, stack, methodRef, ref tempCounter))
             return;
-
-        // Special: System.Threading.Thread methods
         if (TryEmitThreadCall(block, stack, methodRef, ref tempCounter))
             return;
-
-        // Special: System.Type reflection methods
         if (TryEmitTypeCall(block, stack, methodRef, ref tempCounter))
             return;
-
-        // Special: Span<T> / ReadOnlySpan<T> methods
         if (TryEmitSpanCall(block, stack, methodRef, ref tempCounter))
             return;
-
-        // Special: EqualityComparer<T> methods
         if (TryEmitEqualityComparerCall(block, stack, methodRef, ref tempCounter))
             return;
-
-        // Special: Multi-dimensional array methods (Get, Set, Address on T[,] etc.)
         if (TryEmitMdArrayCall(block, stack, methodRef, ref tempCounter))
             return;
-
-        // Special: List<T> methods
         if (TryEmitListCall(block, stack, methodRef, ref tempCounter))
             return;
-
-        // Special: Dictionary<K,V> methods
         if (TryEmitDictionaryCall(block, stack, methodRef, ref tempCounter))
             return;
 
@@ -200,21 +187,9 @@ public partial class IRBuilder
 
         var irCall = new IRCall();
 
-        // Map known BCL methods (hardcoded priority mappings)
-        var mappedName = MapBclMethod(methodRef);
-
-        // Fallback: ICall registry for [InternalCall] methods
-        if (mappedName == null)
-        {
-            var resolved = TryResolveMethodRef(methodRef);
-            if (resolved != null && (resolved.ImplAttributes & MethodImplAttributes.InternalCall) != 0)
-            {
-                mappedName = ICallRegistry.Lookup(
-                    methodRef.DeclaringType.FullName,
-                    methodRef.Name,
-                    methodRef.Parameters.Count);
-            }
-        }
+        // Unified BCL method lookup — covers both [InternalCall] methods and
+        // managed BCL methods with C++ runtime implementations.
+        var mappedName = ICallRegistry.Lookup(methodRef);
 
         if (mappedName != null)
         {
@@ -241,7 +216,14 @@ public partial class IRBuilder
         else
         {
             var typeCpp = GetMangledTypeNameForRef(methodRef.DeclaringType);
-            irCall.FunctionName = CppNameMapper.MangleMethodName(typeCpp, methodRef.Name);
+            var funcName = CppNameMapper.MangleMethodName(typeCpp, methodRef.Name);
+            // op_Explicit/op_Implicit: disambiguate by return type (matches ConvertMethod)
+            if (methodRef.Name is "op_Explicit" or "op_Implicit")
+            {
+                var retMangled = CppNameMapper.MangleTypeName(methodRef.ReturnType.FullName);
+                funcName = $"{funcName}_{retMangled}";
+            }
+            irCall.FunctionName = funcName;
         }
 
         // Collect arguments (in reverse order from stack)
@@ -631,209 +613,6 @@ public partial class IRBuilder
 
         stack.Push(tmp);
         return true;
-    }
-
-    private string? MapBclMethod(MethodReference methodRef)
-    {
-        var fullType = methodRef.DeclaringType.FullName;
-        var name = methodRef.Name;
-
-        // Console methods
-        if (fullType == "System.Console")
-        {
-            if (name == "WriteLine")
-            {
-                return "cil2cpp::System::Console_WriteLine";
-            }
-            if (name == "Write")
-            {
-                return "cil2cpp::System::Console_Write";
-            }
-            if (name == "ReadLine")
-            {
-                return "cil2cpp::System::Console_ReadLine";
-            }
-        }
-
-        // String methods
-        if (fullType == "System.String")
-        {
-            return name switch
-            {
-                "Concat" => "cil2cpp::string_concat",
-                "IsNullOrEmpty" => "cil2cpp::string_is_null_or_empty",
-                "get_Length" => "cil2cpp::string_length",
-                "Substring" => "cil2cpp::string_substring",
-                _ => null
-            };
-        }
-
-        // Value type instance methods — ToString on primitives
-        if (fullType == "System.Int32" && name == "ToString" && methodRef.Parameters.Count == 0)
-            return "cil2cpp::string_from_int32";
-        if (fullType == "System.Double" && name == "ToString" && methodRef.Parameters.Count == 0)
-            return "cil2cpp::string_from_double";
-        if (fullType == "System.Boolean" && name == "ToString" && methodRef.Parameters.Count == 0)
-            return "cil2cpp::object_to_string";
-        if (fullType == "System.Single" && name == "ToString" && methodRef.Parameters.Count == 0)
-            return "cil2cpp::string_from_double";
-        if (fullType == "System.Int64" && name == "ToString" && methodRef.Parameters.Count == 0)
-            return "cil2cpp::string_from_int64";
-
-        // Object methods
-        if (fullType == "System.Object")
-        {
-            return name switch
-            {
-                "ToString" => "cil2cpp::object_to_string",
-                "GetHashCode" => "cil2cpp::object_get_hash_code",
-                "Equals" => "cil2cpp::object_equals",
-                "GetType" => "cil2cpp::object_get_type_managed",
-                "ReferenceEquals" => "cil2cpp::object_reference_equals",
-                "MemberwiseClone" => "cil2cpp::object_memberwise_clone",
-                ".ctor" => null, // Object ctor handled as System_Object__ctor (declared in cil2cpp.h)
-                "Finalize" => null, // Object.Finalize is a no-op (declared in cil2cpp.h)
-                _ => null
-            };
-        }
-
-        // System.Attribute — base class for custom attributes, alias to Object
-        if (fullType == "System.Attribute")
-        {
-            if (name == ".ctor") return "System_Object__ctor";
-            return null;
-        }
-
-        // Array methods (needed for multi-dim arrays — System.Array can't be resolved in single-assembly)
-        if (fullType == "System.Array")
-        {
-            return name switch
-            {
-                "get_Length" => "cil2cpp::array_get_length",
-                "get_Rank" => "cil2cpp::array_get_rank",
-                "GetLength" => "cil2cpp::array_get_length_dim",
-                _ => null
-            };
-        }
-
-        // Delegate methods
-        if (fullType is "System.Delegate" or "System.MulticastDelegate")
-        {
-            return name switch
-            {
-                "Combine" => "cil2cpp::delegate_combine",
-                "Remove" => "cil2cpp::delegate_remove",
-                _ => null
-            };
-        }
-
-        // Math methods
-        if (fullType == "System.Math")
-        {
-            // Abs has multiple overloads — use explicit C++ functions to avoid ambiguity
-            if (name == "Abs" && methodRef.Parameters.Count == 1)
-            {
-                return methodRef.Parameters[0].ParameterType.FullName switch
-                {
-                    "System.Single" => "std::fabsf",
-                    "System.Double" => "std::fabs",
-                    _ => "std::abs" // int, long, short, sbyte — works via <cstdlib>
-                };
-            }
-
-            return name switch
-            {
-                "Max" => "std::max",
-                "Min" => "std::min",
-                "Sqrt" => "std::sqrt",
-                "Floor" => "std::floor",
-                "Ceiling" => "std::ceil",
-                "Round" => "std::round",
-                "Pow" => "std::pow",
-                "Sin" => "std::sin",
-                "Cos" => "std::cos",
-                "Tan" => "std::tan",
-                "Asin" => "std::asin",
-                "Acos" => "std::acos",
-                "Atan" => "std::atan",
-                "Atan2" => "std::atan2",
-                "Log" => "std::log",
-                "Log10" => "std::log10",
-                "Exp" => "std::exp",
-                _ => null
-            };
-        }
-
-        // Monitor methods — managed wrappers for InternalCall, need direct mapping
-        if (fullType == "System.Threading.Monitor")
-        {
-            if (name == "Enter")
-            {
-                // 1-arg: Monitor.Enter(object)
-                // 2-arg: Monitor.Enter(object, ref bool lockTaken)
-                return methodRef.Parameters.Count >= 2
-                    ? "cil2cpp::icall::Monitor_Enter2"
-                    : "cil2cpp::icall::Monitor_Enter";
-            }
-            return name switch
-            {
-                "Exit" => "cil2cpp::icall::Monitor_Exit",
-                "ReliableEnter" => "cil2cpp::icall::Monitor_ReliableEnter",
-                "Wait" => "cil2cpp::icall::Monitor_Wait",
-                "Pulse" => "cil2cpp::icall::Monitor_Pulse",
-                "PulseAll" => "cil2cpp::icall::Monitor_PulseAll",
-                _ => null
-            };
-        }
-
-        // Interlocked methods — dispatched by parameter type for overloads
-        if (fullType == "System.Threading.Interlocked")
-        {
-            return MapInterlockedMethod(methodRef);
-        }
-
-        return null;
-    }
-
-    /// <summary>
-    /// Map Interlocked method calls to the correct typed C++ icall.
-    /// Overloads are distinguished by the first parameter's element type (ref int vs ref long vs ref object).
-    /// </summary>
-    private static string? MapInterlockedMethod(MethodReference methodRef)
-    {
-        var name = methodRef.Name;
-        // Determine type suffix from the first parameter (which is always a ref/byref)
-        var firstParam = methodRef.Parameters.Count > 0 ? methodRef.Parameters[0].ParameterType : null;
-        // Strip ByReference wrapper: "System.Int32&" → "System.Int32"
-        var elemTypeName = firstParam?.FullName.TrimEnd('&') ?? "";
-
-        var suffix = elemTypeName switch
-        {
-            "System.Int32" => "_i32",
-            "System.Int64" => "_i64",
-            "System.Object" => "_obj",
-            _ => null
-        };
-        // For generic Interlocked methods (e.g., CompareExchange<T>), resolve from the generic argument
-        if (suffix == null && methodRef is GenericInstanceMethod gimInterlocked && gimInterlocked.GenericArguments.Count > 0)
-        {
-            var typeArg = gimInterlocked.GenericArguments[0];
-            bool isValueType = false;
-            try { isValueType = typeArg.Resolve()?.IsValueType == true; } catch { }
-            // Reference types (delegates, classes) → use _obj overload
-            suffix = isValueType ? null : "_obj";
-        }
-        if (suffix == null) return null;
-
-        return name switch
-        {
-            "Increment" => $"cil2cpp::icall::Interlocked_Increment{suffix}",
-            "Decrement" => $"cil2cpp::icall::Interlocked_Decrement{suffix}",
-            "Exchange" => $"cil2cpp::icall::Interlocked_Exchange{suffix}",
-            "CompareExchange" => $"cil2cpp::icall::Interlocked_CompareExchange{suffix}",
-            "Add" when suffix is "_i32" => "cil2cpp::icall::Interlocked_Add_i32",
-            _ => null
-        };
     }
 
     /// <summary>

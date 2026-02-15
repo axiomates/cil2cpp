@@ -19,6 +19,61 @@ public partial class CppCodeGenerator
         ["GetHashCode"] = "(void*)cil2cpp::object_get_hash_code",
     };
 
+    /// <summary>
+    /// Unresolved generic parameter names that indicate an open generic type
+    /// leaked through reachability analysis. These types cannot be compiled to C++.
+    /// </summary>
+    private static readonly string[] OpenGenericParamNames =
+    [
+        "TResult", "TKey", "TValue", "TSource", "TElement", "TOutput",
+        "TAntecedentResult", "TContinuationResult", "TNewResult",
+    ];
+
+    /// <summary>
+    /// Check if a type has unresolved generic parameters in its C++ name.
+    /// Such types are open generics that leaked through and should be skipped.
+    /// </summary>
+    private static bool HasUnresolvedGenericParams(IRType type)
+    {
+        var name = type.CppName;
+        foreach (var param in OpenGenericParamNames)
+        {
+            // Check if the param name appears as a word boundary in the C++ name
+            var idx = name.IndexOf(param, StringComparison.Ordinal);
+            if (idx >= 0)
+            {
+                // Verify it's not a substring of a longer word (e.g., "ResultHandler")
+                var afterIdx = idx + param.Length;
+                if (afterIdx >= name.Length || !char.IsLetterOrDigit(name[afterIdx]))
+                    return true;
+            }
+        }
+
+        // Also check for [] in CppName (invalid C++ identifier)
+        if (name.Contains("[]"))
+            return true;
+
+        return false;
+    }
+
+    /// <summary>
+    /// Check if a name is a valid C++ identifier (no brackets, ampersands, parens, etc.).
+    /// Used to filter out mangled names from IL types that contain array/ref/pointer syntax.
+    /// </summary>
+    private static bool IsValidCppIdentifier(string name)
+    {
+        if (string.IsNullOrEmpty(name)) return false;
+        // C++ identifiers can only contain letters, digits, underscores
+        // Also allow :: for namespace-qualified names
+        foreach (var ch in name)
+        {
+            if (char.IsLetterOrDigit(ch) || ch == '_' || ch == ':')
+                continue;
+            return false;
+        }
+        return true;
+    }
+
     private readonly IRModule _module;
     private readonly BuildConfiguration _config;
 
@@ -143,11 +198,14 @@ public partial class CppCodeGenerator
         sb.AppendLine($"target_link_libraries({projectName} {linkVisibility} cil2cpp::runtime)");
         sb.AppendLine();
 
-        // P/Invoke native library linking
+        // P/Invoke native library linking (filter out .NET internal modules)
+        var internalPInvokeModules = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            { "QCall", "QCall.dll", "libSystem.Native", "libSystem.Globalization.Native" };
         var pinvokeModules = _module.Types
             .SelectMany(t => t.Methods)
             .Where(m => m.IsPInvoke && !string.IsNullOrEmpty(m.PInvokeModule))
             .Select(m => m.PInvokeModule!)
+            .Where(m => !internalPInvokeModules.Contains(m))
             .Distinct()
             .ToList();
         if (pinvokeModules.Count > 0)
@@ -197,13 +255,31 @@ public partial class CppCodeGenerator
 
     private static string EscapeString(string s)
     {
-        return s
-            .Replace("\\", "\\\\")
-            .Replace("\"", "\\\"")
-            .Replace("\n", "\\n")
-            .Replace("\r", "\\r")
-            .Replace("\t", "\\t")
-            .Replace("\0", "\\0");
+        var sb = new StringBuilder(s.Length);
+        foreach (var ch in s)
+        {
+            switch (ch)
+            {
+                case '\\': sb.Append("\\\\"); break;
+                case '"':  sb.Append("\\\""); break;
+                case '\n': sb.Append("\\n"); break;
+                case '\r': sb.Append("\\r"); break;
+                case '\t': sb.Append("\\t"); break;
+                case '\0': sb.Append("\\0"); break;
+                default:
+                    if (ch > 127)
+                    {
+                        // Escape non-ASCII as universal character names for MSVC compatibility
+                        sb.Append($"\\u{(int)ch:X4}");
+                    }
+                    else
+                    {
+                        sb.Append(ch);
+                    }
+                    break;
+            }
+        }
+        return sb.ToString();
     }
 }
 

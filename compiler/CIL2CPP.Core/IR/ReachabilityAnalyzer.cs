@@ -18,8 +18,9 @@ public class ReachabilityResult
 
 /// <summary>
 /// Performs reachability analysis (tree shaking) starting from entry point(s).
-/// Computes the set of types and methods that are actually reachable,
-/// so unreachable BCL/library types can be excluded from compilation.
+/// Uses method-level granularity: only methods that are actually called are marked reachable.
+/// For user assembly types, all methods are conservatively marked reachable.
+/// BCL types in deep internal namespaces are filtered at the boundary.
 /// </summary>
 public class ReachabilityAnalyzer
 {
@@ -27,6 +28,10 @@ public class ReachabilityAnalyzer
     private readonly ReachabilityResult _result = new();
     private readonly Queue<MethodDefinition> _worklist = new();
     private readonly HashSet<string> _processedMethods = new();
+
+    // Track dispatched virtual method slots for deferred override resolution.
+    // Key: "MethodName/ParamCount"
+    private readonly HashSet<string> _dispatchedVirtualSlots = new();
 
     public ReachabilityAnalyzer(AssemblySet assemblySet)
     {
@@ -67,6 +72,11 @@ public class ReachabilityAnalyzer
 
         MarkTypeReachable(method.DeclaringType);
         _worklist.Enqueue(method);
+
+        // If this is a virtual method, track it as a dispatched slot
+        // and mark overrides in all already-reachable types
+        if (method.IsVirtual)
+            DispatchVirtualSlot(method);
     }
 
     private void SeedAllPublicTypes(AssemblyDefinition assembly)
@@ -87,6 +97,11 @@ public class ReachabilityAnalyzer
 
     private void MarkTypeReachable(TypeDefinition type)
     {
+        // BCL boundary filtering — deep internal types are not useful to compile
+        // Don't even add them to the reachable set (avoids incomplete type definitions)
+        if (IsBclBoundaryType(type))
+            return;
+
         if (!_result.ReachableTypes.Add(type))
             return;
 
@@ -111,13 +126,12 @@ public class ReachabilityAnalyzer
         if (cctor != null)
             SeedMethod(cctor);
 
-        // Conservative: mark all methods of the type reachable
-        foreach (var method in type.Methods)
-        {
-            SeedMethod(method);
-        }
+        // Mark finalizer reachable
+        var finalizer = type.Methods.FirstOrDefault(m => m.Name == "Finalize" && m.IsVirtual);
+        if (finalizer != null)
+            SeedMethod(finalizer);
 
-        // Mark field types reachable
+        // Mark field types reachable (needed for struct layout)
         foreach (var field in type.Fields)
         {
             var fieldTypeDef = TryResolve(field.FieldType);
@@ -125,13 +139,136 @@ public class ReachabilityAnalyzer
                 MarkTypeReachable(fieldTypeDef);
         }
 
-        // Process nested types
-        foreach (var nested in type.NestedTypes)
+        // User assembly types: conservatively mark all methods and nested types
+        // (user types are few, and missing a method would cause linker errors)
+        if (IsUserAssembly(type))
         {
-            // Nested types of a reachable type are reachable
-            // (they may be compiler-generated closures, state machines, etc.)
-            MarkTypeReachable(nested);
+            foreach (var method in type.Methods)
+                SeedMethod(method);
+
+            foreach (var nested in type.NestedTypes)
+                MarkTypeReachable(nested);
         }
+        else
+        {
+            // BCL/third-party: check for virtual method overrides that match dispatched slots
+            MarkDispatchedOverrides(type);
+        }
+    }
+
+    /// <summary>
+    /// Track a virtual method as dispatched and mark overrides in all reachable types.
+    /// </summary>
+    private void DispatchVirtualSlot(MethodDefinition method)
+    {
+        var slot = $"{method.Name}/{method.Parameters.Count}";
+        if (!_dispatchedVirtualSlots.Add(slot))
+            return;
+
+        // Check all already-reachable types for overrides of this slot
+        foreach (var type in _result.ReachableTypes.ToArray())
+        {
+            if (IsUserAssembly(type)) continue; // already fully seeded
+            MarkOverrideIfExists(type, method.Name, method.Parameters.Count);
+        }
+    }
+
+    /// <summary>
+    /// When a non-user type becomes reachable, check if it overrides any dispatched virtual slot.
+    /// </summary>
+    private void MarkDispatchedOverrides(TypeDefinition type)
+    {
+        foreach (var slot in _dispatchedVirtualSlots)
+        {
+            var parts = slot.Split('/');
+            if (parts.Length == 2 && int.TryParse(parts[1], out var paramCount))
+            {
+                MarkOverrideIfExists(type, parts[0], paramCount);
+            }
+        }
+    }
+
+    private void MarkOverrideIfExists(TypeDefinition type, string methodName, int paramCount)
+    {
+        var overrideMethod = type.Methods.FirstOrDefault(m =>
+            m.IsVirtual && m.Name == methodName && m.Parameters.Count == paramCount);
+        if (overrideMethod != null)
+            SeedMethod(overrideMethod);
+    }
+
+    private bool IsUserAssembly(TypeDefinition type)
+    {
+        return type.Module.Assembly.Name.Name == _assemblySet.RootAssemblyName;
+    }
+
+    /// <summary>
+    /// Whitelist of namespaces whose types can be compiled to C++.
+    /// Everything else is filtered as a BCL boundary type.
+    /// </summary>
+    private static readonly HashSet<string> AllowedNamespaces =
+    [
+        "System",
+        "System.Collections",
+        "System.Collections.Generic",
+        "System.Collections.ObjectModel",
+        "System.Collections.Concurrent",
+        "System.Threading",
+        "System.Threading.Tasks",
+        "System.Runtime.CompilerServices",
+        "System.Text",
+        "System.Linq",
+    ];
+
+    /// <summary>
+    /// Primitive types that map directly to C++ primitives.
+    /// These must never be compiled as BCL structs.
+    /// </summary>
+    private static readonly HashSet<string> PrimitiveTypeNames = new()
+    {
+        "System.Void", "System.Boolean", "System.Byte", "System.SByte",
+        "System.Int16", "System.UInt16", "System.Int32", "System.UInt32",
+        "System.Int64", "System.UInt64", "System.Single", "System.Double",
+        "System.Char", "System.IntPtr", "System.UIntPtr",
+    };
+
+    /// <summary>
+    /// Filter out BCL types that can't be usefully compiled to C++.
+    /// Uses a whitelist approach — only BCL types in allowed namespaces pass through.
+    /// Non-BCL types (user assembly and third-party libraries) always pass.
+    /// </summary>
+    private bool IsBclBoundaryType(TypeDefinition type)
+    {
+        // Only filter types from BCL assemblies
+        var assemblyName = type.Module.Assembly.Name.Name;
+        if (!IsBclAssembly(assemblyName))
+            return false;
+
+        // Primitive types always map to C++ primitives — never compile as BCL structs
+        if (PrimitiveTypeNames.Contains(type.FullName))
+            return true;
+
+        var ns = type.Namespace;
+
+        // Nested types with empty namespace: check the full name
+        if (string.IsNullOrEmpty(ns))
+        {
+            var fullName = type.FullName;
+            // BCL internal nested types (Interop/*, compiler-generated <*)
+            if (fullName.StartsWith("Interop") || fullName.StartsWith("<"))
+                return true;
+            return true; // Conservatively filter unknown empty-namespace BCL types
+        }
+
+        return !AllowedNamespaces.Contains(ns);
+    }
+
+    private static bool IsBclAssembly(string assemblyName)
+    {
+        return assemblyName.StartsWith("System.") ||
+               assemblyName == "System" ||
+               assemblyName == "mscorlib" ||
+               assemblyName == "netstandard" ||
+               assemblyName.StartsWith("Microsoft.");
     }
 
     private void ProcessMethod(MethodDefinition method)

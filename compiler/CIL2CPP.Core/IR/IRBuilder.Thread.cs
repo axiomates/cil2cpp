@@ -21,7 +21,7 @@ public partial class IRBuilder
             var threadType = new IRType
             {
                 ILFullName = "System.Threading.Thread",
-                CppName = "cil2cpp::ManagedThread",
+                CppName = "System_Threading_Thread",
                 Name = "Thread",
                 Namespace = "System.Threading",
                 IsValueType = false,

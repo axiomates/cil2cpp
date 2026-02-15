@@ -3463,7 +3463,7 @@ public class IRBuilderTests
         var threadType = module.Types.FirstOrDefault(t => t.ILFullName == "System.Threading.Thread");
         Assert.NotNull(threadType);
         Assert.True(threadType.IsRuntimeProvided);
-        Assert.Equal("cil2cpp::ManagedThread", threadType.CppName);
+        Assert.Equal("System_Threading_Thread", threadType.CppName);
     }
 
     // ===== Reflection tests =====
