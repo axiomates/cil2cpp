@@ -9,7 +9,7 @@
 ```
 
 1. **IL 解析** — Mono.Cecil 读取 .NET 程序集中的 IL 字节码
-2. **IR 构建** — 将 IL 指令转换为中间表示（6 遍：类型外壳 → 字段/基类 → 方法壳 → VTable/接口 → 方法体）
+2. **IR 构建** — 将 IL 指令转换为中间表示（7 遍：类型外壳 → 字段/基类 → 方法壳 → VTable → 接口 → 方法体 → 合成方法）
 3. **C++ 生成** — 将 IR 翻译为 C++ 头文件、源文件、入口点和 CMakeLists.txt
 4. **原生编译** — 使用 C++ 编译器编译生成的代码，通过 `find_package` 链接 CIL2CPP 运行时
 
@@ -23,14 +23,14 @@ cil2cpp/
 │   │   ├── IL/                 #     IL 解析 (Mono.Cecil)
 │   │   ├── IR/                 #     中间表示 + 类型映射
 │   │   └── CodeGen/            #     C++ 代码生成
-│   ├── CIL2CPP.Tests/          #   编译器单元测试 (xUnit)
+│   ├── CIL2CPP.Tests/          #   编译器单元测试 (xUnit, 1140 tests)
 │   └── samples/                #   示例 C# 程序
 ├── runtime/                    # C++ 运行时库 (CMake 项目)
 │   ├── CMakeLists.txt
 │   ├── cmake/                  #   CMake 包配置模板
 │   ├── include/cil2cpp/        #   头文件
 │   ├── src/                    #   GC、类型系统、异常、BCL
-│   └── tests/                  #   运行时单元测试 (Google Test)
+│   └── tests/                  #   运行时单元测试 (Google Test, 426 tests)
 └── tools/
     └── dev.py                  # 开发者 CLI (build/test/coverage/codegen/integration)
 ```
@@ -114,6 +114,11 @@ cmake --install build --config Debug --prefix <安装路径>
 │   ├── boxing.h                #   装箱/拆箱模板（box<T> / unbox<T>）
 │   ├── reflection.h            #   System.Type 反射包装（typeof / GetType / 属性查询）
 │   ├── threading.h             #   多线程原语（Thread / Monitor / Interlocked）
+│   ├── task.h                  #   异步 Task/TaskAwaiter/AsyncTaskMethodBuilder
+│   ├── threadpool.h            #   线程池（queue_work / init / shutdown）
+│   ├── collections.h           #   List<T> / Dictionary<K,V> 运行时实现
+│   ├── mdarray.h               #   多维数组 T[,] 运行时实现
+│   ├── stackalloc.h            #   stackalloc 平台抽象宏（alloca）
 │   └── bcl/                    #   BCL 实现头文件
 │       ├── System.Object.h
 │       ├── System.String.h
@@ -181,13 +186,14 @@ dotnet run --project compiler/CIL2CPP.CLI -- codegen \
 │ 1. dotnet build       自动编译 .csproj，定位输出 DLL          │
 │ 2. Mono.Cecil 读取    解析 DLL 中的类型、方法、IL 指令         │
 │    (Debug: 同时读取 PDB 符号文件获取源码行号映射)              │
-│ 3. IR 构建            IL → 中间表示（6 遍）                   │
+│ 3. IR 构建            IL → 中间表示（7 遍）                   │
 │    Pass 1: 创建类型外壳（名称、标志）                          │
 │    Pass 2: 填充字段、基类、接口                               │
 │    Pass 3: 创建方法壳（签名，不含方法体）                      │
 │    Pass 4: 构建 VTable                                       │
 │    Pass 5: 构建接口实现映射                                   │
 │    Pass 6: 转换方法体（栈模拟 → 变量赋值，VTable 已就绪）      │
+│    Pass 7: 合成方法（record ToString/Equals/GetHashCode 等）   │
 │ 4. C++ 代码生成       IR → .h + .cpp + main.cpp + CMake      │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -387,6 +393,8 @@ void Program_Main() {
 | 终结器 / 析构函数 | ✅ | 编译器检测 `Finalize()` 方法，生成 finalizer wrapper → TypeInfo.finalizer，BoehmGC 自动注册 |
 | 显式接口实现 | ✅ | Cecil `.override` 指令解析，`void IFoo.Method()` 映射到正确的接口 VTable 槽位 |
 | 方法隐藏 (`new`) | ✅ | `newslot` 标志检测，`new virtual` 创建新 VTable 槽位而非覆盖父类 |
+| 默认接口方法 (DIM) | ✅ | C# 8+ 接口默认实现，未覆盖时使用接口方法体作为 VTable 回退 |
+| 泛型协变/逆变 (`out T`/`in T`) | ✅ | ECMA-335 II.9.11 variance-aware 可赋值检查：`IEnumerable<Dog>` → `IEnumerable<Animal>` |
 
 ### CIL 指令与前缀
 
@@ -433,8 +441,8 @@ void Program_Main() {
 | 元素地址 (`ref arr[i]`) | ✅ | ldelema → `array_get_element_ptr()` + 类型转换（带越界检查） |
 | 数组初始化器 (`new int[] {1,2,3}`) | ✅ | ldtoken + `RuntimeHelpers.InitializeArray` → 静态字节数组 + `memcpy`；`<PrivateImplementationDetails>` 类型自动过滤 |
 | 越界检查 | ✅ | `array_bounds_check()` → 抛出 IndexOutOfRangeException |
-| 多维数组 | ❌ | |
-| Span\<T\> / Memory\<T\> | ❌ | |
+| 多维数组 (`T[,]`) | ✅ | MdArray 运行时：`mdarray_create` / `Get` / `Set` / `Address` / `GetLength(dim)`，bounds check，行主序连续存储 |
+| Span\<T\> / ReadOnlySpan\<T\> | ✅ | BCL 拦截（.ctor/get_Item/get_Length/Slice/ToArray/GetPinnableReference），ref struct 检测（`IsByRefLikeAttribute`），stackalloc 集成 |
 
 ### 异常处理
 
@@ -444,15 +452,16 @@ void Program_Main() {
 | throw | ✅ | throw → `cil2cpp::throw_exception()`；运行时 `throw_null_reference()` 等便捷函数 |
 | try / catch / finally | ✅ | 编译器读取 IL ExceptionHandler 元数据 → 生成 `CIL2CPP_TRY` / `CIL2CPP_CATCH` / `CIL2CPP_FINALLY` 宏调用 |
 | rethrow | ✅ | `CIL2CPP_RETHROW` |
+| 异常过滤器 (`catch when`) | ✅ | ECMA-335 Filter handler，catch-all + 条件判断 + 条件 rethrow，`CIL2CPP_FILTER` / `CIL2CPP_ENDFILTER` 宏 |
 | 自动 null 检查 | ✅ | `null_check()` 内联函数 |
 | 栈回溯 | ⚠️ | `capture_stack_trace()` — Windows: DbgHelp, POSIX: backtrace；仅 Debug |
-| using 语句 | ⚠️ | try/finally + 接口分派已支持；需要 IDisposable 接口映射（多程序集模式下 BCL 可自动翻译） |
+| using 语句 | ✅ | try/finally + BCL 接口代理（IDisposable）→ 接口分派 Dispose()，单程序集/多程序集均可工作 |
 | 嵌套 try/catch/finally | ⚠️ | 宏基于 setjmp/longjmp，支持嵌套但复杂场景可能有限 |
 
 ### 标准库 (BCL)
 
-> Phase 4 已实现多程序集加载 + 树摇 + ICall 注册表，BCL 类型可通过 `--multi-assembly` 自动翻译。
-> 单程序集模式仍使用 `MapBclMethod()` 硬编码映射。
+> 多程序集模式：BCL 类型通过 `--multi-assembly` 自动翻译（树摇 + ICall 注册表）。
+> 单程序集模式：`MapBclMethod()` 硬编码映射 + BCL 拦截（集合类/LINQ/Span 等）。
 
 | 功能 | 状态 | 备注 |
 |------|------|------|
@@ -462,9 +471,11 @@ void Program_Main() {
 | Console.Write / ReadLine | ✅ | 手写映射 |
 | System.Math | ✅ | Abs, Max, Min, Sqrt, Floor, Ceil, Round, Pow, Sin, Cos, Tan, Asin, Acos, Atan, Atan2, Log, Log10, Exp → `<cmath>` |
 | 多程序集 BCL 自动翻译 | ⚠️ | `--multi-assembly` 模式：自动加载 BCL 程序集 + 树摇 + IL 翻译；需要更多 icall 覆盖 |
-| 集合类 (List, Dictionary, HashSet 等) | ⚠️ | 多程序集基础设施已就绪，需要完善 BCL icall 覆盖 |
+| List\<T\> / Dictionary\<K,V\> | ✅ | C++ 运行时实现：`list_create`/`list_add`/`list_get`/`list_set` + `dict_create`/`dict_add`/`dict_get`；BCL 拦截，含 Enumerator |
+| LINQ (Where/Select/ToList/Count/Any/First) | ✅ | 核心 LINQ 操作通过 BCL 拦截映射到 C++ 运行时函数；OrderBy/GroupBy/Join 未实现 |
+| yield return / IEnumerable | ✅ | C# 编译器生成迭代器状态机类，BCL 接口代理（IEnumerable\<T\>/IEnumerator\<T\>）启用接口分派 |
 | System.IO (File, Stream) | ❌ | 需要文件系统 icall 实现 |
-| System.Net | ❌ | Phase 6 |
+| System.Net | ❌ | 需要网络 icall 实现 |
 
 ### 委托与事件
 
@@ -474,20 +485,20 @@ void Program_Main() {
 | 事件 (event) | ✅ | C# 生成 add_/remove_ 方法 + 委托字段，Subscribe/Unsubscribe 通过 `Delegate.Combine/Remove` |
 | 多播委托 | ✅ | `Delegate.Combine` / `Delegate.Remove` 映射到运行时 `delegate_combine` / `delegate_remove` |
 | Lambda / 匿名方法 | ✅ | C# 编译器生成 `<>c` 静态类（无捕获）/ `<>c__DisplayClass`（闭包），编译器自动处理 |
-| LINQ | ⚠️ | 泛型 + 委托已支持，需要 `IEnumerable<T>` BCL 翻译（多程序集基础设施已就绪） |
+| LINQ | ✅ | Where/Select/ToList/ToArray/Count/Any/First/FirstOrDefault BCL 拦截；foreach 通过 BCL 接口代理完整支持 |
 
 ### 高级功能
 
 | 功能 | 状态 | 备注 |
 |------|------|------|
-| async / await | ⚠️ | 同步执行模型（Task 立即完成），支持 `Task<T>` + `await`，不支持真正并发 |
+| async / await | ✅ | 真正并发：线程池 + continuation + Task.Delay/WhenAll/WhenAny/Run；`Task<T>`/`TaskAwaiter<T>`/`AsyncTaskMethodBuilder<T>` BCL 拦截 |
 | 多线程 | ✅ | `Thread`（创建/Start/Join）、`Monitor`（Enter/Exit/Wait/Pulse）、`lock` 语句、`Interlocked`（Increment/Decrement/Exchange/CompareExchange）、`Thread.Sleep`、`volatile` 字段 |
 | 反射 (typeof / GetType) | ⚠️ | `typeof(T)` / `obj.GetType()` → 缓存 `Type` 对象；13 项属性（Name/FullName/IsValueType/IsPrimitive 等）；op_Equality/op_Inequality；ECMA-335 FieldInfo/MethodInfo 元数据数组；不支持 GetMethods/GetFields/Invoke |
-| 特性 (Attribute) | ❌ | |
-| unsafe 代码 (指针, fixed, stackalloc) | ⚠️ | Ldobj/Stobj（类型化解引用）/Ldflda/Ldsflda/全 Ldind/Stind 变体已支持；fixed/stackalloc 未处理 |
-| P/Invoke / DllImport | ❌ | |
+| 特性 (Attribute) | ⚠️ | 元数据存储 + 运行时查询（`type_has_attribute` / `type_get_attribute`）；支持基本类型 + 字符串构造参数；数组/嵌套属性参数未实现 |
+| unsafe 代码 (指针, fixed, stackalloc) | ✅ | `PointerType` 解析，`fixed`（pinned local → BoehmGC 保守扫描无需实际 pin），`stackalloc` → `localloc` → 平台 `alloca` 宏 |
+| P/Invoke / DllImport | ⚠️ | extern "C" 声明 + 基本类型/String marshaling（Ansi/Unicode/Auto）；struct marshaling / callback delegate 未实现 |
 | 默认参数 / 命名参数 | ✅ | C# 编译器在调用点填充默认值，IL 中无可选参数语义 |
-| ref struct / ref return | ❌ | |
+| ref struct | ✅ | `IsByRefLikeAttribute` 检测 → `IsRefStruct` 标志，Span\<T\> / ReadOnlySpan\<T\> 均为 ref struct |
 | init-only setter | ✅ | 编译为普通 setter + `modreq(IsExternalInit)`，CIL2CPP 忽略 modreq |
 
 ### 运行时
@@ -501,32 +512,25 @@ void Program_Main() {
 | 数组（类型化 + 越界检查） | ✅ | `array_get<T>` / `array_set<T>` / `array_get_element_ptr` + 编译器完整 ldelem/stelem/ldelema + 数组初始化器 |
 | 装箱/拆箱 | ✅ | `boxing.h` 模板：`box<T>()`, `unbox<T>()`, `unbox_ptr<T>()` |
 | 异常处理 (setjmp/longjmp) | ✅ | CIL2CPP_TRY/CATCH/FINALLY 宏 + 编译器完整生成 |
-| 增量/并发 GC | ❌ | BoehmGC 支持增量模式，未启用 |
+| 增量 GC | ✅ | `GC_enable_incremental()` 已启用，`gc::collect_a_little()` 增量回收 API |
 
 ---
 
 ## 已知限制
 
-### 计划实现的限制
+### 尚未实现的功能
 
-以下功能当前不支持，但在技术上可行，计划在未来版本中实现：
-
-| 限制 | 说明 | 计划阶段 |
-|------|------|---------|
-| `Span<T>` / `Memory<T>` / `ref struct` | 需要 byref 语义和栈分配支持 | Phase 6 |
-| 多维数组 (`T[,]`) | 仅支持一维数组 (`T[]`)，多维数组需要不同的内存布局 | Phase 6 |
-| `async` / `await` 真正并发 | 同步执行模型已实现，不支持 `Task.Delay`/`WhenAll`/`ValueTask` | Phase 6 |
-| 反射 — 动态查询 | `typeof(T)` / `GetType()` / Type 属性已支持；`GetMethods()` / `GetFields()` / `Invoke()` 未实现 | Phase 6 |
-| 特性 (`Attribute`) | 元数据存储和运行时查询 | Phase 6 |
-| P/Invoke / DllImport | 原生互操作，需要 marshaling 层 | Phase 6 |
-| `unsafe` 代码 (`fixed`, `stackalloc`) | `ldobj`/`stobj`（类型化）+ 全 `ldind`/`stind` 已支持；`fixed`/`stackalloc` 未处理 | Phase 6 |
-| LINQ | 需要 `IEnumerable<T>` BCL 翻译（基础设施已在 Phase 4 就绪） | Phase 6 |
-| 集合类 (`List<T>`, `Dictionary<K,V>`) | 需要 BCL 泛型类翻译（基础设施已在 Phase 4 就绪） | Phase 6 |
-| `using` 语句 | try/finally 已支持，需要 `IDisposable` 接口映射 | Phase 6 |
-| 增量/并发 GC | BoehmGC 支持增量模式，当前未启用 | Phase 6 |
-| SIMD / `System.Numerics.Vector` | 无平台内联函数 (intrinsics) 支持 | Phase 6+ |
-| 泛型协变/逆变 (`out T` / `in T`) | `IEnumerable<out T>` 等协变接口，需要运行时类型兼容性检查 | Phase 6 |
-| 默认接口方法 (C# 8+) | 接口中带默认实现的方法，需要 DIM 分派逻辑 | Phase 6 |
+| 限制 | 说明 |
+|------|------|
+| SIMD / `System.Numerics.Vector` | 需要平台特定内联函数 (SSE/AVX/NEON)，技术上可行但工作量大 |
+| 反射 — 动态查询 | `typeof(T)` / `GetType()` / Type 属性已支持；`GetMethods()` / `GetFields()` / `Invoke()` 未实现 |
+| IAsyncEnumerable\<T\> | 需要异步迭代器状态机支持 |
+| CancellationToken / TaskCompletionSource | Task 取消和手动完成基础设施 |
+| LINQ OrderBy / GroupBy / Join | 仅支持 Where/Select/ToList/Count/Any/First 等核心操作 |
+| P/Invoke struct marshaling | 基本类型 + String 已支持；结构体布局和回调委托未实现 |
+| Attribute 复杂参数 | 基本类型 + 字符串参数已支持；数组/嵌套属性/Type 参数未实现 |
+| System.IO / System.Net | 文件系统和网络 icall 未实现 |
+| Parallel LINQ (PLINQ) | 需要高级线程池调度 |
 
 ### 实现层面的已知限制
 
@@ -540,7 +544,6 @@ void Program_Main() {
 | 未识别的 IL 指令 | 遇到未处理的 IL 操作码时生成 `/* WARNING: unsupported opcode */` 注释占位符，不会报错。可能导致运行时行为不正确 |
 | 字符串方法有限 | 单程序集模式仅支持 `Concat`、`IsNullOrEmpty`、`Length`、`Contains`、`Substring`、`Replace`、`ToUpper`、`ToLower` 等少量方法。`string.Format`、`string.Join`、插值字符串（非 Concat 编译形式）等不支持 |
 | 字符串模式匹配 | 模式匹配 IL 层面全部支持（Roslyn 编译为 isinst/ceq/switch/分支链）。但字符串 `switch` / `is "literal"` 需要 `String.op_Equality` BCL 映射（单程序集模式未映射） |
-| `using` 语句 | try/finally 结构已支持，但需要 `IDisposable` 接口在运行时可解析。单程序集模式下缺少 BCL 接口定义 |
 
 ### AOT 架构根本限制
 
@@ -560,125 +563,23 @@ void Program_Main() {
 
 ---
 
-## 开发路线图
+## BCL 策略
 
-基于功能依赖关系的分阶段实现计划。每个阶段产出可用的增量：
-
-```
-Phase 1 (基础) ✅     Phase 2 (对象模型) ✅    Phase 3 (泛型/委托) ✅
-  数组 (全功能)         VTable 多态分派           泛型类+泛型方法
-  try/catch/finally     接口分派                  委托 → 事件
-  switch                枚举完整支持              Lambda/闭包
-  值类型+装箱/拆箱      运算符重载               属性 (auto+手动)
-  静态构造函数          终结器                   [InternalCall] 识别
-  System.Math
-  类型转换 (全部)
-       │                    │                        │
-       └────────────────────┘────────────────────────┘
-                                                     │
-              Phase 4 (多程序集/树摇) ✅         Phase 5 (高级运行时) ✅
-                多程序集加载+解析                  async/await (同步模型)
-                可达性分析 (树摇)                  多线程 (Thread/Monitor/lock/Interlocked)
-                ICall 注册表                      反射 (typeof/GetType/Type属性)
-                BCL 类型自动翻译                   Range/Index
-                --multi-assembly CLI
-```
-
-### BCL 策略：从手写映射到自动翻译
-
-Phase 1-3 的 BCL 支持通过 `MapBclMethod()` 硬编码映射（如 `Console.WriteLine` → `cil2cpp::System::Console_WriteLine`）。Phase 4 实现了 **Unity IL2CPP 风格**的多程序集架构：将 BCL 程序集的 IL 和用户代码一起翻译为 C++，仅在最底层提供 icall（内部调用）实现。
+CIL2CPP 使用两种互补的 BCL 支持策略：
 
 ```
-Phase 1-3 (单程序集):                   Phase 4+ (多程序集):
+单程序集模式:                             多程序集模式 (--multi-assembly):
   C# 用户代码                            C# 用户代码 + 第三方库 + BCL
       ↓ IL → C++                             ↓ IL → C++ (同一流水线)
   MapBclMethod() 硬编码映射               可达性分析 (树摇)
-      ↓                                      ↓ 仅翻译可达类型
-  手写 C++ 运行时实现                     icall 层 (C++ 薄封装)
-      ↓                                      ↓
-  printf / <cmath> / ...                 printf / <cmath> / OS API / ...
+  + BCL 拦截 (集合/LINQ/Span 等)              ↓ 仅翻译可达类型
+      ↓                                  icall 层 (C++ 薄封装)
+  C++ 运行时实现                              ↓
+      ↓                                  printf / <cmath> / OS API / ...
+  printf / <cmath> / ...
 ```
 
 **icall（内部调用）** 是 .NET 中标记为 `[MethodImpl(MethodImplOptions.InternalCall)]` 的方法——BCL 的 C# 代码调用到原生实现的边界。例如 `Math.Sin()` 的 C# 代码最终调用一个 icall，该 icall 的 C++ 实现调用 `<cmath>` 的 `sin()`。
-
-**过渡路径：**
-
-| 阶段 | BCL 方式 | 覆盖面 |
-|------|---------|--------|
-| Phase 1-2 | `MapBclMethod()` 手写映射 + 手写 C++ 实现 | Object, String, Console, Math |
-| Phase 3 | 手写映射 + 开始识别 `[InternalCall]` 特性 | 同上 + 泛型集合类（手写） |
-| Phase 4 ✅ | **多程序集加载 + 树摇 + ICall 注册表** | 跨程序集类型/方法解析，自动翻译可达 BCL 类型 |
-| Phase 5 | 完整 BCL icall 覆盖 + 高级运行时 | System.IO, System.Net, async/await 等 |
-
-### Phase 1：基础完善 ✅ 已完成
-
-核心功能已全部实现，解锁后续所有阶段的前置条件。
-
-| 功能 | 状态 | 说明 |
-|------|------|------|
-| **数组** | ✅ | 创建 / 元素读写 / 长度 / 越界检查 / 元素地址 / 数组初始化器 (`RuntimeHelpers.InitializeArray`) |
-| **try / catch / finally** | ✅ | IL ExceptionHandler 元数据 → `CIL2CPP_TRY` / `CIL2CPP_CATCH` / `CIL2CPP_FINALLY` 宏 |
-| **switch 语句** | ✅ | IL switch 跳转表 → C++ switch/goto |
-| **值类型 (struct) 语义** | ✅ | initobj + box/unbox/unbox.any |
-| **静态构造函数 (.cctor)** | ✅ | 自动检测 + `_ensure_cctor()` once-guard |
-| **System.Math** | ✅ | `MapBclMethod()` 映射 → `<cmath>` / `<algorithm>` |
-| **类型转换** | ✅ | 全部 13 种 Conv_* 指令 |
-| **编译器内部类型过滤** | ✅ | `<PrivateImplementationDetails>` 自动过滤不生成 C++ 代码 |
-| **goto/label 作用域** | ✅ | 自动为 label 间代码生成 `{}` 作用域，避免 C++ goto 跨声明错误 |
-
-### Phase 2：对象模型完善 ✅ 已完成
-
-完成面向对象体系，支持多态和接口。
-
-| 功能 | 状态 | 说明 |
-|------|------|------|
-| **VTable 多态分派** | ✅ | IR 构建 6 遍（方法壳 → VTable → 方法体），生成函数指针数组 + VTable 结构体，callvirt 通过 `vtable->methods[slot]` 分派 |
-| **接口分派** | ✅ | InterfaceVTable 结构体 + `type_get_interface_vtable()` 运行时查找（支持基类链回溯），编译器生成接口方法表数据 |
-| **枚举完整支持** | ✅ | typedef 到底层整数类型 + constexpr 命名常量 + Enum\|ValueType TypeInfo 标志 |
-| **运算符重载** | ✅ | C# `op_Addition` 等静态方法调用自动识别，编译器标记 IsOperator + OperatorName |
-| **终结器** | ✅ | 编译器检测 `Finalize()` 方法，生成 finalizer wrapper 函数 → TypeInfo.finalizer，BoehmGC `GC_register_finalizer_no_order()` 自动注册 |
-
-### Phase 3：泛型与委托 ✅ 已完成
-
-解锁集合类库和函数式编程范式。
-
-| 功能 | 状态 | 说明 |
-|------|------|------|
-| **泛型类** | ✅ | 单态化（monomorphization）：`Wrapper<int>` → `Wrapper_1_System_Int32` 独立 C++ 类型 |
-| **泛型方法** | ✅ | 单态化：`Identity<int>()` → `GenericUtils_Identity_System_Int32()` 独立函数 |
-| **属性** | ✅ | C# 编译器生成的 get_/set_ 方法调用（auto-property + 手动 property） |
-| **委托** | ✅ | ldftn/ldvirtftn → 函数指针，newobj → `delegate_create()`，Invoke → `IRDelegateInvoke` |
-| **多播委托** | ✅ | `Delegate.Combine` / `Delegate.Remove` 映射到运行时 `delegate_combine` / `delegate_remove` |
-| **事件** | ✅ | C# 生成 add_/remove_ 方法 + 委托字段，Subscribe/Unsubscribe 通过 `Delegate.Combine/Remove` |
-| **Lambda / 闭包** | ✅ | C# 编译器生成 `<>c` 静态类（无捕获）/ `<>c__DisplayClass`（闭包），编译器自动处理 |
-| **`[InternalCall]` 识别** | ✅ | 编译器检测 `MethodImplOptions.InternalCall` 特性，跳过方法体生成。为 Phase 4 icall 层做准备 |
-
-### Phase 4：多程序集 + 树摇 ✅ 已完成
-
-多程序集加载、跨程序集类型解析、可达性分析（树摇）、ICall 注册表。支持第三方库和 BCL IL 自动翻译。
-
-| 功能 | 状态 | 说明 |
-|------|------|------|
-| **自定义程序集解析器** | ✅ | `CIL2CPPAssemblyResolver`：使 Mono.Cecil 的 `.Resolve()` 跨程序集工作（搜索输出目录、NuGet 缓存、.NET 运行时目录） |
-| **deps.json 解析** | ✅ | `DepsJsonParser`：解析 `dotnet build` 生成的 deps.json，发现 NuGet 包依赖及其 DLL 路径 |
-| **.NET 运行时定位** | ✅ | `RuntimeLocator`：通过 runtimeconfig.json 定位 .NET 实现程序集（`System.Private.CoreLib.dll` 等） |
-| **多程序集容器** | ✅ | `AssemblySet`：统一管理根程序集 + 依赖程序集，按来源分类（User / ThirdParty / BCL），按需懒加载 |
-| **可达性分析（树摇）** | ✅ | `ReachabilityAnalyzer`：从入口点出发的工作表定点算法，扫描 IL 指令发现可达类型和方法，避免编译不需要的 BCL 类型 |
-| **ICall 注册表** | ✅ | `ICallRegistry`：42+ 个 `[InternalCall]` 方法到 C++ 函数的映射（Object, String, Array, Math, Environment, GC, Buffer, Type, Monitor, RuntimeHelpers） |
-| **运行时提供类型过滤** | ✅ | 代码生成器跳过已有 C++ 运行时实现的类型（Object, String, Array, Exception, Delegate）的结构体定义和方法实现 |
-| **`--multi-assembly` CLI** | ✅ | 新增命令行标志，启用完整多程序集流水线：AssemblySet → 可达性分析 → IRBuilder → C++ 代码生成 |
-| **运行时 icall 实现** | ✅ | `runtime/src/icall/icall.cpp`：Environment (NewLine, TickCount, ProcessorCount)、Buffer (Memmove, BlockCopy)、Type (GetTypeFromHandle → 反射 Type 对象)、Monitor (Enter/Exit/Wait/Pulse)、RuntimeHelpers (InitializeArray) |
-
-### Phase 5：高级运行时 ✅ 已完成
-
-async/await、多线程、基础反射、Range/Index。
-
-| 功能 | 状态 | 说明 |
-|------|------|------|
-| **async / await** | ✅ | 同步执行模型（Task 立即完成）：`Task<T>` / `TaskAwaiter<T>` / `AsyncTaskMethodBuilder<T>` BCL 拦截，Debug（类）/ Release（结构体）状态机 |
-| **多线程** | ✅ | `Thread`（创建/Start/Join）、`Monitor`（Enter/Exit/Wait/Pulse/TryEnter）、`lock` 语句、`Interlocked`（Increment/Decrement/Exchange/CompareExchange，int/long）、`Thread.Sleep`、`volatile` 字段（`std::atomic` load/store） |
-| **反射 (typeof / GetType)** | ✅ | `typeof(T)` → `ldtoken` + `GetTypeFromHandle` → 缓存 `Type` 对象（引用相等）；`obj.GetType()` → `Type`；13 项属性（Name/FullName/Namespace/BaseType/IsValueType/IsClass/IsPrimitive/IsInterface/IsAbstract/IsSealed/IsEnum/IsArray/IsGenericType）；`op_Equality`/`op_Inequality`；ECMA-335 FieldInfo/MethodInfo 元数据数组（flags/offset/method_pointer） |
-| **Range / Index** | ✅ | `Index`（构造/GetOffset/Value/IsFromEnd）、`Range`（GetOffsetAndLength）、`arr[^1]`、`arr[1..3]`、`string[1..4]` |
 
 ---
 
@@ -737,7 +638,7 @@ runtime/CMakeLists.txt
 | Finalizer 检测 | ✅ | 编译器检测 `Finalize()` 方法，生成 wrapper → TypeInfo.finalizer，`GC_register_finalizer_no_order()` 自动注册 |
 | GC 统计 | ✅ | `GC_get_heap_size()` / `GC_get_total_bytes()` / `GC_get_gc_no()` |
 | Write barrier | ✅ | 空操作（BoehmGC 不需要） |
-| 增量/并发回收 | ❌ | BoehmGC 支持但未启用 |
+| 增量回收 | ✅ | `GC_enable_incremental()` 已启用，`gc::collect_a_little()` 增量回收 API |
 
 ---
 
@@ -778,11 +679,12 @@ dotnet test compiler/CIL2CPP.Tests --collect:"XPlat Code Coverage"
 | AssemblyReader | 12 |
 | IRField / IRVTableEntry / IRInterfaceImpl | 7 |
 | SequencePointInfo | 5 |
-| **合计** | **1092** |
+| BclProxy | 20 |
+| **合计** | **1140** |
 
 ### 运行时单元测试 (C++ / Google Test)
 
-测试覆盖：GC（分配/回收/根/终结器）、字符串（创建/连接/比较/哈希/驻留）、数组（创建/越界检查）、类型系统（继承/接口/注册）、对象模型（分配/转型/相等性）、异常处理（抛出/捕获/栈回溯）、多线程（Thread/Monitor/Interlocked）、反射（Type 缓存/属性/方法）。
+测试覆盖：GC（分配/回收/根/终结器/增量）、字符串（创建/连接/比较/哈希/驻留）、数组（创建/越界检查/多维）、类型系统（继承/接口/注册/泛型协变）、对象模型（分配/转型/相等性）、异常处理（抛出/捕获/过滤/栈回溯）、多线程（Thread/Monitor/Interlocked）、反射（Type 缓存/属性/方法）、集合（List/Dictionary）、异步（线程池/Task/continuation/combinator）。
 
 ```bash
 # 配置 + 编译
@@ -795,18 +697,20 @@ ctest --test-dir runtime/tests/build -C Debug --output-on-failure
 
 | 模块 | 测试数 |
 |------|--------|
+| Exception | 55 (1 disabled) |
 | String | 52 |
 | Reflection | 46 |
+| Collections | 42 |
 | Type System | 39 |
+| Array | 34 |
 | Object | 28 |
 | Console | 27 |
 | Boxing | 26 |
-| Exception | 55 (1 disabled) |
-| Array | 21 |
+| Async (Task/ThreadPool) | 19 |
 | Delegate | 18 |
 | Threading | 17 |
-| GC | 14 |
-| **合计** | **343** |
+| GC | 23 |
+| **合计** | **426 (1 disabled)** |
 
 ### 端到端集成测试
 
@@ -816,14 +720,14 @@ ctest --test-dir runtime/tests/build -C Debug --output-on-failure
 python tools/dev.py integration
 ```
 
-| Phase | 测试内容 | 测试数 |
-|-------|---------|--------|
-| 0 | 前置检查（dotnet、CMake、runtime 安装） | 3 |
-| 1 | HelloWorld 可执行程序（codegen → build → run → 验证输出） | 5 |
-| 2 | 类库项目（无入口点 → add_library → build） | 4 |
-| 3 | Debug 配置（#line 指令、IL 注释、Debug build + run） | 4 |
-| 4 | 字符串字面量（string_literal、__init_string_literals） | 2 |
-| 5 | 多程序集代码生成（--multi-assembly、跨程序集类型/方法、MathLib 引用） | 5 |
+| 阶段 | 测试内容 | 测试数 |
+|------|---------|--------|
+| 前置检查 | dotnet、CMake、runtime 安装 | 3 |
+| HelloWorld | 可执行程序（codegen → build → run → 验证输出） | 5 |
+| 类库项目 | 无入口点 → add_library → build | 4 |
+| Debug 配置 | #line 指令、IL 注释、Debug build + run | 4 |
+| 字符串字面量 | string_literal、__init_string_literals | 2 |
+| 多程序集 | --multi-assembly、跨程序集类型/方法、MathLib 引用 | 5 |
 | **合计** | | **23** |
 
 ### 全部运行
@@ -851,8 +755,8 @@ python tools/dev.py build                  # 编译 compiler + runtime
 python tools/dev.py build --compiler       # 仅编译 compiler
 python tools/dev.py build --runtime        # 仅编译 runtime
 python tools/dev.py test --all             # 运行全部测试（编译器 + 运行时 + 集成）
-python tools/dev.py test --compiler        # 仅编译器测试 (1022 xUnit)
-python tools/dev.py test --runtime         # 仅运行时测试 (280 GTest)
+python tools/dev.py test --compiler        # 仅编译器测试 (1140 xUnit)
+python tools/dev.py test --runtime         # 仅运行时测试 (426 GTest)
 python tools/dev.py test --coverage        # 测试 + 覆盖率 HTML 报告
 python tools/dev.py install                # 安装 runtime (Debug + Release)
 python tools/dev.py codegen HelloWorld     # 快速代码生成测试
