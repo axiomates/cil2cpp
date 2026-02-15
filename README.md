@@ -23,14 +23,14 @@ cil2cpp/
 │   │   ├── IL/                 #     IL 解析 (Mono.Cecil)
 │   │   ├── IR/                 #     中间表示 + 类型映射
 │   │   └── CodeGen/            #     C++ 代码生成
-│   ├── CIL2CPP.Tests/          #   编译器单元测试 (xUnit, 1172 tests)
+│   ├── CIL2CPP.Tests/          #   编译器单元测试 (xUnit, 1172+ tests)
 │   └── samples/                #   示例 C# 程序
 ├── runtime/                    # C++ 运行时库 (CMake 项目)
 │   ├── CMakeLists.txt
 │   ├── cmake/                  #   CMake 包配置模板
 │   ├── include/cil2cpp/        #   头文件
 │   ├── src/                    #   GC、类型系统、异常、BCL
-│   └── tests/                  #   运行时单元测试 (Google Test, 480 tests)
+│   └── tests/                  #   运行时单元测试 (Google Test, 508+ tests)
 └── tools/
     └── dev.py                  # 开发者 CLI (build/test/coverage/codegen/integration)
 ```
@@ -462,21 +462,21 @@ void Program_Main() {
 
 ### 标准库 (BCL)
 
-> BCL 方法调用通过 ICallRegistry（85+ 映射）和 TryEmit* 拦截（28 个拦截器）统一路由到 C++ 运行时。
+> BCL 方法**不编译 IL**，而是通过手动映射路由到 C++ 运行时实现。这与 Unity IL2CPP（编译全部 BCL IL）不同，更接近嵌入式 .NET 运行时的做法。每个支持的 BCL 方法都有对应的 C++ 实现。
 
 | 功能 | 状态 | 备注 |
 |------|------|------|
-| System.Object (ToString, GetHashCode, Equals, GetType) | ✅ | ICallRegistry + 运行时实现；`GetType()` 返回缓存的 `Type` 对象 |
-| System.String (Concat, Format, Join, Split, Contains, Replace, ...) | ✅ | ICallRegistry + 运行时实现；40+ 字符串方法 |
-| Console.WriteLine (全部重载) | ✅ | ICallRegistry 映射，支持 String/Int32/Int64/Single/Double/Boolean/Object |
-| Console.Write / ReadLine | ✅ | ICallRegistry 映射 |
-| System.Math | ✅ | Abs, Max, Min, Sqrt, Floor, Ceil, Round, Pow, Sin, Cos, Tan, Asin, Acos, Atan, Atan2, Log, Log2, Log10, Exp, Truncate, Sinh, Cosh, Tanh, Sign, Clamp → `<cmath>` |
-| 多程序集模式 | ⚠️ | `--multi-assembly`：加载 BCL 程序集 + 可达性分析树摇 + 类型布局生成；BCL 方法体当前为 stub，计划逐步编译 IL |
-| List\<T\> / Dictionary\<K,V\> | ✅ | C++ 运行时实现：`list_create`/`list_add`/`list_get`/`list_set` + `dict_create`/`dict_add`/`dict_get`；BCL 拦截，含 Enumerator |
-| LINQ (Where/Select/OrderBy/GroupBy/Distinct/Skip/Take/...) | ✅ | 完整 LINQ 操作：核心运算符通过 BCL IL 编译 + 运行时拦截 |
-| yield return / IEnumerable | ✅ | C# 编译器生成迭代器状态机类，BCL 接口代理（IEnumerable\<T\>/IEnumerator\<T\>）启用接口分派 |
-| System.IO (File, Directory, Path) | ✅ | File（ReadAllText/WriteAllText/ReadAllLines/WriteAllLines/AppendAllText/Exists/Delete/Copy/ReadAllBytes/WriteAllBytes）、Directory（Exists/CreateDirectory/Delete）、Path（Combine/GetFileName/GetDirectoryName/GetExtension/GetFullPath/IsPathRooted） |
-| System.Net | ❌ | 需要网络 icall 实现 |
+| System.Object (ToString, GetHashCode, Equals, GetType) | ✅ | C++ 运行时实现；`GetType()` 返回缓存的 `Type` 对象 |
+| System.String (40+ 方法) | ✅ | Concat/Format/Join/Split/Contains/Replace/IndexOf/Substring/Trim/PadLeft 等，全部为 C++ 手动实现 |
+| Console.WriteLine / Write / ReadLine | ✅ | C++ 映射到 printf/fgets |
+| System.Math (25 个函数) | ✅ | 直接映射到 `<cmath>`（Abs/Sqrt/Sin/Cos/Pow/Log 等） |
+| 多程序集模式 | ⚠️ | `--multi-assembly`：加载引用程序集 + 可达性分析树摇；BCL 方法体大部分为 stub，仅 Nullable/Index/Range 编译 IL |
+| List\<T\> / Dictionary\<K,V\> | ✅ | C++ 运行时实现（不编译 BCL IL），含 Enumerator |
+| LINQ (14 个操作符) | ✅ | Where/Select/OrderBy/Count/Any/All/First/Last/Sum/Min/Max/ToArray/ToList/Contains，全部为 C++ 拦截实现 |
+| yield return / IEnumerable | ✅ | C# 编译器生成迭代器状态机类，BCL 接口代理启用接口分派 |
+| IAsyncEnumerable\<T\> | ✅ | `await foreach` 支持，ValueTask/AsyncIteratorMethodBuilder BCL 拦截 |
+| System.IO (File, Directory, Path) | ✅ | 20+ 方法，C++ 映射到 OS API（fopen/fread/stat 等） |
+| System.Net | ❌ | 需要网络层 C++ 实现 |
 
 ### 委托与事件
 
@@ -492,10 +492,11 @@ void Program_Main() {
 
 | 功能 | 状态 | 备注 |
 |------|------|------|
-| async / await | ✅ | 真正并发：线程池 + continuation + Task.Delay/WhenAll/WhenAny/Run；`Task<T>`/`TaskAwaiter<T>`/`AsyncTaskMethodBuilder<T>` BCL 拦截 |
+| async / await | ✅ | 真正并发：线程池 + continuation + Task.Delay/WhenAll/WhenAny/Run；Task\<T\>/TaskAwaiter\<T\>/AsyncTaskMethodBuilder\<T\> 拦截 |
+| await foreach (IAsyncEnumerable) | ✅ | 异步迭代器状态机，ValueTask\<T\>/AsyncIteratorMethodBuilder/ManualResetValueTaskSourceCore 拦截 |
 | CancellationToken | ✅ | `CancellationTokenSource`（Create/Cancel/IsCancellationRequested/Token）+ `CancellationToken`（ThrowIfCancellationRequested）+ `TaskCompletionSource<T>` |
 | 多线程 | ✅ | `Thread`（创建/Start/Join）、`Monitor`（Enter/Exit/Wait/Pulse）、`lock` 语句、`Interlocked`（Increment/Decrement/Exchange/CompareExchange）、`Thread.Sleep`、`volatile` 字段 |
-| 反射 (typeof / GetType) | ⚠️ | `typeof(T)` / `obj.GetType()` → 缓存 `Type` 对象；13 项属性（Name/FullName/IsValueType/IsPrimitive 等）；op_Equality/op_Inequality；ECMA-335 FieldInfo/MethodInfo 元数据数组；不支持 GetMethods/GetFields/Invoke |
+| 反射 (typeof / GetType / GetMethods / GetFields) | ✅ | `typeof(T)` / `obj.GetType()` → 缓存 `Type` 对象；13 项属性；GetMethods/GetFields/GetMethod/GetField → ManagedMethodInfo/ManagedFieldInfo；MethodInfo.Invoke/GetParameters；FieldInfo.GetValue/SetValue；MemberInfo 通用分派 |
 | 特性 (Attribute) | ⚠️ | 元数据存储 + 运行时查询（`type_has_attribute` / `type_get_attribute`）；支持基本类型 + 字符串构造参数；数组/嵌套属性参数未实现 |
 | unsafe 代码 (指针, fixed, stackalloc) | ✅ | `PointerType` 解析，`fixed`（pinned local → BoehmGC 保守扫描无需实际 pin），`stackalloc` → `localloc` → 平台 `alloca` 宏 |
 | P/Invoke / DllImport | ⚠️ | extern "C" 声明 + 基本类型/String marshaling（Ansi/Unicode/Auto）；struct marshaling / callback delegate 未实现 |
@@ -525,12 +526,11 @@ void Program_Main() {
 | 限制 | 说明 |
 |------|------|
 | SIMD / `System.Numerics.Vector` | 需要平台特定内联函数 (SSE/AVX/NEON)，技术上可行但工作量大 |
-| 反射 — 动态查询 | `typeof(T)` / `GetType()` / Type 属性已支持；`GetMethods()` / `GetFields()` / `Invoke()` 未实现 |
-| IAsyncEnumerable\<T\> | 需要异步迭代器状态机支持 |
 | P/Invoke struct marshaling | 基本类型 + String 已支持；结构体布局和回调委托未实现 |
 | Attribute 复杂参数 | 基本类型 + 字符串参数已支持；数组/嵌套属性/Type 参数未实现 |
-| System.Net | 网络 icall 未实现 |
+| System.Net | 网络层 C++ 实现未开发 |
 | Parallel LINQ (PLINQ) | 需要高级线程池调度 |
+| BCL 方法覆盖范围 | BCL 方法为手动映射模式，未映射的方法不可用（如 String 的 Regex 重载、Span-based 重载） |
 
 ### 实现层面的已知限制
 
@@ -542,7 +542,7 @@ void Program_Main() {
 | `System.TypedReference` | `mkrefany`/`refanytype`/`refanyval` 指令不支持（C# 的 `__makeref`/`__reftype`/`__refvalue`）。极少使用，.NET 不鼓励 |
 | 泛型约束不验证 | `where T : IComparable` 等泛型约束在编译期不验证。不满足约束的代码可以编译，但运行时可能产生未定义行为 |
 | 未识别的 IL 指令 | 遇到未处理的 IL 操作码时生成 `/* WARNING: unsupported opcode */` 注释占位符，不会报错。可能导致运行时行为不正确 |
-| 字符串方法 | 支持 40+ 方法（Concat/Format/Join/Split/Contains/Replace/Substring/IndexOf/Trim/PadLeft 等）。少数高级方法（正则表达式、Span-based 重载）不支持 |
+| 字符串方法 | 支持 40+ 方法（Concat/Format/Join/Split/Contains/Replace/Substring/IndexOf/Trim/PadLeft 等），均为 C++ 手动实现。未实现的方法（正则表达式重载、Span-based 重载、IFormatProvider 重载）需要逐个添加 C++ 实现 |
 | 字符串模式匹配 | ✅ 已修复。`String.op_Equality` 已映射，字符串 `switch` / `is "literal"` 完全工作 |
 
 ### AOT 架构根本限制
@@ -556,7 +556,7 @@ void Program_Main() {
 | `Expression<T>.Compile()` | 运行时编译表达式树为可执行代码 |
 | `Assembly.Load()` / `Assembly.LoadFrom()` | 运行时动态加载程序集——AOT 要求所有代码在编译期可知 |
 | `Activator.CreateInstance(string typeName)` | 按名称字符串动态实例化——编译期无法确定目标类型 |
-| `MethodInfo.Invoke()` | 反射调用任意方法——需要运行时解释器或 JIT |
+| `MethodInfo.Invoke()` (任意参数) | 完整反射调用需要运行时解释器；当前支持 0-2 参数的 Invoke |
 | `Type.MakeGenericType()` | 运行时构造泛型类型——单态化必须在编译期完成 |
 | `ExpandoObject` / `dynamic` | DLR (Dynamic Language Runtime) 完全依赖运行时绑定 |
 | 运行时代码热更新 | 无 JIT 编译器，编译后的机器码不可替换 |
@@ -565,33 +565,48 @@ void Program_Main() {
 
 ## BCL 策略
 
-CIL2CPP 使用统一的 BCL 方法解析流水线（两种程序集模式共享）：
+### 与 Unity IL2CPP 的关键区别
+
+**Unity IL2CPP** 编译几乎全部 BCL IL 为 C++，仅在最底层保留 `[InternalCall]`（GC、OS API）。
+**CIL2CPP** 采用 **手动映射模型**：每个支持的 BCL 方法都有对应的 C++ 运行时实现，BCL IL 不被编译（3 个例外）。
+
+这是一个务实的架构选择——完整编译 BCL IL 需要处理极深的依赖链（如 String.Format → Number → IFormatProvider → CultureInfo → ...），工程量巨大。当前模型类似嵌入式 .NET 运行时的做法。
+
+### BCL 方法解析流水线
 
 ```
 C# 用户代码中的 BCL 调用
     ↓
-TryEmit* 拦截（28 个拦截器）
-  Nullable<T>, ValueTuple, Task<T>, Span<T>,
-  List<T>, Dictionary<K,V>, Thread, Type,
-  CancellationToken, File, Directory, Path, ...
+TryEmit* 拦截（42 个拦截器）
+  Task<T>, Span<T>, List<T>, Dictionary<K,V>,
+  Thread, LINQ, Reflection, CancellationToken,
+  ValueTuple, AsyncEnumerable, Collections, ...
     ↓ 未拦截的调用
-ICallRegistry 查找（120+ 注册映射）
-  Object, String, Console, Math, Array,
-  Delegate, Monitor, Interlocked, GC,
-  File, Directory, Path, ...
+ICallRegistry 查找（140 注册映射）
+  ├─ 真正 icall（43 个）: Monitor, Interlocked, GC, Buffer, Thread.Sleep, ...
+  │  → 无 IL 方法体，必须由 C++ 实现
+  └─ 手动映射（97 个）: String, Console, Math, File, Array, Delegate, ...
+     → 有 IL 方法体但选择用 C++ 实现（避免编译 BCL 依赖链）
     ↓
 C++ 运行时实现
     ↓
 printf / <cmath> / BoehmGC / OS API / fopen / ...
 ```
 
-> **BCL IL 编译进展**：Phase 8 已将部分 BCL 类型（Nullable/Index/Range/LINQ）从 TryEmit* 拦截迁移为直接编译 BCL IL（多程序集模式），逐步向 Unity IL2CPP 架构靠拢。
+### 两种程序集加载模式
 
-两种程序集加载模式：
 - **单程序集模式**（默认）：仅编译用户代码，BCL 接口通过合成代理提供
-- **多程序集模式**（`--multi-assembly`）：加载用户 + 第三方 + BCL 程序集，可达性分析树摇
+- **多程序集模式**（`--multi-assembly`）：加载用户 + 第三方 + BCL 程序集，可达性分析树摇。BCL IL 编译目前仅限 Nullable\<T\>/Index/Range 三个简单值类型
 
-**icall（内部调用）** 是 .NET 中标记为 `[MethodImpl(MethodImplOptions.InternalCall)]` 的方法——BCL 的 C# 代码调用到原生实现的边界。例如 `Math.Sin()` 的 C# 代码最终调用一个 icall，该 icall 的 C++ 实现调用 `<cmath>` 的 `sin()`。
+### 为什么某些 BCL 方法不支持？
+
+由于 BCL 方法为手动映射，未映射的方法不可用。例如：
+- `String.Replace(char, char)` ✅ 已映射
+- `String.Replace(string, string, StringComparison)` ❌ 未映射
+- `Regex.Match()` ❌ 整个正则表达式库未实现
+- LINQ `GroupBy` ❌ 仅支持 14 个最常用的操作符
+
+要支持新的 BCL 方法，需要在 ICallRegistry 或 TryEmit* 中添加映射并编写对应的 C++ 实现。
 
 ---
 
@@ -692,7 +707,7 @@ dotnet test compiler/CIL2CPP.Tests --collect:"XPlat Code Coverage"
 | IRField / IRVTableEntry / IRInterfaceImpl | 7 |
 | SequencePointInfo | 5 |
 | BclProxy | 20 |
-| **合计** | **~1172** |
+| **合计** | **1172+** |
 
 ### 运行时单元测试 (C++ / Google Test)
 
@@ -719,10 +734,11 @@ ctest --test-dir runtime/tests/build -C Debug --output-on-failure
 | Console | 27 |
 | Boxing | 26 |
 | GC | 23 |
+| MemberInfo (Reflection) | 28 |
 | Async (Task/ThreadPool) | 19 |
 | Delegate | 18 |
 | Threading | 17 |
-| **合计** | **~480 (1 disabled)** |
+| **合计** | **508+ (1 disabled)** |
 
 ### 端到端集成测试
 
@@ -767,8 +783,8 @@ python tools/dev.py build                  # 编译 compiler + runtime
 python tools/dev.py build --compiler       # 仅编译 compiler
 python tools/dev.py build --runtime        # 仅编译 runtime
 python tools/dev.py test --all             # 运行全部测试（编译器 + 运行时 + 集成）
-python tools/dev.py test --compiler        # 仅编译器测试 (1172 xUnit)
-python tools/dev.py test --runtime         # 仅运行时测试 (480 GTest)
+python tools/dev.py test --compiler        # 仅编译器测试 (1172+ xUnit)
+python tools/dev.py test --runtime         # 仅运行时测试 (508+ GTest)
 python tools/dev.py test --coverage        # 测试 + 覆盖率 HTML 报告
 python tools/dev.py install                # 安装 runtime (Debug + Release)
 python tools/dev.py codegen HelloWorld     # 快速代码生成测试

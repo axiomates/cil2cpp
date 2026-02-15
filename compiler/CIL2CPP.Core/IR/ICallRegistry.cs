@@ -5,8 +5,9 @@ namespace CIL2CPP.Core.IR;
 /// <summary>
 /// Unified registry for all BCL method → C++ runtime mappings.
 /// Split into two categories:
-///   - True ICalls: always active (no compilable IL exists — threading, GC, type system)
-///   - Managed Shortcuts: active in SA mode, skippable in MA mode when BCL IL compiles
+///   - True ICalls: always active (no compilable IL exists — GC, threading, type system, native math)
+///   - Managed Shortcuts: C++ implementations for BCL methods that have IL bodies
+///     (active by default; skippable via skipManaged=true if BCL IL compilation is enabled)
 /// </summary>
 public static class ICallRegistry
 {
@@ -97,8 +98,41 @@ public static class ICallRegistry
         RegisterICall("System.Runtime.CompilerServices.RuntimeHelpers", "IsReferenceOrContainsReferences", 0,
             "cil2cpp::icall::RuntimeHelpers_IsReferenceOrContainsReferences");
 
+        // ===== System.Math (native math — BCL IL also calls [InternalCall] at bottom) =====
+        RegisterICallTyped("System.Math", "Abs", 1, "System.Single", "std::fabsf");
+        RegisterICallTyped("System.Math", "Abs", 1, "System.Double", "std::fabs");
+        RegisterICall("System.Math", "Abs", 1, "std::abs"); // fallback for int/long
+        RegisterICall("System.Math", "Max", 2, "std::max");
+        RegisterICall("System.Math", "Min", 2, "std::min");
+        RegisterICall("System.Math", "Sqrt", 1, "std::sqrt");
+        RegisterICall("System.Math", "Floor", 1, "std::floor");
+        RegisterICall("System.Math", "Ceiling", 1, "std::ceil");
+        RegisterICall("System.Math", "Round", 1, "std::round");
+        RegisterICall("System.Math", "Pow", 2, "std::pow");
+        RegisterICall("System.Math", "Sin", 1, "std::sin");
+        RegisterICall("System.Math", "Cos", 1, "std::cos");
+        RegisterICall("System.Math", "Tan", 1, "std::tan");
+        RegisterICall("System.Math", "Asin", 1, "std::asin");
+        RegisterICall("System.Math", "Acos", 1, "std::acos");
+        RegisterICall("System.Math", "Atan", 1, "std::atan");
+        RegisterICall("System.Math", "Atan2", 2, "std::atan2");
+        RegisterICall("System.Math", "Log", 1, "std::log");
+        RegisterICall("System.Math", "Log10", 1, "std::log10");
+        RegisterICall("System.Math", "Log2", 1, "std::log2");
+        RegisterICall("System.Math", "Exp", 1, "std::exp");
+        RegisterICall("System.Math", "Truncate", 1, "std::trunc");
+        RegisterICall("System.Math", "Sinh", 1, "std::sinh");
+        RegisterICall("System.Math", "Cosh", 1, "std::cosh");
+        RegisterICall("System.Math", "Tanh", 1, "std::tanh");
+        RegisterICallTyped("System.Math", "Sign", 1, "System.Int32", "cil2cpp::math_sign_i32");
+        RegisterICallTyped("System.Math", "Sign", 1, "System.Int64", "cil2cpp::math_sign_i64");
+        RegisterICallTyped("System.Math", "Sign", 1, "System.Double", "cil2cpp::math_sign_f64");
+        RegisterICall("System.Math", "Clamp", 3, "std::clamp");
+
         // =====================================================================
-        //  MANAGED SHORTCUTS — compile from BCL IL in future MA mode steps
+        //  MANAGED SHORTCUTS — C++ implementations for BCL methods with IL bodies
+        //  These have BCL IL but we map them to C++ for simplicity/performance.
+        //  In MA mode with skipManaged=true, these would be skipped.
         // =====================================================================
 
         // ===== System.Object (virtual methods — default runtime impls) =====
@@ -198,36 +232,6 @@ public static class ICallRegistry
         // ===== System.Attribute =====
         RegisterManaged("System.Attribute", ".ctor", 0, "System_Object__ctor");
 
-        // ===== System.Math (C stdlib intrinsics) =====
-        RegisterManagedTyped("System.Math", "Abs", 1, "System.Single", "std::fabsf");
-        RegisterManagedTyped("System.Math", "Abs", 1, "System.Double", "std::fabs");
-        RegisterManaged("System.Math", "Abs", 1, "std::abs"); // fallback for int/long
-        RegisterManaged("System.Math", "Max", 2, "std::max");
-        RegisterManaged("System.Math", "Min", 2, "std::min");
-        RegisterManaged("System.Math", "Sqrt", 1, "std::sqrt");
-        RegisterManaged("System.Math", "Floor", 1, "std::floor");
-        RegisterManaged("System.Math", "Ceiling", 1, "std::ceil");
-        RegisterManaged("System.Math", "Round", 1, "std::round");
-        RegisterManaged("System.Math", "Pow", 2, "std::pow");
-        RegisterManaged("System.Math", "Sin", 1, "std::sin");
-        RegisterManaged("System.Math", "Cos", 1, "std::cos");
-        RegisterManaged("System.Math", "Tan", 1, "std::tan");
-        RegisterManaged("System.Math", "Asin", 1, "std::asin");
-        RegisterManaged("System.Math", "Acos", 1, "std::acos");
-        RegisterManaged("System.Math", "Atan", 1, "std::atan");
-        RegisterManaged("System.Math", "Atan2", 2, "std::atan2");
-        RegisterManaged("System.Math", "Log", 1, "std::log");
-        RegisterManaged("System.Math", "Log10", 1, "std::log10");
-        RegisterManaged("System.Math", "Log2", 1, "std::log2");
-        RegisterManaged("System.Math", "Exp", 1, "std::exp");
-        RegisterManaged("System.Math", "Truncate", 1, "std::trunc");
-        RegisterManaged("System.Math", "Sinh", 1, "std::sinh");
-        RegisterManaged("System.Math", "Cosh", 1, "std::cosh");
-        RegisterManaged("System.Math", "Tanh", 1, "std::tanh");
-        RegisterManagedTyped("System.Math", "Sign", 1, "System.Int32", "cil2cpp::math_sign_i32");
-        RegisterManagedTyped("System.Math", "Sign", 1, "System.Int64", "cil2cpp::math_sign_i64");
-        RegisterManagedTyped("System.Math", "Sign", 1, "System.Double", "cil2cpp::math_sign_f64");
-        RegisterManaged("System.Math", "Clamp", 3, "std::clamp");
     }
 
     // ===== Registration methods =====
