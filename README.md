@@ -342,9 +342,83 @@ void Program_Main() {
 
 ---
 
-## C# 功能支持状态
+## 编译能力概览
 
-> ✅ 已支持 ⚠️ 部分支持 ❌ 未支持
+CIL2CPP 是一个 **CIL (Common Intermediate Language) → C++ 翻译器**，不是 C# → C++ 源码转换器。C# 编译器 (Roslyn) 将所有 C# 语法编译为标准 IL 字节码，CIL2CPP 读取这些字节码并逐条翻译为等价的 C++ 代码。
+
+> 因此，CIL2CPP 不需要逐个"支持"C# 特性——只要 IL 指令全覆盖，所有编译为这些指令的 C# 代码自动可用。
+> 项目能力由三层决定：**CIL 指令翻译层**、**BCL 方法编译层**、**运行时 icall 层**。
+
+### 架构分层
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  Layer 1: CIL 指令翻译                                   │
+│  ConvertInstruction() switch — ~220 opcodes             │
+│  覆盖率: 96%+ (仅 11 个极罕见指令未实现)                  │
+│  这一层决定: 能否将 IL 方法体翻译为 C++                   │
+├─────────────────────────────────────────────────────────┤
+│  Layer 2: BCL 方法编译                                   │
+│  所有有 IL 方法体的 BCL 方法从 IL 编译为 C++              │
+│  限制: CLR 内部类型依赖 → 自动 stub 化                    │
+│  这一层决定: 哪些标准库方法可用                           │
+├─────────────────────────────────────────────────────────┤
+│  Layer 3: 运行时 icall                                  │
+│  ~50 个 [InternalCall] 方法 → C++ 运行时实现             │
+│  限制: 未实现的 icall → 功能不可用                        │
+│  这一层决定: GC、线程、字符串布局等底层能力                │
+└─────────────────────────────────────────────────────────┘
+```
+
+### CIL 指令覆盖率 (Layer 1)
+
+ECMA-335 标准定义了约 230 种 IL 操作码变体。CIL2CPP 的 `ConvertInstruction()` switch 处理其中 ~220 种（96%+），仅 11 种极罕见指令未实现。覆盖率通过 `ILOpcodeCoverageTests` 自动验证。
+
+#### 已处理指令分类
+
+| 类别 | 指令数 | 代表性指令 |
+|------|--------|-----------|
+| 常量加载 | 17 | ldc.i4.0 ~ ldc.r8, ldstr, ldnull, ldtoken |
+| 参数操作 | 10 | ldarg.0~3, ldarg.s, starg.s, ldarga.s |
+| 局部变量 | 14 | ldloc.0~3, ldloc.s, stloc.s, ldloca.s |
+| 算术运算 | 15 | add/sub/mul/div/rem + checked 变体, neg |
+| 位运算 | 7 | and, or, xor, not, shl, shr, shr.un |
+| 比较 | 5 | ceq, cgt, cgt.un, clt, clt.un |
+| 类型转换 | 33 | conv.i1~r8 (13) + conv.ovf.\* (20) |
+| 分支 | 35 | br/brtrue/brfalse + beq/bne/bge/bgt/ble/blt + .un + .s 变体, switch |
+| 字段访问 | 6 | ldfld, stfld, ldsfld, stsfld, ldflda, ldsflda |
+| 间接访问 | 19 | ldind.\*, stind.\*, ldobj, stobj |
+| 方法调用 | 4 | call, callvirt, newobj, ret |
+| 数组 | 21 | newarr, ldlen, ldelem.\*, stelem.\*, ldelema |
+| 对象模型 | 12 | castclass, isinst, box, unbox, initobj, throw, rethrow, leave, ... |
+| 函数指针 | 3 | ldftn, ldvirtftn, calli |
+| 栈操作 | 2 | dup, pop |
+| 前缀 | 6 | nop, tail, readonly, constrained, volatile, unaligned |
+| 其他 | 2 | sizeof, localloc |
+| **合计** | **~220** | |
+
+#### 未实现指令 (11 种)
+
+| 指令 | 说明 | 原因 |
+|------|------|------|
+| break | 调试器断点 | AOT 编译中无意义 |
+| no. | 优化提示前缀 | 安全忽略 |
+| cpobj | 复制值类型 | Roslyn 不生成（使用 ldobj+stobj 代替） |
+| cpblk / initblk | 内存块拷贝/初始化 | 仅 Span 内部使用，极罕见 |
+| jmp | 跳转到另一方法 | 已废弃，Roslyn 从不生成 |
+| mkrefany / refanyval / refanytype | TypedReference 操作 | .NET 不鼓励使用 (`__makeref`/`__refvalue`/`__reftype`) |
+| arglist | 变长参数列表 | C 风格变参 (`__arglist`)，极罕见 |
+| ckfinite | 检查有限数 | 罕见，可实现为 `isfinite()` |
+
+> 遇到未处理指令时，编译器生成 `/* WARNING: unsupported opcode */` 注释，不会报错。
+
+### C# 功能参考表
+
+> 以下表格从 C# 用户视角列出功能支持状态，方便查阅。
+> 所有 C# 语法经 Roslyn 编译为标准 IL 后，CIL 指令翻译层 (Layer 1) 均已覆盖。
+> 状态标记 ⚠️/❌ 反映的是 **BCL 依赖链或运行时 icall 层面的限制**，而非 IL 指令翻译问题。
+>
+> ✅ 已支持 ⚠️ 部分支持（BCL/运行时限制） ❌ 未支持（缺失 icall 或 AOT 限制）
 
 ### 基本类型
 
@@ -391,19 +465,6 @@ void Program_Main() {
 | 方法隐藏 (`new`) | ✅ | `newslot` 标志检测，`new virtual` 创建新 VTable 槽位而非覆盖父类 |
 | 默认接口方法 (DIM) | ✅ | C# 8+ 接口默认实现，未覆盖时使用接口方法体作为 VTable 回退 |
 | 泛型协变/逆变 (`out T`/`in T`) | ✅ | ECMA-335 II.9.11 variance-aware 可赋值检查：`IEnumerable<Dog>` → `IEnumerable<Animal>` |
-
-### CIL 指令与前缀
-
-| 功能 | 状态 | 备注 |
-|------|------|------|
-| `constrained.` 前缀 | ✅ | 泛型虚方法调用前缀，单态化后安全跳过（no-op） |
-| `sizeof` 操作码 | ✅ | 值类型大小查询 → C++ `sizeof()` |
-| `calli` 操作码 | ✅ | 间接函数调用（函数指针），支持 `delegate*` 场景 |
-| `ldtoken` / `typeof` | ✅ | 数组初始化 + 类型 token → `&TypeInfo` 指针；`typeof(T)` → `Type.GetTypeFromHandle` → 缓存的 `Type` 对象 |
-| `tail.` 前缀 | ✅ | 尾调用优化提示，AOT 编译中安全跳过（no-op） |
-| `readonly.` 前缀 | ✅ | `ldelema` 只读提示，AOT 编译中安全跳过（no-op） |
-| `volatile.` 前缀 | ✅ | 生成 `std::atomic` 读写（`load(acquire)` / `store(release)`） |
-| `unaligned.` 前缀 | ✅ | 对齐提示，安全跳过（no-op） |
 
 ### 控制流
 
@@ -480,7 +541,6 @@ void Program_Main() {
 | 事件 (event) | ✅ | C# 生成 add_/remove_ 方法 + 委托字段，Subscribe/Unsubscribe 通过 `Delegate.Combine/Remove` |
 | 多播委托 | ✅ | `Delegate.Combine` / `Delegate.Remove` 映射到运行时 `delegate_combine` / `delegate_remove` |
 | Lambda / 匿名方法 | ✅ | C# 编译器生成 `<>c` 静态类（无捕获）/ `<>c__DisplayClass`（闭包），编译器自动处理 |
-| LINQ | ✅ | Where/Select/OrderBy/GroupBy/Distinct/Skip/Take/ToList/ToArray/Count/Any/First/FirstOrDefault 等；从 BCL IL 编译，foreach 通过 BCL 接口代理完整支持 |
 
 ### 高级功能
 
@@ -515,33 +575,33 @@ void Program_Main() {
 
 ## 已知限制
 
-### 尚未实现的功能
+> 以下限制按架构层分类。**IL 指令翻译层 (Layer 1)** 已 96%+ 覆盖（仅 11 个极罕见指令未实现），
+> 大多数"不支持"的功能属于 **BCL 依赖链 (Layer 2)** 或 **运行时 icall (Layer 3)** 层面的问题。
+
+### BCL 依赖链限制 (Layer 2)
 
 | 限制 | 说明 |
 |------|------|
-| SIMD / `System.Numerics.Vector` | 需要平台特定内联函数 (SSE/AVX/NEON)，技术上可行但工作量大 |
-| P/Invoke struct marshaling | 基本类型 + String 已支持；结构体布局和回调委托未实现 |
-| Attribute 复杂参数 | 基本类型 + 字符串参数已支持；数组/嵌套属性/Type 参数未实现 |
-| System.Net | 网络层 C++ 实现未开发 |
-| Parallel LINQ (PLINQ) | 需要高级线程池调度 |
-| BCL 深层依赖链 | 部分 BCL 方法的 IL 引用了 CLR 内部类型（RuntimeType、QCallTypeHandle 等），这些方法会被自动 stub 化 |
+| CLR 内部类型依赖 | BCL IL 引用 RuntimeType / QCallTypeHandle 等 CLR 内部类型 → 方法体自动 stub 化 |
+| BCL 深层依赖链 | 中间层被 stub 化 → 上层方法不可用（如 System.IO 部分方法） |
+| System.Net | 网络层底层 icall 未实现 → 整个命名空间不可用 |
+| Regex 内部 | 依赖 CLR 内部 RegexCache 等 → 部分重载被 stub 化 |
+| SIMD / `System.Numerics.Vector` | 需要平台特定 intrinsics (SSE/AVX/NEON)，BCL IL 引用 JIT intrinsics |
+| Parallel LINQ (PLINQ) | 需要高级线程池调度，依赖链极深 |
 
-### 实现层面的已知限制
-
-以下是当前实现中已知的部分支持或行为差异，不影响大多数程序，但在特定场景下需注意：
+### 运行时 icall 限制 (Layer 3)
 
 | 限制 | 说明 |
 |------|------|
-| 异常类型 | 支持 24 种常见异常类型。未在运行时注册的自定义或罕见异常类型会导致链接失败 |
-| `System.TypedReference` | `mkrefany`/`refanytype`/`refanyval` 指令不支持（C# 的 `__makeref`/`__reftype`/`__refvalue`）。极少使用，.NET 不鼓励 |
-| 泛型约束不验证 | `where T : IComparable` 等泛型约束在编译期不验证。不满足约束的代码可以编译，但运行时可能产生未定义行为 |
-| 未识别的 IL 指令 | 遇到未处理的 IL 操作码时生成 `/* WARNING: unsupported opcode */` 注释占位符，不会报错。可能导致运行时行为不正确 |
-| 字符串方法 | 大部分 String 方法从 BCL IL 编译。引用 CLR 内部类型的方法（如 Regex 重载）会被自动 stub 化 |
-| 字符串模式匹配 | ✅ `String.op_Equality` 从 BCL IL 编译，字符串 `switch` / `is "literal"` 完全工作 |
+| P/Invoke struct marshaling | 基本类型 + String 已支持；struct 布局和回调委托未实现 |
+| Attribute 复杂参数 | 基本类型 + 字符串已支持；数组/嵌套属性/Type 参数未实现 |
+| Console | 临时 icall 映射到 printf/fgets（BCL 依赖链极深，待逐步移除） |
+| 异常类型 | 支持 24 种常见异常类型。未注册的自定义异常类型会导致链接失败 |
+| 泛型约束不验证 | 编译期不验证泛型约束，不满足约束的代码可能产生未定义行为 |
 
 ### AOT 架构根本限制
 
-以下功能由于 AOT（Ahead-of-Time）编译模型的固有约束，**无法支持**。这与 Unity IL2CPP 和 .NET NativeAOT 的限制相同。
+以下功能由于 AOT 编译模型的固有约束**无法支持**，与 Unity IL2CPP 和 .NET NativeAOT 的限制相同。
 
 | 限制 | 原因 |
 |------|------|
@@ -712,7 +772,8 @@ dotnet test compiler/CIL2CPP.Tests --collect:"XPlat Code Coverage"
 | IRField / IRVTableEntry / IRInterfaceImpl | 7 |
 | SequencePointInfo | 5 |
 | BclProxy | 20 |
-| **合计** | **1117+** |
+| ILOpcodeCoverage | 113 |
+| **合计** | **1230+** |
 
 ### 运行时单元测试 (C++ / Google Test)
 
@@ -788,9 +849,10 @@ python tools/dev.py build                  # 编译 compiler + runtime
 python tools/dev.py build --compiler       # 仅编译 compiler
 python tools/dev.py build --runtime        # 仅编译 runtime
 python tools/dev.py test --all             # 运行全部测试（编译器 + 运行时 + 集成）
-python tools/dev.py test --compiler        # 仅编译器测试 (1117+ xUnit)
+python tools/dev.py test --compiler        # 仅编译器测试 (1230+ xUnit)
 python tools/dev.py test --runtime         # 仅运行时测试 (508+ GTest)
 python tools/dev.py test --coverage        # 测试 + 覆盖率 HTML 报告
+python tools/dev.py test --compiler --filter ILOpcode  # 仅 IL opcode 覆盖测试
 python tools/dev.py install                # 安装 runtime (Debug + Release)
 python tools/dev.py codegen HelloWorld     # 快速代码生成测试
 python tools/dev.py integration            # 集成测试（完整编译流水线）

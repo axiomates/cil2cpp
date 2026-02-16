@@ -1897,4 +1897,117 @@ public partial class IRBuilder
         }
         return -1;
     }
+
+    // ===== IL Opcode Coverage Sets (for testing) =====
+
+    /// <summary>
+    /// All IL opcodes handled by ConvertInstruction.
+    /// Any Code value not in this set falls to default and emits a WARNING comment.
+    /// Used by ILOpcodeCoverageTests to verify completeness.
+    /// </summary>
+    internal static readonly HashSet<Code> HandledOpcodes = new()
+    {
+        // Load Constants
+        Code.Ldc_I4_0, Code.Ldc_I4_1, Code.Ldc_I4_2, Code.Ldc_I4_3,
+        Code.Ldc_I4_4, Code.Ldc_I4_5, Code.Ldc_I4_6, Code.Ldc_I4_7,
+        Code.Ldc_I4_8, Code.Ldc_I4_M1, Code.Ldc_I4_S, Code.Ldc_I4,
+        Code.Ldc_I8, Code.Ldc_R4, Code.Ldc_R8,
+        // Load String / Null / Token
+        Code.Ldstr, Code.Ldnull, Code.Ldtoken,
+        // Load/Store Arguments
+        Code.Ldarg_0, Code.Ldarg_1, Code.Ldarg_2, Code.Ldarg_3,
+        Code.Ldarg_S, Code.Ldarg, Code.Starg_S, Code.Starg,
+        Code.Ldarga, Code.Ldarga_S,
+        // Load/Store Locals
+        Code.Ldloc_0, Code.Ldloc_1, Code.Ldloc_2, Code.Ldloc_3,
+        Code.Ldloc_S, Code.Ldloc, Code.Ldloca, Code.Ldloca_S,
+        Code.Stloc_0, Code.Stloc_1, Code.Stloc_2, Code.Stloc_3,
+        Code.Stloc_S, Code.Stloc,
+        // Arithmetic
+        Code.Add, Code.Sub, Code.Mul, Code.Div, Code.Div_Un,
+        Code.Rem, Code.Rem_Un, Code.Neg, Code.Not,
+        // Checked Arithmetic
+        Code.Add_Ovf, Code.Add_Ovf_Un, Code.Sub_Ovf, Code.Sub_Ovf_Un,
+        Code.Mul_Ovf, Code.Mul_Ovf_Un,
+        // Checked Conversions
+        Code.Conv_Ovf_I, Code.Conv_Ovf_I1, Code.Conv_Ovf_I2, Code.Conv_Ovf_I4,
+        Code.Conv_Ovf_I8, Code.Conv_Ovf_U, Code.Conv_Ovf_U1, Code.Conv_Ovf_U2,
+        Code.Conv_Ovf_U4, Code.Conv_Ovf_U8,
+        Code.Conv_Ovf_I_Un, Code.Conv_Ovf_I1_Un, Code.Conv_Ovf_I2_Un,
+        Code.Conv_Ovf_I4_Un, Code.Conv_Ovf_I8_Un, Code.Conv_Ovf_U_Un,
+        Code.Conv_Ovf_U1_Un, Code.Conv_Ovf_U2_Un, Code.Conv_Ovf_U4_Un,
+        Code.Conv_Ovf_U8_Un,
+        // Bitwise / Comparison
+        Code.And, Code.Or, Code.Xor, Code.Shl, Code.Shr, Code.Shr_Un,
+        Code.Ceq, Code.Cgt, Code.Cgt_Un, Code.Clt, Code.Clt_Un,
+        // Branches
+        Code.Br, Code.Br_S, Code.Brtrue, Code.Brtrue_S,
+        Code.Brfalse, Code.Brfalse_S,
+        Code.Beq, Code.Beq_S, Code.Bne_Un, Code.Bne_Un_S,
+        Code.Bge, Code.Bge_S, Code.Bgt, Code.Bgt_S,
+        Code.Ble, Code.Ble_S, Code.Blt, Code.Blt_S,
+        Code.Bge_Un, Code.Bge_Un_S, Code.Bgt_Un, Code.Bgt_Un_S,
+        Code.Ble_Un, Code.Ble_Un_S, Code.Blt_Un, Code.Blt_Un_S,
+        Code.Switch,
+        // Fields
+        Code.Ldfld, Code.Stfld, Code.Ldsfld, Code.Stsfld,
+        Code.Ldflda, Code.Ldsflda,
+        // Indirect Load/Store
+        Code.Ldobj, Code.Stobj,
+        Code.Ldind_I1, Code.Ldind_I2, Code.Ldind_I4, Code.Ldind_I8,
+        Code.Ldind_U1, Code.Ldind_U2, Code.Ldind_U4,
+        Code.Ldind_R4, Code.Ldind_R8, Code.Ldind_I, Code.Ldind_Ref,
+        Code.Stind_I1, Code.Stind_I2, Code.Stind_I4, Code.Stind_I8,
+        Code.Stind_R4, Code.Stind_R8, Code.Stind_I, Code.Stind_Ref,
+        // Method Calls
+        Code.Call, Code.Callvirt, Code.Newobj, Code.Ret,
+        // Conversions
+        Code.Conv_I1, Code.Conv_I2, Code.Conv_I4, Code.Conv_I8, Code.Conv_I,
+        Code.Conv_U1, Code.Conv_U2, Code.Conv_U4, Code.Conv_U8, Code.Conv_U,
+        Code.Conv_R4, Code.Conv_R8, Code.Conv_R_Un,
+        // Stack Operations
+        Code.Dup, Code.Pop,
+        // Prefixes / No-ops
+        Code.Nop, Code.Tail, Code.Readonly, Code.Constrained,
+        Code.Volatile, Code.Unaligned,
+        // Arrays
+        Code.Newarr, Code.Ldlen,
+        Code.Ldelem_I1, Code.Ldelem_I2, Code.Ldelem_I4, Code.Ldelem_I8,
+        Code.Ldelem_U1, Code.Ldelem_U2, Code.Ldelem_U4,
+        Code.Ldelem_R4, Code.Ldelem_R8, Code.Ldelem_Ref, Code.Ldelem_I,
+        Code.Ldelem_Any,
+        Code.Stelem_I1, Code.Stelem_I2, Code.Stelem_I4, Code.Stelem_I8,
+        Code.Stelem_R4, Code.Stelem_R8, Code.Stelem_I, Code.Stelem_Ref,
+        Code.Stelem_Any,
+        Code.Ldelema,
+        // Type Operations
+        Code.Castclass, Code.Isinst,
+        Code.Initobj, Code.Box, Code.Unbox_Any, Code.Unbox,
+        // Exception Handling
+        Code.Throw, Code.Rethrow,
+        Code.Leave, Code.Leave_S, Code.Endfinally, Code.Endfilter,
+        // Function Pointers
+        Code.Ldftn, Code.Ldvirtftn, Code.Calli,
+        // Misc
+        Code.Sizeof, Code.Localloc,
+    };
+
+    /// <summary>
+    /// IL opcodes intentionally not implemented.
+    /// These are either extremely rare, deprecated, or not emitted by Roslyn.
+    /// </summary>
+    internal static readonly HashSet<Code> KnownUnimplementedOpcodes = new()
+    {
+        Code.Break,       // Debugger breakpoint (no-op in AOT)
+        Code.No,          // no. prefix (optimization hint, no-op)
+        Code.Cpobj,       // Copy value type (Roslyn uses ldobj+stobj instead)
+        Code.Cpblk,       // Copy block of memory (rare, used by Span internals)
+        Code.Initblk,     // Initialize block of memory
+        Code.Jmp,         // Jump to another method (deprecated, Roslyn never emits)
+        Code.Mkrefany,    // Make TypedReference (__makeref, discouraged)
+        Code.Refanyval,   // Extract TypedReference value (__refvalue)
+        Code.Refanytype,  // Extract TypedReference type (__reftype)
+        Code.Arglist,     // Variable argument list (__arglist, C-style varargs)
+        Code.Ckfinite,    // Check for finite float (rarely emitted)
+    };
 }

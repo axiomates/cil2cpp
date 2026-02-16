@@ -133,7 +133,11 @@ def cmd_test(args):
             failures += _run_coverage()
         else:
             try:
-                run(["dotnet", "test", str(TEST_PROJECT), "--verbosity", "minimal"])
+                cmd = ["dotnet", "test", str(TEST_PROJECT), "--verbosity", "minimal"]
+                test_filter = getattr(args, "filter", None)
+                if test_filter:
+                    cmd += ["--filter", test_filter]
+                run(cmd)
                 success("Compiler tests passed")
             except subprocess.CalledProcessError:
                 error("Compiler tests FAILED")
@@ -814,8 +818,8 @@ def interactive_menu():
         ("Build compiler",         "dotnet build",            lambda: cmd_build(argparse.Namespace(compiler=True, runtime=False, config="Release"))),
         ("Build runtime",          "cmake --build",           lambda: cmd_build(argparse.Namespace(compiler=False, runtime=True, config="Release"))),
         ("Build all",              "compiler + runtime",      lambda: cmd_build(argparse.Namespace(compiler=False, runtime=False, config="Release"))),
-        ("Test compiler",          "dotnet test (166 tests)", lambda: cmd_test(argparse.Namespace(compiler=True, runtime=False, integration=False, all=False, config="Release", coverage=False))),
-        ("Test runtime",           "ctest (110 tests)",       lambda: cmd_test(argparse.Namespace(compiler=False, runtime=True, integration=False, all=False, config="Release", coverage=False))),
+        ("Test compiler",          "dotnet test",             lambda: cmd_test(argparse.Namespace(compiler=True, runtime=False, integration=False, all=False, config="Release", coverage=False))),
+        ("Test runtime",           "ctest",                   lambda: cmd_test(argparse.Namespace(compiler=False, runtime=True, integration=False, all=False, config="Release", coverage=False))),
         ("Test all (unit)",        "compiler + runtime",      lambda: cmd_test(argparse.Namespace(compiler=False, runtime=False, integration=False, all=False, config="Release", coverage=False))),
         ("Test + coverage report", "HTML coverage report",    lambda: cmd_test(argparse.Namespace(compiler=True, runtime=False, integration=False, all=False, config="Release", coverage=True))),
         ("Integration tests",     "full pipeline test",      lambda: cmd_integration(argparse.Namespace(prefix=DEFAULT_PREFIX, config="Release", generator=DEFAULT_GENERATOR, keep_temp=False))),
@@ -880,6 +884,7 @@ def main():
     p_test.add_argument("--config", default="Release", choices=["Debug", "Release"],
                         help="Build config for runtime/integration tests (default: Release)")
     p_test.add_argument("--coverage", action="store_true", help="Generate coverage report")
+    p_test.add_argument("--filter", help="dotnet test --filter expression (compiler tests only)")
 
     # install
     p_install = subparsers.add_parser("install", help="Install runtime to prefix")
