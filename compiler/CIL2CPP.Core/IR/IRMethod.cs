@@ -40,6 +40,11 @@ public class IRMethod
     public bool IsOperator { get; set; }
     public bool IsGenericInstance { get; set; }
     public bool IsInternalCall { get; set; }
+    /// <summary>
+    /// True if this method has an icall mapping in ICallRegistry.
+    /// When set, the method body is dead code (callers use the icall instead).
+    /// </summary>
+    public bool HasICallMapping { get; set; }
     public bool IsNewSlot { get; set; }
     public bool IsPInvoke { get; set; }
     public string? PInvokeModule { get; set; }

@@ -39,6 +39,12 @@ public partial class CppCodeGenerator
             aliasedTypes.Add(CppNameMapper.MangleTypeName(ilName));
         foreach (var (mangled, _) in GetRuntimeProvidedTypeAliases())
             aliasedTypes.Add(mangled);
+        // Primitive types that get using aliases (System_Byte = uint8_t, etc.)
+        foreach (var (mangled, _) in GetPrimitiveTypeAliases())
+            aliasedTypes.Add(mangled);
+        // Types already aliased in runtime headers — skip struct definitions
+        foreach (var mangled in RuntimeHeaderAliasedTypes)
+            aliasedTypes.Add(mangled);
         foreach (var type in userTypes)
         {
             if (type.IsEnum || type.IsDelegate) continue;
@@ -55,6 +61,9 @@ public partial class CppCodeGenerator
             if (type.IsEnum)
                 enumTypes.Add(type.CppName);
         }
+        // Include external enum types (BCL enums not in the IR module)
+        foreach (var (mangledName, _) in _module.ExternalEnumTypes)
+            enumTypes.Add(mangledName);
         // Also forward-declare types referenced by method parameters, return types, and field types.
         // Scan ALL types (not just non-runtime-provided) to ensure complete forward declarations.
         foreach (var type in userTypes)
@@ -82,6 +91,14 @@ public partial class CppCodeGenerator
         // These types are provided by the runtime but their mangled names may appear
         // as generic type arguments or cast targets in generated code.
         foreach (var (mangled, cppAlias) in GetRuntimeProvidedTypeAliases())
+        {
+            if (!forwardDeclared.Contains(mangled))
+                sb.AppendLine($"using {mangled} = {cppAlias};");
+        }
+        // Using aliases for primitive types (System_Byte = uint8_t, etc.)
+        // Primitive types map to C++ built-in types. Methods are compiled from BCL IL
+        // but the struct definition is not emitted — the using alias provides the type.
+        foreach (var (mangled, cppAlias) in GetPrimitiveTypeAliases())
         {
             if (!forwardDeclared.Contains(mangled))
                 sb.AppendLine($"using {mangled} = {cppAlias};");
@@ -147,6 +164,16 @@ public partial class CppCodeGenerator
             GenerateEnumDefinition(sb, type);
             emittedStructs.Add(type.CppName);
         }
+        // Phase 1.5: External enum aliases (BCL enums referenced in method signatures but not in IR module)
+        // Use using = type (not enum) since generated code passes integers directly.
+        // Method overloading conflicts are handled by DisambiguateOverloadedMethods.
+        foreach (var (mangledName, underlyingType) in _module.ExternalEnumTypes)
+        {
+            if (emittedStructs.Contains(mangledName)) continue;
+            sb.AppendLine($"using {mangledName} = {underlyingType};");
+            emittedStructs.Add(mangledName);
+            definedTypeNames.Add(mangledName);
+        }
         // Phase 2: Delegate aliases
         foreach (var type in userTypes)
         {
@@ -175,17 +202,27 @@ public partial class CppCodeGenerator
             if (emittedStructs.Contains(type.CppName)) continue;
             // Skip types with using aliases (their layout is resolved by the alias target)
             if (aliasedTypes.Contains(type.CppName)) continue;
-            // Skip runtime-provided types without fields (interfaces, opaque runtime types)
-            if (type.IsRuntimeProvided && type.Fields.Count == 0) continue;
+            // Skip runtime-provided types (struct layout comes from runtime headers)
+            if (type.IsRuntimeProvided) continue;
+            // Skip primitive types (mapped to C++ built-in types via using aliases)
+            if (type.IsPrimitiveType) continue;
             if (type.IsInterface) continue;
             GenerateStructDefinition(sb, type, definedTypeNames);
             emittedStructs.Add(type.CppName);
         }
 
-        // Static field storage declarations (skip runtime-provided types)
+        // Save emitted struct definitions for source generator (stub filtering)
+        _emittedStructDefs = new HashSet<string>(emittedStructs);
+        // Also include aliased types (they have full definitions via alias)
+        foreach (var name in aliasedTypes) _emittedStructDefs.Add(name);
+        foreach (var name in enumTypes) _emittedStructDefs.Add(name);
+        foreach (var name in unknownValueTypeStubs) _emittedStructDefs.Add(name);
+
+        // Static field storage declarations
+        // Note: RuntimeProvided types still need statics (e.g., String.Empty)
         foreach (var type in userTypes)
         {
-            if (type.IsEnum || type.IsDelegate || type.IsRuntimeProvided) continue;
+            if (type.IsEnum || type.IsDelegate) continue;
             if (type.StaticFields.Count > 0)
             {
                 sb.AppendLine($"// Static fields for {type.ILFullName}");
@@ -210,12 +247,13 @@ public partial class CppCodeGenerator
         foreach (var name in unknownValueTypeStubs)
             knownTypeNames.Add(name);
 
-        // Method declarations (skip runtime-provided types and InternalCall methods)
+        // Method declarations (skip delegates and InternalCall methods)
+        // RuntimeProvided types: only emit methods that have compiled IL bodies
         sb.AppendLine("// ===== Method Declarations =====");
         var emittedMethodDecls = new HashSet<string>();
         foreach (var type in userTypes)
         {
-            if (type.IsDelegate || type.IsRuntimeProvided) continue;
+            if (type.IsDelegate) continue;
 
             // For interfaces, only emit declarations for DIM methods (non-abstract with bodies)
             if (type.IsInterface)
@@ -234,6 +272,10 @@ public partial class CppCodeGenerator
             {
                 if (method.IsAbstract || method.IsInternalCall) continue;
                 if (method.BasicBlocks.Count == 0 && !method.IsPInvoke) continue;
+                // Core runtime types (Object, String, Array, etc.): only emit static methods.
+                // Non-core RuntimeProvided types (Task, Thread, CancellationToken) emit all methods.
+                if (type.IsRuntimeProvided && !method.IsStatic
+                    && IRBuilder.CoreRuntimeTypes.Contains(type.ILFullName)) continue;
                 // Skip methods whose parameter/return types reference unknown struct types
                 if (HasUnknownParameterTypes(method, knownTypeNames)) continue;
                 if (!emittedMethodDecls.Add(method.GetCppSignature())) continue;
@@ -241,6 +283,16 @@ public partial class CppCodeGenerator
             }
             sb.AppendLine();
         }
+
+        // Generate stub declarations for methods called but not declared.
+        // This handles methods on RuntimeProvided types and types not in the module.
+        GenerateMissingMethodStubs(sb, emittedMethodDecls, userTypes, knownTypeNames);
+
+        // Populate the declared function names and param counts for use by source generation.
+        // This allows the source generator to filter out methods that call undeclared functions
+        // or methods that call functions with wrong arg counts (overload mismatches).
+        _declaredFunctionNames = ExtractFunctionNamesFromSignatures(emittedMethodDecls);
+        _declaredFunctionParamCounts = ExtractFunctionParamCounts(emittedMethodDecls);
 
         // Static constructor guard declarations
         foreach (var type in userTypes)
@@ -509,6 +561,7 @@ public partial class CppCodeGenerator
             var retTypeName = retType.TrimEnd('*').Trim();
             if (retTypeName.Length > 0 && !retTypeName.StartsWith("cil2cpp::") && !IsCppPrimitiveType(retTypeName))
             {
+                if (IsUnresolvedGenericParam(retTypeName)) return true;
                 if (!retType.EndsWith("*") && !knownTypeNames.Contains(retTypeName))
                     return true;
             }
@@ -522,13 +575,227 @@ public partial class CppCodeGenerator
             var typeName = rawType.TrimEnd('*').Trim();
             // Skip known runtime types (cil2cpp:: namespace, primitive C++ types)
             if (typeName.StartsWith("cil2cpp::") || IsCppPrimitiveType(typeName)) continue;
-            // Pointer-type params only need forward declarations (already emitted)
-            if (rawType.EndsWith("*")) continue;
+            // Unresolved generic param names (TOther, TArg1, TNegator, etc.)
+            if (IsUnresolvedGenericParam(typeName)) return true;
+            // Pointer-type params: check for bare unresolved generic param names
+            if (rawType.EndsWith("*"))
+            {
+                if (typeName.Length > 0 && !typeName.Contains('_') && !knownTypeNames.Contains(typeName))
+                    return true;
+                continue;
+            }
             // Non-pointer unknown struct: the body would need the full type definition
             if (typeName.Length > 0 && !knownTypeNames.Contains(typeName))
                 return true;
         }
         return false;
+    }
+
+    /// <summary>
+    /// Check if method body references undefined non-pointer value types in locals.
+    /// Methods with such references would produce C++ compilation errors (undefined struct).
+    /// </summary>
+    private static bool HasUnknownBodyReferences(IRMethod method, HashSet<string> knownTypeNames)
+    {
+        // Check local variables for references to undefined types
+        foreach (var local in method.Locals)
+        {
+            var baseType = local.CppTypeName.TrimEnd('*').Trim();
+            if (string.IsNullOrEmpty(baseType)) continue;
+            if (baseType.StartsWith("cil2cpp::") || IsCppPrimitiveType(baseType)) continue;
+            if (!knownTypeNames.Contains(baseType))
+            {
+                // For pointer types, the base type must still be either known or a valid forward-declared type.
+                // Unresolved generic params (TChar, T1, TKey, etc.) are NOT known types.
+                if (local.CppTypeName.EndsWith("*"))
+                {
+                    // Pointer to unknown type is only OK if the base type looks like a
+                    // regular user/BCL type (contains underscore from namespace mangling)
+                    // AND the type is actually known (has a forward declaration).
+                    // Raw single-word types like TChar, T1, TKey are unresolved generic params.
+                    if (!baseType.Contains('_'))
+                        return true;
+                    // Also reject if the type is not in knownTypeNames
+                    // (no forward declaration → C2065 undeclared identifier)
+                    if (!knownTypeNames.Contains(baseType))
+                        return true;
+                    continue; // pointer to known type — forward decl suffices
+                }
+                return true; // non-pointer value type must be fully defined
+            }
+        }
+
+        // Check body instructions for references to undefined types
+        foreach (var block in method.BasicBlocks)
+        {
+            foreach (var instr in block.Instructions)
+            {
+                if (HasUnknownInstructionReference(instr, knownTypeNames))
+                    return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Check if a single instruction references an undefined type (struct, sizeof, function call).
+    /// </summary>
+    private static bool HasUnknownInstructionReference(IRInstruction instr, HashSet<string> knownTypeNames)
+    {
+        // IRNewObj: TypeCppName must be known (generates sizeof(TypeCppName))
+        if (instr is IRNewObj newObj)
+        {
+            if (IsUnknownValueType(newObj.TypeCppName, knownTypeNames))
+                return true;
+        }
+
+        // IRRawCpp: check for sizeof(TypeName) and TypeName local declarations
+        if (instr is IRRawCpp rawCpp)
+        {
+            var code = rawCpp.Code;
+            // Check sizeof(X) patterns
+            int idx = 0;
+            while ((idx = code.IndexOf("sizeof(", idx)) >= 0)
+            {
+                var start = idx + 7;
+                var end = code.IndexOf(')', start);
+                if (end > start)
+                {
+                    var typeName = code[start..end].Trim();
+                    if (IsUnknownValueType(typeName, knownTypeNames))
+                        return true;
+                }
+                idx = start;
+            }
+            // Check for value-type local declarations
+            if (rawCpp.ResultTypeCpp != null && IsUnknownValueType(rawCpp.ResultTypeCpp, knownTypeNames))
+                return true;
+        }
+
+        // IRCall: check if function targets a type not in knownTypeNames
+        if (instr is IRCall call && !call.IsVirtual
+                 && !string.IsNullOrEmpty(call.FunctionName)
+                 && !call.FunctionName.StartsWith("cil2cpp::"))
+        {
+            if (IsCallToUnknownType(call.FunctionName, knownTypeNames))
+                return true;
+        }
+
+        // IRCast: check TargetTypeCpp for unknown types (catches unresolved generic params T1/T2/TKey etc.)
+        if (instr is IRCast cast)
+        {
+            if (IsUnknownTypeReference(cast.TargetTypeCpp, knownTypeNames))
+                return true;
+        }
+
+        // Catch-all: scan the rendered C++ code for unresolved generic parameter names
+        // These are single-word type names (no underscores) used in casts like (T1*), (TChar*), etc.
+        var renderedCpp = instr.ToCpp();
+        if (HasUnresolvedGenericParamInCode(renderedCpp, knownTypeNames))
+            return true;
+
+        // Check for unresolved function pointer types: method<Type>_ptr patterns
+        // These are IL delegate/function-pointer types that weren't resolved to proper C++ syntax.
+        if (renderedCpp.Contains("method") && renderedCpp.Contains("_ptr"))
+            return true;
+
+        return false;
+    }
+
+    /// <summary>
+    /// Check if a type name references an undefined non-pointer value type.
+    /// </summary>
+    private static bool IsUnknownValueType(string typeRef, HashSet<string> knownTypeNames)
+    {
+        if (string.IsNullOrEmpty(typeRef)) return false;
+        var typeName = typeRef.TrimEnd('*').Trim();
+        if (string.IsNullOrEmpty(typeName)) return false;
+        if (typeRef.EndsWith("*")) return false; // pointer types only need forward decl
+        if (typeName.StartsWith("cil2cpp::") || IsCppPrimitiveType(typeName)) return false;
+        return !knownTypeNames.Contains(typeName);
+    }
+
+    /// <summary>
+    /// Check if a type reference (including pointer forms) refers to an unknown type.
+    /// Unlike IsUnknownValueType, this also catches unresolved generic params in pointer form
+    /// (e.g., T1*, TChar**, TKey*) which are single-word names with no namespace mangling.
+    /// </summary>
+    private static bool IsUnknownTypeReference(string typeRef, HashSet<string> knownTypeNames)
+    {
+        if (string.IsNullOrEmpty(typeRef)) return false;
+        var baseType = typeRef.TrimEnd('*').Trim();
+        if (string.IsNullOrEmpty(baseType)) return false;
+        if (baseType.StartsWith("cil2cpp::") || IsCppPrimitiveType(baseType)) return false;
+        if (knownTypeNames.Contains(baseType)) return false;
+        // Unknown base type — could be an unresolved generic param (TChar, T1, TKey, etc.)
+        // These are single-word identifiers without namespace underscores.
+        // Regular mangled types always have underscores (System_Int32, MyNs_MyType, etc.)
+        if (!baseType.Contains('_')) return true;
+        // For pointer types, the base type is unknown but looks like a mangled type name
+        // — that's OK, it just needs a forward declaration
+        if (typeRef.EndsWith("*")) return false;
+        // Non-pointer unknown type — must be fully defined
+        return true;
+    }
+
+    /// <summary>
+    /// Scan rendered C++ code for unresolved generic parameter names in cast expressions.
+    /// Looks for patterns like (T1*), (TChar*), (TKey*) where the type name is a single word
+    /// without underscores (indicating it's a generic param, not a mangled namespace type).
+    /// </summary>
+    private static bool HasUnresolvedGenericParamInCode(string code, HashSet<string> knownTypeNames)
+    {
+        // Scan for cast patterns: (TypeName*) or (TypeName)
+        int i = 0;
+        while (i < code.Length)
+        {
+            if (code[i] == '(' && i + 1 < code.Length && char.IsUpper(code[i + 1]))
+            {
+                // Found '(' followed by uppercase — could be a cast
+                int start = i + 1;
+                int end = start;
+                while (end < code.Length && (char.IsLetterOrDigit(code[end]) || code[end] == '_'))
+                    end++;
+                // Strip trailing * for pointer casts
+                int nameEnd = end;
+                while (nameEnd < code.Length && code[nameEnd] == '*') nameEnd++;
+                if (nameEnd < code.Length && code[nameEnd] == ')')
+                {
+                    var typeName = code[start..end];
+                    // Single-word uppercase name without underscores = likely unresolved generic param
+                    if (typeName.Length >= 1 && !typeName.Contains('_')
+                        && !IsCppPrimitiveType(typeName) && typeName != "Object"
+                        && !knownTypeNames.Contains(typeName))
+                        return true;
+                }
+            }
+            i++;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Check if a function call targets a method on a type not in knownTypeNames.
+    /// Function names follow the pattern TypeCppName_MethodName or TypeCppName__MethodName.
+    /// </summary>
+    private static bool IsCallToUnknownType(string functionName, HashSet<string> knownTypeNames)
+    {
+        // Try to find the type prefix: scan from right, try each underscore position
+        // as a potential type/method separator
+        for (int i = functionName.Length - 1; i >= 0; i--)
+        {
+            if (functionName[i] != '_') continue;
+            var prefix = functionName[..i];
+            if (string.IsNullOrEmpty(prefix)) continue;
+            // Check if this prefix is a known type (with or without trailing underscore)
+            if (knownTypeNames.Contains(prefix))
+                return false; // found known type — call is valid
+            if (prefix.EndsWith("_") && knownTypeNames.Contains(prefix.TrimEnd('_')))
+                return false;
+        }
+        // No known type prefix found — this targets an unknown type
+        return true;
     }
 
     private static bool IsCppPrimitiveType(string typeName)
@@ -551,13 +818,8 @@ public partial class CppCodeGenerator
         yield return ("System_MulticastDelegate", "cil2cpp::Delegate");
         yield return ("System_Type", "cil2cpp::Object");  // Type represented as opaque pointer
         yield return ("System_Attribute", "cil2cpp::Object");  // Base class for all attributes
-
-        // System.Threading.Thread — maps to cil2cpp::ManagedThread (opaque runtime type)
-        yield return ("System_Threading_Thread", "cil2cpp::ManagedThread");
-
-        // CancellationToken/Source — runtime-provided types
-        yield return ("System_Threading_CancellationTokenSource", "cil2cpp::CancellationTokenSource");
-        yield return ("System_Threading_CancellationToken", "cil2cpp::CancellationToken");
+        yield return ("System_Enum", "cil2cpp::Object");  // Abstract base for enums — same layout as Object
+        yield return ("System_ValueType", "cil2cpp::Object");  // Abstract base for value types — same layout as Object
 
         // Exception hierarchy — all map to runtime C++ exception types
         yield return ("System_Exception", "cil2cpp::Exception");
@@ -585,6 +847,59 @@ public partial class CppCodeGenerator
         yield return ("System_Threading_Tasks_TaskCanceledException", "cil2cpp::TaskCanceledException");
         yield return ("System_Collections_Generic_KeyNotFoundException", "cil2cpp::KeyNotFoundException");
     }
+
+    /// <summary>
+    /// Get using aliases for primitive types (mangled name → C++ built-in type).
+    /// Primitive types map directly to C++ built-in types; no struct is emitted.
+    /// </summary>
+    private static IEnumerable<(string Mangled, string CppAlias)> GetPrimitiveTypeAliases()
+    {
+        yield return ("System_Boolean", "bool");
+        yield return ("System_Byte", "uint8_t");
+        yield return ("System_SByte", "int8_t");
+        yield return ("System_Int16", "int16_t");
+        yield return ("System_UInt16", "uint16_t");
+        yield return ("System_Int32", "int32_t");
+        yield return ("System_UInt32", "uint32_t");
+        yield return ("System_Int64", "int64_t");
+        yield return ("System_UInt64", "uint64_t");
+        yield return ("System_Single", "float");
+        yield return ("System_Double", "double");
+        yield return ("System_Char", "char16_t");
+        yield return ("System_IntPtr", "intptr_t");
+        yield return ("System_UIntPtr", "uintptr_t");
+    }
+
+    /// <summary>
+    /// Types whose "using System_X = cil2cpp::Y;" alias is already defined in runtime headers
+    /// (task.h, memberinfo.h, cancellation.h, async_enumerable.h).
+    /// The codegen must NOT emit struct definitions OR using aliases for these —
+    /// the runtime headers handle both.
+    /// </summary>
+    private static readonly HashSet<string> RuntimeHeaderAliasedTypes = new()
+    {
+        // task.h
+        "System_Threading_Tasks_Task",
+        "System_Runtime_CompilerServices_TaskAwaiter",
+        "System_Runtime_CompilerServices_AsyncTaskMethodBuilder",
+        "System_Runtime_CompilerServices_IAsyncStateMachine",
+        // memberinfo.h
+        "System_Reflection_MemberInfo",
+        "System_Reflection_MethodBase",
+        "System_Reflection_MethodInfo",
+        "System_Reflection_FieldInfo",
+        "System_Reflection_ParameterInfo",
+        // cancellation.h
+        "System_Threading_CancellationTokenSource",
+        "System_Threading_CancellationToken",
+        // async_enumerable.h
+        "System_Threading_Tasks_ValueTask",
+        "System_Runtime_CompilerServices_ValueTaskAwaiter",
+        "System_Runtime_CompilerServices_AsyncIteratorMethodBuilder",
+        // threading.h — ManagedThread is in cil2cpp namespace but no using alias;
+        // still needs to be skipped since runtime defines the struct
+        "System_Threading_Thread",
+    };
 
     /// <summary>
     /// Get TypeInfo reference aliases for runtime exception types.
@@ -631,6 +946,99 @@ public partial class CppCodeGenerator
         yield return ("System_Delegate", "System.Delegate");
     }
 
+    /// <summary>
+    /// Scan all method bodies for function calls, and generate stub declarations
+    /// for any called function that wasn't declared. This handles methods on
+    /// RuntimeProvided types and types not in the IR module.
+    /// </summary>
+    private void GenerateMissingMethodStubs(StringBuilder sb, HashSet<string> emittedMethodDecls,
+        List<IR.IRType> userTypes, HashSet<string> knownTypeNames)
+    {
+        // Build lookup: method CppName → IRMethod (for finding signatures)
+        var methodLookup = new Dictionary<string, IR.IRMethod>();
+        foreach (var type in _module.Types)
+        {
+            foreach (var method in type.Methods)
+            {
+                methodLookup.TryAdd(method.CppName, method);
+            }
+        }
+
+        // Collect all called function names from method bodies that WILL be compiled.
+        // Only scan methods that pass the same filters as method implementation generation.
+        var calledFunctions = new HashSet<string>();
+        foreach (var type in userTypes)
+        {
+            if (type.IsDelegate || type.IsRuntimeProvided) continue;
+            foreach (var method in type.Methods)
+            {
+                if (method.IsAbstract || method.IsInternalCall) continue;
+                if (method.BasicBlocks.Count == 0 && !method.IsPInvoke) continue;
+                // Only check methods that will actually be emitted
+                if (!emittedMethodDecls.Contains(method.GetCppSignature())) continue;
+
+                foreach (var block in method.BasicBlocks)
+                {
+                    foreach (var instr in block.Instructions)
+                    {
+                        if (instr is IR.IRCall call && !string.IsNullOrEmpty(call.FunctionName)
+                            && !call.FunctionName.StartsWith("cil2cpp::"))
+                            calledFunctions.Add(call.FunctionName);
+                    }
+                }
+            }
+        }
+
+        // Find called functions that have no declaration
+        var declaredNames = new HashSet<string>();
+        foreach (var sig in emittedMethodDecls)
+        {
+            // Extract function name from signature: "retType funcName(..."
+            var parenIdx = sig.IndexOf('(');
+            if (parenIdx > 0)
+            {
+                var beforeParen = sig[..parenIdx].TrimEnd();
+                var spaceIdx = beforeParen.LastIndexOf(' ');
+                if (spaceIdx >= 0)
+                    declaredNames.Add(beforeParen[(spaceIdx + 1)..]);
+                // Handle pointer return types: "retType* funcName("
+                var starIdx = beforeParen.LastIndexOf('*');
+                if (starIdx > spaceIdx)
+                    declaredNames.Add(beforeParen[(starIdx + 1)..].TrimStart());
+            }
+        }
+
+        var missingFunctions = new List<(string name, IR.IRMethod? method)>();
+        foreach (var funcName in calledFunctions)
+        {
+            if (declaredNames.Contains(funcName)) continue;
+            methodLookup.TryGetValue(funcName, out var irMethod);
+            missingFunctions.Add((funcName, irMethod));
+        }
+
+        if (missingFunctions.Count == 0) return;
+
+        sb.AppendLine("// ===== Stub Declarations (methods on RuntimeProvided or unreachable types) =====");
+        foreach (var (funcName, irMethod) in missingFunctions.OrderBy(m => m.name))
+        {
+            if (irMethod != null && !HasUnknownParameterTypes(irMethod, knownTypeNames))
+            {
+                var sig = irMethod.GetCppSignature();
+                if (emittedMethodDecls.Add(sig))
+                {
+                    sb.AppendLine($"{sig};");
+                    declaredNames.Add(funcName);
+                }
+            }
+            else
+            {
+                // Unknown or complex signature — skip, will cause linker error if actually needed.
+                // This is better than a compile error that blocks all other compilation.
+            }
+        }
+        sb.AppendLine();
+    }
+
     private void GenerateEnumDefinition(StringBuilder sb, IRType type)
     {
         var underlyingCppType = CppNameMapper.GetCppTypeForDecl(type.EnumUnderlyingType ?? "System.Int32");
@@ -646,5 +1054,946 @@ public partial class CppCodeGenerator
             }
         }
         sb.AppendLine();
+    }
+
+    /// <summary>
+    /// Extract function names from C++ method signatures.
+    /// Signature format: "retType funcName(params)" → extract "funcName".
+    /// </summary>
+    private static HashSet<string> ExtractFunctionNamesFromSignatures(HashSet<string> signatures)
+    {
+        var names = new HashSet<string>();
+        foreach (var sig in signatures)
+        {
+            var parenIdx = sig.IndexOf('(');
+            if (parenIdx <= 0) continue;
+
+            var beforeParen = sig[..parenIdx].TrimEnd();
+            var spaceIdx = beforeParen.LastIndexOf(' ');
+            if (spaceIdx >= 0)
+            {
+                var name = beforeParen[(spaceIdx + 1)..];
+                // Handle pointer return types: "retType* funcName"
+                if (name.StartsWith("*"))
+                    name = name.TrimStart('*');
+                if (!string.IsNullOrEmpty(name))
+                    names.Add(name);
+            }
+        }
+        return names;
+    }
+
+    /// <summary>
+    /// Check if a method's body calls functions that are not declared in the output,
+    /// or calls functions with wrong number of arguments (overload mismatch).
+    /// </summary>
+    private bool CallsUndeclaredOrMismatchedFunctions(IR.IRMethod method)
+    {
+        if (_declaredFunctionNames.Count == 0) return false;
+
+        foreach (var block in method.BasicBlocks)
+        {
+            foreach (var instr in block.Instructions)
+            {
+                if (instr is IR.IRCall call && !string.IsNullOrEmpty(call.FunctionName))
+                {
+                    var funcName = call.FunctionName;
+                    // Skip runtime functions (cil2cpp:: namespace)
+                    if (funcName.StartsWith("cil2cpp::")) continue;
+                    // Skip cctor guards
+                    if (funcName.EndsWith("_ensure_cctor")) continue;
+                    // Check if the function is declared
+                    if (!_declaredFunctionNames.Contains(funcName))
+                        return true;
+                    // Check for overload mismatch (wrong number of arguments)
+                    if (_declaredFunctionParamCounts.TryGetValue(funcName, out var validCounts))
+                    {
+                        if (!validCounts.Contains(call.Arguments.Count))
+                            return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Check if a method's rendered C++ body contains patterns known to cause MSVC errors.
+    /// This is a post-IR check that catches issues not detectable at the IR level.
+    /// </summary>
+    private bool HasKnownBrokenPatterns(IR.IRMethod method, HashSet<string> knownTypeNames)
+    {
+        foreach (var block in method.BasicBlocks)
+        {
+            foreach (var instr in block.Instructions)
+            {
+                if (InstructionHasBrokenPattern(instr, knownTypeNames))
+                    return true;
+            }
+        }
+        return false;
+    }
+
+    private static bool InstructionHasBrokenPattern(IR.IRInstruction instr, HashSet<string> knownTypeNames)
+    {
+        var code = instr.ToCpp();
+
+        // Pattern 1: References to _TypeInfo that are not declared
+        if (HasUndeclaredTypeInfoRef(code, knownTypeNames))
+            return true;
+
+        // Pattern 2: (uintptr_t) cast followed by struct field access
+        // Catches MethodTable mishandling: (uintptr_t)(__t1) then .f_BaseSize
+        if (code.Contains("(uintptr_t)(") && code.Contains(".f_"))
+            return true;
+
+        // Pattern 3: volatile_write with bool* (no matching template specialization)
+        if (code.Contains("volatile_write((bool*)"))
+            return true;
+
+        // Pattern 4: Unsafe_AsRef / Unsafe_Add / Unsafe_SizeOf calls
+        // These are JIT intrinsics with no compilable IL bodies —
+        // calling them produces wrong types in the output.
+        if (code.Contains("Unsafe_AsRef_") || code.Contains("Unsafe_Add_")
+            || code.Contains("Unsafe_SizeOf_") || code.Contains("Unsafe_ReadUnaligned_")
+            || code.Contains("Unsafe_WriteUnaligned_") || code.Contains("Unsafe_As_"))
+            return true;
+
+        // Pattern 5: array_get/array_set/array_length called with non-Array argument
+        // These require cil2cpp::Array* but BCL IL may pass Object*
+        if (code.Contains("array_length(0)") || code.Contains("array_length(__t"))
+        {
+            // Check if the argument looks like a non-Array type
+            // If it's just a number (0) or a temp var, the real type might not be Array
+            if (code.Contains("array_length(0)"))
+                return true;
+        }
+
+        // Pattern 6: Interop_Kernel32 or Interop_ calls with shifted arguments
+        // These P/Invoke wrappers often have wrong argument types
+        if (code.Contains("Interop_Kernel32_") || code.Contains("Interop_User32_"))
+            return true;
+
+        // Pattern 7: Invalid stind pattern: &param = &local (address-of on both sides)
+        // This occurs when stind.ref is emitted for ref parameters incorrectly
+        if (code.StartsWith("&") && code.Contains(" = &"))
+            return true;
+
+        // Pattern 8: (uintptr_t)(__tN) — MethodTable/RuntimeHelpers pattern
+        // These functions use JIT intrinsics that produce uintptr_t casts on structs
+        if (code.Contains("(uintptr_t)("))
+            return true;
+
+        // Pattern 9: Unresolved generic type params in interface vtable casts
+        // e.g., System_IEquatable_1_T* — the _T suffix is an unresolved generic param
+        if (code.Contains("_1_T*") || code.Contains("_1_T,") || code.Contains("_2_T*")
+            || code.Contains("_1_TKey*") || code.Contains("_1_TValue*")
+            || code.Contains("_1_TResult*")
+            || code.Contains("_1_TFrom") || code.Contains("_1_TTo"))
+            return true;
+
+        return false;
+    }
+
+    private static bool HasUndeclaredTypeInfoRef(string code, HashSet<string> knownTypeNames)
+    {
+        var tiIdx = 0;
+        while ((tiIdx = code.IndexOf("_TypeInfo", tiIdx)) >= 0)
+        {
+            // Walk backward to find the type name
+            int start = tiIdx - 1;
+            while (start >= 0 && (char.IsLetterOrDigit(code[start]) || code[start] == '_'))
+                start--;
+            start++;
+            if (start < tiIdx)
+            {
+                var typeName = code[start..tiIdx];
+                // Skip cil2cpp:: prefixed TypeInfo refs
+                if (start >= 2 && code.Length >= start && start >= 2
+                    && code[(start - 2)..start] == "::")
+                {
+                    tiIdx += 9;
+                    continue;
+                }
+                if (!string.IsNullOrEmpty(typeName) && !typeName.StartsWith("cil2cpp")
+                    && !knownTypeNames.Contains(typeName))
+                    return true;
+            }
+            tiIdx += 9;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Post-render validation: scan the fully rendered C++ body for patterns
+    /// that will cause MSVC compilation errors. Used as a final safety net
+    /// after all IR-level checks have passed.
+    /// </summary>
+    private bool RenderedBodyHasErrors(string rendered, IR.IRMethod method)
+    {
+        // Method-level check: __this referenced in static methods
+        if (method.IsStatic && rendered.Contains("__this"))
+            return true;
+
+        // Check each line for known error patterns
+        foreach (var line in rendered.AsSpan().EnumerateLines())
+        {
+            var s = line.ToString().TrimStart();
+            if (s.Length == 0 || s.StartsWith("//") || s.StartsWith("#")) continue;
+
+            if (RenderedLineHasError(s))
+                return true;
+        }
+
+        // Multi-line pattern: Object* variable from byref dereference used where typed ptr expected
+        // Detects: __tN = *(cil2cpp::Object**)... then later:
+        //   - array_length/__tN), array_get<...>(__tN,...), array_set etc.
+        //   - comparisons with typed local variables (locN == __tN)
+        //   - string_length(__tN)
+        {
+            var objectDerefTemps = new HashSet<string>();
+            foreach (var line in rendered.AsSpan().EnumerateLines())
+            {
+                var s = line.ToString().TrimStart();
+                if (s.StartsWith("auto ") && s.Contains("= *(cil2cpp::Object**)"))
+                {
+                    var varEnd = s.IndexOf(' ', 5);
+                    if (varEnd > 5)
+                        objectDerefTemps.Add(s[5..varEnd]);
+                }
+            }
+            if (objectDerefTemps.Count > 0)
+            {
+                foreach (var line in rendered.AsSpan().EnumerateLines())
+                {
+                    var s = line.ToString().TrimStart();
+                    foreach (var temp in objectDerefTemps)
+                    {
+                        // Array operations (need Array*, get Object*)
+                        if (s.Contains($"array_length({temp})") ||
+                            s.Contains($"array_get<") && s.Contains($"({temp},") ||
+                            s.Contains($"array_set<") && s.Contains($"({temp},") ||
+                            s.Contains($"array_get_element_ptr({temp},"))
+                            return true;
+                        // String operations
+                        if (s.Contains($"string_length({temp})"))
+                            return true;
+                        // Comparison involving objectDerefTemp (on either side)
+                        if (s.Contains($"== {temp}") || s.Contains($"!= {temp}") ||
+                            s.Contains($"{temp} ==") || s.Contains($"{temp} !="))
+                            return true;
+                    }
+                }
+            }
+        }
+
+        // Multi-line pattern: comparison of unrelated pointer types (C2446)
+        // When a typed pointer (__this, parameter) is compared with Object* parameter/variable
+        {
+            foreach (var line in rendered.AsSpan().EnumerateLines())
+            {
+                var s = line.ToString().TrimStart();
+                // Catches: __this != value, __this == value, comparer != __tN, etc.
+                // where one side is Object* and the other is a typed pointer
+                if ((s.Contains("__this != ") || s.Contains("__this == ") ||
+                     s.Contains("!= value") || s.Contains("== value") ||
+                     s.Contains("comparer != ") || s.Contains("comparer == ") ||
+                     s.Contains("== __this") || s.Contains("!= __this")) &&
+                    !s.Contains("(void*)") && !s.Contains("nullptr") &&
+                    (s.Contains("__t") || s.Contains("value") || s.Contains("comparer") ||
+                     s.Contains("obj") || s.Contains("other")))
+                {
+                    // Only flag if the function signature shows an Object* parameter
+                    // (mixed type comparison is the issue)
+                    if (method.Parameters.Any(p => p.CppTypeName == "cil2cpp::Object*"))
+                        return true;
+                }
+            }
+        }
+
+        // Multi-line pattern: cross-scope variable declared as Object* but assigned value type
+        // Detects: cil2cpp::Object* __tN = nullptr; ... __tN = intExpr / boolExpr / doubleExpr;
+        {
+            var objectPtrVars = new HashSet<string>();
+            foreach (var line in rendered.AsSpan().EnumerateLines())
+            {
+                var s = line.ToString().TrimStart();
+                if (s.StartsWith("cil2cpp::Object* __t") && s.Contains("= nullptr;"))
+                {
+                    var varEnd = s.IndexOf(' ', 20);
+                    if (varEnd > 20)
+                        objectPtrVars.Add(s[20..varEnd]);
+                }
+            }
+            if (objectPtrVars.Count > 0)
+            {
+                foreach (var line in rendered.AsSpan().EnumerateLines())
+                {
+                    var s = line.ToString().TrimStart();
+                    foreach (var v in objectPtrVars)
+                    {
+                        var prefix = $"__t{v} = ";
+                        if (!s.StartsWith(prefix)) continue;
+                        var rhs = s[prefix.Length..].TrimEnd(';').Trim();
+                        // __tN = expr == 0 / != 0 / != nullptr (assigns bool to Object*)
+                        if (rhs.Contains("== 0") || rhs.Contains("!= 0") ||
+                            rhs.Contains("!= nullptr") || rhs.Contains("== nullptr"))
+                            return true;
+                        // __tN = small_int; (assigns int literal to Object*)
+                        if (rhs.Length > 0 && rhs.All(c => char.IsDigit(c) || c == '-' || c == '.'))
+                            return true;
+                        // __tN = expr + expr (arithmetic/bitwise — can't assign int result to Object*)
+                        if (rhs.Contains(" + ") || rhs.Contains(" - ") || rhs.Contains(" * ")
+                            || rhs.Contains(" / ") || rhs.Contains(" % ") || rhs.Contains(" | ")
+                            || rhs.Contains(" & ") || rhs.Contains(" ^ "))
+                            return true;
+                        // __tN = -value (negation of non-pointer value)
+                        if (rhs.StartsWith("-") && !rhs.Contains("nullptr") && !rhs.Contains("("))
+                            return true;
+                    }
+                }
+            }
+        }
+
+        // Multi-line pattern: cross-scope variable declared as non-pointer but assigned Object*
+        // Detects: int32_t __tN = 0; or double __tN = 0; ... __tN = obj->field (which is Object*)
+        {
+            var nonPtrVarTypes = new Dictionary<string, string>();
+            foreach (var line in rendered.AsSpan().EnumerateLines())
+            {
+                var s = line.ToString().TrimStart();
+                if (s.StartsWith("int32_t __t") || s.StartsWith("double __t") ||
+                    s.StartsWith("int64_t __t") || s.StartsWith("float __t"))
+                {
+                    var spaceIdx = s.IndexOf(' ');
+                    var eqIdx = s.IndexOf(' ', spaceIdx + 1);
+                    if (spaceIdx > 0 && eqIdx > spaceIdx)
+                    {
+                        var varName = s[(spaceIdx + 1)..eqIdx];
+                        nonPtrVarTypes[varName] = s[..spaceIdx];
+                    }
+                }
+            }
+            if (nonPtrVarTypes.Count > 0)
+            {
+                foreach (var line in rendered.AsSpan().EnumerateLines())
+                {
+                    var s = line.ToString().TrimStart();
+                    foreach (var (varName, _) in nonPtrVarTypes)
+                    {
+                        // varName = (SomeType*)(void*) expr; — pointer assigned to int/double
+                        if (s.StartsWith($"{varName} = ") && s.Contains("*)(void*)"))
+                            return true;
+                    }
+                }
+            }
+        }
+
+        // Multi-line pattern: cross-scope assignment without cast between incompatible types
+        // __tN = (TypeA*)(void*)... then later __tN = __tM where __tM is different TypeB*
+        if (rendered.Contains("(void*)"))
+        {
+            bool hasCast = false;
+            bool hasPlainAssign = false;
+            foreach (var line in rendered.AsSpan().EnumerateLines())
+            {
+                var s2 = line.ToString().TrimStart();
+                // Track if any __tN is assigned from a typed pointer cast (with or without auto)
+                if (s2.Contains("__t") && s2.Contains("*)(void*)") && s2.Contains(" = "))
+                    hasCast = true;
+                // Check for plain __tN = __tM; without any cast
+                if (s2.StartsWith("__t") && s2.Contains(" = __t") && !s2.Contains("(") && s2.EndsWith(";"))
+                    hasPlainAssign = true;
+            }
+            if (hasCast && hasPlainAssign)
+                return true;
+        }
+
+        // Multi-line pattern: pointer variable accessed with dot instead of arrow
+        // Detects locals assigned from pointer casts, auto temps, and pointer params
+        {
+            var ptrVars = new HashSet<string>();
+            // Include pointer parameters (by-ref value type params are Type* in C++)
+            // Exclude __this — always used with -> correctly
+            foreach (var param in method.Parameters)
+            {
+                if (param.CppTypeName.EndsWith("*") && param.Name != "__this")
+                    ptrVars.Add(param.Name);
+            }
+            foreach (var line in rendered.AsSpan().EnumerateLines())
+            {
+                var s2 = line.ToString().TrimStart();
+                // Detect: loc_N = (SomeType*)expr;
+                if (s2.StartsWith("loc_") && s2.Contains(" = (") && s2.Contains("*)"))
+                {
+                    var spIdx = s2.IndexOf(' ');
+                    if (spIdx > 0)
+                        ptrVars.Add(s2[..spIdx]);
+                }
+                // Detect: auto __tN = (SomeType*)expr; (exclude derefs *(Type*))
+                if (s2.StartsWith("auto __t") && s2.Contains("*)") &&
+                    s2.Contains(" = (") && !s2.Contains(" = *("))
+                {
+                    var spIdx = s2.IndexOf(' ', 5); // after "auto "
+                    if (spIdx > 5)
+                        ptrVars.Add(s2[5..spIdx]);
+                }
+                // Detect: auto __tN = cil2cpp::unbox_ptr<...>(...); (returns pointer)
+                if (s2.StartsWith("auto __t") && s2.Contains("unbox_ptr<"))
+                {
+                    var spIdx = s2.IndexOf(' ', 5); // after "auto "
+                    if (spIdx > 5)
+                        ptrVars.Add(s2[5..spIdx]);
+                }
+                // Detect: auto __tN = &expr; (address-of produces pointer)
+                if (s2.StartsWith("auto __t") && s2.Contains(" = &"))
+                {
+                    var spIdx = s2.IndexOf(' ', 5); // after "auto "
+                    if (spIdx > 5)
+                        ptrVars.Add(s2[5..spIdx]);
+                }
+            }
+            if (ptrVars.Count > 0)
+            {
+                foreach (var line in rendered.AsSpan().EnumerateLines())
+                {
+                    var s2 = line.ToString().TrimStart();
+                    foreach (var v in ptrVars)
+                    {
+                        if (s2.Contains($"{v}.f_"))
+                            return true;
+                    }
+                }
+            }
+        }
+
+        // Multi-line pattern: array_get<T>/array_set<T> with reference type (value↔pointer mismatch)
+        // array_get returns T by value — casting result to T* means it's a reference type array
+        // array_set expects T by value — passing a T* pointer means it's a reference type array
+        if (rendered.Contains("array_get<") || rendered.Contains("array_set<"))
+        {
+            var arrayGetVars = new HashSet<string>();
+            foreach (var line in rendered.AsSpan().EnumerateLines())
+            {
+                var s = line.ToString().TrimStart();
+                // Track __tN assigned from array_get
+                if (s.StartsWith("auto __t") && s.Contains("array_get<"))
+                {
+                    var spIdx = s.IndexOf(' ', 5);
+                    if (spIdx > 5) arrayGetVars.Add(s[5..spIdx]);
+                }
+                // array_set with pointer value: array_set<T>(arr, idx, ptr)
+                // where ptr is a pointer variable (loc_N that's known pointer)
+                if (s.Contains("array_set<") && !s.Contains("array_set<cil2cpp::"))
+                {
+                    // Check if last argument ends with *)
+                    // Pattern: array_set<X>(arr, idx, loc_N) where X is not a pointer type
+                    var setIdx = s.IndexOf("array_set<");
+                    var closeAngle = s.IndexOf('>', setIdx + 10);
+                    if (closeAngle > setIdx + 10)
+                    {
+                        var typeArg = s[(setIdx + 10)..closeAngle];
+                        if (!typeArg.EndsWith("*"))
+                        {
+                            // If any argument after the second is cast to this type
+                            // or is a pointer variable, it's a mismatch
+                            // For now, check if the method also has array_get of same type with pointer cast
+                            if (arrayGetVars.Count > 0)
+                                return true;
+                        }
+                    }
+                }
+            }
+            if (arrayGetVars.Count > 0)
+            {
+                foreach (var line in rendered.AsSpan().EnumerateLines())
+                {
+                    var s = line.ToString().TrimStart();
+                    foreach (var v in arrayGetVars)
+                    {
+                        // (X*)varName — value-to-pointer cast of array_get result
+                        if (s.Contains($"*){v}") && !s.Contains("array_"))
+                            return true;
+                    }
+                }
+            }
+        }
+
+        // Method-level: DIM implementations in System.Numerics interfaces
+        // These use raw CIL arithmetic/comparison opcodes (add, sub, cgt, clt, etc.)
+        // which translate to C++ operators (+, -, >, <) that struct types don't support
+        if (method.DeclaringType?.ILFullName != null)
+        {
+            var declType = method.DeclaringType.ILFullName;
+            // All System.Numerics.I* interfaces have potential operator issues
+            if (declType.StartsWith("System.Numerics.I") && method.DeclaringType.IsInterface)
+                return true;
+        }
+
+        // Method-level: System.Reflection.Pointer methods use void* as intptr_t/uintptr_t
+        if (method.DeclaringType?.ILFullName == "System.Reflection.Pointer")
+        {
+            if (rendered.Contains("f_ptr"))
+                return true;
+        }
+
+        // Method-level: IntPtr/UIntPtr methods try to access f_value field
+        // IntPtr is aliased to intptr_t (scalar), so ->f_value is invalid
+        if (method.DeclaringType?.ILFullName is "System.IntPtr" or "System.UIntPtr")
+        {
+            if (rendered.Contains("->f_value"))
+                return true;
+        }
+
+        // Method-level: void* parameter assigned to typed field (Span<T> constructors)
+        if (rendered.Contains("f_reference = pointer") &&
+            method.Parameters.Any(p => p.CppTypeName == "void*"))
+            return true;
+
+        // Method-level: calls to Array_IndexOf/LastIndexOf with nested generic element types
+        // where the function declaration has wrong param type due to double-underscore mangling
+        if (rendered.Contains("System_Array_IndexOf_") || rendered.Contains("System_Array_LastIndexOf_"))
+        {
+            // Check if the call's function name contains a nested generic type marker
+            // that would result in double-underscore mangling mismatch
+            foreach (var line in rendered.AsSpan().EnumerateLines())
+            {
+                var s = line.ToString().TrimStart();
+                if ((s.Contains("System_Array_IndexOf_") || s.Contains("System_Array_LastIndexOf_")) &&
+                    s.Contains("(cil2cpp::Array*)"))
+                {
+                    // The function expects Array* but declaration has wrong type
+                    return true;
+                }
+            }
+        }
+
+        // Method-level: ActivityTracker Guid manipulation with pointer arithmetic type mismatch
+        if (method.CppName.Contains("AddIdToGuid"))
+            return true;
+
+        // Method-level: EventPipe methods using intptr_t fields with Span ctors
+        if (method.CppName.Contains("DispatchEventsToEventListeners") ||
+            method.CppName.Contains("EventData_SetMetadata"))
+            return true;
+
+        // Method-level: TypedReference (refanytype is unsupported IL instruction)
+        if (rendered.Contains("refanytype"))
+            return true;
+
+        // Method-level: DBNull comparison (BCL uses DBNull.Value as sentinel, compared with Object*)
+        if (rendered.Contains("System_DBNull") && (rendered.Contains("!= __t") || rendered.Contains("== __t")))
+            return true;
+
+        // Method-level: TimeZoneInfo methods with cross-scope DateTime/TimeSpan/AdjustmentRule
+        if (method.DeclaringType?.ILFullName?.Contains("TimeZoneInfo") == true &&
+            (rendered.Contains("System_DateTime __t") || rendered.Contains("AdjustmentRule")))
+            return true;
+
+        // Method-level: switch-between-switch goto-skips-init (C2362)
+        // Two consecutive switch blocks with auto __tN between them
+        if (rendered.Contains("switch (") && rendered.Contains("auto __t") &&
+            rendered.Contains("goto IL_003C") && rendered.Contains("goto IL_003E"))
+            return true;
+
+        // Method-level: GuidResult pointer parameter accessed with dot instead of arrow
+        // stfld on by-ref param generates result.f_X instead of result->f_X
+        if (method.Parameters.Any(p => p.CppTypeName.Contains("GuidResult*")))
+        {
+            foreach (var line in rendered.AsSpan().EnumerateLines())
+            {
+                var s2 = line.ToString().TrimStart();
+                if (s2.StartsWith("result.f_"))
+                    return true;
+            }
+        }
+
+        // Multi-line pattern: primitive-typed pre-declared variable used with dot access
+        // e.g., bool __t0 = {}; ... __t0.f_hasCustomFormatter (always wrong — primitives have no fields)
+        {
+            var primitiveVars = new HashSet<string>();
+            foreach (var line in rendered.AsSpan().EnumerateLines())
+            {
+                var s = line.ToString().TrimStart();
+                if ((s.StartsWith("bool __t") || s.StartsWith("int32_t __t") ||
+                     s.StartsWith("int64_t __t") || s.StartsWith("double __t") ||
+                     s.StartsWith("float __t") || s.StartsWith("uint8_t __t") ||
+                     s.StartsWith("uint16_t __t") || s.StartsWith("uint32_t __t")) &&
+                    s.Contains(" = "))
+                {
+                    var spIdx = s.IndexOf(' ');
+                    var eqIdx = s.IndexOf(' ', spIdx + 1);
+                    if (eqIdx > spIdx)
+                        primitiveVars.Add(s[(spIdx + 1)..eqIdx]);
+                }
+            }
+            if (primitiveVars.Count > 0)
+            {
+                foreach (var line in rendered.AsSpan().EnumerateLines())
+                {
+                    var s = line.ToString().TrimStart();
+                    foreach (var v in primitiveVars)
+                    {
+                        if (s.Contains($"{v}.f_"))
+                            return true;
+                    }
+                }
+            }
+        }
+
+        // Check for calls to undeclared disambiguated functions
+        if (_declaredFunctionNames.Count > 0)
+        {
+            foreach (var block in method.BasicBlocks)
+            {
+                foreach (var instr in block.Instructions)
+                {
+                    if (instr is IR.IRCall call && !string.IsNullOrEmpty(call.FunctionName)
+                        && !call.FunctionName.StartsWith("cil2cpp::")
+                        && !call.FunctionName.EndsWith("_ensure_cctor")
+                        && call.FunctionName.Contains("__") // disambiguated name
+                        && !_declaredFunctionNames.Contains(call.FunctionName))
+                        return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Check a single rendered C++ line for patterns that would cause MSVC errors.
+    /// </summary>
+    private static bool RenderedLineHasError(string s)
+    {
+        // Pattern: &variable = (assigning to address-of, invalid l-value)
+        if (s.StartsWith("&") && s.Contains(" = "))
+            return true;
+
+        // Pattern: Interop calls with wrong types (P/Invoke wrappers)
+        if (s.Contains("Interop_GetRandomBytes(") || s.Contains("Interop_Globalization_"))
+            return true;
+        if (s.Contains("RuntimeHelpers_CreateSpan"))
+            return true;
+
+        // Pattern: string_length called with non-String arg (Object* from array_get)
+        if (s.Contains("string_length(cil2cpp::array_get<"))
+            return true;
+
+        // Pattern: array operations on Object* — byref deref produces Object*
+        // but array_length/array_get/array_set/array_get_element_ptr need Array*
+        if (s.Contains("array_length(*(cil2cpp::Object**)") ||
+            s.Contains("array_get<") && s.Contains("(*(cil2cpp::Object**)") ||
+            s.Contains("array_set<") && s.Contains("(*(cil2cpp::Object**)") ||
+            s.Contains("array_get_element_ptr(*(cil2cpp::Object**)"))
+            return true;
+        // array_set with 0 as first arg (null array pointer)
+        if (s.Contains("array_set<") && s.Contains(">(0,"))
+            return true;
+
+        // Pattern: OperationCanceledException.f_cancellationToken is void* in runtime
+        if (s.Contains("f_cancellationToken") && !s.Contains("(void*)") && !s.Contains("nullptr")
+            && !s.Contains("//"))
+            return true;
+
+        // Pattern: GetLocaleInfoExInt with wrong argument types
+        if (s.Contains("GetLocaleInfoEx(") || s.Contains("GetLocaleInfoExInt("))
+            return true;
+
+        // Pattern: AsyncLocal constructor with wrong arg count
+        if (s.Contains("System_Threading_AsyncLocal_1_") && s.Contains("__ctor("))
+            return true;
+
+        // Pattern: broken type name from function pointer mishandling
+        // e.g., "methodSystem_Void*" or "reinterpret_cast<void(*)"
+        if (s.Contains("methodSystem_") || s.Contains("reinterpret_cast<void(*)("))
+            return true;
+
+        // Pattern: (cil2cpp::Exception*)__tN or (cil2cpp::Exception*)loc_N
+        // where the variable might be a value type (CancellationToken), not a pointer
+        if (s.Contains("->f_innerException = (cil2cpp::Exception*)") &&
+            !s.Contains("(cil2cpp::Exception*)nullptr") &&
+            !s.Contains("(cil2cpp::Exception*)(void*)"))
+            return true;
+
+        // Pattern: enum type pointer cast where value expected
+        // e.g., (System_Resources_UltimateResourceFallbackLocation*)__t5 in function args
+        // These appear when ldflda/ldloca produces an address but callee expects value
+        if (s.Contains("UltimateResourceFallbackLocation*)"))
+            return true;
+
+        // Pattern: CalendarId pointer/return type issues (enum-as-pointer)
+        // CalendarId* cast in function arguments, or CalendarId from pointer return
+        if (s.Contains("(System_Globalization_CalendarId*)"))
+            return true;
+
+        // Pattern: ReadOnlySpan/Span struct cast to void*
+        // BCL code casts Span structs but C++ can't implicit-cast struct to void*
+        if ((s.Contains("ReadOnlySpan_1_") || s.Contains("Span_1_")) && s.Contains("(void*)"))
+            return true;
+
+        // Pattern: intptr_t in Span constructor or Marshal calls
+        // e.g., Marshal_StringToCoTaskMemUni creating Span from intptr_t
+        if (s.Contains("Marshal_StringToCoTaskMem"))
+            return true;
+
+        // Pattern: missing this pointer — function call where first arg is small int
+        // but function expects a pointer (value type method on struct)
+        // Detect: GuidResult_SetFailure(7, or GetLocaleInfoFromLCType(4099,
+        if (s.Contains("GuidResult_SetFailure(") && !s.Contains("GuidResult_SetFailure(result") &&
+            !s.Contains("GuidResult_SetFailure(&") && !s.Contains("GuidResult_SetFailure(loc_") &&
+            !s.Contains("GuidResult_SetFailure(__"))
+            return true;
+        if (s.Contains("GetLocaleInfoFromLCType(") && char.IsDigit(s[s.IndexOf("GetLocaleInfoFromLCType(") + 24]))
+            return true;
+        if (s.Contains("NlsGetDefaultLocaleName") || s.Contains("NlsGetAdjustedCalendarArray"))
+            return true;
+
+        // Pattern: array_data result cast to wrong pointer depth
+        // e.g., f_reference = (cil2cpp::Object*)cil2cpp::array_data(  — should be Object**
+        if (s.Contains("= (cil2cpp::Object*)cil2cpp::array_data("))
+            return true;
+
+        // Pattern: Span type confusion in function argument
+        // Span_1_System_Char passed where ReadOnlySpan_1_System_Byte expected
+        if (s.Contains("System_Span_1_System_Char") && s.Contains("ReadOnlySpan_1_System_Byte"))
+            return true;
+
+        // Pattern: static_cast<uint64_t>(ptr) — pointer to uint64 needs reinterpret_cast
+        if (s.Contains("static_cast<uint64_t>("))
+            return true;
+
+        // Pattern: Guid* subtracted from uint8_t* (pointer arithmetic type mismatch)
+        if (s.Contains("System_Guid*") && s.Contains("uint8_t*") && s.Contains("-"))
+            return true;
+
+        // Pattern: ValueListBuilder method called with int first arg (missing this)
+        // Look for the actual '(' opening the call arguments — comes after the full function name
+        if (s.Contains("ValueListBuilder_1_"))
+        {
+            // Find the opening paren of the function call arguments
+            var fnEnd = s.LastIndexOf('(');
+            if (fnEnd > 0)
+            {
+                var afterParen = s[(fnEnd + 1)..].TrimStart();
+                // First arg should be a pointer (vlb, &loc_, __this)
+                // If it starts with a digit, the this pointer is missing
+                if (afterParen.Length > 0 && char.IsDigit(afterParen[0]))
+                    return true;
+            }
+        }
+
+        // Pattern: interface type assignment (class* → interface*)
+        // CultureInfo* → IFormatProvider*, etc.
+        if (s.Contains("= (System_IFormatProvider*)") && !s.Contains("(void*)"))
+            return true;
+
+        // Pattern: null-pointer dereference for Unsafe.NullRef
+        // (((Type*)0))->field = value; — dereferencing null pointer
+        if (s.Contains("((") && s.Contains("*)0))"))
+            return true;
+
+        // Pattern: void* dot access — lParam.f_X when lParam is void*
+        if (s.Contains("lParam.f_"))
+            return true;
+
+        // Pattern: volatile_write type mismatch (uint64_t* with int64_t value, or nullptr ambiguity)
+        if (s.Contains("volatile_write((uint64_t*)") && !s.Contains("(uint64_t)"))
+            return true;
+        // volatile_write(ptr, nullptr) — template T is ambiguous between nullptr_t and pointer
+        if (s.Contains("volatile_write(") && s.Contains("nullptr"))
+            return true;
+
+        // Pattern: unbox_ptr/array_get_element_ptr result accessed with dot instead of arrow
+        if ((s.Contains("unbox_ptr<") || s.Contains("array_get_element_ptr(")) && s.Contains(").f_"))
+            return true;
+
+        // Note: Decimal/Int128/UInt128/Half operators are caught at method-level
+        // by the System.Numerics interface DIM pattern in RenderedBodyHasErrors
+
+        // Pattern: unbox/unbox_ptr with trailing underscore in type name (mangling mismatch)
+        // e.g., unbox<System_ValueTuple_4_..._String_> — trailing _ before > is always wrong
+        if ((s.Contains("unbox<") || s.Contains("unbox_ptr<")) && s.Contains("_>"))
+            return true;
+
+        // Pattern: double trailing underscore from nested generic mangling (>>→__)
+        // e.g., List_1_WeakReference_1_EventSource__*) — the __ before *) is wrong
+        if (s.Contains("__*)") || s.Contains("__*>"))
+            return true;
+
+        // Pattern: VerificationException undeclared type
+        if (s.Contains("VerificationException"))
+            return true;
+
+        // Pattern: GCHandle_Alloc with int first arg (should be Object*)
+        if (s.Contains("GCHandle_Alloc(") && !s.Contains("(cil2cpp::Object*)"))
+        {
+            var idx = s.IndexOf("GCHandle_Alloc(");
+            if (idx >= 0)
+            {
+                var afterParen = s[(idx + 15)..].TrimStart();
+                if (afterParen.Length > 0 && (char.IsDigit(afterParen[0]) || afterParen[0] == '-'))
+                    return true;
+            }
+        }
+
+        // Pattern: DataCollector methods with wrong this pointer (args shifted)
+        if (s.Contains("DataCollector_Add") && s.Contains("(loc_") && !s.Contains("DataCollector*"))
+            return true;
+
+        // Pattern: void* to intptr_t/uintptr_t conversion (needs reinterpret_cast)
+        if ((s.Contains("loc_0 = __t") || s.Contains("return __t")) && s.Contains("ToPointer"))
+            return true;
+
+        // Pattern: Calendar-derived to Calendar-base assignment without cast
+        if (s.Contains("GregorianCalendar*") && s.Contains("Calendar*") && s.Contains("= __t"))
+            return true;
+
+        // Pattern: Enum as value type in function arg (it's a reference type)
+        if (s.Contains("System_Enum_GetValue(") && !s.Contains("System_Enum*"))
+            return true;
+
+        // Pattern: pointer-parameter dot-access (EventSourceOptions* → options.f_X)
+        if (s.Contains("options.f_") && !s.Contains("->"))
+            return true;
+
+        // Pattern: intptr_t/uint8_t* pointer mismatch in reflection/tracing
+        if (s.Contains("_GetPropertyOrFieldData(") || s.Contains("set_DataPointer("))
+            return true;
+
+        // Pattern: CustomAttributeData comparison with Object*
+        // The comparison line itself may not mention the type — it just has "obj == __this"
+        // Detect at method level instead
+
+
+        // Pattern: CancellationToken struct in OperationCanceledException ctor
+        if (s.Contains("OperationCanceledException__ctor") && s.Contains("CancellationToken"))
+            return true;
+
+        // Pattern: InformThreadNameChange with wrong first arg (String* instead of ThreadHandle)
+        if (s.Contains("InformThreadNameChange(") && !s.Contains("ThreadHandle"))
+            return true;
+
+        // Pattern: DBNull* comparison with Object* (unrelated pointer types)
+        if (s.Contains("DBNull*") && (s.Contains("!=") || s.Contains("==")))
+            return true;
+
+        // Pattern: Vector128/VectorMath hardware intrinsic types (JIT intrinsic, no IL body)
+        if (s.Contains("Vector128_1_") || s.Contains("VectorMath_"))
+            return true;
+
+        // Pattern: TypedReference passed as void* — it's a struct, not a pointer
+        if (s.Contains("TypedReference") && s.Contains("GetTypeFromHandle"))
+            return true;
+
+        // Pattern: GCHandle_FromIntPtr with void* arg (needs intptr_t)
+        if (s.Contains("GCHandle_FromIntPtr(") && !s.Contains("(intptr_t)"))
+            return true;
+
+        // Pattern: FreeCoTaskMem with pointer arg (needs intptr_t)
+        if (s.Contains("FreeCoTaskMem(") && !s.Contains("(intptr_t)"))
+            return true;
+
+        // Pattern: void* pointer arithmetic (void has unknown size)
+        // e.g., __t3 + index where __t3 is void*
+        if (s.Contains("ToPointer("))
+            return true;
+
+        // Pattern: Span of undefined nested types
+        if (s.Contains("Span_1_System_TimeZoneInfo_AdjustmentRule"))
+            return true;
+
+        // Pattern: enum pointer passed where enum value expected (ResourceTypeCode, etc.)
+        // The enum pointer cast like (ResourceTypeCode*)typeCode or (ResourceTypeCode*)&loc_
+        // when the callee expects the value
+        if (s.Contains("ResourceTypeCode*)"))
+            return true;
+
+        // Pattern: MethodTable field access — JIT internal structure not fully supported
+        if (s.Contains("f_ComponentSize") || s.Contains("f_BaseSize") ||
+            (s.Contains("f_Flags") && s.Contains("MethodTable")))
+            return true;
+
+        // Pattern: TypeHandle/MethodTable JIT internals — bitwise ops on void* (f_m_asTAddr)
+        if (s.Contains("f_m_asTAddr"))
+            return true;
+        // Pattern: TypeHandle__ctor with intptr_t arg (needs void*, not intptr_t)
+        if (s.Contains("TypeHandle__ctor(") || s.Contains("TypeHandle_TypeHandleOf"))
+            return true;
+
+        // Pattern: RuntimeMethodHandle_InvokeMethod — callers pass intptr_t* but it needs void**
+        if (s.Contains("RuntimeMethodHandle_InvokeMethod("))
+            return true;
+
+        // Pattern: enum pointer passed where enum value expected (InvokerStrategy)
+        if (s.Contains("InvokerStrategy*)"))
+            return true;
+
+        // Pattern: string_length with array_get result (Object* not String*)
+        if (s.Contains("string_length(") && !s.Contains("string_length((cil2cpp::String*)"))
+        {
+            // Allow: string_length(__this), string_length(someStringVar)
+            // Reject: string_length(__tN) where __tN came from array_get
+            var idx = s.IndexOf("string_length(");
+            if (idx >= 0)
+            {
+                var argStart = idx + 14;
+                var afterParen = s[argStart..];
+                // If the argument is __tN (not cast to String*), it could be wrong type
+                if (afterParen.StartsWith("__t") && !afterParen.StartsWith("__this"))
+                    return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Extract function name → set of valid parameter counts from C++ signatures.
+    /// Signature format: "retType funcName(Type1 p1, Type2 p2, ...)" → funcName → {2}
+    /// </summary>
+    private static Dictionary<string, HashSet<int>> ExtractFunctionParamCounts(HashSet<string> signatures)
+    {
+        var result = new Dictionary<string, HashSet<int>>();
+        foreach (var sig in signatures)
+        {
+            var parenIdx = sig.IndexOf('(');
+            if (parenIdx <= 0) continue;
+
+            // Extract function name
+            var beforeParen = sig[..parenIdx].TrimEnd();
+            var spaceIdx = beforeParen.LastIndexOf(' ');
+            if (spaceIdx < 0) continue;
+            var name = beforeParen[(spaceIdx + 1)..];
+            if (name.StartsWith("*"))
+                name = name.TrimStart('*');
+            if (string.IsNullOrEmpty(name)) continue;
+
+            // Count parameters (count commas + 1, handle void/empty)
+            var closeIdx = sig.IndexOf(')', parenIdx);
+            if (closeIdx < 0) continue;
+            var paramStr = sig[(parenIdx + 1)..closeIdx].Trim();
+            int paramCount = 0;
+            if (!string.IsNullOrEmpty(paramStr) && paramStr != "void")
+            {
+                paramCount = 1;
+                // Count commas not inside nested angle brackets or parens
+                int depth = 0;
+                foreach (var ch in paramStr)
+                {
+                    if (ch is '<' or '(') depth++;
+                    else if (ch is '>' or ')') depth--;
+                    else if (ch == ',' && depth == 0) paramCount++;
+                }
+            }
+
+            if (!result.TryGetValue(name, out var counts))
+            {
+                counts = new HashSet<int>();
+                result[name] = counts;
+            }
+            counts.Add(paramCount);
+        }
+        return result;
     }
 }

@@ -434,7 +434,7 @@ public class IRInstructionTests
         var instr = new IRThrow { ExceptionExpr = "ex" };
         var code = instr.ToCpp();
         Assert.Contains("throw_exception", code);
-        Assert.Contains("static_cast<cil2cpp::Exception*>(ex)", code);
+        Assert.Contains("(cil2cpp::Exception*)ex", code);
     }
 
     [Fact]

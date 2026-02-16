@@ -10,10 +10,12 @@ public partial class IRBuilder
 
     /// <summary>
     /// Construct a unique key for a generic method instantiation.
+    /// Includes parameter types to distinguish overloads (e.g. GetReference(Span) vs GetReference(ReadOnlySpan)).
     /// Shared between scanning (CollectGenericMethod) and call emission (EmitMethodCall).
     /// </summary>
-    private static string MakeGenericMethodKey(string declaringType, string methodName, List<string> typeArgs)
-        => $"{declaringType}::{methodName}<{string.Join(",", typeArgs)}>";
+    private static string MakeGenericMethodKey(string declaringType, string methodName,
+        List<string> typeArgs, string paramSig = "")
+        => $"{declaringType}::{methodName}<{string.Join(",", typeArgs)}>({paramSig})";
 
     /// <summary>
     /// Mangle a generic method instantiation name for C++ emission.
@@ -44,6 +46,12 @@ public partial class IRBuilder
 
             foreach (var methodDef in typeDef.Methods)
             {
+                // In multi-assembly mode, only scan reachable methods to avoid
+                // pulling in unnecessary generic specializations from unreachable BCL methods
+                if (_reachability != null && !methodDef.HasGenericParameters
+                    && !_reachability.IsReachable(methodDef.GetCecilMethod()))
+                    continue;
+
                 // Scan method signatures (return type, parameters)
                 var cecilMethodSig = methodDef.GetCecilMethod();
                 CollectGenericType(cecilMethodSig.ReturnType);
@@ -146,13 +154,30 @@ public partial class IRBuilder
             return;
 
         var typeArgs = gim.GenericArguments.Select(a => a.FullName).ToList();
-        var key = MakeGenericMethodKey(declaringType, methodName, typeArgs);
+        // Include parameter types in key to distinguish overloads
+        // (e.g. GetReference<T>(Span<T>) vs GetReference<T>(ReadOnlySpan<T>))
+        var paramSig = string.Join(",", elementMethod.Parameters.Select(p => p.ParameterType.FullName));
+        var key = MakeGenericMethodKey(declaringType, methodName, typeArgs, paramSig);
         if (_genericMethodInstantiations.ContainsKey(key)) return;
 
         var cecilMethod = elementMethod.Resolve();
         if (cecilMethod == null) return;
 
         var mangledName = MangleGenericMethodName(declaringType, methodName, typeArgs);
+
+        // Disambiguate mangled name if another overload already uses it
+        if (_genericMethodInstantiations.Values.Any(v => v.MangledName == mangledName))
+        {
+            // Build type parameter map to resolve generic params (!!0 etc.) before mangling
+            var typeParamMap = new Dictionary<string, string>();
+            for (int i = 0; i < cecilMethod.GenericParameters.Count && i < typeArgs.Count; i++)
+                typeParamMap[cecilMethod.GenericParameters[i].Name] = typeArgs[i];
+
+            var paramSuffix = string.Join("_", cecilMethod.Parameters
+                .Select(p => CppNameMapper.MangleTypeName(
+                    ResolveGenericTypeName(p.ParameterType, typeParamMap))));
+            mangledName += $"__{paramSuffix}";
+        }
 
         _genericMethodInstantiations[key] = new GenericMethodInstantiationInfo(
             declaringType, methodName, typeArgs, mangledName, cecilMethod);
@@ -163,13 +188,32 @@ public partial class IRBuilder
     /// </summary>
     private void CreateGenericMethodSpecializations()
     {
-        foreach (var (key, info) in _genericMethodInstantiations)
+        // Fixpoint loop: processing a specialization body may discover new transitive
+        // generic method instantiations (e.g., GetNameInlined<Byte> calls FindDefinedIndex<Byte>).
+        var processed = new HashSet<string>();
+        bool changed = true;
+        while (changed)
         {
-            var cecilMethod = info.CecilMethod;
+            changed = false;
+            // Snapshot keys to avoid collection-modified-during-enumeration
+            var snapshot = _genericMethodInstantiations.ToList();
+            foreach (var (key, info) in snapshot)
+            {
+                if (processed.Contains(key)) continue;
+                processed.Add(key);
+                changed = true;
+                ProcessGenericMethodSpecialization(key, info);
+            }
+        }
+    }
 
-            // Find the declaring IRType
-            if (!_typeCache.TryGetValue(info.DeclaringTypeName, out var declaringIrType))
-                continue;
+    private void ProcessGenericMethodSpecialization(string key, GenericMethodInstantiationInfo info)
+    {
+        var cecilMethod = info.CecilMethod;
+
+        // Find the declaring IRType
+        if (!_typeCache.TryGetValue(info.DeclaringTypeName, out var declaringIrType))
+            return;
 
             // Build method-level type parameter map
             var typeParamMap = new Dictionary<string, string>();
@@ -185,7 +229,9 @@ public partial class IRBuilder
                 Name = cecilMethod.Name,
                 CppName = info.MangledName,
                 DeclaringType = declaringIrType,
-                ReturnTypeCpp = CppNameMapper.GetCppTypeForDecl(returnTypeName),
+                // Use ResolveTypeForDecl (not GetCppTypeForDecl) to leverage _typeCache
+                // for correct value type detection, especially for ref parameters (& → *)
+                ReturnTypeCpp = ResolveTypeForDecl(returnTypeName),
                 IsStatic = cecilMethod.IsStatic,
                 IsVirtual = cecilMethod.IsVirtual,
                 IsAbstract = cecilMethod.IsAbstract,
@@ -193,6 +239,14 @@ public partial class IRBuilder
                 IsStaticConstructor = cecilMethod.IsConstructor && cecilMethod.IsStatic,
                 IsGenericInstance = true,
             };
+
+            // Propagate HasICallMapping from base method
+            // e.g. Volatile.Write<T> has wildcard icall — all specializations are dead code
+            if (declaringIrType.ILFullName != null &&
+                ICallRegistry.Lookup(declaringIrType.ILFullName, cecilMethod.Name, cecilMethod.Parameters.Count) != null)
+            {
+                irMethod.HasICallMapping = true;
+            }
 
             // Parameters
             foreach (var paramDef in cecilMethod.Parameters)
@@ -202,7 +256,7 @@ public partial class IRBuilder
                 {
                     Name = paramDef.Name.Length > 0 ? paramDef.Name : $"p{paramDef.Index}",
                     CppName = paramDef.Name.Length > 0 ? paramDef.Name : $"p{paramDef.Index}",
-                    CppTypeName = CppNameMapper.GetCppTypeForDecl(paramTypeName),
+                    CppTypeName = ResolveTypeForDecl(paramTypeName),
                     ILTypeName = paramTypeName,
                     Index = paramDef.Index,
                 });
@@ -218,7 +272,7 @@ public partial class IRBuilder
                     {
                         Index = localDef.Index,
                         CppName = $"loc_{localDef.Index}",
-                        CppTypeName = CppNameMapper.GetCppTypeForDecl(localTypeName),
+                        CppTypeName = ResolveTypeForDecl(localTypeName),
                     });
                 }
             }
@@ -229,141 +283,63 @@ public partial class IRBuilder
             // (not added to methodBodies — we convert immediately with the type param map)
             if (cecilMethod.HasBody && !cecilMethod.IsAbstract)
             {
-                var methodInfo = new IL.MethodInfo(cecilMethod);
-                ConvertMethodBodyWithGenerics(methodInfo, irMethod, typeParamMap);
+                // Skip methods with CLR-internal dependencies — generate stub instead
+                if (HasClrInternalDependencies(cecilMethod))
+                {
+                    GenerateStubBody(irMethod);
+                }
+                else
+                {
+                    var methodInfo = new IL.MethodInfo(cecilMethod);
+                    ConvertMethodBodyWithGenerics(methodInfo, irMethod, typeParamMap);
+                }
             }
-        }
     }
 
     /// <summary>
     /// Create specialized IRTypes for each generic instantiation found in Pass 0.
+    /// All generic types (user + BCL) are monomorphized from their Cecil definitions.
     /// </summary>
     private void CreateGenericSpecializations()
     {
         foreach (var (key, info) in _genericInstantiations)
         {
-            // Skip types already created (e.g., by BCL proxy system)
+            // Skip types already created (e.g., by BCL proxy system or reachability)
             if (_typeCache.ContainsKey(key)) continue;
 
-            var isAsyncBcl = IsAsyncBclGenericType(info.OpenTypeName);
-            var isSpanBcl = IsSpanBclGenericType(info.OpenTypeName);
-            var isCollectionBcl = IsCollectionBclGenericType(info.OpenTypeName);
-            var isCancellationBcl = IsCancellationBclGenericType(info.OpenTypeName);
-            var isAsyncEnumerableBcl = IsAsyncEnumerableBclGenericType(info.OpenTypeName);
-            var isSyntheticBcl = isAsyncBcl || isSpanBcl || isCollectionBcl || isCancellationBcl || isAsyncEnumerableBcl;
+            // Skip types we can't resolve (no Cecil definition available)
+            if (info.CecilOpenType == null) continue;
 
-            // Skip types we can't resolve — except synthetic BCL types
-            if (info.CecilOpenType == null && !isSyntheticBcl) continue;
-
-            var openType = info.CecilOpenType; // may be null for async BCL types
+            var openType = info.CecilOpenType;
 
             // Build type parameter map
             var typeParamMap = new Dictionary<string, string>();
-            if (openType != null)
-            {
-                for (int i = 0; i < openType.GenericParameters.Count && i < info.TypeArguments.Count; i++)
-                    typeParamMap[openType.GenericParameters[i].Name] = info.TypeArguments[i];
-            }
-            else if (isSyntheticBcl && info.TypeArguments.Count > 0)
-            {
-                if (isCollectionBcl)
-                {
-                    // List<T> has one param "T", Dictionary<K,V> has "TKey"/"TValue"
-                    if (info.OpenTypeName.StartsWith("System.Collections.Generic.List`"))
-                        typeParamMap["T"] = info.TypeArguments[0];
-                    else if (info.OpenTypeName.StartsWith("System.Collections.Generic.Dictionary`")
-                             && info.TypeArguments.Count >= 2)
-                    {
-                        typeParamMap["TKey"] = info.TypeArguments[0];
-                        typeParamMap["TValue"] = info.TypeArguments[1];
-                    }
-                }
-                else if (isCancellationBcl)
-                {
-                    // TaskCompletionSource<T> has a single generic param "TResult"
-                    typeParamMap["TResult"] = info.TypeArguments[0];
-                }
-                else if (isAsyncEnumerableBcl)
-                {
-                    // ValueTask<T>, ManualResetValueTaskSourceCore<T>, ValueTaskAwaiter<T>
-                    typeParamMap["TResult"] = info.TypeArguments[0];
-                }
-                else
-                {
-                    // Async/Span BCL types have a single generic parameter
-                    typeParamMap[isAsyncBcl ? "TResult" : "T"] = info.TypeArguments[0];
-                }
-            }
+            for (int i = 0; i < openType.GenericParameters.Count && i < info.TypeArguments.Count; i++)
+                typeParamMap[openType.GenericParameters[i].Name] = info.TypeArguments[i];
 
-            // Determine type flags
-            bool isValueType;
-            string namespaceName;
-            if (openType != null)
-            {
-                isValueType = openType.IsValueType;
-                namespaceName = openType.Namespace;
-            }
-            else if (isSpanBcl)
-            {
-                // Span<T> and ReadOnlySpan<T> are value types
-                isValueType = true;
-                namespaceName = "System";
-            }
-            else if (isCollectionBcl)
-            {
-                // List<T> and Dictionary<K,V> are reference types (classes)
-                isValueType = false;
-                namespaceName = "System.Collections.Generic";
-            }
-            else if (isCancellationBcl)
-            {
-                // TaskCompletionSource<T> is a reference type
-                isValueType = false;
-                namespaceName = "System.Threading.Tasks";
-            }
-            else if (isAsyncEnumerableBcl)
-            {
-                // ValueTask<T>, ManualResetValueTaskSourceCore<T>, ValueTaskAwaiter<T> are all value types
-                isValueType = true;
-                namespaceName = info.OpenTypeName.Contains("CompilerServices")
-                    ? "System.Runtime.CompilerServices"
-                    : info.OpenTypeName.Contains("Sources")
-                        ? "System.Threading.Tasks.Sources"
-                        : "System.Threading.Tasks";
-            }
-            else
-            {
-                // Async BCL: TaskAwaiter<T> and AsyncTaskMethodBuilder<T> are value types
-                isValueType = !info.OpenTypeName.StartsWith("System.Threading.Tasks.Task`");
-                namespaceName = info.OpenTypeName.Contains("CompilerServices")
-                    ? "System.Runtime.CompilerServices"
-                    : "System.Threading.Tasks";
-            }
-
-            var isDelegate = openType?.BaseType?.FullName is "System.MulticastDelegate" or "System.Delegate";
+            var isDelegate = openType.BaseType?.FullName is "System.MulticastDelegate" or "System.Delegate";
 
             var irType = new IRType
             {
                 ILFullName = key,
                 CppName = info.MangledName,
                 Name = info.MangledName,
-                Namespace = namespaceName,
-                IsValueType = isValueType,
-                IsInterface = openType?.IsInterface ?? false,
-                IsAbstract = openType?.IsAbstract ?? false,
-                IsSealed = openType?.IsSealed ?? true,
+                Namespace = openType.Namespace,
+                IsValueType = openType.IsValueType,
+                IsInterface = openType.IsInterface,
+                IsAbstract = openType.IsAbstract,
+                IsSealed = openType.IsSealed,
                 IsGenericInstance = true,
                 IsDelegate = isDelegate,
                 GenericArguments = info.TypeArguments,
-                IsRuntimeProvided = isSyntheticBcl && !isCollectionBcl,
-                SourceKind = isSyntheticBcl ? AssemblyKind.BCL
-                    : (openType != null && _assemblySet != null
-                        ? _assemblySet.ClassifyAssembly(openType.Module.Assembly.Name.Name)
-                        : AssemblyKind.User),
+                IsRuntimeProvided = RuntimeProvidedTypes.Contains(info.OpenTypeName),
+                SourceKind = _assemblySet != null
+                    ? _assemblySet.ClassifyAssembly(openType.Module.Assembly.Name.Name)
+                    : AssemblyKind.User,
             };
 
             // Propagate generic parameter variances from open type definition
-            if (openType != null && openType.HasGenericParameters)
+            if (openType.HasGenericParameters)
             {
                 irType.GenericDefinitionCppName = CppNameMapper.MangleTypeName(info.OpenTypeName);
                 foreach (var gp in openType.GenericParameters)
@@ -385,58 +361,29 @@ public partial class IRBuilder
             }
 
             // Register value types
-            if (isValueType)
+            if (openType.IsValueType)
             {
                 CppNameMapper.RegisterValueType(key);
                 CppNameMapper.RegisterValueType(info.MangledName);
             }
 
-            // Fields: synthetic for BCL generic types, Cecil-based for everything else
-            if (isAsyncBcl)
+            // Fields from Cecil definition
+            foreach (var fieldDef in openType.Fields)
             {
-                irType.Fields.AddRange(CreateAsyncSyntheticFields(info.OpenTypeName, irType, typeParamMap));
-            }
-            else if (isSpanBcl)
-            {
-                irType.Fields.AddRange(CreateSpanSyntheticFields(info.OpenTypeName, irType, typeParamMap));
-            }
-            else if (isCollectionBcl)
-            {
-                if (info.OpenTypeName.StartsWith("System.Collections.Generic.List`"))
-                    irType.Fields.AddRange(CreateListSyntheticFields(irType));
-                else if (info.OpenTypeName.StartsWith("System.Collections.Generic.Dictionary`"))
-                    irType.Fields.AddRange(CreateDictionarySyntheticFields(irType));
-            }
-            else if (isCancellationBcl)
-            {
-                // TaskCompletionSource<T>: holds a Task<T>*
-                var tResult = typeParamMap.GetValueOrDefault("TResult", "System.Int32");
-                var taskKey = $"System.Threading.Tasks.Task`1<{tResult}>";
-                irType.Fields.Add(MakeSyntheticField("_task", taskKey, irType));
-            }
-            else if (isAsyncEnumerableBcl)
-            {
-                irType.Fields.AddRange(CreateAsyncEnumerableSyntheticFields(info.OpenTypeName, irType, typeParamMap));
-            }
-            else
-            {
-                foreach (var fieldDef in openType!.Fields)
+                var fieldTypeName = ResolveGenericTypeName(fieldDef.FieldType, typeParamMap);
+                var irField = new IRField
                 {
-                    var fieldTypeName = ResolveGenericTypeName(fieldDef.FieldType, typeParamMap);
-                    var irField = new IRField
-                    {
-                        Name = fieldDef.Name,
-                        CppName = CppNameMapper.MangleFieldName(fieldDef.Name),
-                        FieldTypeName = fieldTypeName,
-                        IsStatic = fieldDef.IsStatic,
-                        IsPublic = fieldDef.IsPublic,
-                        DeclaringType = irType,
-                    };
-                    if (fieldDef.IsStatic)
-                        irType.StaticFields.Add(irField);
-                    else
-                        irType.Fields.Add(irField);
-                }
+                    Name = fieldDef.Name,
+                    CppName = CppNameMapper.MangleFieldName(fieldDef.Name),
+                    FieldTypeName = fieldTypeName,
+                    IsStatic = fieldDef.IsStatic,
+                    IsPublic = fieldDef.IsPublic,
+                    DeclaringType = irType,
+                };
+                if (fieldDef.IsStatic)
+                    irType.StaticFields.Add(irField);
+                else
+                    irType.Fields.Add(irField);
             }
 
             // Calculate instance size
@@ -446,8 +393,8 @@ public partial class IRBuilder
             _module.Types.Add(irType);
             _typeCache[key] = irType;
 
-            // Methods: skip entirely for async/collection/cancellation/async-enumerable BCL types (all calls are intercepted)
-            if (openType != null && !isAsyncBcl && !isCollectionBcl && !isCancellationBcl && !isAsyncEnumerableBcl)
+            // Create method specializations from Cecil definition
+            if (openType != null)
             {
                 foreach (var methodDef in openType.Methods)
                 {
@@ -462,13 +409,17 @@ public partial class IRBuilder
                         Name = methodDef.Name,
                         CppName = cppName,
                         DeclaringType = irType,
-                        ReturnTypeCpp = CppNameMapper.GetCppTypeForDecl(returnTypeName),
+                        ReturnTypeCpp = ResolveTypeForDecl(returnTypeName),
                         IsStatic = methodDef.IsStatic,
                         IsVirtual = methodDef.IsVirtual,
                         IsAbstract = methodDef.IsAbstract,
                         IsConstructor = methodDef.IsConstructor,
                         IsStaticConstructor = methodDef.IsConstructor && methodDef.IsStatic,
                     };
+
+                    // Propagate HasICallMapping for methods with icall mappings
+                    if (ICallRegistry.Lookup(openType.FullName, methodDef.Name, methodDef.Parameters.Count) != null)
+                        irMethod.HasICallMapping = true;
 
                     // Parameters
                     foreach (var paramDef in methodDef.Parameters)
@@ -478,7 +429,7 @@ public partial class IRBuilder
                         {
                             Name = paramDef.Name.Length > 0 ? paramDef.Name : $"p{paramDef.Index}",
                             CppName = paramDef.Name.Length > 0 ? paramDef.Name : $"p{paramDef.Index}",
-                            CppTypeName = CppNameMapper.GetCppTypeForDecl(paramTypeName),
+                            CppTypeName = ResolveTypeForDecl(paramTypeName),
                             ILTypeName = paramTypeName,
                             Index = paramDef.Index,
                         });
@@ -494,7 +445,7 @@ public partial class IRBuilder
                             {
                                 Index = localDef.Index,
                                 CppName = $"loc_{localDef.Index}",
-                                CppTypeName = CppNameMapper.GetCppTypeForDecl(localTypeName),
+                                CppTypeName = ResolveTypeForDecl(localTypeName),
                             });
                         }
                     }
@@ -502,17 +453,18 @@ public partial class IRBuilder
                     irType.Methods.Add(irMethod);
 
                     // Convert method body with generic substitution context
-                    // Skip BCL generic types — their method calls are intercepted instead
-                    // In MA mode, Nullable compiles from IL (interceptions bypassed)
-                    var isBclGeneric = info.OpenTypeName.StartsWith("System.Nullable`")
-                        || info.OpenTypeName.StartsWith("System.ValueTuple`")
-                        || IsEqualityComparerBclGenericType(info.OpenTypeName);
-                    if (_assemblySet != null && info.OpenTypeName.StartsWith("System.Nullable`"))
-                        isBclGeneric = false;
-                    if (!isBclGeneric && methodDef.HasBody && !methodDef.IsAbstract)
+                    if (methodDef.HasBody && !methodDef.IsAbstract)
                     {
-                        var methodInfo = new IL.MethodInfo(methodDef);
-                        ConvertMethodBodyWithGenerics(methodInfo, irMethod, typeParamMap);
+                        // Skip methods with CLR-internal dependencies — generate stub instead
+                        if (HasClrInternalDependencies(methodDef))
+                        {
+                            GenerateStubBody(irMethod);
+                        }
+                        else
+                        {
+                            var methodInfo = new IL.MethodInfo(methodDef);
+                            ConvertMethodBodyWithGenerics(methodInfo, irMethod, typeParamMap);
+                        }
                     }
                 }
             }
@@ -603,6 +555,23 @@ public partial class IRBuilder
         if (typeRef is ByReferenceType brt)
         {
             return ResolveGenericTypeName(brt.ElementType, typeParamMap) + "&";
+        }
+
+        if (typeRef is PointerType ptr)
+        {
+            return ResolveGenericTypeName(ptr.ElementType, typeParamMap) + "*";
+        }
+
+        // Handle RequiredModifierType (modreq) — common with Unsafe methods
+        if (typeRef is RequiredModifierType rmt)
+        {
+            return ResolveGenericTypeName(rmt.ElementType, typeParamMap);
+        }
+
+        // Handle OptionalModifierType (modopt)
+        if (typeRef is OptionalModifierType omt)
+        {
+            return ResolveGenericTypeName(omt.ElementType, typeParamMap);
         }
 
         return typeRef.FullName;
@@ -709,6 +678,15 @@ public partial class IRBuilder
     /// </summary>
     private string ResolveTypeForDecl(string ilTypeName)
     {
+        // Handle ByReference types (ref/out) — strip & suffix and recurse.
+        // Critical for ref T where T is a reference type: ref Encoding → Encoding** (not Encoding*)
+        if (ilTypeName.EndsWith("&"))
+            return ResolveTypeForDecl(ilTypeName[..^1]) + "*";
+
+        // Handle pointer types — strip * suffix and recurse
+        if (ilTypeName.EndsWith("*"))
+            return ResolveTypeForDecl(ilTypeName[..^1]) + "*";
+
         // Primitive types always map to C++ primitives (int32_t, bool, void, etc.)
         // regardless of whether BCL struct definitions exist in the type cache
         if (CppNameMapper.IsPrimitive(ilTypeName))
@@ -736,6 +714,19 @@ public partial class IRBuilder
                     return genericCached.CppName;
                 return genericCached.CppName + "*";
             }
+
+            // Check if the open generic type definition is a value type
+            // (e.g. Span<T> is a value type → Span<Byte> is also a value type)
+            var cppGenName = CppNameMapper.MangleGenericInstanceTypeName(openTypeName, args);
+            if (_typeCache.TryGetValue(openTypeName, out var openCached))
+            {
+                if (openCached.IsValueType)
+                    return cppGenName;
+                return cppGenName + "*";
+            }
+            // Open generic not in _typeCache (skipped in Pass 1) — check _userValueTypes
+            if (CppNameMapper.IsValueType(openTypeName))
+                return cppGenName;
         }
 
         return CppNameMapper.GetCppTypeForDecl(ilTypeName);

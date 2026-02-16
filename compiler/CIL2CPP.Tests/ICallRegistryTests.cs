@@ -30,7 +30,6 @@ public class ICallRegistryTests
     [Theory]
     [InlineData("System.Array", "get_Length", 0, "cil2cpp::array_get_length")]
     [InlineData("System.Array", "get_Rank", 0, "cil2cpp::array_get_rank")]
-    [InlineData("System.Array", "Copy", 5, "cil2cpp::array_copy")]
     [InlineData("System.Array", "Clear", 3, "cil2cpp::array_clear")]
     [InlineData("System.Array", "GetLength", 1, "cil2cpp::array_get_length_dim")]
     public void Lookup_SystemArray_ReturnsCorrectCppName(string type, string method, int paramCount, string expected)
@@ -125,20 +124,20 @@ public class ICallRegistryTests
         Assert.Null(result);
     }
 
-    // Register (custom)
+    // RegisterICall (custom)
     [Fact]
-    public void Register_CustomMapping_CanBeLookedUp()
+    public void RegisterICall_CustomMapping_CanBeLookedUp()
     {
-        ICallRegistry.Register("Test.MyClass", "MyMethod", 2, "cil2cpp::test_my_method");
+        ICallRegistry.RegisterICall("Test.MyClass", "MyMethod", 2, "cil2cpp::test_my_method");
         var result = ICallRegistry.Lookup("Test.MyClass", "MyMethod", 2);
         Assert.Equal("cil2cpp::test_my_method", result);
     }
 
     [Fact]
-    public void Register_Overwrite_ReplacesExisting()
+    public void RegisterICall_Overwrite_ReplacesExisting()
     {
-        ICallRegistry.Register("Test.Overwrite", "Method", 0, "old_impl");
-        ICallRegistry.Register("Test.Overwrite", "Method", 0, "new_impl");
+        ICallRegistry.RegisterICall("Test.Overwrite", "Method", 0, "old_impl");
+        ICallRegistry.RegisterICall("Test.Overwrite", "Method", 0, "new_impl");
         var result = ICallRegistry.Lookup("Test.Overwrite", "Method", 0);
         Assert.Equal("new_impl", result);
     }
@@ -172,18 +171,30 @@ public class ICallRegistryTests
         Assert.Equal(expected, result);
     }
 
-    // Wildcard registrations (Console, String.Concat/Substring)
+    // Wildcard registrations (Console)
     [Theory]
     [InlineData("System.Console", "WriteLine", 0, "cil2cpp::System::Console_WriteLine")]
     [InlineData("System.Console", "WriteLine", 1, "cil2cpp::System::Console_WriteLine")]
     [InlineData("System.Console", "Write", 1, "cil2cpp::System::Console_Write")]
     [InlineData("System.Console", "ReadLine", 0, "cil2cpp::System::Console_ReadLine")]
-    [InlineData("System.String", "Concat", 2, "cil2cpp::string_concat")]
-    [InlineData("System.String", "Concat", 4, "cil2cpp::string_concat")]
-    [InlineData("System.String", "IsNullOrEmpty", 1, "cil2cpp::string_is_null_or_empty")]
     public void Lookup_WildcardAndExact_ReturnsCorrectCppName(string type, string method, int paramCount, string expected)
     {
         var result = ICallRegistry.Lookup(type, method, paramCount);
         Assert.Equal(expected, result);
+    }
+
+    // String.Concat/IsNullOrEmpty compile from BCL IL now (not icalls)
+    [Fact]
+    public void Lookup_StringConcat_ReturnsNull_CompiledFromIL()
+    {
+        var result = ICallRegistry.Lookup("System.String", "Concat", 2);
+        Assert.Null(result);
+    }
+
+    [Fact]
+    public void Lookup_StringIsNullOrEmpty_ReturnsNull_CompiledFromIL()
+    {
+        var result = ICallRegistry.Lookup("System.String", "IsNullOrEmpty", 1);
+        Assert.Null(result);
     }
 }

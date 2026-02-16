@@ -57,23 +57,15 @@ class Program
             description: "Build configuration (Debug or Release)");
         codegenConfigOption.AddAlias("-c");
 
-        var codegenMultiOption = new Option<bool>(
-            name: "--multi-assembly",
-            getDefaultValue: () => false,
-            description: "Enable multi-assembly mode (load referenced assemblies, tree shake)");
-
         var codegenCommand = new Command("codegen", "Generate C++ code from C# project (without compiling)")
         {
-            codegenInputOption, codegenOutputOption, codegenConfigOption, codegenMultiOption
+            codegenInputOption, codegenOutputOption, codegenConfigOption
         };
 
-        codegenCommand.SetHandler((input, output, config, multi) =>
+        codegenCommand.SetHandler((input, output, config) =>
         {
-            if (multi)
-                GenerateCppMultiAssembly(input, output, config);
-            else
-                GenerateCpp(input, output, config);
-        }, codegenInputOption, codegenOutputOption, codegenConfigOption, codegenMultiOption);
+            GenerateCpp(input, output, config);
+        }, codegenInputOption, codegenOutputOption, codegenConfigOption);
 
         rootCommand.AddCommand(codegenCommand);
 
@@ -225,48 +217,6 @@ class Program
         {
             PrintBanner(assemblyFile, output, config);
 
-            Console.WriteLine("[1/3] Reading assembly...");
-            using var reader = new AssemblyReader(assemblyFile.FullName, config);
-            var types = reader.GetAllTypes().ToList();
-            Console.WriteLine($"      Found {types.Count} types");
-            if (config.IsDebug)
-                Console.WriteLine($"      Debug symbols: {(reader.HasSymbols ? "loaded" : "not available")}");
-
-            Console.WriteLine("[2/3] Building IR...");
-            var builder = new IRBuilder(reader, config);
-            var module = builder.Build();
-            Console.WriteLine($"      {module.Types.Count} types, {module.GetAllMethods().Count()} methods");
-            if (module.EntryPoint != null)
-                Console.WriteLine($"      Entry point: {module.EntryPoint.DeclaringType?.ILFullName}.{module.EntryPoint.Name}");
-            else
-                Console.WriteLine("      No entry point - generating static library");
-
-            Console.WriteLine("[3/3] Generating C++ code...");
-            var generator = new CppCodeGenerator(module, config);
-            var generatedOutput = generator.Generate();
-            generatedOutput.WriteToDirectory(output.FullName);
-            PrintGeneratedFiles(generatedOutput);
-
-            Console.WriteLine();
-            var outputType = module.EntryPoint != null ? "executable" : "static library";
-            Console.WriteLine($"Code generation completed! ({config.ConfigurationName}, {outputType})");
-        }
-        catch (Exception ex)
-        {
-            Console.Error.WriteLine($"Error: {ex.Message}");
-            Console.Error.WriteLine(ex.StackTrace);
-        }
-    }
-
-    static void GenerateCppMultiAssembly(FileInfo input, DirectoryInfo output, string configName = "Release")
-    {
-        var prepared = PrepareBuild(input, output, configName);
-        if (prepared is not var (assemblyFile, config)) return;
-
-        try
-        {
-            PrintBanner(assemblyFile, output, config, "multi-assembly mode");
-
             Console.WriteLine("[1/4] Loading assembly set...");
             using var assemblySet = new AssemblySet(assemblyFile.FullName, config);
             Console.WriteLine($"      Root assembly: {assemblySet.RootAssemblyName}");
@@ -278,7 +228,7 @@ class Program
             Console.WriteLine($"      {reachability.ReachableMethods.Count} reachable methods");
             Console.WriteLine($"      {assemblySet.LoadedAssemblies.Count} assemblies loaded");
 
-            Console.WriteLine("[3/4] Building IR (multi-assembly)...");
+            Console.WriteLine("[3/4] Building IR...");
             using var reader = new AssemblyReader(assemblyFile.FullName, config);
             var builder = new IRBuilder(reader, config);
             var module = builder.Build(assemblySet, reachability);
@@ -296,7 +246,7 @@ class Program
 
             Console.WriteLine();
             var outputType = module.EntryPoint != null ? "executable" : "static library";
-            Console.WriteLine($"Multi-assembly code generation completed! ({config.ConfigurationName}, {outputType})");
+            Console.WriteLine($"Code generation completed! ({config.ConfigurationName}, {outputType})");
         }
         catch (Exception ex)
         {
@@ -307,68 +257,34 @@ class Program
 
     static void Compile(FileInfo input, DirectoryInfo output, string configName = "Release")
     {
-        FileInfo assemblyFile;
-        try
-        {
-            assemblyFile = BuildAndResolve(input);
-        }
-        catch (Exception ex)
-        {
-            Console.Error.WriteLine($"Error: {ex.Message}");
-            return;
-        }
-
-        BuildConfiguration config;
-        try
-        {
-            config = BuildConfiguration.FromName(configName);
-        }
-        catch (ArgumentException ex)
-        {
-            Console.Error.WriteLine($"Error: {ex.Message}");
-            return;
-        }
-
-        output.Create();
+        var prepared = PrepareBuild(input, output, configName);
+        if (prepared is not var (assemblyFile, config)) return;
 
         try
         {
-            var version = typeof(Program).Assembly.GetName().Version;
-            Console.WriteLine($"CIL2CPP Compiler v{version?.ToString(3) ?? "0.0.0"}");
-            Console.WriteLine($"Input:  {assemblyFile.FullName}");
-            Console.WriteLine($"Output: {output.FullName}");
-            Console.WriteLine($"Config: {config.ConfigurationName}");
-            Console.WriteLine();
+            PrintBanner(assemblyFile, output, config);
 
-            // Step 1: Read assembly
-            Console.WriteLine("[1/4] Reading assembly...");
+            Console.WriteLine("[1/5] Loading assembly set...");
+            using var assemblySet = new AssemblySet(assemblyFile.FullName, config);
+
+            Console.WriteLine("[2/5] Analyzing reachability...");
+            var analyzer = new ReachabilityAnalyzer(assemblySet);
+            var reachability = analyzer.Analyze();
+
+            Console.WriteLine("[3/5] Building IR...");
             using var reader = new AssemblyReader(assemblyFile.FullName, config);
-            var types = reader.GetAllTypes().ToList();
-            Console.WriteLine($"      Found {types.Count} types");
-            if (config.IsDebug)
-            {
-                Console.WriteLine($"      Debug symbols: {(reader.HasSymbols ? "loaded" : "not available")}");
-            }
-
-            // Step 2: Build IR
-            Console.WriteLine("[2/4] Building IR...");
             var builder = new IRBuilder(reader, config);
-            var module = builder.Build();
+            var module = builder.Build(assemblySet, reachability);
             Console.WriteLine($"      {module.Types.Count} types, {module.GetAllMethods().Count()} methods");
 
-            // Step 3: Generate C++
-            Console.WriteLine("[3/4] Generating C++ code...");
+            Console.WriteLine("[4/5] Generating C++ code...");
             var generator = new CppCodeGenerator(module, config);
             var generatedOutput = generator.Generate();
-
             var cppDir = Path.Combine(output.FullName, "cpp");
             generatedOutput.WriteToDirectory(cppDir);
-            Console.WriteLine($"      Generated files in {cppDir}");
 
-            // Step 4: Compile C++ (TODO: integrate with CMake/MSVC)
-            Console.WriteLine("[4/4] Compiling to native...");
+            Console.WriteLine("[5/5] Compiling to native...");
             Console.WriteLine("      (Native compilation not yet integrated)");
-            Console.WriteLine("      You can manually compile the generated C++ files.");
 
             Console.WriteLine();
             Console.WriteLine($"Compilation completed ({config.ConfigurationName} configuration, native compile pending).");

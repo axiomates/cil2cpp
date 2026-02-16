@@ -97,14 +97,19 @@ public static class CppNameMapper
     /// </summary>
     public static bool IsValueType(string ilTypeName)
     {
-        return ilTypeName switch
-        {
-            "System.Boolean" or "System.Byte" or "System.SByte" or
+        if (ilTypeName is "System.Boolean" or "System.Byte" or "System.SByte" or
             "System.Int16" or "System.UInt16" or "System.Int32" or "System.UInt32" or
             "System.Int64" or "System.UInt64" or "System.Single" or "System.Double" or
-            "System.Char" or "System.IntPtr" or "System.UIntPtr" => true,
-            _ => _userValueTypes.Contains(ilTypeName)
-        };
+            "System.Char" or "System.IntPtr" or "System.UIntPtr")
+            return true;
+        if (_userValueTypes.Contains(ilTypeName))
+            return true;
+        // For generic instantiations (e.g. "System.Span`1<System.Byte>"),
+        // check if the open generic type is a registered value type
+        var angleBracket = ilTypeName.IndexOf('<');
+        if (angleBracket > 0 && _userValueTypes.Contains(ilTypeName[..angleBracket]))
+            return true;
+        return false;
     }
 
     /// <summary>
@@ -183,6 +188,15 @@ public static class CppNameMapper
 
         if (ilTypeName == "System.Void") return "void";
 
+        // Handle ByReference types (ref/out) — recurse on element type + add pointer.
+        // Critical for ref T where T is a reference type: ref Encoding → Encoding** (not Encoding*)
+        if (ilTypeName.EndsWith("&"))
+            return GetCppTypeForDecl(ilTypeName[..^1]) + "*";
+
+        // Handle pointer types — recurse on element type + add pointer.
+        if (ilTypeName.EndsWith("*"))
+            return GetCppTypeForDecl(ilTypeName[..^1]) + "*";
+
         if (IsValueType(ilTypeName))
             return GetCppTypeName(ilTypeName);
 
@@ -205,13 +219,16 @@ public static class CppNameMapper
             .Replace("<", "_")
             .Replace(">", "_")
             .Replace(",", "_")
+            .Replace("&", "_ref") // ByReference types (ref/out params)
+            .Replace("*", "_ptr") // Pointer types (void*, int*)
             .Replace("`", "_")
             .Replace(" ", "")
             .Replace("+", "_")
             .Replace("=", "_")  // e.g. __StaticArrayInitTypeSize=20
             .Replace("-", "_")
             .Replace("[", "_")  // Array types (e.g., System.String[])
-            .Replace("]", "_");
+            .Replace("]", "_")
+            .Replace("|", "_"); // Local function names (e.g., g__Func|42_0)
     }
 
     /// <summary>
@@ -231,7 +248,10 @@ public static class CppNameMapper
     /// </summary>
     public static bool IsCompilerGeneratedType(string ilFullName)
     {
-        return ilFullName.StartsWith("<PrivateImplementationDetails>");
+        // <PrivateImplementationDetails> is NOT filtered — BCL code uses it for
+        // static array initialization data that we need when compiling BCL IL.
+        // Previously filtered when BCL was hand-mapped, now needed.
+        return false;
     }
 
     /// <summary>
@@ -292,7 +312,7 @@ public static class CppNameMapper
     {
         var mangled = name.Replace("<", "_").Replace(">", "_").Replace(".", "_");
         if (CppKeywords.Contains(mangled))
-            mangled = "_" + mangled;
+            mangled = mangled + "_";  // suffix to avoid _asm/__asm MSVC conflicts
         return mangled;
     }
 

@@ -69,16 +69,16 @@ public partial class CppCodeGenerator
             .Where(t => seenTypeNames.Add(t.CppName)) // Deduplicate by CppName
             .ToList();
 
-        // Static field storage (skip runtime-provided types)
+        // Static field storage (include RuntimeProvided types — BCL code uses their statics)
         foreach (var type in userTypes)
         {
-            if (type.IsEnum || type.IsDelegate || type.IsRuntimeProvided) continue;
+            if (type.IsEnum || type.IsDelegate) continue;
             if (type.StaticFields.Count > 0)
             {
                 sb.AppendLine($"{type.CppName}_Statics {type.CppName}_statics = {{}};");
             }
         }
-        if (userTypes.Any(t => !t.IsEnum && !t.IsDelegate && !t.IsRuntimeProvided && t.StaticFields.Count > 0))
+        if (userTypes.Any(t => !t.IsEnum && !t.IsDelegate && t.StaticFields.Count > 0))
         {
             sb.AppendLine();
         }
@@ -206,15 +206,29 @@ public partial class CppCodeGenerator
         }
         sb.AppendLine();
 
-        // Static constructor guards (skip runtime-provided types)
+        // Static constructor guards — collect all types that SHOULD have ensure_cctor
+        // (matches the header declaration loop in GenerateHeader)
+        var needsEnsureCctor = new HashSet<string>();
         foreach (var type in userTypes)
         {
-            if (type.IsRuntimeProvided) continue;
+            if (type.HasCctor)
+                needsEnsureCctor.Add(type.CppName);
+        }
+        var emittedEnsureCctor = new HashSet<string>();
+        foreach (var type in userTypes)
+        {
             if (type.HasCctor)
             {
                 var cctorMethod = type.Methods.FirstOrDefault(m => m.IsStaticConstructor);
                 if (cctorMethod != null)
                 {
+                    // For RuntimeProvided types: emit cctor if the method has a compiled body
+                    if (type.IsRuntimeProvided && cctorMethod.BasicBlocks.Count == 0)
+                    {
+                        sb.AppendLine($"void {type.CppName}_ensure_cctor() {{ }}");
+                        emittedEnsureCctor.Add(type.CppName);
+                        continue;
+                    }
                     sb.AppendLine($"static bool {type.CppName}_cctor_called = false;");
                     sb.AppendLine($"void {type.CppName}_ensure_cctor() {{");
                     sb.AppendLine($"    if (!{type.CppName}_cctor_called) {{");
@@ -222,8 +236,24 @@ public partial class CppCodeGenerator
                     sb.AppendLine($"        {cctorMethod.CppName}();");
                     sb.AppendLine($"    }}");
                     sb.AppendLine($"}}");
+                    emittedEnsureCctor.Add(type.CppName);
                     sb.AppendLine();
                 }
+                else
+                {
+                    sb.AppendLine($"void {type.CppName}_ensure_cctor() {{ }}");
+                    emittedEnsureCctor.Add(type.CppName);
+                }
+            }
+        }
+        // Safety net: emit no-op for any ensure_cctor declared in the header but not generated.
+        // This handles cases where CppName dedup in source drops a type with HasCctor.
+        foreach (var type in _module.Types)
+        {
+            if (type.HasCctor && !emittedEnsureCctor.Contains(type.CppName))
+            {
+                sb.AppendLine($"void {type.CppName}_ensure_cctor() {{ }}");
+                emittedEnsureCctor.Add(type.CppName);
             }
         }
 
@@ -239,60 +269,223 @@ public partial class CppCodeGenerator
         foreach (var (mangled, _) in GetRuntimeProvidedTypeAliases())
             knownTypeNames.Add(mangled);
 
-        // Method implementations (skip runtime-provided types and InternalCall methods)
+        // Method implementations (skip delegates and InternalCall methods)
+        // RuntimeProvided types: only emit methods that have compiled IL bodies
         sb.AppendLine("// ===== Method Implementations =====");
         var emittedMethodSignatures = new HashSet<string>();
         foreach (var type in userTypes)
         {
-            if (type.IsDelegate || type.IsRuntimeProvided) continue;
+            if (type.IsDelegate) continue;
 
             // For interfaces, only emit DIM method bodies (non-abstract with converted bodies)
             if (type.IsInterface)
             {
-                var isBclInterface = type.SourceKind == AssemblyKind.BCL;
                 foreach (var method in type.Methods)
                 {
                     if (method.IsAbstract || method.BasicBlocks.Count == 0) continue;
                     if (HasUnknownParameterTypes(method, knownTypeNames)) continue;
+                    if (HasUnknownBodyReferences(method, knownTypeNames)) continue;
+                    if (CallsUndeclaredOrMismatchedFunctions(method)) continue;
+                    if (HasKnownBrokenPatterns(method, knownTypeNames)) continue;
                     if (!emittedMethodSignatures.Add(method.GetCppSignature())) continue;
-                    if (isBclInterface)
-                        GenerateMethodStub(sb, method);
-                    else
-                        GenerateMethodImpl(sb, method);
+                    // Trial render for DIM methods too
+                    var dimTrialSb = new StringBuilder();
+                    GenerateMethodImpl(dimTrialSb, method);
+                    var dimRendered = dimTrialSb.ToString();
+                    if (RenderedBodyHasErrors(dimRendered, method))
+                    {
+                        GenerateStubForMethod(sb, method);
+                        continue;
+                    }
+                    sb.Append(dimRendered);
                 }
                 continue;
             }
 
-            // BCL types: emit stub method bodies unless they compile from IL
-            // Nullable/Index/Range compile from IL in MA mode; other BCL types are stubbed
-            if (type.SourceKind == AssemblyKind.BCL && !IsCompileFromILType(type))
-            {
-                foreach (var method in type.Methods)
-                {
-                    if (method.IsAbstract || method.IsInternalCall || method.IsPInvoke) continue;
-                    if (method.BasicBlocks.Count == 0) continue;
-                    if (HasUnknownParameterTypes(method, knownTypeNames)) continue;
-                    if (!emittedMethodSignatures.Add(method.GetCppSignature())) continue;
-                    GenerateMethodStub(sb, method);
-                }
-                continue;
-            }
-
+            // All types (user + BCL) compile from IL — Unity IL2CPP model
             foreach (var method in type.Methods)
             {
                 if (method.IsAbstract || method.IsInternalCall || method.IsPInvoke) continue;
                 if (method.BasicBlocks.Count == 0) continue;
+                // Skip methods that have icall mappings — their calls are redirected to the runtime,
+                // so the IL body is dead code. Compiling it would require resolving internal BCL types.
+                if (method.HasICallMapping) continue;
+                // Core runtime types (Object, String, Array, etc.): only emit static methods.
+                // Non-core RuntimeProvided types (Task, Thread, CancellationToken) emit all methods.
+                if (type.IsRuntimeProvided && !method.IsStatic
+                    && IRBuilder.CoreRuntimeTypes.Contains(type.ILFullName)) continue;
                 if (HasUnknownParameterTypes(method, knownTypeNames)) continue;
+                if (HasUnknownBodyReferences(method, knownTypeNames)) continue;
+                if (CallsUndeclaredOrMismatchedFunctions(method)) continue;
+                if (HasKnownBrokenPatterns(method, knownTypeNames)) continue;
                 if (!emittedMethodSignatures.Add(method.GetCppSignature())) continue;
-                GenerateMethodImpl(sb, method);
+
+                // Trial render: render to temp buffer, check for error patterns,
+                // emit stub if errors found (avoids C++ compilation failures)
+                var trialSb = new StringBuilder();
+                GenerateMethodImpl(trialSb, method);
+                var rendered = trialSb.ToString();
+                if (RenderedBodyHasErrors(rendered, method))
+                {
+                    GenerateStubForMethod(sb, method);
+                    continue;
+                }
+                sb.Append(rendered);
             }
         }
+
+        // Generate stub implementations for methods on RuntimeProvided or unreachable types.
+        GenerateMissingMethodStubImpls(sb, emittedMethodSignatures, userTypes);
 
         return new GeneratedFile
         {
             FileName = $"{_module.Name}.cpp",
             Content = sb.ToString()
         };
+    }
+
+    /// <summary>
+    /// Generate stub implementations for methods on RuntimeProvided types that are called
+    /// but don't have generated bodies. Only generates for methods with known, clean signatures.
+    /// </summary>
+    private void GenerateMissingMethodStubImpls(StringBuilder sb, HashSet<string> emittedSignatures,
+        List<IRType> userTypes)
+    {
+        // Build lookup: method CppName → list of IRMethods (multiple overloads possible)
+        var methodLookup = new Dictionary<string, List<IRMethod>>();
+        foreach (var type in _module.Types)
+        {
+            foreach (var method in type.Methods)
+            {
+                if (!methodLookup.TryGetValue(method.CppName, out var list))
+                {
+                    list = new List<IRMethod>();
+                    methodLookup[method.CppName] = list;
+                }
+                list.Add(method);
+            }
+        }
+
+        // Generate stubs for ALL declared-but-not-defined functions.
+        // This covers IRCall references, VTable entries, static constructor guards,
+        // delegate function pointers, etc.
+        var stubs = new List<IRMethod>();
+        foreach (var funcName in _declaredFunctionNames)
+        {
+            if (!methodLookup.TryGetValue(funcName, out var methods)) continue;
+            foreach (var irMethod in methods)
+            {
+                var sig = irMethod.GetCppSignature();
+                if (emittedSignatures.Contains(sig)) continue;
+                stubs.Add(irMethod);
+            }
+        }
+
+        if (stubs.Count == 0) return;
+
+        sb.AppendLine();
+        sb.AppendLine("// ===== Stub Implementations (RuntimeProvided/unreachable type methods) =====");
+
+        // Collect all by-value types from stub signatures that are forward-declared only.
+        // Emit empty struct definitions to make them "complete" types for C++.
+        var opaqueTypes = new HashSet<string>();
+        foreach (var method in stubs)
+        {
+            var typesToCheck = method.Parameters.Select(p => p.CppTypeName).ToList();
+            if (!string.IsNullOrEmpty(method.ReturnTypeCpp) && method.ReturnTypeCpp != "void")
+                typesToCheck.Add(method.ReturnTypeCpp);
+            foreach (var typeName in typesToCheck)
+            {
+                if (typeName.EndsWith("*")) continue; // pointer types don't need full definition
+                var baseType = typeName.Trim();
+                if (string.IsNullOrEmpty(baseType)) continue;
+                if (IsCppPrimitiveType(baseType)) continue;
+                if (baseType.StartsWith("cil2cpp::")) continue;
+                if (_emittedStructDefs.Contains(baseType)) continue;
+                if (!IsValidCppIdentifier(baseType)) continue;
+                opaqueTypes.Add(baseType);
+            }
+        }
+        if (opaqueTypes.Count > 0)
+        {
+            sb.AppendLine("// Opaque type definitions for forward-declared-only types used by value in stubs");
+            foreach (var typeName in opaqueTypes.OrderBy(n => n))
+                sb.AppendLine($"struct {typeName} {{ }}; // opaque — forward-declared only");
+            sb.AppendLine();
+        }
+
+        // Track emitted function overloads to avoid return-type-only overloads (C++ doesn't support them).
+        // Key: "FuncName(type1,type2,...)" — function name + param TYPES only (no names).
+        // Pre-populate from already-emitted method signatures (main body section).
+        var emittedOverloads = new HashSet<string>();
+        // Helper: extract "FuncName(type1, type2)" from a method
+        string GetOverloadKey(IRMethod m) =>
+            $"{m.CppName}({string.Join(", ", m.Parameters.Select(p => p.CppTypeName))})";
+        // Pre-populate from methods that already have emitted signatures
+        foreach (var type in _module.Types)
+        {
+            foreach (var method in type.Methods)
+            {
+                if (emittedSignatures.Contains(method.GetCppSignature()))
+                    emittedOverloads.Add(GetOverloadKey(method));
+            }
+        }
+        foreach (var method in stubs.OrderBy(m => m.CppName))
+        {
+            var sig = method.GetCppSignature();
+            if (!emittedSignatures.Add(sig)) continue;
+
+            // Skip if same function name + param types already emitted (return-type-only overload)
+            if (!emittedOverloads.Add(GetOverloadKey(method))) continue;
+
+            // Skip stubs with unresolved generic params (bare name without underscore: TKey, TOther, etc.)
+            bool hasProblematicType = false;
+            var stubTypesToCheck = method.Parameters.Select(p => p.CppTypeName).ToList();
+            if (!string.IsNullOrEmpty(method.ReturnTypeCpp) && method.ReturnTypeCpp != "void")
+                stubTypesToCheck.Add(method.ReturnTypeCpp);
+            foreach (var typeName in stubTypesToCheck)
+            {
+                var baseType = typeName.TrimEnd('*').Trim();
+                if (string.IsNullOrEmpty(baseType)) continue;
+                if (!baseType.Contains('_') && !baseType.StartsWith("cil2cpp::") &&
+                    !IsCppPrimitiveType(baseType))
+                {
+                    hasProblematicType = true;
+                    break;
+                }
+            }
+            if (hasProblematicType) continue;
+
+            sb.AppendLine($"{sig} {{");
+            if (method.ReturnTypeCpp == "void" || string.IsNullOrEmpty(method.ReturnTypeCpp))
+                sb.AppendLine("    // TODO: compile from IL");
+            else if (method.ReturnTypeCpp.EndsWith("*"))
+                sb.AppendLine("    return nullptr; // TODO: compile from IL");
+            else if (method.ReturnTypeCpp == "bool")
+                sb.AppendLine("    return false; // TODO: compile from IL");
+            else
+                sb.AppendLine("    return {}; // TODO: compile from IL");
+            sb.AppendLine("}");
+        }
+    }
+
+    /// <summary>
+    /// Emit a stub body for a method whose trial-rendered C++ body contained error patterns.
+    /// The stub prevents compilation errors while still providing a callable function.
+    /// </summary>
+    private static void GenerateStubForMethod(StringBuilder sb, IRMethod method)
+    {
+        sb.AppendLine($"// {method.DeclaringType?.ILFullName}::{method.Name} (stub — body has codegen errors)");
+        sb.AppendLine($"{method.GetCppSignature()} {{");
+        if (method.ReturnTypeCpp == "void" || string.IsNullOrEmpty(method.ReturnTypeCpp))
+            sb.AppendLine("    // TODO: fix codegen for this method");
+        else if (method.ReturnTypeCpp.EndsWith("*"))
+            sb.AppendLine("    return nullptr; // TODO: fix codegen for this method");
+        else if (method.ReturnTypeCpp == "bool")
+            sb.AppendLine("    return false; // TODO: fix codegen for this method");
+        else
+            sb.AppendLine("    return {}; // TODO: fix codegen for this method");
+        sb.AppendLine("}");
     }
 
     private void GenerateTypeInfo(StringBuilder sb, IRType type)
@@ -382,36 +575,6 @@ public partial class CppCodeGenerator
         sb.AppendLine("};");
     }
 
-    /// <summary>
-    /// Check if a BCL type should compile from IL instead of being stubbed.
-    /// These are simple value types whose IL bodies have no deep BCL dependencies.
-    /// </summary>
-    private static bool IsCompileFromILType(IRType type)
-    {
-        return type.ILFullName == "System.Index"
-            || type.ILFullName == "System.Range"
-            || type.ILFullName.StartsWith("System.Nullable`");
-    }
-
-    /// <summary>
-    /// Emit a stub method body for BCL methods.
-    /// Returns a default value without compiling the IL body.
-    /// </summary>
-    private static void GenerateMethodStub(StringBuilder sb, IRMethod method)
-    {
-        sb.AppendLine($"// [BCL stub] {method.DeclaringType?.ILFullName}::{method.Name}");
-        sb.Append($"{method.GetCppSignature()} {{ ");
-        if (method.ReturnTypeCpp == "void")
-            sb.AppendLine("}");
-        else if (method.ReturnTypeCpp.EndsWith("*"))
-            sb.AppendLine("return nullptr; }");
-        else
-        {
-            var defaultVal = CppNameMapper.GetDefaultValue(method.ReturnTypeCpp);
-            sb.AppendLine($"return {defaultVal}; }}");
-        }
-    }
-
     private void GenerateMethodImpl(StringBuilder sb, IRMethod method)
     {
         sb.AppendLine($"// {method.DeclaringType?.ILFullName}::{method.Name}");
@@ -437,9 +600,21 @@ public partial class CppCodeGenerator
         if (hasLabels)
         {
             var crossScopeVars = FindCrossScopeVariables(allInstructions);
+            // Determine actual types from IRCall.ResultTypeCpp for each temp var
+            var tempVarTypes = DetermineTempVarTypes(allInstructions);
             foreach (var varName in crossScopeVars)
             {
-                sb.AppendLine($"    cil2cpp::Object* {varName} = nullptr;");
+                var typeName = tempVarTypes.GetValueOrDefault(varName);
+                if (typeName == null)
+                {
+                    // Type unknown: default to Object* (most cross-scope temps are pointer types)
+                    sb.AppendLine($"    cil2cpp::Object* {varName} = nullptr;");
+                }
+                else
+                {
+                    var initVal = typeName.EndsWith("*") ? "nullptr" : "{}";
+                    sb.AppendLine($"    {typeName} {varName} = {initVal};");
+                }
                 declaredTemps.Add(varName);
             }
         }
@@ -470,7 +645,7 @@ public partial class CppCodeGenerator
 
                 // Exception handling instructions must be at function scope
                 // (CIL2CPP_TRY/CATCH/FINALLY/END_TRY macros expand to { if / } else if / } })
-                if (instr is IRTryBegin or IRCatchBegin or IRFinallyBegin or IRTryEnd)
+                if (instr is IRTryBegin or IRCatchBegin or IRFinallyBegin or IRFilterBegin or IRTryEnd)
                 {
                     if (gotoScopeOpen)
                     {
@@ -603,6 +778,61 @@ public partial class CppCodeGenerator
             }
         }
         return result;
+    }
+
+    /// <summary>
+    /// Determine the C++ type of each __tN temp variable by scanning all IR instructions.
+    /// Returns a map from variable name to its C++ type (e.g., "__t0" → "System_IO_TextWriter*").
+    /// </summary>
+    private static Dictionary<string, string> DetermineTempVarTypes(List<IRInstruction> instructions)
+    {
+        var types = new Dictionary<string, string>();
+        foreach (var instr in instructions)
+        {
+            switch (instr)
+            {
+                case IRCall call when call.ResultVar != null && call.ResultTypeCpp != null:
+                    types.TryAdd(call.ResultVar, call.ResultTypeCpp);
+                    break;
+                case IRNewObj newObj when newObj.ResultVar != null:
+                    types.TryAdd(newObj.ResultVar, newObj.TypeCppName + "*");
+                    break;
+                case IRFieldAccess fa when !fa.IsStore && fa.ResultVar != null && fa.ResultTypeCpp != null:
+                    types.TryAdd(fa.ResultVar, fa.ResultTypeCpp);
+                    break;
+                case IRStaticFieldAccess sfa when !sfa.IsStore && sfa.ResultVar != null && sfa.ResultTypeCpp != null:
+                    types.TryAdd(sfa.ResultVar, sfa.ResultTypeCpp);
+                    break;
+                case IRCast cast when cast.ResultVar != null:
+                    types.TryAdd(cast.ResultVar, cast.TargetTypeCpp);
+                    break;
+                case IRConversion conv when conv.ResultVar != null:
+                    types.TryAdd(conv.ResultVar, conv.TargetType);
+                    break;
+                case IRBox box when box.ResultVar != null:
+                    types.TryAdd(box.ResultVar, "cil2cpp::Object*");
+                    break;
+                case IRUnbox unbox when unbox.ResultVar != null:
+                    types.TryAdd(unbox.ResultVar, unbox.IsUnboxAny ? unbox.ValueTypeCppName : unbox.ValueTypeCppName + "*");
+                    break;
+                case IRArrayAccess aa when !aa.IsStore && aa.ResultVar != null:
+                    types.TryAdd(aa.ResultVar, aa.ElementType);
+                    break;
+                case IRLoadFunctionPointer lfp when lfp.ResultVar != null:
+                    types.TryAdd(lfp.ResultVar, "void*");
+                    break;
+                case IRDelegateCreate dc when dc.ResultVar != null:
+                    types.TryAdd(dc.ResultVar, "cil2cpp::Delegate*");
+                    break;
+                case IRDelegateInvoke di when di.ResultVar != null:
+                    types.TryAdd(di.ResultVar, di.ReturnTypeCpp);
+                    break;
+                case IRRawCpp raw when raw.ResultVar != null && raw.ResultTypeCpp != null:
+                    types.TryAdd(raw.ResultVar, raw.ResultTypeCpp);
+                    break;
+            }
+        }
+        return types;
     }
 
     /// <summary>
@@ -743,6 +973,9 @@ public partial class CppCodeGenerator
                     var declType = e.Method.DeclaringType;
                     if (declType != null && (declType.IsRuntimeProvided || !generatedMethodTypes.Contains(declType.CppName)))
                         return ObjectMethodFallbacks.GetValueOrDefault(e.MethodName, "nullptr");
+                    // Check if the function was actually declared in the header
+                    if (!_declaredFunctionNames.Contains(e.Method.CppName))
+                        return ObjectMethodFallbacks.GetValueOrDefault(e.MethodName, "nullptr");
                     return GetTypedMethodPointerCast(e.Method);
                 }
                 return ObjectMethodFallbacks.GetValueOrDefault(e.MethodName, "nullptr");
@@ -792,8 +1025,14 @@ public partial class CppCodeGenerator
                     var declType = m.DeclaringType;
                     if (declType != null && (declType.IsRuntimeProvided || !generatedMethodTypes.Contains(declType.CppName)))
                         return "nullptr";
+                    // Check if the function was actually declared in the header
+                    if (!_declaredFunctionNames.Contains(m.CppName))
+                        return "nullptr";
                     return GetTypedMethodPointerCast(m);
                 }));
+                // MSVC: zero-size arrays are not allowed (C2466)
+                if (string.IsNullOrWhiteSpace(methods))
+                    methods = "nullptr";
                 sb.AppendLine($"static void* {type.CppName}_iface_{impl.Interface.CppName}_methods[] = {{ {methods} }};");
             }
 
@@ -945,7 +1184,11 @@ public partial class CppCodeGenerator
                 foreach (var field in allFields)
                 {
                     var fieldTypeExpr = typeInfoLookup.GetValueOrDefault(field.FieldTypeName, "nullptr");
-                    var offsetExpr = field.IsStatic ? "0" : $"offsetof({type.CppName}, {field.CppName})";
+                    // Primitive types (System_Byte = uint8_t, etc.) don't have struct layout;
+                    // their m_value field is at offset 0 by definition.
+                    var offsetExpr = field.IsStatic || type.IsPrimitiveType
+                        ? "0"
+                        : $"offsetof({type.CppName}, {field.CppName})";
                     var fieldAttrsExpr = field.CustomAttributes.Count > 0
                         ? $"{type.CppName}_{field.CppName}_attrs" : "nullptr";
                     sb.AppendLine($"    {{ .name = \"{field.Name}\", " +
@@ -986,7 +1229,8 @@ public partial class CppCodeGenerator
                     var hasValidSignature = !method.IsAbstract && !method.IsInternalCall
                         && method.BasicBlocks.Count > 0
                         && !method.Parameters.Any(p => p.CppTypeName.Contains("(") || p.CppTypeName.Contains(")"))
-                        && !(method.ReturnTypeCpp?.Contains("(") == true);
+                        && !(method.ReturnTypeCpp?.Contains("(") == true)
+                        && _declaredFunctionNames.Contains(method.CppName);
                     var methodPtrExpr = hasValidSignature
                         ? GetTypedMethodPointerCast(method)
                         : "nullptr";

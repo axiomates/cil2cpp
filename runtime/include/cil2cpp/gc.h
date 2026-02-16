@@ -109,4 +109,24 @@ struct GCStats {
 GCStats get_stats();
 
 } // namespace gc
+
+/**
+ * GC.SuppressFinalize — tells the GC not to run the finalizer for obj.
+ * With BoehmGC, we unregister the BoehmGC destructor callback.
+ */
+inline void gc_suppress_finalize(void* obj) {
+    (void)obj; // BoehmGC doesn't use per-object finalizer queues by default
+}
+
+/**
+ * GC.KeepAlive — prevents the object from being collected before this point.
+ * With BoehmGC (conservative scanning), this is effectively a no-op since
+ * BoehmGC scans the entire stack for roots. The volatile write ensures
+ * the compiler doesn't optimize away the variable.
+ */
+inline void gc_keep_alive(void* obj) {
+    static volatile void* _gc_keep_alive_sink;
+    _gc_keep_alive_sink = obj;
+}
+
 } // namespace cil2cpp

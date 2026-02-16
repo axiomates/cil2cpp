@@ -58,7 +58,7 @@ extern TypeInfo KeyNotFoundException_TypeInfo;
     } else {
         // No exception handler, terminate
         fprintf(stderr, "Unhandled exception: ");
-        if (ex && ex->message) {
+        if (ex && ex->f_message) {
             // TODO: Convert string to UTF-8 and print
             fprintf(stderr, "(exception message)\n");
         } else {
@@ -66,9 +66,9 @@ extern TypeInfo KeyNotFoundException_TypeInfo;
         }
 
         // Print stack trace if available
-        if (ex && ex->stack_trace) {
+        if (ex && ex->f_stackTraceString) {
             fprintf(stderr, "Stack trace:\n");
-            auto trace = string_to_utf8(ex->stack_trace);
+            auto trace = string_to_utf8(ex->f_stackTraceString);
             if (trace) {
                 fprintf(stderr, "%s", trace);
             }
@@ -81,10 +81,10 @@ extern TypeInfo KeyNotFoundException_TypeInfo;
 static Exception* create_exception(TypeInfo* type, const char* message) {
     Exception* ex = static_cast<Exception*>(gc::alloc(sizeof(Exception), type));
     if (message) {
-        ex->message = string_literal(message);
+        ex->f_message = string_literal(message);
     }
-    ex->inner_exception = nullptr;
-    ex->stack_trace = capture_stack_trace();
+    ex->f_innerException = nullptr;
+    ex->f_stackTraceString = capture_stack_trace();
     return ex;
 }
 

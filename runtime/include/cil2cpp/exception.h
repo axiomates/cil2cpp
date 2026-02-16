@@ -15,9 +15,15 @@ namespace cil2cpp {
  * Corresponds to System.Exception.
  */
 struct Exception : Object {
-    String* message;
-    Exception* inner_exception;
-    String* stack_trace;
+    // Field names match BCL (System.Exception) for AOT-compiled IL compatibility
+    String* f_message;           // System.Exception._message
+    Exception* f_innerException; // System.Exception._innerException
+    String* f_stackTraceString;  // System.Exception._stackTraceString
+
+    // Convenience aliases for runtime C++ code
+    String*& message() { return f_message; }
+    Exception*& inner_exception() { return f_innerException; }
+    String*& stack_trace() { return f_stackTraceString; }
 };
 
 // --- SystemException hierarchy ---
@@ -25,26 +31,38 @@ struct NullReferenceException : Exception {};
 struct IndexOutOfRangeException : Exception {};
 struct InvalidCastException : Exception {};
 struct InvalidOperationException : Exception {};
-struct ObjectDisposedException : InvalidOperationException {};
+struct ObjectDisposedException : InvalidOperationException {
+    String* f_objectName;  // System.ObjectDisposedException._objectName
+};
 struct NotSupportedException : Exception {};
 struct PlatformNotSupportedException : NotSupportedException {};
 struct NotImplementedException : Exception {};
-struct ArgumentException : Exception {};
+struct ArgumentException : Exception {
+    String* f_paramName;   // System.ArgumentException._paramName
+};
 struct ArgumentNullException : ArgumentException {};
-struct ArgumentOutOfRangeException : ArgumentException {};
+struct ArgumentOutOfRangeException : ArgumentException {
+    Object* f_actualValue;
+};
 struct ArithmeticException : Exception {};
 struct OverflowException : ArithmeticException {};
 struct DivideByZeroException : ArithmeticException {};
 struct FormatException : Exception {};
 struct RankException : Exception {};
 struct ArrayTypeMismatchException : Exception {};
-struct TypeInitializationException : Exception {};
+struct TypeInitializationException : Exception {
+    String* f_typeName;  // System.TypeInitializationException._typeName
+};
 struct TimeoutException : Exception {};
 
 // --- Task-related exceptions ---
 struct AggregateException : Exception {};
-struct OperationCanceledException : Exception {};
-struct TaskCanceledException : OperationCanceledException {};
+struct OperationCanceledException : Exception {
+    void* f_cancellationToken;  // System.OperationCanceledException._cancellationToken (CancellationToken value)
+};
+struct TaskCanceledException : OperationCanceledException {
+    void* f_canceledTask;  // System.Threading.Tasks.TaskCanceledException._canceledTask
+};
 
 // --- IO ---
 struct IOException : Exception {};

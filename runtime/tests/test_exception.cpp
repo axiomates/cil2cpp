@@ -213,7 +213,7 @@ TEST_F(ExceptionTest, ThrownException_HasStackTrace) {
     } else {
         ASSERT_NE(ctx.current_exception, nullptr);
         // Stack trace should be set
-        EXPECT_NE(ctx.current_exception->stack_trace, nullptr);
+        EXPECT_NE(ctx.current_exception->f_stackTraceString, nullptr);
     }
 
     g_exception_context = ctx.previous;
@@ -232,7 +232,7 @@ TEST_F(ExceptionTest, NullReferenceException_HasMessage) {
         throw_null_reference();
     } else {
         ASSERT_NE(ctx.current_exception, nullptr);
-        EXPECT_NE(ctx.current_exception->message, nullptr);
+        EXPECT_NE(ctx.current_exception->f_message, nullptr);
     }
 
     g_exception_context = ctx.previous;
@@ -249,7 +249,7 @@ TEST_F(ExceptionTest, IndexOutOfRangeException_HasMessage) {
         throw_index_out_of_range();
     } else {
         ASSERT_NE(ctx.current_exception, nullptr);
-        EXPECT_NE(ctx.current_exception->message, nullptr);
+        EXPECT_NE(ctx.current_exception->f_message, nullptr);
     }
 
     g_exception_context = ctx.previous;
@@ -267,7 +267,7 @@ TEST_F(ExceptionTest, Exception_InnerException_IsNull) {
     } else {
         ASSERT_NE(ctx.current_exception, nullptr);
         // Default inner_exception should be null
-        EXPECT_EQ(ctx.current_exception->inner_exception, nullptr);
+        EXPECT_EQ(ctx.current_exception->f_innerException, nullptr);
     }
 
     g_exception_context = ctx.previous;
@@ -407,9 +407,9 @@ TEST_F(ExceptionTest, ThrowException_CustomException) {
     };
 
     Exception* ex = static_cast<Exception*>(gc::alloc(sizeof(Exception), &CustomExType));
-    ex->message = string_create_utf8("Custom error");
-    ex->inner_exception = nullptr;
-    ex->stack_trace = nullptr;
+    ex->f_message = string_create_utf8("Custom error");
+    ex->f_innerException = nullptr;
+    ex->f_stackTraceString = nullptr;
 
     CIL2CPP_TRY
         throw_exception(ex);
@@ -590,8 +590,8 @@ TEST_F(ExceptionTest, ThrowInvalidOperation_HasCorrectMessage) {
     CIL2CPP_CATCH_ALL
         auto ex = get_current_exception();
         ASSERT_NE(ex, nullptr);
-        ASSERT_NE(ex->message, nullptr);
-        auto msg = string_to_utf8(ex->message);
+        ASSERT_NE(ex->f_message, nullptr);
+        auto msg = string_to_utf8(ex->f_message);
         EXPECT_NE(std::string(msg).find("Operation is not valid"), std::string::npos);
         free(msg);
     CIL2CPP_END_TRY

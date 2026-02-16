@@ -232,8 +232,8 @@ public class CppNameMapperTests
     // ===== IsCompilerGeneratedType =====
 
     [Theory]
-    [InlineData("<PrivateImplementationDetails>", true)]
-    [InlineData("<PrivateImplementationDetails>/__StaticArrayInitTypeSize=20", true)]
+    [InlineData("<PrivateImplementationDetails>", false)] // No longer filtered — BCL IL needs this for static array init
+    [InlineData("<PrivateImplementationDetails>/__StaticArrayInitTypeSize=20", false)]
     [InlineData("MyClass", false)]
     [InlineData("System.Object", false)]
     public void IsCompilerGeneratedType_ReturnsExpected(string typeName, bool expected)

@@ -74,6 +74,8 @@ def run(cmd, *, cwd=None, check=True, capture=False):
             check=check,
             capture_output=capture,
             text=True,
+            encoding="utf-8",
+            errors="replace",
         )
         return result
     except subprocess.CalledProcessError as e:
@@ -540,7 +542,7 @@ def cmd_integration(args):
             capture=True)
 
     def lib_verify_structure():
-        cmake_txt = (lib_output / "CMakeLists.txt").read_text()
+        cmake_txt = (lib_output / "CMakeLists.txt").read_text(encoding="utf-8", errors="replace")
         if "add_library" not in cmake_txt:
             raise RuntimeError("CMakeLists.txt missing add_library")
         if (lib_output / "main.cpp").exists():
@@ -571,12 +573,12 @@ def cmd_integration(args):
             capture=True)
 
     def dbg_has_line_directives():
-        src = (dbg_output / "HelloWorld.cpp").read_text()
+        src = (dbg_output / "HelloWorld.cpp").read_text(encoding="utf-8", errors="replace")
         if "#line" not in src:
             raise RuntimeError("No #line directives found in Debug output")
 
     def dbg_has_il_comments():
-        src = (dbg_output / "HelloWorld.cpp").read_text()
+        src = (dbg_output / "HelloWorld.cpp").read_text(encoding="utf-8", errors="replace")
         if not re.search(r"/\* IL_", src):
             raise RuntimeError("No IL offset comments found in Debug output")
 
@@ -604,14 +606,14 @@ def cmd_integration(args):
     header("Phase 4: String literals")
 
     def str_has_literal_calls():
-        src = (hw_output / "HelloWorld.cpp").read_text()
+        src = (hw_output / "HelloWorld.cpp").read_text(encoding="utf-8", errors="replace")
         if "string_literal" not in src:
             raise RuntimeError("No string_literal calls found")
         if "Hello, CIL2CPP!" not in src:
             raise RuntimeError("String content not found")
 
     def str_has_init_fn():
-        hdr = (hw_output / "HelloWorld.h").read_text()
+        hdr = (hw_output / "HelloWorld.h").read_text(encoding="utf-8", errors="replace")
         if "__init_string_literals" not in hdr:
             raise RuntimeError("No __init_string_literals in header")
 
@@ -626,8 +628,7 @@ def cmd_integration(args):
 
     def multi_codegen():
         run(["dotnet", "run", "--project", str(CLI_PROJECT), "--",
-             "codegen", "-i", str(multi_sample), "-o", str(multi_output),
-             "--multi-assembly"],
+             "codegen", "-i", str(multi_sample), "-o", str(multi_output)],
             capture=True)
 
     def multi_files_exist():
@@ -654,7 +655,7 @@ def cmd_integration(args):
         if "Program_Main" not in main:
             raise RuntimeError("Entry point not found in main.cpp")
 
-    runner.step("Multi-assembly codegen (--multi-assembly flag)", multi_codegen)
+    runner.step("Multi-assembly codegen", multi_codegen)
     runner.step("Generated files exist", multi_files_exist)
     runner.step("Header contains MathLib types", multi_header_has_mathlib_types)
     runner.step("Source has cross-assembly method calls", multi_source_has_cross_assembly_calls)

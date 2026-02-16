@@ -5,6 +5,7 @@
 
 #pragma once
 
+#include <atomic>
 #include "types.h"
 #include "object.h"
 #include "string.h"
@@ -34,6 +35,21 @@
 #include "bcl/System.IO.h"
 
 namespace cil2cpp {
+
+// ===== Volatile Read/Write =====
+// System.Threading.Volatile.Read/Write — JIT intrinsics for volatile memory access.
+// Implemented as fence + plain read/write (equivalent to BCL IL implementation).
+template<typename T>
+inline T volatile_read(T* location) {
+    std::atomic_thread_fence(std::memory_order_acquire);
+    return *location;
+}
+
+template<typename T>
+inline void volatile_write(T* location, T value) {
+    *location = value;
+    std::atomic_thread_fence(std::memory_order_release);
+}
 
 /**
  * Initialize the CIL2CPP runtime.

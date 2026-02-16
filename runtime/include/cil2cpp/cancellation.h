@@ -22,7 +22,11 @@ struct Task;
 struct CancellationTokenSource {
     TypeInfo* __type_info;
     UInt32 __sync_block;
-    Int32 f__state;       // 0 = active, 1 = canceled, 2 = disposed
+    Int32 f_state;            // _state: 0 = active, 1 = canceled, 2 = disposed
+    Boolean f_disposed;       // _disposed
+    void* f_timer;            // _timer (ITimer)
+    void* f_kernelEvent;      // _kernelEvent (ManualResetEvent)
+    void* f_registrations;    // _registrations (Registrations)
 };
 
 /**
@@ -31,7 +35,7 @@ struct CancellationTokenSource {
  * Default token (no source) is never canceled.
  */
 struct CancellationToken {
-    CancellationTokenSource* f__source;
+    CancellationTokenSource* f_source;
 };
 
 // ===== CancellationTokenSource API =====
@@ -47,12 +51,12 @@ void cts_cancel_after(CancellationTokenSource* cts, Int32 milliseconds);
 
 /** Check if cancellation has been requested. */
 inline Boolean cts_is_cancellation_requested(CancellationTokenSource* cts) {
-    return cts != nullptr && cts->f__state == 1;
+    return cts != nullptr && cts->f_state == 1;
 }
 
 /** Dispose the token source (prevents further cancellation). */
 inline void cts_dispose(CancellationTokenSource* cts) {
-    if (cts) cts->f__state = 2;
+    if (cts) cts->f_state = 2;
 }
 
 /** Get the CancellationToken for this source. */
@@ -64,12 +68,12 @@ inline CancellationToken cts_get_token(CancellationTokenSource* cts) {
 
 /** Check if cancellation has been requested. */
 inline Boolean ct_is_cancellation_requested(CancellationToken token) {
-    return token.f__source != nullptr && token.f__source->f__state == 1;
+    return token.f_source != nullptr && token.f_source->f_state == 1;
 }
 
 /** Check if this token can be canceled (has a non-null source). */
 inline Boolean ct_can_be_canceled(CancellationToken token) {
-    return token.f__source != nullptr;
+    return token.f_source != nullptr;
 }
 
 /** Throw OperationCanceledException if cancellation requested. */

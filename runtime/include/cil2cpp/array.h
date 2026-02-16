@@ -88,4 +88,10 @@ Int32 array_get_rank(Object* arr);
 /// System.Array::GetLength(int dimension) — length of a specific dimension.
 Int32 array_get_length_dim(Object* arr, Int32 dimension);
 
+/// System.Array::Clear — zero out a range of elements.
+void array_clear(Array* arr, Int32 index, Int32 length);
+
+/// System.Array::Copy — copy elements between arrays.
+void array_copy(Array* src, Int32 srcIndex, Array* dst, Int32 dstIndex, Int32 length);
+
 } // namespace cil2cpp

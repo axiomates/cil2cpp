@@ -50,6 +50,8 @@ public class IRCall : IRInstruction
     public string FunctionName { get; set; } = "";
     public List<string> Arguments { get; } = new();
     public string? ResultVar { get; set; }
+    /// <summary>C++ return type for the call (used for cross-scope variable pre-declarations).</summary>
+    public string? ResultTypeCpp { get; set; }
     public bool IsVirtual { get; set; }
     public int VTableSlot { get; set; } = -1;
     public string? VTableReturnType { get; set; }
@@ -204,19 +206,29 @@ public class IRFieldAccess : IRInstruction
     /// Uses `.` instead of `->` for field access.
     /// </summary>
     public bool IsValueAccess { get; set; }
+    /// <summary>
+    /// Optional C++ type name to cast the object to before field access.
+    /// Used when the stack type (e.g. Object*) differs from the field's declaring type.
+    /// </summary>
+    public string? CastToType { get; set; }
+    /// <summary>C++ type of the field being accessed (used for cross-scope variable pre-declarations).</summary>
+    public string? ResultTypeCpp { get; set; }
 
     public override string ToCpp()
     {
         var obj = ObjectExpr;
+        // Apply declaring-type cast if needed (e.g. Object* → ContingentProperties*)
+        if (CastToType != null && !IsValueAccess)
+            obj = $"(({CastToType}*){obj})";
         string access;
         if (IsValueAccess)
         {
             // Value type: use dot accessor
             access = $"{obj}.{FieldCppName}";
         }
-        else if (obj.StartsWith("&"))
+        else if (obj.StartsWith("&") || obj.StartsWith("(("))
         {
-            // Address expression: needs parentheses for correct precedence
+            // Address or cast expression: needs parentheses for correct precedence
             access = $"({obj})->{FieldCppName}";
         }
         else
@@ -226,6 +238,12 @@ public class IRFieldAccess : IRInstruction
 
         if (IsStore)
             return $"{access} = {StoreValue};";
+        // Cast result to IL field type for flat struct model (runtime field may be Object*)
+        // Skip cast for unresolved generic params (!0, !!0), primitive types, and value types
+        if (ResultTypeCpp != null && ResultTypeCpp.EndsWith("*")
+            && ResultTypeCpp != "void*" && !IsValueAccess
+            && !ResultTypeCpp.Contains('!') && !ResultTypeCpp.Contains('<'))
+            return $"{ResultVar} = ({ResultTypeCpp})(void*){access};";
         return $"{ResultVar} = {access};";
     }
 }
@@ -237,12 +255,18 @@ public class IRStaticFieldAccess : IRInstruction
     public string ResultVar { get; set; } = "";
     public bool IsStore { get; set; }
     public string? StoreValue { get; set; }
+    /// <summary>C++ type of the static field being accessed (used for cross-scope variable pre-declarations).</summary>
+    public string? ResultTypeCpp { get; set; }
 
     public override string ToCpp()
     {
         var fullName = $"{TypeCppName}_statics.{FieldCppName}";
         if (IsStore)
             return $"{fullName} = {StoreValue};";
+        // Cast result to IL field type for flat struct model
+        if (ResultTypeCpp != null && ResultTypeCpp.EndsWith("*") && ResultTypeCpp != "void*"
+            && !ResultTypeCpp.Contains('!') && !ResultTypeCpp.Contains('<'))
+            return $"{ResultVar} = ({ResultTypeCpp})(void*){fullName};";
         return $"{ResultVar} = {fullName};";
     }
 }
@@ -270,12 +294,15 @@ public class IRCast : IRInstruction
     public string TargetTypeCpp { get; set; } = "";
     public string ResultVar { get; set; } = "";
     public bool IsSafe { get; set; } // 'as' vs cast
+    /// <summary>TypeInfo name for the cast (without _TypeInfo suffix). Defaults to TargetTypeCpp sans pointer.</summary>
+    public string? TypeInfoCppName { get; set; }
 
     public override string ToCpp()
     {
+        var typeInfo = TypeInfoCppName ?? TargetTypeCpp.TrimEnd('*');
         if (IsSafe)
-            return $"{ResultVar} = ({TargetTypeCpp})cil2cpp::object_as((cil2cpp::Object*){SourceExpr}, &{TargetTypeCpp.TrimEnd('*')}_TypeInfo);";
-        return $"{ResultVar} = ({TargetTypeCpp})cil2cpp::object_cast((cil2cpp::Object*){SourceExpr}, &{TargetTypeCpp.TrimEnd('*')}_TypeInfo);";
+            return $"{ResultVar} = ({TargetTypeCpp})cil2cpp::object_as((cil2cpp::Object*){SourceExpr}, &{typeInfo}_TypeInfo);";
+        return $"{ResultVar} = ({TargetTypeCpp})cil2cpp::object_cast((cil2cpp::Object*){SourceExpr}, &{typeInfo}_TypeInfo);";
     }
 }
 
@@ -284,7 +311,18 @@ public class IRConversion : IRInstruction
     public string SourceExpr { get; set; } = "";
     public string TargetType { get; set; } = "";
     public string ResultVar { get; set; } = "";
-    public override string ToCpp() => $"{ResultVar} = static_cast<{TargetType}>({SourceExpr});";
+
+    public override string ToCpp()
+    {
+        // uintptr_t/intptr_t targets may receive pointer values (conv.u/conv.i on pointers)
+        // and pointer targets may receive integer values — use C-style cast for these
+        // since static_cast can't handle pointer↔integer conversions
+        bool useCStyleCast = TargetType is "uintptr_t" or "intptr_t"
+            || TargetType.EndsWith("*");
+        if (useCStyleCast)
+            return $"{ResultVar} = ({TargetType})({SourceExpr});";
+        return $"{ResultVar} = static_cast<{TargetType}>({SourceExpr});";
+    }
 }
 
 public class IRNullCheck : IRInstruction
@@ -371,7 +409,7 @@ public class IRThrow : IRInstruction
 {
     public string ExceptionExpr { get; set; } = "";
     public override string ToCpp() =>
-        $"cil2cpp::throw_exception(static_cast<cil2cpp::Exception*>({ExceptionExpr}));";
+        $"cil2cpp::throw_exception((cil2cpp::Exception*){ExceptionExpr});";
 }
 
 public class IRRethrow : IRInstruction
@@ -382,6 +420,10 @@ public class IRRethrow : IRInstruction
 public class IRRawCpp : IRInstruction
 {
     public string Code { get; set; } = "";
+    /// <summary>Optional: the temp variable this instruction writes to (for type tracking).</summary>
+    public string? ResultVar { get; set; }
+    /// <summary>Optional: the C++ type of the result (for cross-scope variable pre-declarations).</summary>
+    public string? ResultTypeCpp { get; set; }
     public override string ToCpp() => Code;
 }
 

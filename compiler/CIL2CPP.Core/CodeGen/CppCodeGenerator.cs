@@ -57,6 +57,24 @@ public partial class CppCodeGenerator
     }
 
     /// <summary>
+    /// Check if a type name looks like an unresolved generic parameter.
+    /// Pattern: T + uppercase letter + optional alphanumeric/digits, NO underscores.
+    /// Examples: TOther, TArg1, TKey, TNegator, TContinuationResult
+    /// </summary>
+    private static bool IsUnresolvedGenericParam(string typeName)
+    {
+        if (typeName.Length < 2) return false;
+        if (typeName[0] != 'T' || !char.IsUpper(typeName[1])) return false;
+        if (typeName.Contains('_')) return false;
+        // All chars must be letters or digits
+        for (int i = 2; i < typeName.Length; i++)
+        {
+            if (!char.IsLetterOrDigit(typeName[i])) return false;
+        }
+        return true;
+    }
+
+    /// <summary>
     /// Check if a name is a valid C++ identifier (no brackets, ampersands, parens, etc.).
     /// Used to filter out mangled names from IL types that contain array/ref/pointer syntax.
     /// </summary>
@@ -76,6 +94,26 @@ public partial class CppCodeGenerator
 
     private readonly IRModule _module;
     private readonly BuildConfiguration _config;
+
+    /// <summary>
+    /// Set of all declared C++ function names (populated during header generation).
+    /// Used by source generation to filter out methods that call undeclared functions.
+    /// </summary>
+    private HashSet<string> _declaredFunctionNames = new();
+
+    /// <summary>
+    /// Map of function name → set of declared parameter counts (populated during header generation).
+    /// Used to detect overload mismatches (calling a function with wrong number of arguments).
+    /// </summary>
+    private Dictionary<string, HashSet<int>> _declaredFunctionParamCounts = new();
+
+    /// <summary>
+    /// Set of type names that have full struct definitions emitted in the header.
+    /// Types only forward-declared (no body) are NOT in this set.
+    /// Populated during header generation, used by source generation to skip stubs
+    /// that use undefined types by value.
+    /// </summary>
+    private HashSet<string> _emittedStructDefs = new();
 
     public CppCodeGenerator(IRModule module, BuildConfiguration? config = null)
     {
@@ -200,7 +238,10 @@ public partial class CppCodeGenerator
 
         // P/Invoke native library linking (filter out .NET internal modules)
         var internalPInvokeModules = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-            { "QCall", "QCall.dll", "libSystem.Native", "libSystem.Globalization.Native" };
+            { "QCall", "QCall.dll", "libSystem.Native", "libSystem.Globalization.Native",
+              "System.Globalization.Native", "System.Native", "System.IO.Compression.Native",
+              "System.Security.Cryptography.Native.OpenSsl", "System.Net.Security.Native",
+              "ucrtbase", "ucrtbase.dll" };
         var pinvokeModules = _module.Types
             .SelectMany(t => t.Methods)
             .Where(m => m.IsPInvoke && !string.IsNullOrEmpty(m.PInvokeModule))

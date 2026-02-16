@@ -11,6 +11,7 @@
 namespace cil2cpp {
 
 struct Array;
+struct Delegate;
 
 // Forward declare for continuation storage
 struct TaskContinuation;
@@ -18,20 +19,31 @@ struct TaskContinuation;
 /**
  * Task (reference type, GC-allocated).
  * Non-generic base; generic Task<T> is monomorphized by the compiler.
- * Layout: Object header (inline) + status + exception + continuations + lock
- * Task<T> extends this with a result field after lock.
  *
  * NOTE: Task does NOT inherit from Object to avoid MSVC tail-padding mismatch
  * between the runtime struct (with inheritance padding) and generated flat structs.
  * The __type_info and __sync_block fields are inlined at the same offsets as Object.
+ *
+ * BCL fields use Object* to match the IL metadata types (BCL uses `object` for many fields).
  */
 struct Task {
     TypeInfo* __type_info;              // Object header field 1
     UInt32 __sync_block;                // Object header field 2
+    // --- Custom runtime fields (used by task_complete/task_fault/etc.) ---
     Int32 f_status;                     // 0=created, 1=completed, 2=faulted
     Exception* f_exception;
     TaskContinuation* f_continuations;  // Linked list of continuations
     void* f_lock;                       // std::mutex* for thread-safe completion
+    // --- BCL fields (accessed by methods compiled from BCL IL) ---
+    // Use void* for polymorphic fields: any pointer type converts to void* implicitly.
+    // BCL IL uses various concrete types for these fields across different methods.
+    Int32 f_m_taskId;                   // Task.m_taskId (int)
+    Delegate* f_m_action;               // Task.m_action (Delegate)
+    void* f_m_stateObject;             // Task.m_stateObject (object)
+    void* f_m_taskScheduler;           // Task.m_taskScheduler (TaskScheduler)
+    volatile Int32 f_m_stateFlags;      // Task.m_stateFlags (int, volatile)
+    void* f_m_contingentProperties;    // Task.m_contingentProperties (ContingentProperties)
+    void* f_m_continuationObject;      // Task.m_continuationObject (object)
 };
 
 /**

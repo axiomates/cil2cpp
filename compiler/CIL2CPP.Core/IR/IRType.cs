@@ -63,6 +63,12 @@ public class IRType
     public bool IsDelegate { get; set; }
     public bool IsGenericInstance { get; set; }
     public bool IsRecord { get; set; }
+    /// <summary>
+    /// True if this type is a CLR primitive (System.Byte, System.Int32, etc.)
+    /// that maps to a C++ built-in type. Struct definition is NOT emitted,
+    /// but methods ARE compiled from BCL IL.
+    /// </summary>
+    public bool IsPrimitiveType { get; set; }
 
     /// <summary>Concrete type argument names for generic instances (e.g., ["System.Int32"])</summary>
     public List<string> GenericArguments { get; set; } = new();

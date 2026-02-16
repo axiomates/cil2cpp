@@ -59,6 +59,19 @@ public class IRModule
     public Dictionary<string, PrimitiveTypeInfoEntry> PrimitiveTypeInfos { get; } = new();
 
     /// <summary>
+    /// Disambiguated method names for overloaded methods whose C++ names would collide.
+    /// Key: "OriginalCppName|param1CppType,param2CppType", Value: disambiguated C++ name.
+    /// </summary>
+    public Dictionary<string, string> DisambiguatedMethodNames { get; } = new();
+
+    /// <summary>
+    /// Enum types referenced in method signatures but not in the IR module.
+    /// Key: C++ mangled name, Value: C++ underlying type (e.g. "int32_t", "uint8_t").
+    /// These need <c>using X = int32_t;</c> in the header instead of <c>struct X;</c>.
+    /// </summary>
+    public Dictionary<string, string> ExternalEnumTypes { get; } = new();
+
+    /// <summary>
     /// Register a primitive type that needs a TypeInfo (used as array element type).
     /// </summary>
     public void RegisterPrimitiveTypeInfo(string ilFullName)

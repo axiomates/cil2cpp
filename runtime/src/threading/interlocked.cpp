@@ -56,6 +56,14 @@ Int32 add_i32(Int32* location, Int32 value) {
 #endif
 }
 
+Int64 add_i64(Int64* location, Int64 value) {
+#ifdef _MSC_VER
+    return _InterlockedExchangeAdd64(location, value) + value;
+#else
+    return __sync_add_and_fetch(location, value);
+#endif
+}
+
 // ===== Int64 operations =====
 
 Int64 increment_i64(Int64* location) {

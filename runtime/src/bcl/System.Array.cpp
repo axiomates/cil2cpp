@@ -94,4 +94,36 @@ Int32 array_get_length_dim(Object* obj, Int32 dimension) {
     return static_cast<Array*>(obj)->length;
 }
 
+void array_clear(Array* arr, Int32 index, Int32 length) {
+    if (!arr) { throw_null_reference(); return; }
+    if (index < 0 || length < 0 || index + length > arr->length) {
+        throw_index_out_of_range();
+        return;
+    }
+    if (length == 0) return;
+
+    size_t elem_size = arr->element_type->element_size;
+    if (elem_size == 0) elem_size = sizeof(void*);
+
+    char* data = static_cast<char*>(array_data(arr)) + index * elem_size;
+    std::memset(data, 0, length * elem_size);
+}
+
+void array_copy(Array* src, Int32 srcIndex, Array* dst, Int32 dstIndex, Int32 length) {
+    if (!src || !dst) { throw_null_reference(); return; }
+    if (srcIndex < 0 || dstIndex < 0 || length < 0 ||
+        srcIndex + length > src->length || dstIndex + length > dst->length) {
+        throw_index_out_of_range();
+        return;
+    }
+    if (length == 0) return;
+
+    size_t elem_size = src->element_type->element_size;
+    if (elem_size == 0) elem_size = sizeof(void*);
+
+    char* src_data = static_cast<char*>(array_data(src)) + srcIndex * elem_size;
+    char* dst_data = static_cast<char*>(array_data(dst)) + dstIndex * elem_size;
+    std::memmove(dst_data, src_data, length * elem_size);
+}
+
 } // namespace cil2cpp

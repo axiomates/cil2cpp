@@ -156,4 +156,275 @@ public partial class IRBuilder
     {
         return Math.Min(GetFieldSize(typeName), 8);
     }
+
+    /// <summary>
+    /// Scan all method signatures for types not in the IR module.
+    /// If a referenced type resolves (via Cecil) to an enum, register it as a value type
+    /// and add it to ExternalEnumTypes so the header generator emits a using alias
+    /// instead of a struct forward declaration.
+    /// </summary>
+    private void ScanExternalEnumTypes()
+    {
+        var checkedTypes = new HashSet<string>();
+
+        foreach (var irType in _module.Types)
+        {
+            foreach (var method in irType.Methods)
+            {
+                // Check return type
+                if (!string.IsNullOrEmpty(method.ReturnTypeCpp) && method.ReturnTypeCpp != "void")
+                    TryRegisterExternalEnum(method.ReturnTypeCpp, checkedTypes);
+
+                // Check parameter types
+                foreach (var param in method.Parameters)
+                    TryRegisterExternalEnum(param.CppTypeName, checkedTypes);
+
+                // Check local variable types
+                foreach (var local in method.Locals)
+                    TryRegisterExternalEnum(local.CppTypeName, checkedTypes);
+            }
+
+            // Check field types (including static fields)
+            foreach (var field in irType.Fields)
+                TryRegisterExternalEnum(CppNameMapper.GetCppTypeForDecl(field.FieldTypeName), checkedTypes);
+            foreach (var field in irType.StaticFields)
+                TryRegisterExternalEnum(CppNameMapper.GetCppTypeForDecl(field.FieldTypeName), checkedTypes);
+        }
+    }
+
+    /// <summary>
+    /// After ScanExternalEnumTypes registers enum types as value types,
+    /// fix up method signatures that were resolved before the registration.
+    /// Removes the pointer suffix (*) from parameters/return types that are now known to be enums.
+    /// </summary>
+    private void FixupExternalEnumTypes()
+    {
+        if (_module.ExternalEnumTypes.Count == 0) return;
+
+        foreach (var irType in _module.Types)
+        {
+            foreach (var method in irType.Methods)
+            {
+                // Fix return type — strip exactly one trailing * if the base is an external enum
+                if (method.ReturnTypeCpp != null)
+                    method.ReturnTypeCpp = FixupEnumPointerSuffix(method.ReturnTypeCpp);
+
+                // Fix parameter types — strip one * per level of enum indirection
+                // Note: ref/out enum params have ** (one for ref, one for wrong enum→pointer);
+                // we strip one to get * (correct for ref/out value type)
+                foreach (var param in method.Parameters)
+                    param.CppTypeName = FixupEnumPointerSuffix(param.CppTypeName);
+
+                // Fix local variable types
+                foreach (var local in method.Locals)
+                    local.CppTypeName = FixupEnumPointerSuffix(local.CppTypeName);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Strip exactly one trailing '*' from a type name if the base type (without all '*')
+    /// is a known external enum. This handles:
+    ///   "EnumType*"  → "EnumType"       (enum was wrongly treated as reference type)
+    ///   "EnumType**" → "EnumType*"      (ref/out enum: one * for ref, one wrongly added)
+    ///   "EnumType"   → "EnumType"       (already correct)
+    /// </summary>
+    private string FixupEnumPointerSuffix(string cppTypeName)
+    {
+        if (!cppTypeName.EndsWith("*")) return cppTypeName;
+        var baseType = cppTypeName.TrimEnd('*').Trim();
+        if (_module.ExternalEnumTypes.ContainsKey(baseType))
+        {
+            // Strip exactly one '*'
+            return cppTypeName[..^1];
+        }
+        return cppTypeName;
+    }
+
+    /// <summary>
+    /// Check if a C++ type name corresponds to an external enum type.
+    /// If the type isn't in the IR module and resolves to a Cecil enum definition,
+    /// register it as a value type and add to ExternalEnumTypes.
+    /// </summary>
+    private void TryRegisterExternalEnum(string cppTypeName, HashSet<string> checkedTypes)
+    {
+        // Strip pointer suffix — enum types are value types, shouldn't have *
+        var raw = cppTypeName.TrimEnd('*').Trim();
+        if (raw.Length == 0 || raw.StartsWith("cil2cpp::")) return;
+        if (!checkedTypes.Add(raw)) return;
+
+        // Skip if already known (in type cache or already registered)
+        if (_module.ExternalEnumTypes.ContainsKey(raw)) return;
+
+        // Try to find the IL type name for this mangled C++ name
+        // Scan all loaded assemblies for types whose mangled name matches
+        var assemblies = GetLoadedAssemblies();
+        foreach (var asm in assemblies)
+        {
+            foreach (var module in asm.Modules)
+            {
+                if (FindAndRegisterExternalEnum(module.Types, raw))
+                    return;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Recursively search Cecil types for an enum with the given mangled name.
+    /// Returns true if found and registered.
+    /// </summary>
+    private bool FindAndRegisterExternalEnum(
+        IEnumerable<Mono.Cecil.TypeDefinition> types, string mangledName)
+    {
+        foreach (var typeDef in types)
+        {
+            if (CppNameMapper.MangleTypeName(typeDef.FullName) == mangledName)
+            {
+                if (!typeDef.IsEnum) return true; // Found but not an enum — stop searching
+
+                var underlyingCpp = GetEnumUnderlyingCppType(typeDef);
+                _module.ExternalEnumTypes[mangledName] = underlyingCpp;
+                CppNameMapper.RegisterValueType(typeDef.FullName);
+                CppNameMapper.RegisterValueType(mangledName);
+                return true;
+            }
+
+            // Search nested types
+            if (typeDef.HasNestedTypes && FindAndRegisterExternalEnum(typeDef.NestedTypes, mangledName))
+                return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Get all loaded Cecil assemblies (from AssemblySet or single reader).
+    /// </summary>
+    private IEnumerable<Mono.Cecil.AssemblyDefinition> GetLoadedAssemblies()
+    {
+        if (_assemblySet != null)
+        {
+            foreach (var asm in _assemblySet.LoadedAssemblies.Values)
+                yield return asm;
+        }
+        else
+        {
+            yield return _reader.Assembly;
+        }
+    }
+
+    /// <summary>
+    /// Get the C++ type name for an enum's underlying type from Cecil metadata.
+    /// </summary>
+    private static string GetEnumUnderlyingCppType(Mono.Cecil.TypeDefinition enumType)
+    {
+        // The underlying type is stored in the special "value__" field
+        foreach (var field in enumType.Fields)
+        {
+            if (field.Name == "value__")
+            {
+                return field.FieldType.FullName switch
+                {
+                    "System.Byte" => "uint8_t",
+                    "System.SByte" => "int8_t",
+                    "System.Int16" => "int16_t",
+                    "System.UInt16" => "uint16_t",
+                    "System.Int32" => "int32_t",
+                    "System.UInt32" => "uint32_t",
+                    "System.Int64" => "int64_t",
+                    "System.UInt64" => "uint64_t",
+                    _ => "int32_t",
+                };
+            }
+        }
+        return "int32_t"; // default
+    }
+
+    /// <summary>
+    /// Discover types referenced by compiled method bodies but not yet in the IR module.
+    /// Scans Cecil method definitions for parameter/local types that need full struct definitions.
+    /// </summary>
+    private void DiscoverMissingReferencedTypes()
+    {
+        if (_allTypes == null) return;
+
+        var typesToAdd = new List<TypeDefinition>();
+        var seen = new HashSet<string>(_typeCache.Keys);
+
+        // Scan compiled method bodies for ldfld/stfld/ldflda/stsfld references
+        // Only discover types whose fields are ACCESSED (needed for struct definition)
+        foreach (var typeDef in _allTypes)
+        {
+            if (typeDef.HasGenericParameters) continue;
+            foreach (var method in typeDef.Methods)
+            {
+                if (!method.HasBody) continue;
+                // Only scan methods whose bodies will be compiled
+                if (_reachability != null && !_reachability.IsReachable(method.GetCecilMethod()))
+                    continue;
+                var cecil = method.GetCecilMethod();
+                foreach (var instr in cecil.Body.Instructions)
+                {
+                    if (instr.Operand is FieldReference fieldRef)
+                    {
+                        // Only discover types for field access instructions
+                        var code = instr.OpCode.Code;
+                        if (code is Mono.Cecil.Cil.Code.Ldfld or Mono.Cecil.Cil.Code.Stfld
+                            or Mono.Cecil.Cil.Code.Ldflda or Mono.Cecil.Cil.Code.Ldsflda
+                            or Mono.Cecil.Cil.Code.Ldsfld or Mono.Cecil.Cil.Code.Stsfld)
+                        {
+                            TryDiscoverCecilType(fieldRef.DeclaringType, seen, typesToAdd);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Add discovered types to the module
+        foreach (var cecilType in typesToAdd)
+        {
+            var typeDefInfo = new TypeDefinitionInfo(cecilType);
+            var irType = CreateTypeShell(typeDefInfo);
+
+            var assemblyName = cecilType.Module.Assembly.Name.Name;
+            if (_assemblySet != null)
+                irType.SourceKind = _assemblySet.ClassifyAssembly(assemblyName);
+            irType.IsRuntimeProvided = RuntimeProvidedTypes.Contains(cecilType.FullName);
+
+            _module.Types.Add(irType);
+            _typeCache[cecilType.FullName] = irType;
+
+            // Populate fields/base types
+            PopulateTypeDetails(typeDefInfo, irType);
+        }
+    }
+
+    private void TryDiscoverCecilType(TypeReference? typeRef, HashSet<string> seen, List<TypeDefinition> toAdd)
+    {
+        if (typeRef == null) return;
+        // Unwrap wrapper types
+        if (typeRef is ByReferenceType byRef)
+            typeRef = byRef.ElementType;
+        if (typeRef is PointerType ptr)
+            typeRef = ptr.ElementType;
+        if (typeRef is GenericInstanceType git)
+            typeRef = git.ElementType;
+        if (typeRef is ArrayType) return;
+        if (typeRef is GenericParameter) return;
+
+        try
+        {
+            var resolved = typeRef.Resolve();
+            if (resolved == null) return;
+            if (resolved.HasGenericParameters) return;
+            if (seen.Contains(resolved.FullName)) return;
+            seen.Add(resolved.FullName);
+
+            // Skip primitives
+            if (CppNameMapper.IsPrimitive(resolved.FullName)) return;
+            if (resolved.FullName == "<Module>") return;
+
+            toAdd.Add(resolved);
+        }
+        catch { }
+    }
 }

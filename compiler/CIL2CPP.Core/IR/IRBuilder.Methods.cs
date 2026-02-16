@@ -56,6 +56,13 @@ public partial class IRBuilder
         if (methodDef.IsInternalCall)
             irMethod.IsInternalCall = true;
 
+        // Check if this method has an icall mapping (even if it has an IL body).
+        // This happens for methods like Volatile.Read/Write, Console.WriteLine, Math.*, etc.
+        // When an icall mapping exists, callers use the runtime function, making the IL body dead code.
+        if (declaringType != null && ICallRegistry.Lookup(
+                declaringType.ILFullName, methodDef.Name, methodDef.Parameters.Count) != null)
+            irMethod.HasICallMapping = true;
+
         // Detect P/Invoke (DllImport)
         if (methodDef.IsPInvokeImpl && methodDef.PInvokeInfo != null)
         {
@@ -111,6 +118,97 @@ public partial class IRBuilder
 
         // Note: method body is converted in a later pass (after VTables are built)
         return irMethod;
+    }
+
+    /// <summary>
+    /// Detect overloaded methods whose C++ names collide (e.g. different C# enum types
+    /// collapse to the same C++ type via using aliases) and rename them to be unique.
+    /// Appends parameter type suffixes to disambiguate.
+    /// </summary>
+    private void DisambiguateOverloadedMethods()
+    {
+        foreach (var irType in _module.Types)
+        {
+            // Group methods by their C++ mangled name
+            var groups = irType.Methods
+                .GroupBy(m => m.CppName)
+                .Where(g => g.Count() > 1)
+                .ToList();
+
+            foreach (var group in groups)
+            {
+                // Check if the C++ parameter signatures actually collide
+                var methods = group.ToList();
+                var sigMap = new Dictionary<string, List<IRMethod>>();
+
+                foreach (var m in methods)
+                {
+                    // Resolve enum type names to their underlying types for collision detection
+                    // (e.g., System_Globalization_CultureData_LocaleStringData → int32_t)
+                    var sig = string.Join(",", m.Parameters.Select(p =>
+                        ResolveEnumToUnderlying(p.CppTypeName, p.ILTypeName)));
+                    if (!sigMap.TryGetValue(sig, out var list))
+                    {
+                        list = new List<IRMethod>();
+                        sigMap[sig] = list;
+                    }
+                    list.Add(m);
+                }
+
+                // Always disambiguate when multiple methods share the same C++ name,
+                // even if their C++ signatures differ. This prevents silent mismatches
+                // when some overload bodies are filtered out by the code generator.
+                // C++ overloading works for same-name-different-sig, but our body filters
+                // may remove one overload, causing callers to silently bind to the wrong one.
+
+                // Rename all methods in colliding groups by appending IL parameter types
+                var originalName = group.Key;
+                foreach (var m in methods)
+                {
+                    var ilSuffix = string.Join("_", m.Parameters.Select(p =>
+                        MangleILTypeForDisambiguation(p.ILTypeName)));
+                    if (ilSuffix.Length > 0)
+                    {
+                        m.CppName = $"{m.CppName}__{ilSuffix}";
+                        // Register lookup: originalName|ilParam1,ilParam2 → disambiguated name
+                        var ilParamKey = string.Join(",", m.Parameters.Select(p => p.ILTypeName));
+                        var lookupKey = $"{originalName}|{ilParamKey}";
+                        _module.DisambiguatedMethodNames[lookupKey] = m.CppName;
+                    }
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Resolve a C++ type name through enum aliases for collision detection.
+    /// If the type is an enum (in the module or external), returns the underlying type.
+    /// </summary>
+    private string ResolveEnumToUnderlying(string cppTypeName, string ilTypeName)
+    {
+        // Check if it's an enum in the module
+        if (_typeCache.TryGetValue(ilTypeName, out var irType) && irType.IsEnum)
+        {
+            return CppNameMapper.GetCppTypeForDecl(irType.EnumUnderlyingType ?? "System.Int32");
+        }
+        // Check external enums
+        var mangled = cppTypeName.TrimEnd('*').Trim();
+        if (_module.ExternalEnumTypes.TryGetValue(mangled, out var underlying))
+        {
+            return underlying;
+        }
+        return cppTypeName;
+    }
+
+    /// <summary>
+    /// Mangle an IL type name for use in disambiguated method names.
+    /// Strips pointer/ref suffixes and applies standard mangling.
+    /// </summary>
+    private static string MangleILTypeForDisambiguation(string ilTypeName)
+    {
+        // Strip pointer/ref suffixes before mangling
+        var clean = ilTypeName.TrimEnd('*', '&', ' ');
+        return CppNameMapper.MangleTypeName(clean);
     }
 
     /// <summary>
@@ -180,12 +278,14 @@ public partial class IRBuilder
                 if (handler.HandlerType == Mono.Cecil.Cil.ExceptionHandlerType.Catch)
                 {
                     AddExceptionEvent(exceptionEvents, handler.HandlerStart,
-                        new ExceptionEvent(ExceptionEventKind.CatchBegin, handler.CatchTypeName));
+                        new ExceptionEvent(ExceptionEventKind.CatchBegin, handler.CatchTypeName,
+                            handler.TryStart, handler.TryEnd));
                 }
                 else if (handler.HandlerType == Mono.Cecil.Cil.ExceptionHandlerType.Finally)
                 {
                     AddExceptionEvent(exceptionEvents, handler.HandlerStart,
-                        new ExceptionEvent(ExceptionEventKind.FinallyBegin));
+                        new ExceptionEvent(ExceptionEventKind.FinallyBegin, null,
+                            handler.TryStart, handler.TryEnd));
                 }
                 else if (handler.HandlerType == Mono.Cecil.Cil.ExceptionHandlerType.Filter
                     && handler.FilterStart.HasValue)
@@ -193,19 +293,23 @@ public partial class IRBuilder
                     // Filter: catch all exceptions at FilterStart, evaluate filter condition,
                     // then accept or reject at endfilter. Handler body follows at HandlerStart.
                     AddExceptionEvent(exceptionEvents, handler.FilterStart.Value,
-                        new ExceptionEvent(ExceptionEventKind.FilterBegin));
+                        new ExceptionEvent(ExceptionEventKind.FilterBegin, null,
+                            handler.TryStart, handler.TryEnd));
                     // Push exception onto stack at handler body start (like CatchBegin)
                     AddExceptionEvent(exceptionEvents, handler.HandlerStart,
-                        new ExceptionEvent(ExceptionEventKind.FilterHandlerBegin));
+                        new ExceptionEvent(ExceptionEventKind.FilterHandlerBegin, null,
+                            handler.TryStart, handler.TryEnd));
                 }
                 AddExceptionEvent(exceptionEvents, handler.HandlerEnd,
-                    new ExceptionEvent(ExceptionEventKind.HandlerEnd));
+                    new ExceptionEvent(ExceptionEventKind.HandlerEnd, null,
+                        handler.TryStart, handler.TryEnd));
             }
         }
 
         // Stack simulation
         var stack = new Stack<string>();
         int tempCounter = 0;
+        bool skipDeadCode = false; // Skip IL instructions after unconditional branch until next label
 
         foreach (var instr in instructions)
         {
@@ -262,7 +366,16 @@ public partial class IRBuilder
                             block.Instructions.Add(new IRFinallyBegin());
                             break;
                         case ExceptionEventKind.HandlerEnd:
-                            block.Instructions.Add(new IRTryEnd());
+                            // Don't emit END_TRY if another handler (catch/filter) follows
+                            // at the same offset for the SAME try block.
+                            var hasFollowingHandlerSameTry = events.Any(e =>
+                                e != evt
+                                && e.TryStart == evt.TryStart && e.TryEnd == evt.TryEnd
+                                && (e.Kind == ExceptionEventKind.FilterBegin
+                                    || e.Kind == ExceptionEventKind.CatchBegin
+                                    || e.Kind == ExceptionEventKind.FinallyBegin));
+                            if (!hasFollowingHandlerSameTry)
+                                block.Instructions.Add(new IRTryEnd());
                             break;
                     }
                 }
@@ -282,10 +395,17 @@ public partial class IRBuilder
             // Insert label if this is a branch target
             if (branchTargets.Contains(instr.Offset))
             {
+                var wasDeadCode = skipDeadCode;
+                skipDeadCode = false; // Resume processing at branch targets
                 // Merge stack at branch targets: if a conditional branch saved a merge variable
                 // for this offset, the fall-through path may have a different stack top.
                 // Insert an assignment to unify both paths (fixes dup+brtrue delegate caching pattern).
-                if (branchMergeVars.TryGetValue(instr.Offset, out var mergeVar)
+                // IMPORTANT: Only do this if we're on a live fall-through path. If we were in dead code
+                // (after an unconditional br/ret/throw), the stack state is from the dead path and
+                // should not be used for merge assignments.
+                if (!wasDeadCode
+                    && branchMergeVars.TryGetValue(instr.Offset, out var mergeVar)
+                    && IsValidMergeVariable(mergeVar)
                     && stack.Count > 0 && stack.Peek() != mergeVar)
                 {
                     var currentTop = stack.Pop();
@@ -295,6 +415,11 @@ public partial class IRBuilder
 
                 block.Instructions.Add(new IRLabel { LabelName = $"IL_{instr.Offset:X4}" });
             }
+
+            // Skip dead code after unconditional branches (br, ret, throw, rethrow)
+            // These instructions have corrupted stack state and produce invalid C++ (e.g., "16 = 0")
+            if (skipDeadCode)
+                continue;
 
             int beforeCount = block.Instructions.Count;
 
@@ -307,6 +432,11 @@ public partial class IRBuilder
                 block.Instructions.Add(new IRComment { Text = $"WARNING: Unsupported IL instruction: {instr}" });
                 Console.Error.WriteLine($"WARNING: Unsupported IL instruction '{instr.OpCode}' at IL_{instr.Offset:X4} in {irMethod.CppName}");
             }
+
+            // After unconditional terminators, skip remaining dead code until next label
+            if (instr.OpCode is Code.Br or Code.Br_S or Code.Ret or Code.Throw or Code.Rethrow
+                or Code.Leave or Code.Leave_S or Code.Endfinally)
+                skipDeadCode = true;
 
             // Attach debug info to newly added instructions
             if (_config.IsDebug)
@@ -346,6 +476,25 @@ public partial class IRBuilder
                 }
             }
         }
+    }
+
+    /// <summary>
+    /// Check if a stack value is a valid C++ lvalue for use as a merge variable.
+    /// Literals (numeric, nullptr, string) are NOT valid merge targets.
+    /// </summary>
+    private static bool IsValidMergeVariable(string stackValue)
+    {
+        if (string.IsNullOrEmpty(stackValue)) return false;
+        // Numeric literals (0, 16, -1, 0.5f, etc.)
+        if (char.IsDigit(stackValue[0]) || (stackValue[0] == '-' && stackValue.Length > 1 && char.IsDigit(stackValue[1])))
+            return false;
+        // nullptr
+        if (stackValue == "nullptr") return false;
+        // String literals
+        if (stackValue.StartsWith("\"") || stackValue.StartsWith("u\"") || stackValue.StartsWith("u'")) return false;
+        // Cast expressions like "(int32_t)(0)" are not lvalues
+        if (stackValue.StartsWith("(") && !stackValue.StartsWith("(&")) return false;
+        return true;
     }
 
     private void ConvertInstruction(ILInstruction instr, IRBasicBlock block, Stack<string> stack,
@@ -582,7 +731,9 @@ public partial class IRBuilder
                 var tmp = $"__t{tempCounter++}";
                 block.Instructions.Add(new IRRawCpp
                 {
-                    Code = $"{tmp} = {func}<{cppType}>({val});"
+                    Code = $"{tmp} = {func}<{cppType}>({val});",
+                    ResultVar = tmp,
+                    ResultTypeCpp = cppType,
                 });
                 stack.Push(tmp);
                 break;
@@ -637,7 +788,9 @@ public partial class IRBuilder
                 var cond = stack.Count > 0 ? stack.Pop() : "0";
                 var target = (Instruction)instr.Operand!;
                 // Save stack top as merge variable for branch target (dup+brtrue pattern)
-                if (stack.Count > 0 && !branchMergeVars.ContainsKey(target.Offset))
+                // Only save if the stack top is a valid C++ lvalue (variable name, not a literal)
+                if (stack.Count > 0 && !branchMergeVars.ContainsKey(target.Offset)
+                    && IsValidMergeVariable(stack.Peek()))
                     branchMergeVars[target.Offset] = stack.Peek();
                 block.Instructions.Add(new IRConditionalBranch
                 {
@@ -653,7 +806,9 @@ public partial class IRBuilder
                 var cond = stack.Count > 0 ? stack.Pop() : "0";
                 var target = (Instruction)instr.Operand!;
                 // Save stack top as merge variable for branch target (dup+brfalse pattern)
-                if (stack.Count > 0 && !branchMergeVars.ContainsKey(target.Offset))
+                // Only save if the stack top is a valid C++ lvalue (variable name, not a literal)
+                if (stack.Count > 0 && !branchMergeVars.ContainsKey(target.Offset)
+                    && IsValidMergeVariable(stack.Peek()))
                     branchMergeVars[target.Offset] = stack.Peek();
                 block.Instructions.Add(new IRConditionalBranch
                 {
@@ -734,13 +889,26 @@ public partial class IRBuilder
                 // - starts with '&' → pointer to value type → use ->
                 // - declaring type is value type and obj is a local/temp → use .
                 var isValueAccess = IsValueTypeAccess(fieldRef.DeclaringType, obj, method);
+                // Cast to declaring type when the stack value might be a base type (Object*)
+                // CIL ldfld specifies the declaring type; C++ needs the correct type for field access
+                string? castToType = null;
+                if (!isValueAccess && !fieldRef.DeclaringType.IsValueType && obj != "__this")
+                {
+                    var declTypeName = GetMangledTypeNameForRef(fieldRef.DeclaringType);
+                    if (declTypeName != "cil2cpp::Object" && declTypeName != "cil2cpp::String")
+                        castToType = declTypeName;
+                }
                 var tmp = $"__t{tempCounter++}";
+                var lfFieldTypeName = ResolveTypeRefOperand(fieldRef.FieldType);
+                var lfFieldTypeCpp = CppNameMapper.GetCppTypeForDecl(lfFieldTypeName);
                 block.Instructions.Add(new IRFieldAccess
                 {
                     ObjectExpr = obj,
                     FieldCppName = CppNameMapper.MangleFieldName(fieldRef.Name),
                     ResultVar = tmp,
                     IsValueAccess = isValueAccess,
+                    CastToType = castToType,
+                    ResultTypeCpp = lfFieldTypeCpp,
                 });
                 stack.Push(tmp);
                 break;
@@ -753,16 +921,24 @@ public partial class IRBuilder
                 var obj = stack.Count > 0 ? stack.Pop() : "__this";
                 bool isVolatileStore = _pendingVolatile;
                 _pendingVolatile = false;
-                // Cast value for reference type fields to handle ldelem.ref → stfld type mismatch
-                // (ldelem.ref produces Object* but field may expect String*, etc.)
+                // Cast value for reference type fields to handle derived→base type mismatch
+                // (flat struct model: no C++ inheritance, so all pointer casts must be explicit)
                 var fieldTypeName = ResolveTypeRefOperand(fieldRef.FieldType);
                 var fieldTypeCpp = CppNameMapper.GetCppTypeForDecl(fieldTypeName);
                 if (fieldTypeCpp.EndsWith("*") && !CppNameMapper.IsValueType(fieldTypeName)
-                    && fieldTypeCpp != "cil2cpp::Object*" && fieldTypeCpp != "void*")
+                    && fieldTypeCpp != "void*" && val != "nullptr" && val != "0")
                 {
-                    val = $"({fieldTypeCpp}){val}";
+                    // Use (void*) intermediate to handle flat struct model (no C++ inheritance)
+                    val = $"({fieldTypeCpp})(void*){val}";
                 }
                 var isValueAccess = IsValueTypeAccess(fieldRef.DeclaringType, obj, method);
+                string? stCastToType = null;
+                if (!isValueAccess && !fieldRef.DeclaringType.IsValueType && obj != "__this")
+                {
+                    var stDeclTypeName = GetMangledTypeNameForRef(fieldRef.DeclaringType);
+                    if (stDeclTypeName != "cil2cpp::Object" && stDeclTypeName != "cil2cpp::String")
+                        stCastToType = stDeclTypeName;
+                }
                 block.Instructions.Add(new IRFieldAccess
                 {
                     ObjectExpr = obj,
@@ -770,6 +946,7 @@ public partial class IRBuilder
                     IsStore = true,
                     StoreValue = val,
                     IsValueAccess = isValueAccess,
+                    CastToType = stCastToType,
                 });
                 // volatile. prefix: fence after store
                 if (isVolatileStore)
@@ -782,6 +959,27 @@ public partial class IRBuilder
             case Code.Ldsfld:
             {
                 var fieldRef = (FieldReference)instr.Operand!;
+
+                // Intercept EmptyArray<T>.Value — nested in RuntimeProvidedType Array
+                if (fieldRef.Name == "Value" && fieldRef.DeclaringType is GenericInstanceType emptyGit
+                    && emptyGit.ElementType.FullName == "System.Array/EmptyArray`1")
+                {
+                    var elemTypeArg = emptyGit.GenericArguments[0];
+                    var resolvedElem = ResolveGenericTypeRef(elemTypeArg, emptyGit);
+                    var elemCppType = CppNameMapper.MangleTypeName(resolvedElem);
+                    if (CppNameMapper.IsPrimitive(resolvedElem))
+                        _module.RegisterPrimitiveTypeInfo(resolvedElem);
+                    var tmp2 = $"__t{tempCounter++}";
+                    block.Instructions.Add(new IRRawCpp
+                    {
+                        Code = $"auto {tmp2} = cil2cpp::array_create(&{elemCppType}_TypeInfo, 0);",
+                        ResultVar = tmp2,
+                        ResultTypeCpp = "cil2cpp::Array*",
+                    });
+                    stack.Push(tmp2);
+                    break;
+                }
+
                 var typeCppName = GetMangledTypeNameForRef(fieldRef.DeclaringType);
                 var fieldCacheKey = ResolveCacheKey(fieldRef.DeclaringType);
                 EmitCctorGuardIfNeeded(block, fieldCacheKey, typeCppName);
@@ -792,11 +990,14 @@ public partial class IRBuilder
                     _pendingVolatile = false;
                 }
                 var tmp = $"__t{tempCounter++}";
+                var sfTypeName = ResolveTypeRefOperand(fieldRef.FieldType);
+                var sfTypeCpp = CppNameMapper.GetCppTypeForDecl(sfTypeName);
                 block.Instructions.Add(new IRStaticFieldAccess
                 {
                     TypeCppName = typeCppName,
                     FieldCppName = CppNameMapper.MangleFieldName(fieldRef.Name),
                     ResultVar = tmp,
+                    ResultTypeCpp = sfTypeCpp,
                 });
                 stack.Push(tmp);
                 break;
@@ -811,6 +1012,14 @@ public partial class IRBuilder
                 var val = stack.Count > 0 ? stack.Pop() : "0";
                 bool isVolatileStore = _pendingVolatile;
                 _pendingVolatile = false;
+                // Cast value for reference type static fields (derived→base in flat struct model)
+                var sfieldTypeName = ResolveTypeRefOperand(fieldRef.FieldType);
+                var sfieldTypeCpp = CppNameMapper.GetCppTypeForDecl(sfieldTypeName);
+                if (sfieldTypeCpp.EndsWith("*") && !CppNameMapper.IsValueType(sfieldTypeName)
+                    && sfieldTypeCpp != "void*" && val != "nullptr" && val != "0")
+                {
+                    val = $"({sfieldTypeCpp})(void*){val}";
+                }
                 block.Instructions.Add(new IRStaticFieldAccess
                 {
                     TypeCppName = typeCppName,
@@ -831,9 +1040,23 @@ public partial class IRBuilder
                 var fieldRef = (FieldReference)instr.Operand!;
                 var obj = stack.Count > 0 ? stack.Pop() : "__this";
                 var tmp = $"__t{tempCounter++}";
+                var fieldName = CppNameMapper.MangleFieldName(fieldRef.Name);
+                // When obj is an address (e.g. &loc_0 from ldloca), use . accessor
+                // to avoid &&loc_0->field which MSVC tokenizes as rvalue-ref &&
+                string expr;
+                if (obj.StartsWith("&") && !obj.StartsWith("&("))
+                    expr = $"&({obj[1..]}.{fieldName})";
+                else
+                    expr = $"&{obj}->{fieldName}";
+                var fldaTypeName = ResolveTypeRefOperand(fieldRef.FieldType);
+                var fldaTypeCpp = CppNameMapper.GetCppTypeForDecl(fldaTypeName);
+                // ldflda pushes a pointer to the field
+                var fldaPtrType = fldaTypeCpp.EndsWith("*") ? fldaTypeCpp : fldaTypeCpp + "*";
                 block.Instructions.Add(new IRRawCpp
                 {
-                    Code = $"auto {tmp} = &{obj}->{CppNameMapper.MangleFieldName(fieldRef.Name)};"
+                    Code = $"{tmp} = {expr};",
+                    ResultVar = tmp,
+                    ResultTypeCpp = fldaPtrType,
                 });
                 stack.Push(tmp);
                 break;
@@ -846,9 +1069,14 @@ public partial class IRBuilder
                 var fieldCacheKey = ResolveCacheKey(fieldRef.DeclaringType);
                 EmitCctorGuardIfNeeded(block, fieldCacheKey, typeCppName);
                 var tmp = $"__t{tempCounter++}";
+                var sfaTypeName = ResolveTypeRefOperand(fieldRef.FieldType);
+                var sfaTypeCpp = CppNameMapper.GetCppTypeForDecl(sfaTypeName);
+                var sfaPtrType = sfaTypeCpp.EndsWith("*") ? sfaTypeCpp : sfaTypeCpp + "*";
                 block.Instructions.Add(new IRRawCpp
                 {
-                    Code = $"auto {tmp} = &{typeCppName}_statics.{CppNameMapper.MangleFieldName(fieldRef.Name)};"
+                    Code = $"auto {tmp} = &{typeCppName}_statics.{CppNameMapper.MangleFieldName(fieldRef.Name)};",
+                    ResultVar = tmp,
+                    ResultTypeCpp = sfaPtrType,
                 });
                 stack.Push(tmp);
                 break;
@@ -866,14 +1094,19 @@ public partial class IRBuilder
                     var cppType = CppNameMapper.GetCppTypeName(resolvedName);
                     block.Instructions.Add(new IRRawCpp
                     {
-                        Code = $"auto {tmp} = *({cppType}*){addr};"
+                        Code = $"auto {tmp} = *({cppType}*){addr};",
+                        ResultVar = tmp,
+                        ResultTypeCpp = cppType,
                     });
                 }
                 else
                 {
+                    var cppRefType = CppNameMapper.GetCppTypeForDecl(resolvedName);
                     block.Instructions.Add(new IRRawCpp
                     {
-                        Code = $"auto {tmp} = *{addr};"
+                        Code = $"auto {tmp} = *{addr};",
+                        ResultVar = tmp,
+                        ResultTypeCpp = cppRefType,
                     });
                 }
                 stack.Push(tmp);
@@ -920,7 +1153,9 @@ public partial class IRBuilder
                 var tmp = $"__t{tempCounter++}";
                 block.Instructions.Add(new IRRawCpp
                 {
-                    Code = $"auto {tmp} = *({cppType}*){addr};"
+                    Code = $"auto {tmp} = *({cppType}*){addr};",
+                    ResultVar = tmp,
+                    ResultTypeCpp = cppType,
                 });
                 stack.Push(tmp);
                 break;
@@ -932,7 +1167,9 @@ public partial class IRBuilder
                 var tmp = $"__t{tempCounter++}";
                 block.Instructions.Add(new IRRawCpp
                 {
-                    Code = $"auto {tmp} = *(cil2cpp::Object**){addr};"
+                    Code = $"auto {tmp} = *(cil2cpp::Object**){addr};",
+                    ResultVar = tmp,
+                    ResultTypeCpp = "cil2cpp::Object*",
                 });
                 stack.Push(tmp);
                 break;
@@ -1009,21 +1246,27 @@ public partial class IRBuilder
             case Code.Conv_I2:  EmitConversion(block, stack, "int16_t", ref tempCounter); break;
             case Code.Conv_I4:  EmitConversion(block, stack, "int32_t", ref tempCounter); break;
             case Code.Conv_I8:  EmitConversion(block, stack, "int64_t", ref tempCounter); break;
-            case Code.Conv_I:   EmitConversion(block, stack, "intptr_t", ref tempCounter); break;
+            case Code.Conv_I:
+            {
+                // Address-of expressions (&loc_N, &field) are already native pointers
+                // — conv.i is a no-op, preserving pointer type avoids intptr_t→T* casts
+                var convIVal = stack.Count > 0 ? stack.Peek() : "0";
+                if (!convIVal.StartsWith("&"))
+                    EmitConversion(block, stack, "intptr_t", ref tempCounter);
+                break;
+            }
             case Code.Conv_U1:  EmitConversion(block, stack, "uint8_t", ref tempCounter); break;
             case Code.Conv_U2:  EmitConversion(block, stack, "uint16_t", ref tempCounter); break;
             case Code.Conv_U4:  EmitConversion(block, stack, "uint32_t", ref tempCounter); break;
             case Code.Conv_U8:  EmitConversion(block, stack, "uint64_t", ref tempCounter); break;
             case Code.Conv_U:
             {
-                // If converting literal 0 → preserve as 0 (valid null pointer constant in C++)
-                // Avoids: static_cast<uintptr_t>(0) cannot be assigned to pointer types
                 var convVal = stack.Count > 0 ? stack.Peek() : "0";
-                if (convVal == "0")
-                {
-                    // Leave 0 on stack — valid as both uintptr_t and null pointer constant
-                    break;
-                }
+                // If converting literal 0 → preserve as 0 (valid null pointer constant in C++)
+                if (convVal == "0") break;
+                // Address-of expressions (&loc_N, &field) are already native pointers
+                // — conv.u is a no-op, preserving pointer type avoids uintptr_t→T* casts
+                if (convVal.StartsWith("&")) break;
                 EmitConversion(block, stack, "uintptr_t", ref tempCounter);
                 break;
             }
@@ -1088,7 +1331,9 @@ public partial class IRBuilder
                     _module.RegisterPrimitiveTypeInfo(resolvedName);
                 block.Instructions.Add(new IRRawCpp
                 {
-                    Code = $"auto {tmp} = cil2cpp::array_create(&{elemCppType}_TypeInfo, {length});"
+                    Code = $"auto {tmp} = cil2cpp::array_create(&{elemCppType}_TypeInfo, {length});",
+                    ResultVar = tmp,
+                    ResultTypeCpp = "cil2cpp::Array*",
                 });
                 stack.Push(tmp);
                 break;
@@ -1100,7 +1345,9 @@ public partial class IRBuilder
                 var tmp = $"__t{tempCounter++}";
                 block.Instructions.Add(new IRRawCpp
                 {
-                    Code = $"auto {tmp} = cil2cpp::array_length({arr});"
+                    Code = $"auto {tmp} = cil2cpp::array_length({arr});",
+                    ResultVar = tmp,
+                    ResultTypeCpp = "int32_t",
                 });
                 stack.Push(tmp);
                 break;
@@ -1140,7 +1387,7 @@ public partial class IRBuilder
             }
 
             case Code.Stelem_I1: case Code.Stelem_I2: case Code.Stelem_I4: case Code.Stelem_I8:
-            case Code.Stelem_R4: case Code.Stelem_R8: case Code.Stelem_Ref: case Code.Stelem_I:
+            case Code.Stelem_R4: case Code.Stelem_R8: case Code.Stelem_I:
             {
                 var val = stack.Count > 0 ? stack.Pop() : "0";
                 var index = stack.Count > 0 ? stack.Pop() : "0";
@@ -1149,6 +1396,24 @@ public partial class IRBuilder
                 {
                     ArrayExpr = arr, IndexExpr = index,
                     ElementType = GetArrayElementType(instr.OpCode),
+                    IsStore = true, StoreValue = val
+                });
+                break;
+            }
+
+            case Code.Stelem_Ref:
+            {
+                // stelem.ref stores a reference in an Object[] array.
+                // Cast value to cil2cpp::Object* since flat C++ structs don't inherit from Object.
+                var val = stack.Count > 0 ? stack.Pop() : "0";
+                var index = stack.Count > 0 ? stack.Pop() : "0";
+                var arr = stack.Count > 0 ? stack.Pop() : "nullptr";
+                if (val != "nullptr" && val != "0")
+                    val = $"(cil2cpp::Object*){val}";
+                block.Instructions.Add(new IRArrayAccess
+                {
+                    ArrayExpr = arr, IndexExpr = index,
+                    ElementType = "cil2cpp::Object*",
                     IsStore = true, StoreValue = val
                 });
                 break;
@@ -1179,7 +1444,9 @@ public partial class IRBuilder
                 var tmp = $"__t{tempCounter++}";
                 block.Instructions.Add(new IRRawCpp
                 {
-                    Code = $"auto {tmp} = ({elemType}*)cil2cpp::array_get_element_ptr({arr}, {index});"
+                    Code = $"auto {tmp} = ({elemType}*)cil2cpp::array_get_element_ptr({arr}, {index});",
+                    ResultVar = tmp,
+                    ResultTypeCpp = elemType + "*",
                 });
                 stack.Push(tmp);
                 break;
@@ -1191,13 +1458,17 @@ public partial class IRBuilder
                 var typeRef = (TypeReference)instr.Operand!;
                 var obj = stack.Count > 0 ? stack.Pop() : "nullptr";
                 var tmp = $"__t{tempCounter++}";
-                var castTargetType = GetMangledTypeNameForRef(typeRef);
+                // Array types always use cil2cpp::Array* regardless of element type
+                var castIsArray = typeRef is ArrayType;
+                var castTargetType = castIsArray
+                    ? "cil2cpp::Array" : GetMangledTypeNameForRef(typeRef);
                 block.Instructions.Add(new IRCast
                 {
                     SourceExpr = obj,
                     TargetTypeCpp = castTargetType + "*",
                     ResultVar = tmp,
-                    IsSafe = false
+                    IsSafe = false,
+                    TypeInfoCppName = castIsArray ? "System_Array" : null
                 });
                 stack.Push(tmp);
                 break;
@@ -1208,13 +1479,16 @@ public partial class IRBuilder
                 var typeRef = (TypeReference)instr.Operand!;
                 var obj = stack.Count > 0 ? stack.Pop() : "nullptr";
                 var tmp = $"__t{tempCounter++}";
-                var isinstTargetType = GetMangledTypeNameForRef(typeRef);
+                var isArray = typeRef is ArrayType;
+                var isinstTargetType = isArray
+                    ? "cil2cpp::Array" : GetMangledTypeNameForRef(typeRef);
                 block.Instructions.Add(new IRCast
                 {
                     SourceExpr = obj,
                     TargetTypeCpp = isinstTargetType + "*",
                     ResultVar = tmp,
-                    IsSafe = true
+                    IsSafe = true,
+                    TypeInfoCppName = isArray ? "System_Array" : null
                 });
                 stack.Push(tmp);
                 break;
@@ -1263,7 +1537,12 @@ public partial class IRBuilder
             {
                 var typeRef = (TypeReference)instr.Operand!;
                 var addr = stack.Count > 0 ? stack.Pop() : "nullptr";
-                var typeCpp = GetMangledTypeNameForRef(typeRef);
+                // Use GetCppTypeName (not MangleTypeName) so primitives map to C++ types
+                // e.g. System.SByte → int8_t (not System_SByte which doesn't exist as a C++ type)
+                var resolvedName = ResolveTypeRefOperand(typeRef);
+                var typeCpp = CppNameMapper.GetCppTypeName(resolvedName);
+                // Strip pointer suffix — initobj operates on value types, sizeof needs the base type
+                if (typeCpp.EndsWith("*")) typeCpp = typeCpp.TrimEnd('*');
                 block.Instructions.Add(new IRInitObj
                 {
                     AddressExpr = addr,
@@ -1293,24 +1572,63 @@ public partial class IRBuilder
                     {
                         Code = $"{tmp} = {val}.f_hasValue"
                             + $" ? (cil2cpp::Object*)cil2cpp::box<{innerTypeCppBox}>({val}.f_value, &{innerTypeCppInfo}_TypeInfo)"
-                            + $" : nullptr;"
+                            + $" : nullptr;",
+                        ResultVar = tmp,
+                        ResultTypeCpp = "cil2cpp::Object*",
                     });
                 }
                 else
                 {
-                    // For primitives, use the C++ type name (int32_t) for template,
-                    // but the mangled IL name (System_Int32) for TypeInfo reference
-                    var typeCpp = CppNameMapper.IsPrimitive(resolvedName)
-                        ? CppNameMapper.GetCppTypeName(resolvedName)
-                        : CppNameMapper.MangleTypeName(resolvedName);
-                    var typeInfoCpp = CppNameMapper.MangleTypeName(resolvedName);
-                    block.Instructions.Add(new IRBox
+                    // Check if this is a reference type (class, not value type).
+                    // Boxing a reference type is a no-op in the CLR — the value is already an Object*.
+                    // Use multiple detection: Cecil Resolve, type cache, CppNameMapper
+                    bool isValueType;
+                    try
                     {
-                        ValueExpr = val,
-                        ValueTypeCppName = typeCpp,
-                        TypeInfoCppName = typeCpp != typeInfoCpp ? typeInfoCpp : null,
-                        ResultVar = tmp
-                    });
+                        var resolved = typeRef.Resolve();
+                        if (resolved != null)
+                            isValueType = resolved.IsValueType;
+                        else if (_typeCache.TryGetValue(resolvedName, out var cachedType))
+                            isValueType = cachedType.IsValueType;
+                        else
+                            isValueType = CppNameMapper.IsValueType(resolvedName);
+                    }
+                    catch
+                    {
+                        // Can't resolve — fall back to CppNameMapper + type cache
+                        if (_typeCache.TryGetValue(resolvedName, out var cachedType))
+                            isValueType = cachedType.IsValueType;
+                        else
+                            isValueType = CppNameMapper.IsValueType(resolvedName);
+                    }
+
+                    if (!isValueType)
+                    {
+                        // Reference type: box is just a cast to Object*
+                        block.Instructions.Add(new IRRawCpp
+                        {
+                            Code = $"{tmp} = (cil2cpp::Object*)(void*){val};",
+                            ResultVar = tmp,
+                            ResultTypeCpp = "cil2cpp::Object*",
+                        });
+                    }
+                    else
+                    {
+                        // Value type: use box<T> template
+                        // For primitives, use the C++ type name (int32_t) for template,
+                        // but the mangled IL name (System_Int32) for TypeInfo reference
+                        var typeCpp = CppNameMapper.IsPrimitive(resolvedName)
+                            ? CppNameMapper.GetCppTypeName(resolvedName)
+                            : CppNameMapper.MangleTypeName(resolvedName);
+                        var typeInfoCpp = CppNameMapper.MangleTypeName(resolvedName);
+                        block.Instructions.Add(new IRBox
+                        {
+                            ValueExpr = val,
+                            ValueTypeCppName = typeCpp,
+                            TypeInfoCppName = typeCpp != typeInfoCpp ? typeInfoCpp : null,
+                            ResultVar = tmp
+                        });
+                    }
                 }
                 stack.Push(tmp);
                 break;
@@ -1340,13 +1658,16 @@ public partial class IRBuilder
                 else
                 {
                     // ECMA-335 III.4.33: for reference types, equivalent to castclass
-                    var castTargetType = GetMangledTypeNameForRef(typeRef);
+                    var unboxIsArray = typeRef is ArrayType;
+                    var unboxCastTarget = unboxIsArray
+                        ? "cil2cpp::Array" : GetMangledTypeNameForRef(typeRef);
                     block.Instructions.Add(new IRCast
                     {
                         SourceExpr = obj,
-                        TargetTypeCpp = castTargetType + "*",
+                        TargetTypeCpp = unboxCastTarget + "*",
                         ResultVar = tmp,
-                        IsSafe = false
+                        IsSafe = false,
+                        TypeInfoCppName = unboxIsArray ? "System_Array" : null
                     });
                 }
                 stack.Push(tmp);
@@ -1423,11 +1744,16 @@ public partial class IRBuilder
             case Code.Sizeof:
             {
                 var typeRef = (TypeReference)instr.Operand!;
-                var typeCpp = CppNameMapper.MangleTypeName(ResolveTypeRefOperand(typeRef));
+                // Use GetCppTypeName so primitives map to C++ types (int32_t, not System_Int32)
+                var resolvedName = ResolveTypeRefOperand(typeRef);
+                var typeCpp = CppNameMapper.GetCppTypeName(resolvedName);
+                if (typeCpp.EndsWith("*")) typeCpp = typeCpp.TrimEnd('*');
                 var tmp = $"__t{tempCounter++}";
                 block.Instructions.Add(new IRRawCpp
                 {
-                    Code = $"auto {tmp} = static_cast<int32_t>(sizeof({typeCpp}));"
+                    Code = $"auto {tmp} = static_cast<int32_t>(sizeof({typeCpp}));",
+                    ResultVar = tmp,
+                    ResultTypeCpp = "int32_t",
                 });
                 stack.Push(tmp);
                 break;
@@ -1456,7 +1782,9 @@ public partial class IRBuilder
                     var tmp = $"__t{tempCounter++}";
                     block.Instructions.Add(new IRRawCpp
                     {
-                        Code = $"auto {tmp} = {castExpr}({argStr});"
+                        Code = $"auto {tmp} = {castExpr}({argStr});",
+                        ResultVar = tmp,
+                        ResultTypeCpp = retType,
                     });
                     stack.Push(tmp);
                 }
@@ -1477,7 +1805,9 @@ public partial class IRBuilder
                 var tmp = $"__t{tempCounter++}";
                 block.Instructions.Add(new IRRawCpp
                 {
-                    Code = $"auto {tmp} = static_cast<void*>(CIL2CPP_STACKALLOC({size}));"
+                    Code = $"auto {tmp} = static_cast<void*>(CIL2CPP_STACKALLOC({size}));",
+                    ResultVar = tmp,
+                    ResultTypeCpp = "void*",
                 });
                 stack.Push(tmp);
                 break;
@@ -1524,7 +1854,9 @@ public partial class IRBuilder
 
         block.Instructions.Add(new IRRawCpp
         {
-            Code = $"auto {tmp} = {func}<{type}>(({type}){a}, ({type}){b});"
+            Code = $"auto {tmp} = {func}<{type}>(({type}){a}, ({type}){b});",
+            ResultVar = tmp,
+            ResultTypeCpp = type,
         });
         stack.Push(tmp);
     }

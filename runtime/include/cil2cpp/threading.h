@@ -62,6 +62,7 @@ Int32 decrement_i32(Int32* location);
 Int32 exchange_i32(Int32* location, Int32 value);
 Int32 compare_exchange_i32(Int32* location, Int32 value, Int32 comparand);
 Int32 add_i32(Int32* location, Int32 value);
+Int64 add_i64(Int64* location, Int64 value);
 
 Int64 increment_i64(Int64* location);
 Int64 decrement_i64(Int64* location);
@@ -84,6 +85,11 @@ struct ManagedThread : Object {
     Delegate* start_delegate;   // ThreadStart delegate
     Int32 managed_id;           // Managed thread ID
     Int32 state;                // 0=unstarted, 1=running, 2=stopped
+    void* f_executionContext;        // BCL: Thread._executionContext (ExecutionContext)
+    void* f_synchronizationContext;  // BCL: Thread._synchronizationContext (SynchronizationContext)
+    String* f_name;                  // BCL: Thread._name
+    void* f_startHelper;             // BCL: Thread._startHelper (StartHelper)
+    bool f_mayNeedResetForThreadPool; // BCL: Thread._mayNeedResetForThreadPool
 };
 
 namespace thread {
@@ -127,3 +133,6 @@ Int32 get_managed_id(ManagedThread* t);
 } // namespace thread
 
 } // namespace cil2cpp
+
+// Type alias for generated code
+using System_Threading_Thread = cil2cpp::ManagedThread;

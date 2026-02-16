@@ -12,6 +12,7 @@ public class AssemblyReader : IDisposable
     private readonly ModuleDefinition _mainModule;
 
     public string AssemblyName => _assembly.Name.Name;
+    public AssemblyDefinition Assembly => _assembly;
 
     /// <summary>Whether debug symbols were successfully loaded.</summary>
     public bool HasSymbols { get; }

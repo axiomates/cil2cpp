@@ -761,17 +761,6 @@ public class IRBuilderTests
     // ===== FeatureTest: BCL method mapping =====
 
     [Fact]
-    public void Build_FeatureTest_TestStringOps_HasStringCalls()
-    {
-        var module = BuildFeatureTest();
-        var instrs = GetMethodInstructions(module, "Program", "TestStringOps");
-        var calls = instrs.OfType<IRCall>().ToList();
-        Assert.Contains(calls, c => c.FunctionName.Contains("string_concat"));
-        Assert.Contains(calls, c => c.FunctionName.Contains("string_is_null_or_empty"));
-        Assert.Contains(calls, c => c.FunctionName.Contains("string_length"));
-    }
-
-    [Fact]
     public void Build_FeatureTest_TestObjectMethods_HasObjectCalls()
     {
         var module = BuildFeatureTest();
@@ -1205,14 +1194,6 @@ public class IRBuilderTests
     // ===== Rethrow instruction =====
 
     [Fact]
-    public void Build_FeatureTest_TestRethrow_HasRethrow()
-    {
-        var module = BuildFeatureTest();
-        var instrs = GetMethodInstructions(module, "Program", "TestRethrow");
-        Assert.Contains(instrs, i => i is IRRethrow);
-    }
-
-    [Fact]
     public void Build_FeatureTest_TestRethrow_HasNestedTryCatch()
     {
         var module = BuildFeatureTest();
@@ -1394,17 +1375,6 @@ public class IRBuilderTests
             var instrs = GetMethodInstructions(module, "Program", "TestStaticFields");
             Assert.Contains(instrs, i => i is IRStaticCtorGuard);
         }
-    }
-
-    // ===== Branching opcodes: unconditional branch =====
-
-    [Fact]
-    public void Build_FeatureTest_TestRethrow_HasUnconditionalBranch()
-    {
-        var module = BuildFeatureTest();
-        // Exception handling leave instructions produce unconditional branches
-        var instrs = GetMethodInstructions(module, "Program", "TestRethrow");
-        Assert.Contains(instrs, i => i is IRBranch);
     }
 
     // ===== FeatureTest: Array creation with RawCpp =====
@@ -2283,34 +2253,6 @@ public class IRBuilderTests
         Assert.Contains("value", fieldNames);
     }
 
-    [Fact]
-    public void Build_FeatureTest_Nullable_MethodsAreIntercepted()
-    {
-        var module = BuildFeatureTest();
-        // TestNullable method should contain HasValue inline code (not IRCall to BCL)
-        var testMethod = module.GetAllMethods().FirstOrDefault(m => m.Name == "TestNullable");
-        Assert.NotNull(testMethod);
-        var allInstructions = testMethod!.BasicBlocks.SelectMany(b => b.Instructions).ToList();
-        // Should contain inline field access, not unresolved BCL call
-        var rawCppInstructions = allInstructions.OfType<IRRawCpp>().ToList();
-        Assert.True(rawCppInstructions.Any(r => r.Code.Contains("f_hasValue")),
-            "Nullable.HasValue should be intercepted as inline field access");
-    }
-
-    [Fact]
-    public void Build_FeatureTest_Nullable_NoUnresolvedCalls()
-    {
-        var module = BuildFeatureTest();
-        var testMethod = module.GetAllMethods().FirstOrDefault(m => m.Name == "TestNullable");
-        Assert.NotNull(testMethod);
-        var allInstructions = testMethod!.BasicBlocks.SelectMany(b => b.Instructions).ToList();
-        // There should be no IRCall to Nullable methods (they should all be intercepted)
-        var calls = allInstructions.OfType<IRCall>()
-            .Where(c => c.FunctionName.Contains("Nullable"))
-            .ToList();
-        Assert.Empty(calls);
-    }
-
     // ===== ValueTuple =====
 
     [Fact]
@@ -2325,19 +2267,6 @@ public class IRBuilderTests
         var fieldNames = tuple.Fields.Select(f => f.Name).ToList();
         Assert.Contains("Item1", fieldNames);
         Assert.Contains("Item2", fieldNames);
-    }
-
-    [Fact]
-    public void Build_FeatureTest_ValueTuple_ConstructorIntercepted()
-    {
-        var module = BuildFeatureTest();
-        var testMethod = module.GetAllMethods().FirstOrDefault(m => m.Name == "TestValueTuple");
-        Assert.NotNull(testMethod);
-        var allInstructions = testMethod!.BasicBlocks.SelectMany(b => b.Instructions).ToList();
-        // Should contain inline field assignments for tuple construction
-        var rawCpp = allInstructions.OfType<IRRawCpp>().ToList();
-        Assert.True(rawCpp.Any(r => r.Code.Contains("f_Item1")),
-            "ValueTuple constructor should be intercepted with inline field assignments");
     }
 
     // ===== record =====
@@ -2469,38 +2398,6 @@ public class IRBuilderTests
     }
 
     [Fact]
-    public void Build_FeatureTest_Async_MoveNextNoUnresolvedBuilderCalls()
-    {
-        var module = BuildFeatureTest();
-        var stateMachine = module.Types.FirstOrDefault(t =>
-            t.Name.Contains("ComputeAsync") && t.Name.Contains("d__"));
-        Assert.NotNull(stateMachine);
-        var moveNext = stateMachine!.Methods.First(m => m.Name == "MoveNext");
-        var allInstructions = moveNext.BasicBlocks.SelectMany(b => b.Instructions).ToList();
-        // No unresolved calls to AsyncTaskMethodBuilder
-        var builderCalls = allInstructions.OfType<IRCall>()
-            .Where(c => c.FunctionName.Contains("AsyncTaskMethodBuilder"))
-            .ToList();
-        Assert.Empty(builderCalls);
-    }
-
-    [Fact]
-    public void Build_FeatureTest_Async_MoveNextNoUnresolvedAwaiterCalls()
-    {
-        var module = BuildFeatureTest();
-        var stateMachine = module.Types.FirstOrDefault(t =>
-            t.Name.Contains("ComputeAsync") && t.Name.Contains("d__"));
-        Assert.NotNull(stateMachine);
-        var moveNext = stateMachine!.Methods.First(m => m.Name == "MoveNext");
-        var allInstructions = moveNext.BasicBlocks.SelectMany(b => b.Instructions).ToList();
-        // No unresolved calls to TaskAwaiter
-        var awaiterCalls = allInstructions.OfType<IRCall>()
-            .Where(c => c.FunctionName.Contains("TaskAwaiter"))
-            .ToList();
-        Assert.Empty(awaiterCalls);
-    }
-
-    [Fact]
     public void Build_FeatureTest_Async_MoveNextCallsExist()
     {
         var module = BuildFeatureTest();
@@ -2512,37 +2409,6 @@ public class IRBuilderTests
         // Should have IRRawCpp instructions for intercepted builder/awaiter calls
         var rawCpp = allInstructions.OfType<IRRawCpp>().ToList();
         Assert.True(rawCpp.Count > 0, "MoveNext should have inline C++ from intercepted calls");
-    }
-
-    [Fact]
-    public void Build_FeatureTest_Async_TaskTMonomorphized()
-    {
-        var module = BuildFeatureTest();
-        // Task<int> should be monomorphized as a generic instance
-        // Match specifically Task`1 (not TaskAwaiter or AsyncTaskMethodBuilder)
-        var taskInt = module.Types.FirstOrDefault(t =>
-            t.IsGenericInstance
-            && t.ILFullName.StartsWith("System.Threading.Tasks.Task`1"));
-        Assert.NotNull(taskInt);
-        // Should have result field for the return value (MangleFieldName adds f_ prefix)
-        var fields = taskInt!.Fields.Select(f => f.Name).ToList();
-        Assert.Contains("result", fields);
-        Assert.Contains("status", fields);
-    }
-
-    [Fact]
-    public void Build_FeatureTest_Async_BuilderSetResultIntercepted()
-    {
-        var module = BuildFeatureTest();
-        var stateMachine = module.Types.FirstOrDefault(t =>
-            t.Name.Contains("ComputeAsync") && t.Name.Contains("d__"));
-        Assert.NotNull(stateMachine);
-        var moveNext = stateMachine!.Methods.First(m => m.Name == "MoveNext");
-        var rawCpp = moveNext.BasicBlocks.SelectMany(b => b.Instructions)
-            .OfType<IRRawCpp>().Select(r => r.Code).ToList();
-        var allCode = string.Join("\n", rawCpp);
-        // SetResult should set f_result on the task
-        Assert.Contains("f_status", allCode);
     }
 
     // ===== unbox.any reference type → castclass =====
@@ -2604,21 +2470,6 @@ public class IRBuilderTests
     }
 
     // ===== ValueTuple.Equals / GetHashCode / ToString =====
-
-    [Fact]
-    public void Build_FeatureTest_ValueTupleEquals_FieldComparison()
-    {
-        var module = BuildFeatureTest();
-        var testMethod = module.GetAllMethods().FirstOrDefault(m => m.Name == "TestValueTupleEquals");
-        Assert.NotNull(testMethod);
-        var allInstructions = testMethod!.BasicBlocks.SelectMany(b => b.Instructions).ToList();
-        var rawCpp = allInstructions.OfType<IRRawCpp>().Select(r => r.Code).ToList();
-        var allCode = string.Join("\n", rawCpp);
-        // Equals should compare fields, not return hardcoded false
-        Assert.DoesNotContain("/* ValueTuple.Equals stub */", allCode);
-        Assert.Contains("f_Item1", allCode);
-        Assert.Contains("f_Item2", allCode);
-    }
 
     [Fact]
     public void Build_FeatureTest_ValueTupleGetHashCode_UsesHashCombining()
@@ -3199,31 +3050,6 @@ public class IRBuilderTests
     // ===== Index / Range =====
 
     [Fact]
-    public void Build_FeatureTest_SystemIndex_SyntheticType()
-    {
-        var module = BuildFeatureTest();
-        var indexType = module.FindType("System.Index");
-        Assert.NotNull(indexType);
-        Assert.True(indexType!.IsValueType);
-        Assert.Equal("System_Index", indexType.CppName);
-        Assert.Single(indexType.Fields); // _value
-        Assert.Equal("f__value", indexType.Fields[0].CppName);
-    }
-
-    [Fact]
-    public void Build_FeatureTest_SystemRange_SyntheticType()
-    {
-        var module = BuildFeatureTest();
-        var rangeType = module.FindType("System.Range");
-        Assert.NotNull(rangeType);
-        Assert.True(rangeType!.IsValueType);
-        Assert.Equal("System_Range", rangeType.CppName);
-        Assert.Equal(2, rangeType.Fields.Count); // _start, _end
-        Assert.Equal("f__start", rangeType.Fields[0].CppName);
-        Assert.Equal("f__end", rangeType.Fields[1].CppName);
-    }
-
-    [Fact]
     public void Build_FeatureTest_TestIndexFromEnd_NoWarnings()
     {
         var module = BuildFeatureTest();
@@ -3252,42 +3078,6 @@ public class IRBuilderTests
     }
 
     [Fact]
-    public void Build_FeatureTest_TestStringSlice_HasSubstring()
-    {
-        var module = BuildFeatureTest();
-        var method = module.Types.First(t => t.CppName == "Program")
-            .Methods.First(m => m.Name == "TestStringSlice");
-        var calls = method.BasicBlocks
-            .SelectMany(b => b.Instructions)
-            .OfType<IRCall>()
-            .Select(c => c.FunctionName)
-            .ToList();
-        // s[1..4] compiles to String.Substring → cil2cpp::string_substring
-        Assert.Contains(calls, c => c.Contains("string_substring"));
-    }
-
-    [Fact]
-    public void Build_FeatureTest_TestIndexProperties_HasIndexAccess()
-    {
-        var module = BuildFeatureTest();
-        var method = module.Types.First(t => t.CppName == "Program")
-            .Methods.First(m => m.Name == "TestIndexProperties");
-        var rawCpps = method.BasicBlocks
-            .SelectMany(b => b.Instructions)
-            .OfType<IRRawCpp>()
-            .Select(r => r.Code)
-            .ToList();
-        // Index constructor sets f__value
-        Assert.Contains(rawCpps, c => c.Contains("f__value"));
-        // No warnings
-        var comments = method.BasicBlocks
-            .SelectMany(b => b.Instructions)
-            .OfType<IRComment>()
-            .Select(c => c.Text);
-        Assert.DoesNotContain(comments, c => c.Contains("WARNING"));
-    }
-
-    [Fact]
     public void Build_FeatureTest_TestRangeGetOffsetAndLength_NoWarnings()
     {
         var module = BuildFeatureTest();
@@ -3300,56 +3090,7 @@ public class IRBuilderTests
         Assert.DoesNotContain(comments, c => c.Contains("WARNING"));
     }
 
-    [Fact]
-    public void Build_FeatureTest_IndexRangeHelper_GetFromEnd_HasIndexGetOffset()
-    {
-        var module = BuildFeatureTest();
-        var method = module.Types.First(t => t.CppName == "IndexRangeHelper")
-            .Methods.First(m => m.Name == "GetFromEnd");
-        var rawCpps = method.BasicBlocks
-            .SelectMany(b => b.Instructions)
-            .OfType<IRRawCpp>()
-            .Select(r => r.Code)
-            .ToList();
-        // Index.ctor sets f__value with ternary (fromEnd ? ~value : value)
-        Assert.Contains(rawCpps, c => c.Contains("f__value") && c.Contains("~"));
-        // GetOffset computes offset based on f__value < 0
-        Assert.Contains(rawCpps, c => c.Contains("f__value < 0"));
-    }
-
-    [Fact]
-    public void Build_FeatureTest_IndexRangeHelper_SliceLength_HasGetOffsetAndLength()
-    {
-        var module = BuildFeatureTest();
-        var method = module.Types.First(t => t.CppName == "IndexRangeHelper")
-            .Methods.First(m => m.Name == "SliceLength");
-        var rawCpps = method.BasicBlocks
-            .SelectMany(b => b.Instructions)
-            .OfType<IRRawCpp>()
-            .Select(r => r.Code)
-            .ToList();
-        // GetOffsetAndLength accesses f__start and f__end of Range
-        Assert.Contains(rawCpps, c => c.Contains("f__start"));
-        Assert.Contains(rawCpps, c => c.Contains("f__end"));
-    }
-
     // ===== Threading Tests =====
-
-    [Fact]
-    public void Build_FeatureTest_TestLock_HasMonitorEnterExit()
-    {
-        var module = BuildFeatureTest();
-        var method = module.Types.First(t => t.Name == "Program")
-            .Methods.First(m => m.Name == "TestLock");
-        var calls = method.BasicBlocks
-            .SelectMany(b => b.Instructions)
-            .OfType<IRCall>()
-            .Select(c => c.FunctionName)
-            .ToList();
-        // lock statement generates Monitor.ReliableEnter + Monitor.Exit
-        Assert.Contains(calls, c => c.Contains("Monitor_ReliableEnter") || c.Contains("Monitor_Enter"));
-        Assert.Contains(calls, c => c.Contains("Monitor_Exit"));
-    }
 
     [Fact]
     public void Build_FeatureTest_TestLock_NoWarnings()
@@ -3365,23 +3106,6 @@ public class IRBuilderTests
             .Where(c => c.Text.Contains("WARNING"))
             .ToList();
         Assert.Empty(warnings);
-    }
-
-    [Fact]
-    public void Build_FeatureTest_TestThread_HasThreadCreate()
-    {
-        var module = BuildFeatureTest();
-        var method = module.Types.First(t => t.Name == "Program")
-            .Methods.First(m => m.Name == "TestThread");
-        var rawCpps = method.BasicBlocks
-            .SelectMany(b => b.Instructions)
-            .OfType<IRRawCpp>()
-            .Select(r => r.Code)
-            .ToList();
-        // Thread interception should produce thread::create and thread::start
-        Assert.Contains(rawCpps, c => c.Contains("thread::create"));
-        Assert.Contains(rawCpps, c => c.Contains("thread::start"));
-        Assert.Contains(rawCpps, c => c.Contains("thread::join"));
     }
 
     [Fact]
@@ -3417,21 +3141,6 @@ public class IRBuilderTests
     }
 
     [Fact]
-    public void Build_FeatureTest_TestThreadSleep_HasSleep()
-    {
-        var module = BuildFeatureTest();
-        var method = module.Types.First(t => t.Name == "Program")
-            .Methods.First(m => m.Name == "TestThreadSleep");
-        var rawCpps = method.BasicBlocks
-            .SelectMany(b => b.Instructions)
-            .OfType<IRRawCpp>()
-            .Select(r => r.Code)
-            .ToList();
-        // Thread.Sleep → thread::sleep
-        Assert.Contains(rawCpps, c => c.Contains("thread::sleep"));
-    }
-
-    [Fact]
     public void Build_FeatureTest_TestMonitorWaitPulse_HasMonitorWaitPulse()
     {
         var module = BuildFeatureTest();
@@ -3456,46 +3165,7 @@ public class IRBuilderTests
         Assert.Contains(allCalls, c => c.Contains("Monitor_Pulse"));
     }
 
-    [Fact]
-    public void Build_FeatureTest_ThreadSyntheticType_Exists()
-    {
-        var module = BuildFeatureTest();
-        var threadType = module.Types.FirstOrDefault(t => t.ILFullName == "System.Threading.Thread");
-        Assert.NotNull(threadType);
-        Assert.True(threadType.IsRuntimeProvided);
-        Assert.Equal("System_Threading_Thread", threadType.CppName);
-    }
-
     // ===== Reflection tests =====
-
-    [Fact]
-    public void Build_FeatureTest_TestTypeof_HasGetTypeFromHandle()
-    {
-        var module = BuildFeatureTest();
-        var method = module.Types.First(t => t.Name == "Program")
-            .Methods.First(m => m.Name == "TestTypeof");
-        var rawCpps = method.BasicBlocks
-            .SelectMany(b => b.Instructions)
-            .OfType<IRRawCpp>()
-            .Select(r => r.Code)
-            .ToList();
-        Assert.Contains(rawCpps, c => c.Contains("type_get_type_from_handle"));
-    }
-
-    [Fact]
-    public void Build_FeatureTest_TestTypeof_HasNameAccessor()
-    {
-        var module = BuildFeatureTest();
-        var method = module.Types.First(t => t.Name == "Program")
-            .Methods.First(m => m.Name == "TestTypeof");
-        var rawCpps = method.BasicBlocks
-            .SelectMany(b => b.Instructions)
-            .OfType<IRRawCpp>()
-            .Select(r => r.Code)
-            .ToList();
-        // MemberInfo.get_Name on a Type dispatches through memberinfo_get_name
-        Assert.Contains(rawCpps, c => c.Contains("memberinfo_get_name") || c.Contains("type_get_name"));
-    }
 
     [Fact]
     public void Build_FeatureTest_TestGetType_HasGetTypeManagedCall()
@@ -3512,36 +3182,6 @@ public class IRBuilderTests
     }
 
     [Fact]
-    public void Build_FeatureTest_TestTypeEquality_HasEqualityOp()
-    {
-        var module = BuildFeatureTest();
-        var method = module.Types.First(t => t.Name == "Program")
-            .Methods.First(m => m.Name == "TestTypeEquality");
-        // Type equality via op_Equality should emit IRBinaryOp with ==
-        var binaryOps = method.BasicBlocks
-            .SelectMany(b => b.Instructions)
-            .OfType<IRBinaryOp>()
-            .Select(b => b.Op)
-            .ToList();
-        Assert.Contains("==", binaryOps);
-        Assert.Contains("!=", binaryOps);
-    }
-
-    [Fact]
-    public void Build_FeatureTest_TestTypeHierarchy_HasBaseTypeCall()
-    {
-        var module = BuildFeatureTest();
-        var method = module.Types.First(t => t.Name == "Program")
-            .Methods.First(m => m.Name == "TestTypeHierarchy");
-        var rawCpps = method.BasicBlocks
-            .SelectMany(b => b.Instructions)
-            .OfType<IRRawCpp>()
-            .Select(r => r.Code)
-            .ToList();
-        Assert.Contains(rawCpps, c => c.Contains("type_get_base_type"));
-    }
-
-    [Fact]
     public void Build_FeatureTest_TestTypeToString_HasVtableOrToString()
     {
         var module = BuildFeatureTest();
@@ -3555,23 +3195,6 @@ public class IRBuilderTests
             .SelectMany(b => b.Instructions)
             .ToList();
         Assert.NotEmpty(allInstr);
-    }
-
-    [Fact]
-    public void Build_FeatureTest_TypeofInt_HasGetTypeFromHandle()
-    {
-        // System.Type is in RuntimeProvidedTypes but only appears as an IRType
-        // when processing multi-assembly (BCL included). For single-assembly,
-        // verify that typeof(int) emits type_get_type_from_handle via interception.
-        var module = BuildFeatureTest();
-        var method = module.Types.First(t => t.Name == "Program")
-            .Methods.First(m => m.Name == "TestTypeof");
-        var rawCpps = method.BasicBlocks
-            .SelectMany(b => b.Instructions)
-            .OfType<IRRawCpp>()
-            .Select(r => r.Code)
-            .ToList();
-        Assert.Contains(rawCpps, c => c.Contains("type_get_type_from_handle"));
     }
 
     [Fact]
@@ -3675,16 +3298,6 @@ public class IRBuilderTests
     // ===== Multi-dimensional array tests =====
 
     [Fact]
-    public void Build_FeatureTest_MdArray_Create2D_HasMdarrayCreate()
-    {
-        var module = BuildFeatureTest();
-        var type = module.Types.First(t => t.Name == "MdArrayTest");
-        var method = type.Methods.First(m => m.Name == "Create2D");
-        var allCode = string.Join("\n", method.BasicBlocks.SelectMany(b => b.Instructions).Select(i => i.ToCpp()));
-        Assert.Contains("mdarray_create", allCode);
-    }
-
-    [Fact]
     public void Build_FeatureTest_MdArray_Create2D_HasRank2()
     {
         var module = BuildFeatureTest();
@@ -3696,26 +3309,6 @@ public class IRBuilderTests
     }
 
     [Fact]
-    public void Build_FeatureTest_MdArray_Get2D_HasElementPtr()
-    {
-        var module = BuildFeatureTest();
-        var type = module.Types.First(t => t.Name == "MdArrayTest");
-        var method = type.Methods.First(m => m.Name == "Get2D");
-        var allCode = string.Join("\n", method.BasicBlocks.SelectMany(b => b.Instructions).Select(i => i.ToCpp()));
-        Assert.Contains("mdarray_get_element_ptr", allCode);
-    }
-
-    [Fact]
-    public void Build_FeatureTest_MdArray_Set2D_HasElementPtr()
-    {
-        var module = BuildFeatureTest();
-        var type = module.Types.First(t => t.Name == "MdArrayTest");
-        var method = type.Methods.First(m => m.Name == "Set2D");
-        var allCode = string.Join("\n", method.BasicBlocks.SelectMany(b => b.Instructions).Select(i => i.ToCpp()));
-        Assert.Contains("mdarray_get_element_ptr", allCode);
-    }
-
-    [Fact]
     public void Build_FeatureTest_MdArray_GetTotalLength_HasArrayGetLength()
     {
         var module = BuildFeatureTest();
@@ -3724,16 +3317,6 @@ public class IRBuilderTests
         var allCode = string.Join("\n", method.BasicBlocks.SelectMany(b => b.Instructions).Select(i => i.ToCpp()));
         // Should call array_get_length (ICall) which handles both 1D and multi-dim
         Assert.Contains("array_get_length", allCode);
-    }
-
-    [Fact]
-    public void Build_FeatureTest_MdArray_Create2DString_HasMdarrayCreate()
-    {
-        var module = BuildFeatureTest();
-        var type = module.Types.First(t => t.Name == "MdArrayTest");
-        var method = type.Methods.First(m => m.Name == "Create2DString");
-        var allCode = string.Join("\n", method.BasicBlocks.SelectMany(b => b.Instructions).Select(i => i.ToCpp()));
-        Assert.Contains("mdarray_create", allCode);
     }
 
     // ===== P/Invoke tests =====
@@ -3890,43 +3473,6 @@ public class IRBuilderTests
     }
 
     [Fact]
-    public void Build_FeatureTest_SpanFromArray_HasInlineCode()
-    {
-        var module = BuildFeatureTest();
-        var type = module.Types.First(t => t.Name == "SpanTest");
-        var method = type.Methods.First(m => m.Name == "SpanFromArray");
-        var allInstr = method.BasicBlocks.SelectMany(b => b.Instructions).ToList();
-        // Should contain inline Span construction from array
-        var rawCpp = allInstr.OfType<IRRawCpp>().ToList();
-        Assert.True(rawCpp.Any(r => r.Code.Contains("f_reference")));
-        Assert.True(rawCpp.Any(r => r.Code.Contains("f_length")));
-    }
-
-    [Fact]
-    public void Build_FeatureTest_SpanGetItem_HasBoundsCheck()
-    {
-        var module = BuildFeatureTest();
-        var type = module.Types.First(t => t.Name == "SpanTest");
-        var method = type.Methods.First(m => m.Name == "SpanGetItem");
-        var allInstr = method.BasicBlocks.SelectMany(b => b.Instructions).ToList();
-        var rawCpp = allInstr.OfType<IRRawCpp>().ToList();
-        // Should contain bounds check
-        Assert.True(rawCpp.Any(r => r.Code.Contains("throw_index_out_of_range")));
-    }
-
-    [Fact]
-    public void Build_FeatureTest_SpanSlice_HasSliceCode()
-    {
-        var module = BuildFeatureTest();
-        var type = module.Types.First(t => t.Name == "SpanTest");
-        var method = type.Methods.First(m => m.Name == "SpanSlice");
-        var allInstr = method.BasicBlocks.SelectMany(b => b.Instructions).ToList();
-        var rawCpp = allInstr.OfType<IRRawCpp>().ToList();
-        // Should contain Slice inline code
-        Assert.True(rawCpp.Any(r => r.Code.Contains("f_reference")));
-    }
-
-    [Fact]
     public void Build_FeatureTest_ReadOnlySpan_SyntheticType_Created()
     {
         var module = BuildFeatureTest();
@@ -3978,58 +3524,6 @@ public class IRBuilderTests
     // ===== CancellationToken / TaskCompletionSource =====
 
     [Fact]
-    public void Build_FeatureTest_CancellationTokenSource_SyntheticType()
-    {
-        var module = BuildFeatureTest();
-        var ctsType = module.Types.FirstOrDefault(t =>
-            t.ILFullName == "System.Threading.CancellationTokenSource");
-        Assert.NotNull(ctsType);
-        Assert.False(ctsType!.IsValueType);
-        Assert.True(ctsType.IsRuntimeProvided);
-    }
-
-    [Fact]
-    public void Build_FeatureTest_CancellationToken_SyntheticType()
-    {
-        var module = BuildFeatureTest();
-        var ctType = module.Types.FirstOrDefault(t =>
-            t.ILFullName == "System.Threading.CancellationToken");
-        Assert.NotNull(ctType);
-        Assert.True(ctType!.IsValueType);
-        Assert.Contains(ctType.Fields, f => f.CppName == "f__source");
-    }
-
-    [Fact]
-    public void Build_FeatureTest_CancellationTokenSource_InterceptedCalls()
-    {
-        var module = BuildFeatureTest();
-        var programType = module.Types.First(t => t.Name == "Program");
-        var method = programType.Methods.FirstOrDefault(m => m.Name == "TestCancellationTokenSourceCreate");
-        Assert.NotNull(method);
-        var rawCpp = method!.BasicBlocks.SelectMany(b => b.Instructions)
-            .OfType<IRRawCpp>().ToList();
-        // Should have cts_create, cts_cancel, etc.
-        Assert.True(rawCpp.Any(r => r.Code.Contains("cts_create")),
-            "Should intercept CTS constructor with cts_create");
-        Assert.True(rawCpp.Any(r => r.Code.Contains("cts_cancel")),
-            "Should intercept CTS.Cancel with cts_cancel");
-    }
-
-    [Fact]
-    public void Build_FeatureTest_CancellationToken_InterceptedCalls()
-    {
-        var module = BuildFeatureTest();
-        var programType = module.Types.First(t => t.Name == "Program");
-        var method = programType.Methods.FirstOrDefault(m => m.Name == "TestCancellationTokenDefault");
-        Assert.NotNull(method);
-        var rawCpp = method!.BasicBlocks.SelectMany(b => b.Instructions)
-            .OfType<IRRawCpp>().ToList();
-        // Should have ct_get_none or ct_is_cancellation_requested
-        Assert.True(rawCpp.Any(r => r.Code.Contains("ct_")),
-            "Should intercept CancellationToken calls with ct_ runtime functions");
-    }
-
-    [Fact]
     public void Build_FeatureTest_TaskCompletionSource_Monomorphized()
     {
         var module = BuildFeatureTest();
@@ -4045,30 +3539,6 @@ public class IRBuilderTests
     // ── LINQ Interception Tests ───────────────────────────────
 
     [Fact]
-    public void Build_FeatureTest_LinqCount_Intercepted()
-    {
-        var module = BuildFeatureTest();
-        var method = module.Types.First(t => t.Name == "Program")
-            .Methods.First(m => m.Name == "LinqCount");
-        var rawCpp = method.BasicBlocks.SelectMany(b => b.Instructions)
-            .OfType<IRRawCpp>().ToList();
-        Assert.True(rawCpp.Any(r => r.Code.Contains("array_length")),
-            "LinqCount should use array_length");
-    }
-
-    [Fact]
-    public void Build_FeatureTest_LinqCountPredicate_Intercepted()
-    {
-        var module = BuildFeatureTest();
-        var method = module.Types.First(t => t.Name == "Program")
-            .Methods.First(m => m.Name == "LinqCountPredicate");
-        var rawCpp = method.BasicBlocks.SelectMany(b => b.Instructions)
-            .OfType<IRRawCpp>().ToList();
-        Assert.True(rawCpp.Any(r => r.Code.Contains("method_ptr")),
-            "LinqCountPredicate should call delegate via method_ptr");
-    }
-
-    [Fact]
     public void Build_FeatureTest_LinqSum_Intercepted()
     {
         var module = BuildFeatureTest();
@@ -4081,18 +3551,6 @@ public class IRBuilderTests
     }
 
     [Fact]
-    public void Build_FeatureTest_LinqContains_Intercepted()
-    {
-        var module = BuildFeatureTest();
-        var method = module.Types.First(t => t.Name == "Program")
-            .Methods.First(m => m.Name == "LinqContains");
-        var rawCpp = method.BasicBlocks.SelectMany(b => b.Instructions)
-            .OfType<IRRawCpp>().ToList();
-        Assert.True(rawCpp.Any(r => r.Code.Contains("__linq_f")),
-            "LinqContains should use __linq_f found variable");
-    }
-
-    [Fact]
     public void Build_FeatureTest_GenericDelegate_IsDelegate()
     {
         var module = BuildFeatureTest();
@@ -4101,56 +3559,6 @@ public class IRBuilderTests
         Assert.NotNull(funcType);
         Assert.True(funcType!.IsDelegate,
             "Generic Func<int,bool> should have IsDelegate = true");
-    }
-
-    // ── String Operations Tests ───────────────────────────────
-
-    [Fact]
-    public void Build_FeatureTest_StringFormat_Intercepted()
-    {
-        var module = BuildFeatureTest();
-        var method = module.Types.First(t => t.Name == "Program")
-            .Methods.First(m => m.Name == "StringFormat");
-        var rawCpp = method.BasicBlocks.SelectMany(b => b.Instructions)
-            .OfType<IRRawCpp>().ToList();
-        Assert.True(rawCpp.Any(r => r.Code.Contains("string_format")),
-            "StringFormat should call string_format");
-    }
-
-    [Fact]
-    public void Build_FeatureTest_StringIndexOf_Mapped()
-    {
-        var module = BuildFeatureTest();
-        var method = module.Types.First(t => t.Name == "Program")
-            .Methods.First(m => m.Name == "StringIndexOf");
-        var calls = method.BasicBlocks.SelectMany(b => b.Instructions)
-            .OfType<IRCall>().ToList();
-        Assert.True(calls.Any(c => c.FunctionName.Contains("string_index_of")),
-            "StringIndexOf should map to string_index_of");
-    }
-
-    [Fact]
-    public void Build_FeatureTest_StringToUpper_Mapped()
-    {
-        var module = BuildFeatureTest();
-        var method = module.Types.First(t => t.Name == "Program")
-            .Methods.First(m => m.Name == "StringToUpper");
-        var calls = method.BasicBlocks.SelectMany(b => b.Instructions)
-            .OfType<IRCall>().ToList();
-        Assert.True(calls.Any(c => c.FunctionName.Contains("string_to_upper")),
-            "StringToUpper should map to string_to_upper");
-    }
-
-    [Fact]
-    public void Build_FeatureTest_StringReplace_Mapped()
-    {
-        var module = BuildFeatureTest();
-        var method = module.Types.First(t => t.Name == "Program")
-            .Methods.First(m => m.Name == "StringReplace");
-        var calls = method.BasicBlocks.SelectMany(b => b.Instructions)
-            .OfType<IRCall>().ToList();
-        Assert.True(calls.Any(c => c.FunctionName.Contains("string_replace")),
-            "StringReplace should map to string_replace");
     }
 
     // ===== System.IO tests =====

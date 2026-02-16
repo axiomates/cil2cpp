@@ -20,10 +20,53 @@ public partial class IRBuilder
     }
 
     /// <summary>
-    /// Set of IL type full names that have C++ runtime implementations.
-    /// These types get IsRuntimeProvided = true and should not emit struct definitions.
+    /// Set of IL type full names whose struct definitions come from the C++ runtime.
+    /// These types get IsRuntimeProvided = true; their struct is defined in runtime headers,
+    /// but their method bodies still compile from IL (Unity IL2CPP model).
     /// </summary>
     internal static readonly HashSet<string> RuntimeProvidedTypes = new()
+    {
+        // Core types — struct layout defined in runtime headers (object.h, string.h, etc.)
+        "System.Object",
+        "System.ValueType",
+        "System.Enum",
+        "System.String",
+        "System.Array",
+        "System.Exception",
+        "System.Delegate",
+        "System.MulticastDelegate",
+        "System.Type",
+
+        // Async non-generic types — struct defined in task.h / async_enumerable.h
+        // NOTE: generic open types (Task`1, TaskAwaiter`1, etc.) are NOT here —
+        // their specializations get struct definitions generated from BCL IL.
+        "System.Threading.Tasks.Task",
+        "System.Runtime.CompilerServices.TaskAwaiter",
+        "System.Runtime.CompilerServices.AsyncTaskMethodBuilder",
+        "System.Runtime.CompilerServices.IAsyncStateMachine",
+        "System.Threading.Tasks.ValueTask",
+        "System.Runtime.CompilerServices.ValueTaskAwaiter",
+        "System.Runtime.CompilerServices.AsyncIteratorMethodBuilder",
+
+        // Reflection types — struct defined in memberinfo.h
+        "System.Reflection.MemberInfo",
+        "System.Reflection.MethodBase",
+        "System.Reflection.MethodInfo",
+        "System.Reflection.FieldInfo",
+        "System.Reflection.ParameterInfo",
+
+        // Threading types — struct defined in threading.h / cancellation.h
+        "System.Threading.Thread",
+        "System.Threading.CancellationToken",
+        "System.Threading.CancellationTokenSource",
+    };
+
+    /// <summary>
+    /// Core runtime types where instance methods should NOT be emitted from IL.
+    /// These types have their methods fully provided by the C++ runtime.
+    /// Non-core RuntimeProvidedTypes (Task, Thread, etc.) DO emit instance methods.
+    /// </summary>
+    internal static readonly HashSet<string> CoreRuntimeTypes = new()
     {
         "System.Object",
         "System.ValueType",
@@ -33,24 +76,127 @@ public partial class IRBuilder
         "System.Exception",
         "System.Delegate",
         "System.MulticastDelegate",
-        "System.Threading.Tasks.Task",
-        "System.Runtime.CompilerServices.TaskAwaiter",
-        "System.Runtime.CompilerServices.AsyncTaskMethodBuilder",
-        "System.Runtime.CompilerServices.IAsyncStateMachine",
-        "System.Threading.Thread",
-        "System.Threading.CancellationTokenSource",
         "System.Type",
-        "System.Span`1",
-        "System.ReadOnlySpan`1",
-        "System.Threading.Tasks.ValueTask",
-        "System.Runtime.CompilerServices.ValueTaskAwaiter",
-        "System.Runtime.CompilerServices.AsyncIteratorMethodBuilder",
-        "System.Reflection.MethodInfo",
+        // Reflection types: instance methods provided by runtime C++ (memberinfo.h)
+        "System.Reflection.MemberInfo",
         "System.Reflection.MethodBase",
+        "System.Reflection.MethodInfo",
         "System.Reflection.FieldInfo",
         "System.Reflection.ParameterInfo",
-        "System.Reflection.MemberInfo",
     };
+
+    /// <summary>
+    /// CLR runtime-internal types that cannot be compiled to C++.
+    /// Methods whose locals or parameters reference these types get stub bodies.
+    /// These depend on CLR internal memory layout (QCall bridge, RuntimeType, etc.).
+    /// </summary>
+    internal static readonly HashSet<string> ClrInternalTypeNames = new()
+    {
+        // QCall/P-Invoke bridge types
+        "System.Runtime.CompilerServices.QCallTypeHandle",
+        "System.Runtime.CompilerServices.QCallAssembly",
+        "System.Runtime.CompilerServices.ObjectHandleOnStack",
+        "System.Runtime.CompilerServices.MethodTable",
+        // CLR-internal runtime type system
+        "System.RuntimeType",
+        "System.RuntimeTypeHandle",
+        "System.RuntimeMethodHandle",
+        "System.RuntimeFieldHandle",
+        // CLR-internal reflection types
+        "System.Reflection.RuntimeMethodInfo",
+        "System.Reflection.RuntimeFieldInfo",
+        "System.Reflection.RuntimePropertyInfo",
+        "System.Reflection.RuntimeConstructorInfo",
+        "System.Reflection.MetadataImport",
+        // CLR-internal binder/dispatch
+        "System.DefaultBinder",
+        "System.DBNull",
+        "System.Signature",
+        // Deep BCL types with runtime struct layout mismatches
+        "System.AggregateException",        // Runtime struct lacks BCL internal fields
+        "System.Reflection.TypeInfo",       // Abstract base for RuntimeType — compiled methods can't cast properly
+        "System.Reflection.Assembly",       // GetExecutingAssembly uses CLR-internal StackCrawlMark
+        "System.Reflection.RuntimeAssembly", // CLR internal assembly type
+        "System.Threading.WaitHandle",      // Uses CLR-internal SafeWaitHandle patterns
+        "System.Runtime.InteropServices.PosixSignalRegistration", // Uses CLR-internal interop
+    };
+
+    /// <summary>
+    /// Check if a Cecil method's body references CLR-internal types that cannot be compiled.
+    /// When true, the method body should be replaced with a stub.
+    /// Detects: CLR-internal locals/params, BCL compiler-generated generic display classes.
+    /// </summary>
+    internal static bool HasClrInternalDependencies(Mono.Cecil.MethodDefinition cecilMethod)
+    {
+        // Check if declaring type is CLR-internal (all methods on these types are unstubable)
+        var declType = cecilMethod.DeclaringType;
+        if (ClrInternalTypeNames.Contains(declType.FullName))
+            return true;
+        // Nested types within CLR-internal types
+        if (declType.DeclaringType != null && ClrInternalTypeNames.Contains(declType.DeclaringType.FullName))
+            return true;
+
+        if (!cecilMethod.HasBody) return false;
+
+        // Check local variable types
+        foreach (var local in cecilMethod.Body.Variables)
+        {
+            var typeName = local.VariableType.FullName;
+            if (ClrInternalTypeNames.Contains(typeName))
+                return true;
+            if (local.VariableType is GenericInstanceType git
+                && ClrInternalTypeNames.Contains(git.ElementType.FullName))
+                return true;
+        }
+
+        // Check parameter types
+        foreach (var param in cecilMethod.Parameters)
+        {
+            if (ClrInternalTypeNames.Contains(param.ParameterType.FullName))
+                return true;
+        }
+
+        // Check for field/method references to BCL compiler-generated generic types
+        // (display classes like System.Enum.<>c__63<T>) whose specializations may not exist
+        foreach (var instr in cecilMethod.Body.Instructions)
+        {
+            TypeReference? refType = null;
+            if (instr.Operand is FieldReference fr) refType = fr.DeclaringType;
+            else if (instr.Operand is MethodReference mr) refType = mr.DeclaringType;
+
+            if (refType is GenericInstanceType refGit)
+            {
+                var elemType = refGit.ElementType;
+                // Compiler-generated nested types (<>c__, __DisplayClass) from BCL
+                if ((elemType.Name.StartsWith("<>") || elemType.Name.Contains("__DisplayClass"))
+                    && elemType.DeclaringType != null)
+                {
+                    var ns = elemType.DeclaringType.Namespace;
+                    if (!string.IsNullOrEmpty(ns) &&
+                        (ns.StartsWith("System") || ns.StartsWith("Internal") || ns.StartsWith("Microsoft")))
+                        return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Generate a minimal stub body for methods that cannot be compiled from IL.
+    /// Returns the appropriate default value for the method's return type.
+    /// </summary>
+    private static void GenerateStubBody(IRMethod irMethod)
+    {
+        var block = new IRBasicBlock { Id = 0 };
+        string? retVal = null;
+        if (irMethod.ReturnTypeCpp != "void")
+        {
+            retVal = irMethod.ReturnTypeCpp.EndsWith("*") ? "nullptr" : "{}";
+        }
+        block.Instructions.Add(new IRReturn { Value = retVal });
+        irMethod.BasicBlocks.Add(block);
+    }
 
     private readonly AssemblyReader _reader;
     private readonly IRModule _module;
@@ -132,22 +278,46 @@ public partial class IRBuilder
         return BuildInternal();
     }
 
+    /// <summary>
+    /// Scan all loaded assemblies and register value types (structs, enums) in CppNameMapper.
+    /// This ensures BCL value types used as locals/params in reachable methods are correctly
+    /// treated as value types even if the type itself isn't in _allTypes.
+    /// </summary>
+    private void PreRegisterAllValueTypes()
+    {
+        if (_assemblySet == null) return;
+        foreach (var (_, assembly) in _assemblySet.LoadedAssemblies)
+        {
+            foreach (var module in assembly.Modules)
+            {
+                foreach (var typeDef in module.Types)
+                    PreRegisterValueTypesRecursive(typeDef);
+            }
+        }
+    }
+
+    private static void PreRegisterValueTypesRecursive(Mono.Cecil.TypeDefinition typeDef)
+    {
+        if (typeDef.IsValueType && typeDef.FullName != "<Module>")
+        {
+            CppNameMapper.RegisterValueType(typeDef.FullName);
+            CppNameMapper.RegisterValueType(CppNameMapper.MangleTypeName(typeDef.FullName));
+        }
+        if (typeDef.HasNestedTypes)
+        {
+            foreach (var nested in typeDef.NestedTypes)
+                PreRegisterValueTypesRecursive(nested);
+        }
+    }
+
     private IRModule BuildInternal()
     {
         CppNameMapper.ClearValueTypes();
 
-        // Register async BCL value types (awaiter + builder are value types)
-        // Register both IL names and C++ mangled names for GetDefaultValue
-        CppNameMapper.RegisterValueType("System.Runtime.CompilerServices.TaskAwaiter");
-        CppNameMapper.RegisterValueType("System_Runtime_CompilerServices_TaskAwaiter");
-        CppNameMapper.RegisterValueType("System.Runtime.CompilerServices.AsyncTaskMethodBuilder");
-        CppNameMapper.RegisterValueType("System_Runtime_CompilerServices_AsyncTaskMethodBuilder");
-
-        // Register Index/Range BCL value types
-        CppNameMapper.RegisterValueType("System.Index");
-        CppNameMapper.RegisterValueType("System_Index");
-        CppNameMapper.RegisterValueType("System.Range");
-        CppNameMapper.RegisterValueType("System_Range");
+        // Pre-register value types from ALL loaded assemblies (not just reachable types).
+        // BCL enums/structs (e.g. System.Number.ParsingStatus) may be used as locals/params
+        // in reachable methods but not themselves marked reachable.
+        PreRegisterAllValueTypes();
 
         // Pass 0: Scan for generic instantiations in all method bodies
         ScanGenericInstantiations();
@@ -161,35 +331,14 @@ public partial class IRBuilder
             var irType = CreateTypeShell(typeDef);
 
             // Classify type origin and runtime-provided status
+            var assemblyName = typeDef.GetCecilType().Module.Assembly.Name.Name;
             if (_assemblySet != null)
-            {
-                var assemblyName = typeDef.GetCecilType().Module.Assembly.Name.Name;
                 irType.SourceKind = _assemblySet.ClassifyAssembly(assemblyName);
-                irType.IsRuntimeProvided = RuntimeProvidedTypes.Contains(typeDef.FullName);
-            }
+            irType.IsRuntimeProvided = RuntimeProvidedTypes.Contains(typeDef.FullName);
+            irType.IsPrimitiveType = ReachabilityAnalyzer.PrimitiveTypeNames.Contains(typeDef.FullName);
 
             _module.Types.Add(irType);
             _typeCache[typeDef.FullName] = irType;
-        }
-
-        // Pass 1.5a: Create synthetic types for BCL value types (Index, Range)
-        CreateIndexRangeSyntheticTypes();
-
-        // Pass 1.5b: Create synthetic type for System.Threading.Thread (reference type)
-        CreateThreadSyntheticType();
-
-        // Pass 1.5b2: Create synthetic types for CancellationTokenSource/CancellationToken
-        CreateCancellationSyntheticTypes();
-
-        // Pass 1.5b3: Create synthetic types for async enumerable (ValueTask, AsyncIteratorMethodBuilder)
-        CreateAsyncEnumerableSyntheticTypes();
-
-        // Pass 1.5c: Create proxy types for well-known BCL interfaces (IDisposable, IEnumerable, etc.)
-        // In multi-assembly mode, real BCL interfaces are loaded from assemblies — no proxies needed.
-        if (_assemblySet == null)
-        {
-            CreateBclInterfaceProxies();
-            ResolveBclProxyInterfaces();
         }
 
         // Pass 1.5: Create specialized types for each generic instantiation
@@ -202,6 +351,30 @@ public partial class IRBuilder
             if (_typeCache.TryGetValue(typeDef.FullName, out var irType))
             {
                 PopulateTypeDetails(typeDef, irType);
+            }
+        }
+
+        // Pass 2.3: Create BCL interface proxies for types that implement BCL interfaces
+        // In single-assembly mode, BCL interfaces (IDisposable, IComparable, etc.) have no
+        // type definitions — create minimal proxy IRTypes for interface dispatch.
+        CreateBclInterfaceProxies();
+        ResolveBclProxyInterfaces();
+
+        // Pass 2.4: Re-resolve interfaces that were missed in Pass 2 because BCL proxies
+        // didn't exist yet. Back-fill the Interfaces list for user types.
+        foreach (var typeDef in _allTypes)
+        {
+            if (typeDef.HasGenericParameters) continue;
+            if (_typeCache.TryGetValue(typeDef.FullName, out var irType))
+            {
+                foreach (var ifaceName in typeDef.InterfaceNames)
+                {
+                    if (_typeCache.TryGetValue(ifaceName, out var iface)
+                        && !irType.Interfaces.Contains(iface))
+                    {
+                        irType.Interfaces.Add(iface);
+                    }
+                }
             }
         }
 
@@ -266,6 +439,15 @@ public partial class IRBuilder
             }
         }
 
+        // Pass 3.2: Scan method signatures for external enum types (BCL enums not in the IR module)
+        // Must run after Pass 3 to have method signatures, then fixup the types.
+        ScanExternalEnumTypes();
+        FixupExternalEnumTypes();
+
+        // Pass 3.3: Disambiguate overloaded methods whose C++ names collide
+        // (e.g. different C# enum types collapse to same C++ type via using aliases)
+        DisambiguateOverloadedMethods();
+
         // Pass 3.5: Create specialized methods for each generic method instantiation
         CreateGenericMethodSpecializations();
 
@@ -292,8 +474,25 @@ public partial class IRBuilder
             if (irMethod.DeclaringType?.IsRecord == true && IsRecordSynthesizedMethod(irMethod.Name))
                 continue;
 
+            // Skip methods with CLR-internal dependencies (QCallTypeHandle, RuntimeType, etc.)
+            // These cannot be compiled to C++ — generate a minimal stub body instead
+            if (HasClrInternalDependencies(methodDef.GetCecilMethod()))
+            {
+                GenerateStubBody(irMethod);
+                continue;
+            }
+
             ConvertMethodBody(methodDef, irMethod);
         }
+
+        // Pass 6.5: Discover types referenced by compiled method bodies but not yet in the module
+        // This can happen when BCL methods reference types only as parameters/locals/fields
+        DiscoverMissingReferencedTypes();
+
+        // Pass 6.6: Re-scan for external enum types in generic specialization and newly
+        // compiled method bodies (their locals weren't available during Pass 3.2)
+        ScanExternalEnumTypes();
+        FixupExternalEnumTypes();
 
         // Pass 7: Synthesize record method bodies (replace compiler-generated bodies
         // that reference unsupported BCL types like StringBuilder, EqualityComparer<T>)
@@ -312,4 +511,16 @@ public partial class IRBuilder
     private static bool IsRecordSynthesizedMethod(string name) => name is
         "ToString" or "GetHashCode" or "Equals" or "PrintMembers"
         or "<Clone>$" or "op_Equality" or "op_Inequality" or "get_EqualityContract";
+
+    /// <summary>
+    /// Check if a type reference is System.Nullable`1 (any instantiation).
+    /// Used by boxing logic (ECMA-335 III.4.1).
+    /// </summary>
+    internal static bool IsNullableType(TypeReference typeRef)
+    {
+        var elementName = typeRef is GenericInstanceType git
+            ? git.ElementType.FullName
+            : typeRef.FullName;
+        return elementName == "System.Nullable`1";
+    }
 }

@@ -189,29 +189,11 @@ public class ReachabilityAnalyzer
     }
 
     /// <summary>
-    /// Whitelist of namespaces whose types can be compiled to C++.
-    /// Everything else is filtered as a BCL boundary type.
-    /// </summary>
-    private static readonly HashSet<string> AllowedNamespaces =
-    [
-        "System",
-        "System.Collections",
-        "System.Collections.Generic",
-        "System.Collections.ObjectModel",
-        "System.Collections.Concurrent",
-        "System.Threading",
-        "System.Threading.Tasks",
-        "System.Runtime.CompilerServices",
-        "System.Text",
-        "System.Linq",
-        "System.Reflection",
-    ];
-
-    /// <summary>
     /// Primitive types that map directly to C++ primitives.
-    /// These must never be compiled as BCL structs.
+    /// Their struct definitions are NOT emitted (they use C++ built-in types),
+    /// but their methods ARE compiled from BCL IL (CompareTo, Equals, etc.).
     /// </summary>
-    private static readonly HashSet<string> PrimitiveTypeNames = new()
+    internal static readonly HashSet<string> PrimitiveTypeNames = new()
     {
         "System.Void", "System.Boolean", "System.Byte", "System.SByte",
         "System.Int16", "System.UInt16", "System.Int32", "System.UInt32",
@@ -220,34 +202,33 @@ public class ReachabilityAnalyzer
     };
 
     /// <summary>
-    /// Filter out BCL types that can't be usefully compiled to C++.
-    /// Uses a whitelist approach — only BCL types in allowed namespaces pass through.
-    /// Non-BCL types (user assembly and third-party libraries) always pass.
+    /// Filter out BCL types that should not be compiled to C++.
+    /// Unity IL2CPP model: ALL BCL types with IL bodies compile to C++.
+    /// Primitive types pass through (their methods compile, but struct is skipped).
+    /// Only filter compiler internals and module-level types.
     /// </summary>
     private bool IsBclBoundaryType(TypeDefinition type)
     {
-        // Only filter types from BCL assemblies
+        // Non-BCL types always pass through
         var assemblyName = type.Module.Assembly.Name.Name;
         if (!IsBclAssembly(assemblyName))
             return false;
 
-        // Primitive types always map to C++ primitives — never compile as BCL structs
-        if (PrimitiveTypeNames.Contains(type.FullName))
+        // Primitive types pass through — methods compile from BCL IL,
+        // struct emission is skipped by the code generator (IsPrimitiveType flag)
+        // System.Void is the exception — no useful methods to compile
+        if (type.FullName == "System.Void")
             return true;
 
-        var ns = type.Namespace;
+        // Filter module-level types only
+        var fullName = type.FullName;
+        if (fullName == "<Module>")
+            return true;
+        // Note: <PrivateImplementationDetails> is NOT filtered — BCL code uses it for
+        // static array initialization data, and we need its statics in generated code.
 
-        // Nested types with empty namespace: check the full name
-        if (string.IsNullOrEmpty(ns))
-        {
-            var fullName = type.FullName;
-            // BCL internal nested types (Interop/*, compiler-generated <*)
-            if (fullName.StartsWith("Interop") || fullName.StartsWith("<"))
-                return true;
-            return true; // Conservatively filter unknown empty-namespace BCL types
-        }
-
-        return !AllowedNamespaces.Contains(ns);
+        // Allow all other BCL types through — they compile from IL
+        return false;
     }
 
     private static bool IsBclAssembly(string assemblyName)
