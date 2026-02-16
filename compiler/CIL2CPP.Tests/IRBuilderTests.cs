@@ -20,19 +20,19 @@ public class IRBuilderTests
     private IRModule BuildHelloWorld(BuildConfiguration? config = null)
     {
         if (config == null || !config.ReadDebugSymbols)
-            return _fixture.GetHelloWorldModule();
+            return _fixture.GetHelloWorldReleaseModule();
         return _fixture.GetHelloWorldDebugModule();
     }
 
     private IRModule BuildArrayTest(BuildConfiguration? config = null)
     {
-        return _fixture.GetArrayTestModule();
+        return _fixture.GetArrayTestReleaseModule();
     }
 
     private IRModule BuildFeatureTest(BuildConfiguration? config = null)
     {
         if (config == null || !config.ReadDebugSymbols)
-            return _fixture.GetFeatureTestModule();
+            return _fixture.GetFeatureTestReleaseModule();
         return _fixture.GetFeatureTestDebugModule();
     }
 

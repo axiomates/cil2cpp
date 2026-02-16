@@ -25,7 +25,7 @@ RUNTIME_DIR = REPO_ROOT / "runtime"
 CLI_PROJECT = COMPILER_DIR / "CIL2CPP.CLI"
 TEST_PROJECT = COMPILER_DIR / "CIL2CPP.Tests"
 RUNTIME_TESTS_DIR = RUNTIME_DIR / "tests"
-SAMPLES_DIR = COMPILER_DIR / "samples"
+SAMPLES_DIR = COMPILER_DIR / "testprojects"
 
 IS_WINDOWS = platform.system() == "Windows"
 DEFAULT_PREFIX = "C:/cil2cpp_test" if IS_WINDOWS else "/usr/local/cil2cpp"

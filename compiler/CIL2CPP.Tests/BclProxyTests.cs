@@ -19,7 +19,7 @@ public class BclProxyTests
     private IRModule BuildFeatureTest(BuildConfiguration? config = null)
     {
         if (config == null || !config.ReadDebugSymbols)
-            return _fixture.GetFeatureTestModule();
+            return _fixture.GetFeatureTestReleaseModule();
         return _fixture.GetFeatureTestDebugModule();
     }
 

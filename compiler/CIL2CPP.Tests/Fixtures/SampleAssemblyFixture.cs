@@ -20,21 +20,21 @@ public class SampleAssemblyFixture : IDisposable
     public string MathLibDllPath { get; }
     public string SolutionRoot { get; }
 
-    // Cached AssemblySet + ReachabilityResult per sample (lazy-initialized)
-    private AssemblySet? _helloWorldSet;
-    private ReachabilityResult? _helloWorldReach;
-    private AssemblySet? _arrayTestSet;
-    private ReachabilityResult? _arrayTestReach;
-    private AssemblySet? _featureTestSet;
-    private ReachabilityResult? _featureTestReach;
+    // Cached AssemblySet + ReachabilityResult per sample — Release config (lazy-initialized)
+    private AssemblySet? _helloWorldReleaseSet;
+    private ReachabilityResult? _helloWorldReleaseReach;
+    private AssemblySet? _arrayTestReleaseSet;
+    private ReachabilityResult? _arrayTestReleaseReach;
+    private AssemblySet? _featureTestReleaseSet;
+    private ReachabilityResult? _featureTestReleaseReach;
 
-    // Cached IRModule per sample — Release (default config, lazy-initialized)
-    private IRModule? _helloWorldModule;
-    private AssemblyReader? _helloWorldReader;
-    private IRModule? _arrayTestModule;
-    private AssemblyReader? _arrayTestReader;
-    private IRModule? _featureTestModule;
-    private AssemblyReader? _featureTestReader;
+    // Cached IRModule per sample — Release config (lazy-initialized)
+    private IRModule? _helloWorldReleaseModule;
+    private AssemblyReader? _helloWorldReleaseReader;
+    private IRModule? _arrayTestReleaseModule;
+    private AssemblyReader? _arrayTestReleaseReader;
+    private IRModule? _featureTestReleaseModule;
+    private AssemblyReader? _featureTestReleaseReader;
 
     // Cached IRModule per sample — Debug config (lazy-initialized)
     private AssemblySet? _helloWorldDebugSet;
@@ -50,10 +50,10 @@ public class SampleAssemblyFixture : IDisposable
     {
         SolutionRoot = FindSolutionRoot();
 
-        var helloWorldProj = Path.Combine(SolutionRoot, "compiler", "samples", "HelloWorld", "HelloWorld.csproj");
-        var arrayTestProj = Path.Combine(SolutionRoot, "compiler", "samples", "ArrayTest", "ArrayTest.csproj");
-        var featureTestProj = Path.Combine(SolutionRoot, "compiler", "samples", "FeatureTest", "FeatureTest.csproj");
-        var multiAssemblyTestProj = Path.Combine(SolutionRoot, "compiler", "samples", "MultiAssemblyTest", "MultiAssemblyTest.csproj");
+        var helloWorldProj = Path.Combine(SolutionRoot, "compiler", "testprojects", "HelloWorld", "HelloWorld.csproj");
+        var arrayTestProj = Path.Combine(SolutionRoot, "compiler", "testprojects", "ArrayTest", "ArrayTest.csproj");
+        var featureTestProj = Path.Combine(SolutionRoot, "compiler", "testprojects", "FeatureTest", "FeatureTest.csproj");
+        var multiAssemblyTestProj = Path.Combine(SolutionRoot, "compiler", "testprojects", "MultiAssemblyTest", "MultiAssemblyTest.csproj");
 
         EnsureBuilt(helloWorldProj);
         EnsureBuilt(arrayTestProj);
@@ -61,15 +61,15 @@ public class SampleAssemblyFixture : IDisposable
         EnsureBuilt(multiAssemblyTestProj); // Also builds MathLib as ProjectReference
 
         HelloWorldDllPath = Path.Combine(SolutionRoot,
-            "compiler", "samples", "HelloWorld", "bin", "Debug", "net8.0", "HelloWorld.dll");
+            "compiler", "testprojects", "HelloWorld", "bin", "Debug", "net8.0", "HelloWorld.dll");
         ArrayTestDllPath = Path.Combine(SolutionRoot,
-            "compiler", "samples", "ArrayTest", "bin", "Debug", "net8.0", "ArrayTest.dll");
+            "compiler", "testprojects", "ArrayTest", "bin", "Debug", "net8.0", "ArrayTest.dll");
         FeatureTestDllPath = Path.Combine(SolutionRoot,
-            "compiler", "samples", "FeatureTest", "bin", "Debug", "net8.0", "FeatureTest.dll");
+            "compiler", "testprojects", "FeatureTest", "bin", "Debug", "net8.0", "FeatureTest.dll");
         MultiAssemblyTestDllPath = Path.Combine(SolutionRoot,
-            "compiler", "samples", "MultiAssemblyTest", "bin", "Debug", "net8.0", "MultiAssemblyTest.dll");
+            "compiler", "testprojects", "MultiAssemblyTest", "bin", "Debug", "net8.0", "MultiAssemblyTest.dll");
         MathLibDllPath = Path.Combine(SolutionRoot,
-            "compiler", "samples", "MultiAssemblyTest", "bin", "Debug", "net8.0", "MathLib.dll");
+            "compiler", "testprojects", "MultiAssemblyTest", "bin", "Debug", "net8.0", "MathLib.dll");
 
         if (!File.Exists(HelloWorldDllPath))
             throw new InvalidOperationException($"HelloWorld.dll not found at {HelloWorldDllPath}");
@@ -84,89 +84,89 @@ public class SampleAssemblyFixture : IDisposable
     }
 
     /// <summary>
-    /// Get cached AssemblySet + ReachabilityResult for HelloWorld sample.
+    /// Get cached AssemblySet + ReachabilityResult for HelloWorld sample (Release config).
     /// </summary>
-    public (AssemblySet Set, ReachabilityResult Reach) GetHelloWorldContext()
+    public (AssemblySet Set, ReachabilityResult Reach) GetHelloWorldReleaseContext()
     {
-        if (_helloWorldSet == null)
+        if (_helloWorldReleaseSet == null)
         {
-            _helloWorldSet = new AssemblySet(HelloWorldDllPath);
-            _helloWorldReach = new ReachabilityAnalyzer(_helloWorldSet).Analyze();
+            _helloWorldReleaseSet = new AssemblySet(HelloWorldDllPath);
+            _helloWorldReleaseReach = new ReachabilityAnalyzer(_helloWorldReleaseSet).Analyze();
         }
-        return (_helloWorldSet, _helloWorldReach!);
+        return (_helloWorldReleaseSet, _helloWorldReleaseReach!);
     }
 
     /// <summary>
-    /// Get cached AssemblySet + ReachabilityResult for ArrayTest sample.
+    /// Get cached AssemblySet + ReachabilityResult for ArrayTest sample (Release config).
     /// </summary>
-    public (AssemblySet Set, ReachabilityResult Reach) GetArrayTestContext()
+    public (AssemblySet Set, ReachabilityResult Reach) GetArrayTestReleaseContext()
     {
-        if (_arrayTestSet == null)
+        if (_arrayTestReleaseSet == null)
         {
-            _arrayTestSet = new AssemblySet(ArrayTestDllPath);
-            _arrayTestReach = new ReachabilityAnalyzer(_arrayTestSet).Analyze();
+            _arrayTestReleaseSet = new AssemblySet(ArrayTestDllPath);
+            _arrayTestReleaseReach = new ReachabilityAnalyzer(_arrayTestReleaseSet).Analyze();
         }
-        return (_arrayTestSet, _arrayTestReach!);
+        return (_arrayTestReleaseSet, _arrayTestReleaseReach!);
     }
 
     /// <summary>
-    /// Get cached AssemblySet + ReachabilityResult for FeatureTest sample.
+    /// Get cached AssemblySet + ReachabilityResult for FeatureTest sample (Release config).
     /// Uses library mode (all public types) since tests check individual IL patterns,
     /// not just entry-point-reachable code.
     /// </summary>
-    public (AssemblySet Set, ReachabilityResult Reach) GetFeatureTestContext()
+    public (AssemblySet Set, ReachabilityResult Reach) GetFeatureTestReleaseContext()
     {
-        if (_featureTestSet == null)
+        if (_featureTestReleaseSet == null)
         {
-            _featureTestSet = new AssemblySet(FeatureTestDllPath);
-            _featureTestReach = new ReachabilityAnalyzer(_featureTestSet).Analyze(forceLibraryMode: true);
+            _featureTestReleaseSet = new AssemblySet(FeatureTestDllPath);
+            _featureTestReleaseReach = new ReachabilityAnalyzer(_featureTestReleaseSet).Analyze(forceLibraryMode: true);
         }
-        return (_featureTestSet, _featureTestReach!);
+        return (_featureTestReleaseSet, _featureTestReleaseReach!);
     }
 
     /// <summary>
-    /// Get cached IRModule for HelloWorld (default config). Built once, shared by all tests.
+    /// Get cached IRModule for HelloWorld (Release config). Built once, shared by all tests.
     /// </summary>
-    public IRModule GetHelloWorldModule()
+    public IRModule GetHelloWorldReleaseModule()
     {
-        if (_helloWorldModule == null)
+        if (_helloWorldReleaseModule == null)
         {
-            var (set, reach) = GetHelloWorldContext();
-            _helloWorldReader = new AssemblyReader(HelloWorldDllPath);
-            var builder = new IRBuilder(_helloWorldReader);
-            _helloWorldModule = builder.Build(set, reach);
+            var (set, reach) = GetHelloWorldReleaseContext();
+            _helloWorldReleaseReader = new AssemblyReader(HelloWorldDllPath);
+            var builder = new IRBuilder(_helloWorldReleaseReader);
+            _helloWorldReleaseModule = builder.Build(set, reach);
         }
-        return _helloWorldModule;
+        return _helloWorldReleaseModule;
     }
 
     /// <summary>
-    /// Get cached IRModule for ArrayTest (default config). Built once, shared by all tests.
+    /// Get cached IRModule for ArrayTest (Release config). Built once, shared by all tests.
     /// </summary>
-    public IRModule GetArrayTestModule()
+    public IRModule GetArrayTestReleaseModule()
     {
-        if (_arrayTestModule == null)
+        if (_arrayTestReleaseModule == null)
         {
-            var (set, reach) = GetArrayTestContext();
-            _arrayTestReader = new AssemblyReader(ArrayTestDllPath);
-            var builder = new IRBuilder(_arrayTestReader);
-            _arrayTestModule = builder.Build(set, reach);
+            var (set, reach) = GetArrayTestReleaseContext();
+            _arrayTestReleaseReader = new AssemblyReader(ArrayTestDllPath);
+            var builder = new IRBuilder(_arrayTestReleaseReader);
+            _arrayTestReleaseModule = builder.Build(set, reach);
         }
-        return _arrayTestModule;
+        return _arrayTestReleaseModule;
     }
 
     /// <summary>
-    /// Get cached IRModule for FeatureTest (default config). Built once, shared by all tests.
+    /// Get cached IRModule for FeatureTest (Release config). Built once, shared by all tests.
     /// </summary>
-    public IRModule GetFeatureTestModule()
+    public IRModule GetFeatureTestReleaseModule()
     {
-        if (_featureTestModule == null)
+        if (_featureTestReleaseModule == null)
         {
-            var (set, reach) = GetFeatureTestContext();
-            _featureTestReader = new AssemblyReader(FeatureTestDllPath);
-            var builder = new IRBuilder(_featureTestReader);
-            _featureTestModule = builder.Build(set, reach);
+            var (set, reach) = GetFeatureTestReleaseContext();
+            _featureTestReleaseReader = new AssemblyReader(FeatureTestDllPath);
+            var builder = new IRBuilder(_featureTestReleaseReader);
+            _featureTestReleaseModule = builder.Build(set, reach);
         }
-        return _featureTestModule;
+        return _featureTestReleaseModule;
     }
 
     /// <summary>
@@ -241,14 +241,14 @@ public class SampleAssemblyFixture : IDisposable
 
     public void Dispose()
     {
-        _helloWorldReader?.Dispose();
-        _arrayTestReader?.Dispose();
-        _featureTestReader?.Dispose();
+        _helloWorldReleaseReader?.Dispose();
+        _arrayTestReleaseReader?.Dispose();
+        _featureTestReleaseReader?.Dispose();
         _helloWorldDebugReader?.Dispose();
         _featureTestDebugReader?.Dispose();
-        _helloWorldSet?.Dispose();
-        _arrayTestSet?.Dispose();
-        _featureTestSet?.Dispose();
+        _helloWorldReleaseSet?.Dispose();
+        _arrayTestReleaseSet?.Dispose();
+        _featureTestReleaseSet?.Dispose();
         _helloWorldDebugSet?.Dispose();
         _featureTestDebugSet?.Dispose();
     }
