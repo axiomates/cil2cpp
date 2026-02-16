@@ -1,13 +1,12 @@
 namespace CIL2CPP.Core.IR;
 
 /// <summary>
-/// Creates proxy IRTypes for well-known BCL interfaces that user types may implement.
-/// In single-assembly mode, BCL interfaces like IDisposable, IEnumerable, etc. have no
-/// type definitions in the user assembly. This proxy system creates minimal IRType shells
-/// with method stubs so that:
-///   - Pass 2 (PopulateTypeDetails) can resolve interface references from Cecil
-///   - Pass 5 (BuildInterfaceImpls) can build interface vtable mappings
-///   - EmitMethodCall can generate interface dispatch for callvirt on BCL interfaces
+/// Creates proxy IRTypes for well-known BCL interfaces whose closed generic forms
+/// may not appear in the reachability result. Open generic types (e.g. IEquatable`1)
+/// are loaded from BCL IL, but closed forms (e.g. IEquatable&lt;int&gt;) might not be
+/// in the type cache. This proxy creates minimal IRType shells for interface dispatch.
+/// For non-generic BCL interfaces, this is typically a no-op since they are loaded
+/// from BCL IL via reachability analysis.
 /// </summary>
 public partial class IRBuilder
 {

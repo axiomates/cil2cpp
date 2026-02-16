@@ -272,4 +272,11 @@ String* string_from_int64(Int64 value) {
     return string_create_utf8(buf);
 }
 
+String* string_fast_allocate(Int32 length) {
+    size_t size = sizeof(String) + (length * sizeof(Char));
+    String* str = static_cast<String*>(gc::alloc(size, &System::String_TypeInfo));
+    str->length = length;
+    return str;
+}
+
 } // namespace cil2cpp

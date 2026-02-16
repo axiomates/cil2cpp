@@ -18,9 +18,11 @@ public class BclProxyTests
 
     private IRModule BuildFeatureTest(BuildConfiguration? config = null)
     {
+        if (config == null) return _fixture.GetFeatureTestModule();
+        var (set, reach) = _fixture.GetFeatureTestContext();
         using var reader = new AssemblyReader(_fixture.FeatureTestDllPath, config);
         var builder = new IRBuilder(reader, config);
-        return builder.Build();
+        return builder.Build(set, reach);
     }
 
     // ===== Non-Generic BCL Interface Proxies =====
@@ -162,11 +164,11 @@ public class BclProxyTests
     // ===== Only Created When Referenced =====
 
     [Fact]
-    public void BclProxy_UnreferencedInterfacesNotCreated()
+    public void BclProxy_UnreferencedInterfaces_NotUsedByUserTypes()
     {
-        // ICloneable is not implemented by any type in FeatureTest
+        // ICloneable exists from BCL but no user type in FeatureTest implements it
         var module = BuildFeatureTest();
-        var cloneable = module.Types.FirstOrDefault(t => t.ILFullName == "System.ICloneable");
-        Assert.Null(cloneable);
+        var userTypes = module.Types.Where(t => t.SourceKind == AssemblyKind.User);
+        Assert.DoesNotContain(userTypes, t => t.Interfaces.Any(i => i.ILFullName == "System.ICloneable"));
     }
 }

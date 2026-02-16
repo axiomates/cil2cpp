@@ -46,9 +46,9 @@ public partial class IRBuilder
 
             foreach (var methodDef in typeDef.Methods)
             {
-                // In multi-assembly mode, only scan reachable methods to avoid
-                // pulling in unnecessary generic specializations from unreachable BCL methods
-                if (_reachability != null && !methodDef.HasGenericParameters
+                // Only scan reachable methods to avoid pulling in
+                // unnecessary generic specializations from unreachable BCL methods
+                if (!methodDef.HasGenericParameters
                     && !_reachability.IsReachable(methodDef.GetCecilMethod()))
                     continue;
 
@@ -333,9 +333,7 @@ public partial class IRBuilder
                 IsDelegate = isDelegate,
                 GenericArguments = info.TypeArguments,
                 IsRuntimeProvided = RuntimeProvidedTypes.Contains(info.OpenTypeName),
-                SourceKind = _assemblySet != null
-                    ? _assemblySet.ClassifyAssembly(openType.Module.Assembly.Name.Name)
-                    : AssemblyKind.User,
+                SourceKind = _assemblySet.ClassifyAssembly(openType.Module.Assembly.Name.Name),
             };
 
             // Propagate generic parameter variances from open type definition

@@ -19,23 +19,33 @@ public class IRBuilderTests
 
     private IRModule BuildHelloWorld(BuildConfiguration? config = null)
     {
+        if (config == null) return _fixture.GetHelloWorldModule();
+        // Non-default config (e.g. Debug): create fresh context with debug symbols
+        using var set = new AssemblySet(_fixture.HelloWorldDllPath, config);
+        var reach = new ReachabilityAnalyzer(set).Analyze();
         using var reader = new AssemblyReader(_fixture.HelloWorldDllPath, config);
         var builder = new IRBuilder(reader, config);
-        return builder.Build();
+        return builder.Build(set, reach);
     }
 
     private IRModule BuildArrayTest(BuildConfiguration? config = null)
     {
+        if (config == null) return _fixture.GetArrayTestModule();
+        using var set = new AssemblySet(_fixture.ArrayTestDllPath, config);
+        var reach = new ReachabilityAnalyzer(set).Analyze();
         using var reader = new AssemblyReader(_fixture.ArrayTestDllPath, config);
         var builder = new IRBuilder(reader, config);
-        return builder.Build();
+        return builder.Build(set, reach);
     }
 
     private IRModule BuildFeatureTest(BuildConfiguration? config = null)
     {
+        if (config == null) return _fixture.GetFeatureTestModule();
+        using var set = new AssemblySet(_fixture.FeatureTestDllPath, config);
+        var reach = new ReachabilityAnalyzer(set).Analyze(forceLibraryMode: true);
         using var reader = new AssemblyReader(_fixture.FeatureTestDllPath, config);
         var builder = new IRBuilder(reader, config);
-        return builder.Build();
+        return builder.Build(set, reach);
     }
 
     private List<IRInstruction> GetMethodInstructions(IRModule module, string typeName, string methodName)
@@ -1967,7 +1977,7 @@ public class IRBuilderTests
         Assert.True(stringFunc!.IsDelegate);
     }
 
-    // Multi-assembly Build path tests
+    // Build path with explicit AssemblySet + Reachability
     [Fact]
     public void Build_MultiAssembly_HelloWorld_ProducesModule()
     {
@@ -3451,7 +3461,7 @@ public class IRBuilderTests
         var module = BuildFeatureTest();
         // Span<int> should be created as a synthetic generic instance
         var spanInt = module.Types.FirstOrDefault(t => t.IsGenericInstance
-            && t.CppName.Contains("Span") && t.CppName.Contains("Int32"));
+            && t.ILFullName.StartsWith("System.Span`1<"));
         Assert.NotNull(spanInt);
         Assert.True(spanInt.IsValueType);
         Assert.True(spanInt.Fields.Any(f => f.CppName == "f_reference"));
@@ -3463,7 +3473,7 @@ public class IRBuilderTests
     {
         var module = BuildFeatureTest();
         var roSpan = module.Types.FirstOrDefault(t => t.IsGenericInstance
-            && t.CppName.Contains("ReadOnlySpan"));
+            && t.ILFullName.StartsWith("System.ReadOnlySpan`1<"));
         Assert.NotNull(roSpan);
         Assert.True(roSpan.IsValueType);
     }

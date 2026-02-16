@@ -111,8 +111,7 @@ public partial class CppCodeGenerator
         var runtimeDeclaredTypeInfos = new HashSet<string>();
         foreach (var (mangledName, _) in GetExceptionTypeInfoAliases())
             runtimeDeclaredTypeInfos.Add(mangledName);
-        // Skip System.Object/System.String from main loop only when they'll be declared
-        // in the primitive type section (multi-assembly mode has them in PrimitiveTypeInfos)
+        // Skip System.Object/System.String from main loop when declared in primitive type section
         foreach (var entry in _module.PrimitiveTypeInfos.Values)
         {
             if (GetRuntimeTypeInfoAlias(entry.ILFullName) != null)

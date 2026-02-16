@@ -620,8 +620,8 @@ def cmd_integration(args):
     runner.step("HelloWorld source contains string_literal calls", str_has_literal_calls)
     runner.step("HelloWorld source contains __init_string_literals", str_has_init_fn)
 
-    # ===== Phase 5: Multi-assembly codegen =====
-    header("Phase 5: Multi-assembly codegen (MathLib + MultiAssemblyTest)")
+    # ===== Phase 5: Cross-project codegen =====
+    header("Phase 5: Cross-project codegen (MathLib + MultiAssemblyTest)")
 
     multi_sample = SAMPLES_DIR / "MultiAssemblyTest" / "MultiAssemblyTest.csproj"
     multi_output = temp_dir / "multi_output"
@@ -655,7 +655,7 @@ def cmd_integration(args):
         if "Program_Main" not in main:
             raise RuntimeError("Entry point not found in main.cpp")
 
-    runner.step("Multi-assembly codegen", multi_codegen)
+    runner.step("Cross-project codegen", multi_codegen)
     runner.step("Generated files exist", multi_files_exist)
     runner.step("Header contains MathLib types", multi_header_has_mathlib_types)
     runner.step("Source has cross-assembly method calls", multi_source_has_cross_assembly_calls)

@@ -2,39 +2,6 @@
 
 将 .NET/C# 程序编译为原生 C++ 代码的 AOT 编译工具，类似于 Unity IL2CPP。
 
-## 工作原理
-
-```
-.csproj → dotnet build → .NET DLL (IL) → CIL2CPP → C++ 代码 + CMakeLists.txt → C++ 编译器 → 原生可执行文件
-```
-
-1. **IL 解析** — Mono.Cecil 读取 .NET 程序集中的 IL 字节码
-2. **IR 构建** — 将 IL 指令转换为中间表示（7 遍：类型外壳 → 字段/基类 → 方法壳 → VTable → 接口 → 方法体 → 合成方法）
-3. **C++ 生成** — 将 IR 翻译为 C++ 头文件、源文件、入口点和 CMakeLists.txt
-4. **原生编译** — 使用 C++ 编译器编译生成的代码，通过 `find_package` 链接 CIL2CPP 运行时
-
-## 项目结构
-
-```
-cil2cpp/
-├── compiler/                   # C# 编译器 (.NET 项目)
-│   ├── CIL2CPP.CLI/            #   命令行入口
-│   ├── CIL2CPP.Core/           #   核心编译逻辑
-│   │   ├── IL/                 #     IL 解析 (Mono.Cecil)
-│   │   ├── IR/                 #     中间表示 + 类型映射
-│   │   └── CodeGen/            #     C++ 代码生成
-│   ├── CIL2CPP.Tests/          #   编译器单元测试 (xUnit, 1117+ tests)
-│   └── samples/                #   示例 C# 程序
-├── runtime/                    # C++ 运行时库 (CMake 项目)
-│   ├── CMakeLists.txt
-│   ├── cmake/                  #   CMake 包配置模板
-│   ├── include/cil2cpp/        #   头文件
-│   ├── src/                    #   GC、类型系统、异常、BCL
-│   └── tests/                  #   运行时单元测试 (Google Test, 508+ tests)
-└── tools/
-    └── dev.py                  # 开发者 CLI (build/test/coverage/codegen/integration)
-```
-
 ## 前置要求
 
 - **.NET 8 SDK** — 用于构建编译器和编译输入的 C# 项目，`dotnet` 需在 PATH 中
@@ -58,7 +25,38 @@ cil2cpp/
   ```
 - Linux 用户：`lcov` + `lcov_cobertura`（替代 OpenCppCoverage）
 
----
+## 项目结构
+
+```
+cil2cpp/
+├── compiler/                   # C# 编译器 (.NET 项目)
+│   ├── CIL2CPP.CLI/            #   命令行入口
+│   ├── CIL2CPP.Core/           #   核心编译逻辑
+│   │   ├── IL/                 #     IL 解析 (Mono.Cecil)
+│   │   ├── IR/                 #     中间表示 + 类型映射
+│   │   └── CodeGen/            #     C++ 代码生成
+│   ├── CIL2CPP.Tests/          #   编译器单元测试 (xUnit, 1117+ tests)
+│   └── samples/                #   示例 C# 程序
+├── runtime/                    # C++ 运行时库 (CMake 项目)
+│   ├── CMakeLists.txt
+│   ├── cmake/                  #   CMake 包配置模板
+│   ├── include/cil2cpp/        #   头文件
+│   ├── src/                    #   GC、类型系统、异常、BCL
+│   └── tests/                  #   运行时单元测试 (Google Test, 508+ tests)
+└── tools/
+    └── dev.py                  # 开发者 CLI (build/test/coverage/codegen/integration)
+```
+
+## 工作原理
+
+```
+.csproj → dotnet build → .NET DLL (IL) → CIL2CPP → C++ 代码 + CMakeLists.txt → C++ 编译器 → 原生可执行文件
+```
+
+1. **IL 解析** — Mono.Cecil 读取 .NET 程序集中的 IL 字节码
+2. **IR 构建** — 将 IL 指令转换为中间表示（7 遍：类型外壳 → 字段/基类 → 方法壳 → VTable → 接口 → 方法体 → 合成方法）
+3. **C++ 生成** — 将 IR 翻译为 C++ 头文件、源文件、入口点和 CMakeLists.txt
+4. **原生编译** — 使用 C++ 编译器编译生成的代码，通过 `find_package` 链接 CIL2CPP 运行时
 
 ## 工作流程
 
@@ -465,13 +463,13 @@ void Program_Main() {
 | System.Object (ToString, GetHashCode, Equals, GetType) | ✅ | 运行时提供默认实现（vtable 基类）；`GetType()` 返回缓存的 `Type` 对象 |
 | System.String | ✅ | `FastAllocateString` / `get_Length` / `get_Chars` 为 icall（运行时布局），其余方法（Concat/Format/Join/Split 等）从 BCL IL 编译 |
 | Console.WriteLine / Write / ReadLine | ⚠️ | 临时 icall 映射到 C++ printf/fgets（BCL IL 依赖链极深，待完整编译） |
-| System.Math | ✅ | 从 BCL IL 编译；`[InternalCall]` 方法（Sqrt/Sin/Cos 等）通过 icall 映射到 `<cmath>` |
+| System.Math | ✅ | 从 BCL IL 编译。真正的 `[InternalCall]` 方法（如 Sqrt/Sin）由 BCL IL 内部处理 |
 | 多程序集 + 树摇 | ✅ | 默认启用：加载用户 + 第三方 + BCL 程序集，可达性分析树摇，BCL IL 全面编译 |
 | List\<T\> / Dictionary\<K,V\> | ✅ | 从 BCL IL 编译（不再使用 C++ 手动实现） |
 | LINQ | ✅ | Where/Select/OrderBy/Count/Any/All/First/Last 等，从 BCL IL 编译 |
 | yield return / IEnumerable | ✅ | C# 编译器生成迭代器状态机类，BCL 接口代理启用接口分派 |
 | IAsyncEnumerable\<T\> | ✅ | `await foreach` 支持，ValueTask/AsyncIteratorMethodBuilder 从 BCL IL 编译 |
-| System.IO (File, Directory, Path) | ✅ | 从 BCL IL 编译，底层 OS API 通过 icall 提供 |
+| System.IO (File, Directory, Path) | ⚠️ | BCL IL 编译，但深层依赖链可能被 stub 化 |
 | System.Net | ❌ | BCL IL 存在但依赖未实现的底层 icall |
 
 ### 委托与事件
@@ -584,6 +582,15 @@ ICallRegistry 查找（~50 个 icall 映射）
 生成 C++ 代码
 ```
 
+### 运行时提供的类型（RuntimeProvidedTypes）
+
+以下类型的**结构体定义**由 C++ 运行时提供（不从 BCL IL 编译结构体），但方法体从 IL 编译：
+- **核心类型**: Object, String, Array, Exception, Delegate, MulticastDelegate, Type, Enum
+- **异常类型（24 种）**: Exception, InvalidOperationException, ArgumentException 等 — 运行时定义结构体，`newobj` 拦截为运行时构造
+- **异步类型**: Task, TaskAwaiter, AsyncTaskMethodBuilder（非泛型基类）
+- **反射类型**: MemberInfo, MethodInfo, FieldInfo, ParameterInfo
+- **线程类型**: Thread, CancellationToken, CancellationTokenSource
+
 ### 编译器内置 intrinsics
 
 少数 JIT intrinsic 方法由编译器内联处理（不经过 ICallRegistry）：
@@ -591,6 +598,7 @@ ICallRegistry 查找（~50 个 icall 映射）
 - `INumber<T>.CreateTruncating` → C++ static_cast
 - `Array.Empty<T>()` → 静态空数组实例
 - `RuntimeHelpers.InitializeArray` → memcpy 静态数据
+- `TryGetIntrinsicOperator` → 泛型数值接口运算符（`IBitwiseOperators` 等）→ C++ 运算符
 
 ### HasClrInternalDependencies 过滤
 

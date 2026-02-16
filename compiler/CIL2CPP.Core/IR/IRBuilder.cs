@@ -213,11 +213,10 @@ public partial class IRBuilder
     private bool _inFilterRegion;
     private int _endfilterOffset = -1;
 
-    // Multi-assembly mode fields (null in single-assembly mode)
-    private AssemblySet? _assemblySet;
-    private ReachabilityResult? _reachability;
-    // Pre-computed list of types to process (set by both Build overloads)
-    private List<TypeDefinitionInfo>? _allTypes;
+    // Set by Build() before BuildInternal()
+    private AssemblySet _assemblySet = null!;
+    private ReachabilityResult _reachability = null!;
+    private List<TypeDefinitionInfo> _allTypes = null!;
 
     // Generic type instantiation tracking
     private readonly Dictionary<string, GenericInstantiationInfo> _genericInstantiations = new();
@@ -248,17 +247,8 @@ public partial class IRBuilder
     }
 
     /// <summary>
-    /// Build the complete IR module from a single assembly (existing behavior).
-    /// </summary>
-    public IRModule Build()
-    {
-        _allTypes = _reader.GetAllTypes().ToList();
-        return BuildInternal();
-    }
-
-    /// <summary>
-    /// Build the IR module from multiple assemblies, filtered by reachability.
-    /// Types are classified by SourceKind and RuntimeProvided status.
+    /// Build the IR module from assemblies, filtered by reachability analysis.
+    /// All BCL types with IL bodies compile to C++ (Unity IL2CPP model).
     /// </summary>
     public IRModule Build(AssemblySet assemblySet, ReachabilityResult reachability)
     {
@@ -285,7 +275,6 @@ public partial class IRBuilder
     /// </summary>
     private void PreRegisterAllValueTypes()
     {
-        if (_assemblySet == null) return;
         foreach (var (_, assembly) in _assemblySet.LoadedAssemblies)
         {
             foreach (var module in assembly.Modules)
@@ -324,7 +313,7 @@ public partial class IRBuilder
 
         // Pass 1: Create all type shells (no fields/methods yet)
         // Skip open generic types — they are templates, not concrete types
-        foreach (var typeDef in _allTypes!)
+        foreach (var typeDef in _allTypes)
         {
             if (typeDef.HasGenericParameters)
                 continue;
@@ -332,8 +321,7 @@ public partial class IRBuilder
 
             // Classify type origin and runtime-provided status
             var assemblyName = typeDef.GetCecilType().Module.Assembly.Name.Name;
-            if (_assemblySet != null)
-                irType.SourceKind = _assemblySet.ClassifyAssembly(assemblyName);
+            irType.SourceKind = _assemblySet.ClassifyAssembly(assemblyName);
             irType.IsRuntimeProvided = RuntimeProvidedTypes.Contains(typeDef.FullName);
             irType.IsPrimitiveType = ReachabilityAnalyzer.PrimitiveTypeNames.Contains(typeDef.FullName);
 
@@ -354,9 +342,9 @@ public partial class IRBuilder
             }
         }
 
-        // Pass 2.3: Create BCL interface proxies for types that implement BCL interfaces
-        // In single-assembly mode, BCL interfaces (IDisposable, IComparable, etc.) have no
-        // type definitions — create minimal proxy IRTypes for interface dispatch.
+        // Pass 2.3: Create BCL interface proxies for closed generic BCL interfaces
+        // Open generic types (e.g. IEquatable`1) are loaded from BCL IL, but closed forms
+        // (e.g. IEquatable<int>) may not be in the type cache. Create minimal proxy shells.
         CreateBclInterfaceProxies();
         ResolveBclProxyInterfaces();
 
@@ -404,15 +392,12 @@ public partial class IRBuilder
                     var irMethod = ConvertMethod(methodDef, irType);
                     irType.Methods.Add(irMethod);
 
-                    // Detect entry point (only from root assembly in multi-assembly mode)
-                    if (methodDef.Name == "Main" && methodDef.IsStatic)
+                    // Detect entry point (only from root assembly)
+                    if (methodDef.Name == "Main" && methodDef.IsStatic
+                        && typeDef.GetCecilType().Module.Assembly.Name.Name == _assemblySet.RootAssemblyName)
                     {
-                        if (_assemblySet == null ||
-                            typeDef.GetCecilType().Module.Assembly.Name.Name == _assemblySet.RootAssemblyName)
-                        {
-                            irMethod.IsEntryPoint = true;
-                            _module.EntryPoint = irMethod;
-                        }
+                        irMethod.IsEntryPoint = true;
+                        _module.EntryPoint = irMethod;
                     }
 
                     // Track finalizer
@@ -420,11 +405,10 @@ public partial class IRBuilder
                         irType.Finalizer = irMethod;
 
                     // Save for body conversion later (skip abstract and InternalCall)
-                    // In multi-assembly mode, only convert bodies for reachable methods
-                    if (methodDef.HasBody && !methodDef.IsAbstract && !irMethod.IsInternalCall)
+                    if (methodDef.HasBody && !methodDef.IsAbstract && !irMethod.IsInternalCall
+                        && _reachability.IsReachable(methodDef.GetCecilMethod()))
                     {
-                        if (_reachability == null || _reachability.IsReachable(methodDef.GetCecilMethod()))
-                            methodBodies.Add((methodDef, irMethod));
+                        methodBodies.Add((methodDef, irMethod));
                     }
                 }
 
@@ -452,9 +436,11 @@ public partial class IRBuilder
         CreateGenericMethodSpecializations();
 
         // Pass 4: Build vtables (needs method shells with IsVirtual)
+        // Use recursive helper to ensure base types are built before derived types
+        var vtableBuilt = new HashSet<IRType>();
         foreach (var irType in _module.Types)
         {
-            BuildVTable(irType);
+            BuildVTableRecursive(irType, vtableBuilt);
         }
 
         // Pass 5: Build interface implementation maps

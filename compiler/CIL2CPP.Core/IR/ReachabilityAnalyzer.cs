@@ -40,12 +40,18 @@ public class ReachabilityAnalyzer
 
     /// <summary>
     /// Run the reachability analysis and return the result.
+    /// When forceLibraryMode is true, seeds from all types/methods regardless of entry point.
     /// </summary>
-    public ReachabilityResult Analyze()
+    public ReachabilityResult Analyze(bool forceLibraryMode = false)
     {
         // Seed: find the entry point
         var entryPoint = _assemblySet.RootAssembly.EntryPoint;
-        if (entryPoint != null)
+        if (forceLibraryMode)
+        {
+            // Forced library mode: seed ALL types and methods (used by test fixture)
+            SeedAllTypes(_assemblySet.RootAssembly);
+        }
+        else if (entryPoint != null)
         {
             SeedMethod(entryPoint);
         }
@@ -77,6 +83,25 @@ public class ReachabilityAnalyzer
         // and mark overrides in all already-reachable types
         if (method.IsVirtual)
             DispatchVirtualSlot(method);
+    }
+
+    private void SeedAllTypes(AssemblyDefinition assembly)
+    {
+        foreach (var type in assembly.MainModule.Types)
+        {
+            if (type.Name == "<Module>") continue;
+
+            MarkTypeReachable(type);
+            foreach (var method in type.Methods)
+                SeedMethod(method);
+
+            foreach (var nested in type.NestedTypes)
+            {
+                MarkTypeReachable(nested);
+                foreach (var method in nested.Methods)
+                    SeedMethod(method);
+            }
+        }
     }
 
     private void SeedAllPublicTypes(AssemblyDefinition assembly)

@@ -1048,6 +1048,19 @@ public partial class IRBuilder
         }
     }
 
+    /// <summary>
+    /// Ensures VTable is built for this type, recursively building base type first.
+    /// Needed because base types (e.g. System.Object from BCL) may appear
+    /// after derived types in the module list.
+    /// </summary>
+    private void BuildVTableRecursive(IRType irType, HashSet<IRType> built)
+    {
+        if (!built.Add(irType)) return;
+        if (irType.BaseType != null)
+            BuildVTableRecursive(irType.BaseType, built);
+        BuildVTable(irType);
+    }
+
     private void BuildVTable(IRType irType)
     {
         // Start with base type's vtable

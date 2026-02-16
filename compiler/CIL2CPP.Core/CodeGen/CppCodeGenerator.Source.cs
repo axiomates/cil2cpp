@@ -135,7 +135,7 @@ public partial class CppCodeGenerator
         sb.AppendLine();
 
         // Ensure System_Object_TypeInfo and System_String_TypeInfo exist at global scope
-        // (In multi-assembly mode they're defined by PrimitiveTypeInfos; in single-assembly mode we alias)
+        // (normally defined by PrimitiveTypeInfos; alias as fallback if missing)
         var needsObjectAlias = !_module.PrimitiveTypeInfos.Values.Any(e => e.ILFullName == "System.Object");
         var needsStringAlias = !_module.PrimitiveTypeInfos.Values.Any(e => e.ILFullName == "System.String");
         if (needsObjectAlias || needsStringAlias)

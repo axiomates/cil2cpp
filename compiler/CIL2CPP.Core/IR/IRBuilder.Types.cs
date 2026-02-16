@@ -297,19 +297,12 @@ public partial class IRBuilder
     }
 
     /// <summary>
-    /// Get all loaded Cecil assemblies (from AssemblySet or single reader).
+    /// Get all loaded Cecil assemblies from the AssemblySet.
     /// </summary>
     private IEnumerable<Mono.Cecil.AssemblyDefinition> GetLoadedAssemblies()
     {
-        if (_assemblySet != null)
-        {
-            foreach (var asm in _assemblySet.LoadedAssemblies.Values)
-                yield return asm;
-        }
-        else
-        {
-            yield return _reader.Assembly;
-        }
+        foreach (var asm in _assemblySet.LoadedAssemblies.Values)
+            yield return asm;
     }
 
     /// <summary>
@@ -359,7 +352,7 @@ public partial class IRBuilder
             {
                 if (!method.HasBody) continue;
                 // Only scan methods whose bodies will be compiled
-                if (_reachability != null && !_reachability.IsReachable(method.GetCecilMethod()))
+                if (!_reachability.IsReachable(method.GetCecilMethod()))
                     continue;
                 var cecil = method.GetCecilMethod();
                 foreach (var instr in cecil.Body.Instructions)
@@ -386,8 +379,7 @@ public partial class IRBuilder
             var irType = CreateTypeShell(typeDefInfo);
 
             var assemblyName = cecilType.Module.Assembly.Name.Name;
-            if (_assemblySet != null)
-                irType.SourceKind = _assemblySet.ClassifyAssembly(assemblyName);
+            irType.SourceKind = _assemblySet.ClassifyAssembly(assemblyName);
             irType.IsRuntimeProvided = RuntimeProvidedTypes.Contains(cecilType.FullName);
 
             _module.Types.Add(irType);
