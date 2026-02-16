@@ -18,11 +18,9 @@ public class BclProxyTests
 
     private IRModule BuildFeatureTest(BuildConfiguration? config = null)
     {
-        if (config == null) return _fixture.GetFeatureTestModule();
-        var (set, reach) = _fixture.GetFeatureTestContext();
-        using var reader = new AssemblyReader(_fixture.FeatureTestDllPath, config);
-        var builder = new IRBuilder(reader, config);
-        return builder.Build(set, reach);
+        if (config == null || !config.ReadDebugSymbols)
+            return _fixture.GetFeatureTestModule();
+        return _fixture.GetFeatureTestDebugModule();
     }
 
     // ===== Non-Generic BCL Interface Proxies =====

@@ -28,13 +28,23 @@ public class SampleAssemblyFixture : IDisposable
     private AssemblySet? _featureTestSet;
     private ReachabilityResult? _featureTestReach;
 
-    // Cached IRModule per sample (default config only, lazy-initialized)
+    // Cached IRModule per sample — Release (default config, lazy-initialized)
     private IRModule? _helloWorldModule;
     private AssemblyReader? _helloWorldReader;
     private IRModule? _arrayTestModule;
     private AssemblyReader? _arrayTestReader;
     private IRModule? _featureTestModule;
     private AssemblyReader? _featureTestReader;
+
+    // Cached IRModule per sample — Debug config (lazy-initialized)
+    private AssemblySet? _helloWorldDebugSet;
+    private ReachabilityResult? _helloWorldDebugReach;
+    private IRModule? _helloWorldDebugModule;
+    private AssemblyReader? _helloWorldDebugReader;
+    private AssemblySet? _featureTestDebugSet;
+    private ReachabilityResult? _featureTestDebugReach;
+    private IRModule? _featureTestDebugModule;
+    private AssemblyReader? _featureTestDebugReader;
 
     public SampleAssemblyFixture()
     {
@@ -159,6 +169,38 @@ public class SampleAssemblyFixture : IDisposable
         return _featureTestModule;
     }
 
+    /// <summary>
+    /// Get cached IRModule for HelloWorld (Debug config with PDB). Built once, shared by Debug tests.
+    /// </summary>
+    public IRModule GetHelloWorldDebugModule()
+    {
+        if (_helloWorldDebugModule == null)
+        {
+            _helloWorldDebugSet = new AssemblySet(HelloWorldDllPath, BuildConfiguration.Debug);
+            _helloWorldDebugReach = new ReachabilityAnalyzer(_helloWorldDebugSet).Analyze();
+            _helloWorldDebugReader = new AssemblyReader(HelloWorldDllPath, BuildConfiguration.Debug);
+            var builder = new IRBuilder(_helloWorldDebugReader, BuildConfiguration.Debug);
+            _helloWorldDebugModule = builder.Build(_helloWorldDebugSet, _helloWorldDebugReach);
+        }
+        return _helloWorldDebugModule;
+    }
+
+    /// <summary>
+    /// Get cached IRModule for FeatureTest (Debug config with PDB). Built once, shared by Debug tests.
+    /// </summary>
+    public IRModule GetFeatureTestDebugModule()
+    {
+        if (_featureTestDebugModule == null)
+        {
+            _featureTestDebugSet = new AssemblySet(FeatureTestDllPath, BuildConfiguration.Debug);
+            _featureTestDebugReach = new ReachabilityAnalyzer(_featureTestDebugSet).Analyze(forceLibraryMode: true);
+            _featureTestDebugReader = new AssemblyReader(FeatureTestDllPath, BuildConfiguration.Debug);
+            var builder = new IRBuilder(_featureTestDebugReader, BuildConfiguration.Debug);
+            _featureTestDebugModule = builder.Build(_featureTestDebugSet, _featureTestDebugReach);
+        }
+        return _featureTestDebugModule;
+    }
+
     private static void EnsureBuilt(string csprojPath)
     {
         var dir = Path.GetDirectoryName(csprojPath)!;
@@ -202,9 +244,13 @@ public class SampleAssemblyFixture : IDisposable
         _helloWorldReader?.Dispose();
         _arrayTestReader?.Dispose();
         _featureTestReader?.Dispose();
+        _helloWorldDebugReader?.Dispose();
+        _featureTestDebugReader?.Dispose();
         _helloWorldSet?.Dispose();
         _arrayTestSet?.Dispose();
         _featureTestSet?.Dispose();
+        _helloWorldDebugSet?.Dispose();
+        _featureTestDebugSet?.Dispose();
     }
 }
 

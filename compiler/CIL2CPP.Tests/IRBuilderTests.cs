@@ -19,33 +19,21 @@ public class IRBuilderTests
 
     private IRModule BuildHelloWorld(BuildConfiguration? config = null)
     {
-        if (config == null) return _fixture.GetHelloWorldModule();
-        // Non-default config (e.g. Debug): create fresh context with debug symbols
-        using var set = new AssemblySet(_fixture.HelloWorldDllPath, config);
-        var reach = new ReachabilityAnalyzer(set).Analyze();
-        using var reader = new AssemblyReader(_fixture.HelloWorldDllPath, config);
-        var builder = new IRBuilder(reader, config);
-        return builder.Build(set, reach);
+        if (config == null || !config.ReadDebugSymbols)
+            return _fixture.GetHelloWorldModule();
+        return _fixture.GetHelloWorldDebugModule();
     }
 
     private IRModule BuildArrayTest(BuildConfiguration? config = null)
     {
-        if (config == null) return _fixture.GetArrayTestModule();
-        using var set = new AssemblySet(_fixture.ArrayTestDllPath, config);
-        var reach = new ReachabilityAnalyzer(set).Analyze();
-        using var reader = new AssemblyReader(_fixture.ArrayTestDllPath, config);
-        var builder = new IRBuilder(reader, config);
-        return builder.Build(set, reach);
+        return _fixture.GetArrayTestModule();
     }
 
     private IRModule BuildFeatureTest(BuildConfiguration? config = null)
     {
-        if (config == null) return _fixture.GetFeatureTestModule();
-        using var set = new AssemblySet(_fixture.FeatureTestDllPath, config);
-        var reach = new ReachabilityAnalyzer(set).Analyze(forceLibraryMode: true);
-        using var reader = new AssemblyReader(_fixture.FeatureTestDllPath, config);
-        var builder = new IRBuilder(reader, config);
-        return builder.Build(set, reach);
+        if (config == null || !config.ReadDebugSymbols)
+            return _fixture.GetFeatureTestModule();
+        return _fixture.GetFeatureTestDebugModule();
     }
 
     private List<IRInstruction> GetMethodInstructions(IRModule module, string typeName, string methodName)
@@ -1769,9 +1757,13 @@ public class IRBuilderTests
     public void Build_FeatureTest_UserValueType_Registered()
     {
         var module = BuildFeatureTest();
-        // After building, Point and Vector2 should be registered as value types
-        Assert.True(CppNameMapper.IsValueType("Point"), "Point should be registered as value type");
-        Assert.True(CppNameMapper.IsValueType("Vector2"), "Vector2 should be registered as value type");
+        // Point and Vector2 should be value types in the IR module
+        var point = module.FindType("Point");
+        var vector2 = module.FindType("Vector2");
+        Assert.NotNull(point);
+        Assert.NotNull(vector2);
+        Assert.True(point!.IsValueType, "Point should be a value type");
+        Assert.True(vector2!.IsValueType, "Vector2 should be a value type");
     }
 
     // ===== Phase 2: VTable seeded with Object methods =====
