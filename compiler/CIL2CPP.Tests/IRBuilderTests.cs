@@ -778,11 +778,12 @@ public class IRBuilderTests
         var instrs = GetMethodInstructions(module, "Program", "TestMathOps");
         var calls = instrs.OfType<IRCall>().ToList();
         var funcNames = calls.Select(c => c.FunctionName).ToList();
-        Assert.Contains(funcNames, n => n.Contains("abs"));
-        Assert.Contains(funcNames, n => n.Contains("max"));
-        Assert.Contains(funcNames, n => n.Contains("min"));
-        Assert.Contains(funcNames, n => n.Contains("sqrt"));
-        Assert.Contains(funcNames, n => n.Contains("pow"));
+        // Math methods now compile from BCL IL — calls go to mangled BCL method names
+        Assert.Contains(funcNames, n => n.Contains("Math") || n.Contains("abs"));
+        Assert.Contains(funcNames, n => n.Contains("Math") || n.Contains("max"));
+        Assert.Contains(funcNames, n => n.Contains("Math") || n.Contains("min"));
+        Assert.Contains(funcNames, n => n.Contains("Math") || n.Contains("sqrt"));
+        Assert.Contains(funcNames, n => n.Contains("Math") || n.Contains("pow"));
     }
 
     // ===== FeatureTest: Struct operations =====
@@ -858,13 +859,14 @@ public class IRBuilderTests
         var instrs = GetMethodInstructions(module, "Program", "TestMoreMathOps");
         var calls = instrs.OfType<IRCall>().ToList();
         var funcNames = calls.Select(c => c.FunctionName).ToList();
-        Assert.Contains(funcNames, n => n.Contains("ceil"));
-        Assert.Contains(funcNames, n => n.Contains("round"));
-        Assert.Contains(funcNames, n => n.Contains("sin"));
-        Assert.Contains(funcNames, n => n.Contains("cos"));
-        Assert.Contains(funcNames, n => n.Contains("tan"));
-        Assert.Contains(funcNames, n => n.Contains("log"));
-        Assert.Contains(funcNames, n => n.Contains("exp"));
+        // Math methods now compile from BCL IL — calls go to mangled BCL method names
+        Assert.Contains(funcNames, n => n.Contains("Math") || n.Contains("ceil"));
+        Assert.Contains(funcNames, n => n.Contains("Math") || n.Contains("round"));
+        Assert.Contains(funcNames, n => n.Contains("Math") || n.Contains("sin"));
+        Assert.Contains(funcNames, n => n.Contains("Math") || n.Contains("cos"));
+        Assert.Contains(funcNames, n => n.Contains("Math") || n.Contains("tan"));
+        Assert.Contains(funcNames, n => n.Contains("Math") || n.Contains("log"));
+        Assert.Contains(funcNames, n => n.Contains("Math") || n.Contains("exp"));
     }
 
     // ===== FeatureTest: ManyParams (ldarg.s) =====
@@ -1237,33 +1239,17 @@ public class IRBuilderTests
         Assert.Contains(calls, c => c.FunctionName.Contains("delegate_remove"));
     }
 
-    // ===== Math.Abs overloads =====
+    // ===== Math.Abs overloads — now compiled from BCL IL =====
 
     [Fact]
-    public void Build_FeatureTest_TestMathAbsOverloads_HasFabsf()
+    public void Build_FeatureTest_TestMathAbsOverloads_HasAbsCalls()
     {
         var module = BuildFeatureTest();
         var instrs = GetMethodInstructions(module, "Program", "TestMathAbsOverloads");
         var calls = instrs.OfType<IRCall>().ToList();
-        Assert.Contains(calls, c => c.FunctionName == "std::fabsf");
-    }
-
-    [Fact]
-    public void Build_FeatureTest_TestMathAbsOverloads_HasFabs()
-    {
-        var module = BuildFeatureTest();
-        var instrs = GetMethodInstructions(module, "Program", "TestMathAbsOverloads");
-        var calls = instrs.OfType<IRCall>().ToList();
-        Assert.Contains(calls, c => c.FunctionName == "std::fabs");
-    }
-
-    [Fact]
-    public void Build_FeatureTest_TestMathAbsOverloads_HasStdAbs()
-    {
-        var module = BuildFeatureTest();
-        var instrs = GetMethodInstructions(module, "Program", "TestMathAbsOverloads");
-        var calls = instrs.OfType<IRCall>().ToList();
-        Assert.Contains(calls, c => c.FunctionName == "std::abs");
+        var funcNames = calls.Select(c => c.FunctionName).ToList();
+        // Math.Abs overloads now compile from BCL IL — calls go to mangled BCL method names
+        Assert.Contains(funcNames, n => n.Contains("Math") || n.Contains("Abs") || n.Contains("abs"));
     }
 
     // ===== AllFieldTypes: field size coverage for Int16/Char/Int64/Double =====

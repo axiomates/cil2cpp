@@ -71,17 +71,8 @@ public static class ICallRegistry
         RegisterICall("System.Enum", "InternalBoxEnum", 2, "cil2cpp::icall::Enum_InternalBoxEnum");
         RegisterICall("System.Enum", "InternalGetCorElementType", 1, "cil2cpp::icall::Enum_InternalGetCorElementType");
 
-        // ===== System.Char (primitive classification) =====
-        RegisterICall("System.Char", "IsWhiteSpace", 1, "cil2cpp::icall::Char_IsWhiteSpace");
-        RegisterICall("System.Char", "IsAsciiDigit", 1, "cil2cpp::icall::Char_IsAsciiDigit");
-        RegisterICall("System.Char", "IsAscii", 1, "cil2cpp::icall::Char_IsAscii");
-        RegisterICall("System.Char", "IsLetter", 1, "cil2cpp::icall::Char_IsLetter");
-        RegisterICall("System.Char", "IsDigit", 1, "cil2cpp::icall::Char_IsDigit");
-        RegisterICall("System.Char", "IsUpper", 1, "cil2cpp::icall::Char_IsUpper");
-        RegisterICall("System.Char", "IsLower", 1, "cil2cpp::icall::Char_IsLower");
-
-        // ===== System.Attribute =====
-        RegisterICall("System.Attribute", ".ctor", 0, "System_Object__ctor");
+        // Char classification methods (IsWhiteSpace, IsDigit, etc.) — compile from BCL IL.
+        // Attribute..ctor — compiles from BCL IL (just calls Object..ctor).
 
         // ===== System.Threading.Monitor =====
         RegisterICall("System.Threading.Monitor", "Enter", 1, "cil2cpp::icall::Monitor_Enter");
@@ -139,14 +130,7 @@ public static class ICallRegistry
         // NOTE: ArgumentNullException.ThrowIfNull is NOT an icall — it compiles from IL.
         // It has a void* overload in BCL that would cause casting issues with the Object* icall.
 
-        // ===== System.ThrowHelper (BCL internal) =====
-        RegisterICall("System.ThrowHelper", "ThrowArgumentException", 1, "cil2cpp::icall::ThrowHelper_ThrowArgumentException");
-        RegisterICall("System.ThrowHelper", "ThrowInvalidOperationException_InvalidOperation_NoValue", 0,
-            "cil2cpp::throw_invalid_operation");
-        RegisterICall("System.ThrowHelper", "ThrowValueArgumentOutOfRange_NeedNonNegNumException", 0,
-            "cil2cpp::throw_argument_out_of_range");
-        RegisterICall("System.ThrowHelper", "ThrowArgumentOutOfRangeException", 0,
-            "cil2cpp::throw_argument_out_of_range");
+        // ThrowHelper methods — compile from BCL IL (create exceptions and throw).
 
         // ===== System.Runtime.CompilerServices.RuntimeHelpers =====
         RegisterICall("System.Runtime.CompilerServices.RuntimeHelpers", "InitializeArray", 2,
@@ -154,36 +138,9 @@ public static class ICallRegistry
         RegisterICall("System.Runtime.CompilerServices.RuntimeHelpers", "IsReferenceOrContainsReferences", 0,
             "cil2cpp::icall::RuntimeHelpers_IsReferenceOrContainsReferences");
 
-        // ===== System.Math (native math functions) =====
-        RegisterICallTyped("System.Math", "Abs", 1, "System.Single", "std::fabsf");
-        RegisterICallTyped("System.Math", "Abs", 1, "System.Double", "std::fabs");
-        RegisterICall("System.Math", "Abs", 1, "std::abs");
-        RegisterICall("System.Math", "Max", 2, "std::max");
-        RegisterICall("System.Math", "Min", 2, "std::min");
-        RegisterICall("System.Math", "Sqrt", 1, "std::sqrt");
-        RegisterICall("System.Math", "Floor", 1, "std::floor");
-        RegisterICall("System.Math", "Ceiling", 1, "std::ceil");
-        RegisterICall("System.Math", "Round", 1, "std::round");
-        RegisterICall("System.Math", "Pow", 2, "std::pow");
-        RegisterICall("System.Math", "Sin", 1, "std::sin");
-        RegisterICall("System.Math", "Cos", 1, "std::cos");
-        RegisterICall("System.Math", "Tan", 1, "std::tan");
-        RegisterICall("System.Math", "Asin", 1, "std::asin");
-        RegisterICall("System.Math", "Acos", 1, "std::acos");
-        RegisterICall("System.Math", "Atan", 1, "std::atan");
-        RegisterICall("System.Math", "Atan2", 2, "std::atan2");
-        RegisterICall("System.Math", "Log", 1, "std::log");
-        RegisterICall("System.Math", "Log10", 1, "std::log10");
-        RegisterICall("System.Math", "Log2", 1, "std::log2");
-        RegisterICall("System.Math", "Exp", 1, "std::exp");
-        RegisterICall("System.Math", "Truncate", 1, "std::trunc");
-        RegisterICall("System.Math", "Sinh", 1, "std::sinh");
-        RegisterICall("System.Math", "Cosh", 1, "std::cosh");
-        RegisterICall("System.Math", "Tanh", 1, "std::tanh");
-        RegisterICallTyped("System.Math", "Sign", 1, "System.Int32", "cil2cpp::math_sign_i32");
-        RegisterICallTyped("System.Math", "Sign", 1, "System.Int64", "cil2cpp::math_sign_i64");
-        RegisterICallTyped("System.Math", "Sign", 1, "System.Double", "cil2cpp::math_sign_f64");
-        RegisterICall("System.Math", "Clamp", 3, "std::clamp");
+        // Math methods — compile from BCL IL.
+        // In .NET 8, most Math functions (Sqrt, Sin, Cos, etc.) are [InternalCall] extern methods.
+        // Their icalls will be discovered via compile errors and added back as needed.
     }
 
     // ===== Registration methods =====

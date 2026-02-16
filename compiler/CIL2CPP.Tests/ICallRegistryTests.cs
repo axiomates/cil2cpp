@@ -142,33 +142,18 @@ public class ICallRegistryTests
         Assert.Equal("new_impl", result);
     }
 
-    // System.Math — unified into ICallRegistry (previously in MapBclMethod)
+    // System.Math — now compiled from BCL IL (not icalls)
     [Theory]
-    [InlineData("System.Math", "Abs", 1, "std::abs")]
-    [InlineData("System.Math", "Max", 2, "std::max")]
-    [InlineData("System.Math", "Min", 2, "std::min")]
-    [InlineData("System.Math", "Sqrt", 1, "std::sqrt")]
-    [InlineData("System.Math", "Floor", 1, "std::floor")]
-    [InlineData("System.Math", "Ceiling", 1, "std::ceil")]
-    [InlineData("System.Math", "Round", 1, "std::round")]
-    [InlineData("System.Math", "Pow", 2, "std::pow")]
-    [InlineData("System.Math", "Sin", 1, "std::sin")]
-    [InlineData("System.Math", "Cos", 1, "std::cos")]
-    [InlineData("System.Math", "Log", 1, "std::log")]
-    public void Lookup_SystemMath_ReturnsCorrectCppName(string type, string method, int paramCount, string expected)
+    [InlineData("System.Math", "Abs", 1)]
+    [InlineData("System.Math", "Max", 2)]
+    [InlineData("System.Math", "Min", 2)]
+    [InlineData("System.Math", "Sqrt", 1)]
+    [InlineData("System.Math", "Sin", 1)]
+    [InlineData("System.Math", "Cos", 1)]
+    public void Lookup_SystemMath_ReturnsNull_CompiledFromIL(string type, string method, int paramCount)
     {
         var result = ICallRegistry.Lookup(type, method, paramCount);
-        Assert.Equal(expected, result);
-    }
-
-    // System.Math.Abs typed dispatch
-    [Theory]
-    [InlineData("System.Single", "std::fabsf")]
-    [InlineData("System.Double", "std::fabs")]
-    public void Lookup_SystemMath_Abs_TypedDispatch(string firstParamType, string expected)
-    {
-        var result = ICallRegistry.Lookup("System.Math", "Abs", 1, firstParamType);
-        Assert.Equal(expected, result);
+        Assert.Null(result);
     }
 
     // Wildcard registrations (Console)
