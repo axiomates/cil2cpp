@@ -25,7 +25,7 @@ RUNTIME_DIR = REPO_ROOT / "runtime"
 CLI_PROJECT = COMPILER_DIR / "CIL2CPP.CLI"
 TEST_PROJECT = COMPILER_DIR / "CIL2CPP.Tests"
 RUNTIME_TESTS_DIR = RUNTIME_DIR / "tests"
-SAMPLES_DIR = COMPILER_DIR / "testprojects"
+TESTPROJECTS_DIR = COMPILER_DIR / "testprojects"
 
 IS_WINDOWS = platform.system() == "Windows"
 DEFAULT_PREFIX = "C:/cil2cpp_test" if IS_WINDOWS else "/usr/local/cil2cpp"
@@ -140,14 +140,15 @@ def cmd_test(args):
                 failures += 1
 
     if run_runtime:
-        header("Runtime tests (Google Test)")
+        rt_config = getattr(args, "config", "Release")
+        header(f"Runtime tests (Google Test, {rt_config})")
         build_dir = RUNTIME_TESTS_DIR / "build"
         try:
             run(["cmake", "-B", str(build_dir), "-S", str(RUNTIME_TESTS_DIR),
                  "-G", DEFAULT_GENERATOR] + (["-A", "x64"] if IS_WINDOWS else []),
                 capture=True)
-            run(["cmake", "--build", str(build_dir), "--config", "Debug"])
-            run(["ctest", "--test-dir", str(build_dir), "-C", "Debug",
+            run(["cmake", "--build", str(build_dir), "--config", rt_config])
+            run(["ctest", "--test-dir", str(build_dir), "-C", rt_config,
                  "--output-on-failure"])
             success("Runtime tests passed")
         except subprocess.CalledProcessError:
@@ -158,7 +159,7 @@ def cmd_test(args):
         header("Integration tests")
         ns = argparse.Namespace(
             prefix=getattr(args, "prefix", DEFAULT_PREFIX),
-            config="Release",
+            config=getattr(args, "config", "Release"),
             generator=DEFAULT_GENERATOR,
             keep_temp=False,
         )
@@ -345,7 +346,7 @@ def cmd_codegen(args):
     if args.sample:
         name = args.sample
         if not name.endswith(".csproj") and "/" not in name and "\\" not in name:
-            csproj = SAMPLES_DIR / name / f"{name}.csproj"
+            csproj = TESTPROJECTS_DIR / name / f"{name}.csproj"
         else:
             csproj = Path(name)
     elif args.input:
@@ -465,7 +466,7 @@ def cmd_integration(args):
     # ===== Phase 1: HelloWorld =====
     header("Phase 1: HelloWorld (executable with entry point)")
 
-    hw_sample = SAMPLES_DIR / "HelloWorld" / "HelloWorld.csproj"
+    hw_sample = TESTPROJECTS_DIR / "HelloWorld" / "HelloWorld.csproj"
     hw_output = temp_dir / "helloworld_output"
     hw_build = temp_dir / "helloworld_build"
 
@@ -623,7 +624,7 @@ def cmd_integration(args):
     # ===== Phase 5: Cross-project codegen =====
     header("Phase 5: Cross-project codegen (MathLib + MultiAssemblyTest)")
 
-    multi_sample = SAMPLES_DIR / "MultiAssemblyTest" / "MultiAssemblyTest.csproj"
+    multi_sample = TESTPROJECTS_DIR / "MultiAssemblyTest" / "MultiAssemblyTest.csproj"
     multi_output = temp_dir / "multi_output"
 
     def multi_codegen():
@@ -813,10 +814,10 @@ def interactive_menu():
         ("Build compiler",         "dotnet build",            lambda: cmd_build(argparse.Namespace(compiler=True, runtime=False, config="Release"))),
         ("Build runtime",          "cmake --build",           lambda: cmd_build(argparse.Namespace(compiler=False, runtime=True, config="Release"))),
         ("Build all",              "compiler + runtime",      lambda: cmd_build(argparse.Namespace(compiler=False, runtime=False, config="Release"))),
-        ("Test compiler",          "dotnet test (166 tests)", lambda: cmd_test(argparse.Namespace(compiler=True, runtime=False, integration=False, all=False, coverage=False))),
-        ("Test runtime",           "ctest (110 tests)",       lambda: cmd_test(argparse.Namespace(compiler=False, runtime=True, integration=False, all=False, coverage=False))),
-        ("Test all (unit)",        "compiler + runtime",      lambda: cmd_test(argparse.Namespace(compiler=False, runtime=False, integration=False, all=False, coverage=False))),
-        ("Test + coverage report", "HTML coverage report",    lambda: cmd_test(argparse.Namespace(compiler=True, runtime=False, integration=False, all=False, coverage=True))),
+        ("Test compiler",          "dotnet test (166 tests)", lambda: cmd_test(argparse.Namespace(compiler=True, runtime=False, integration=False, all=False, config="Release", coverage=False))),
+        ("Test runtime",           "ctest (110 tests)",       lambda: cmd_test(argparse.Namespace(compiler=False, runtime=True, integration=False, all=False, config="Release", coverage=False))),
+        ("Test all (unit)",        "compiler + runtime",      lambda: cmd_test(argparse.Namespace(compiler=False, runtime=False, integration=False, all=False, config="Release", coverage=False))),
+        ("Test + coverage report", "HTML coverage report",    lambda: cmd_test(argparse.Namespace(compiler=True, runtime=False, integration=False, all=False, config="Release", coverage=True))),
         ("Integration tests",     "full pipeline test",      lambda: cmd_integration(argparse.Namespace(prefix=DEFAULT_PREFIX, config="Release", generator=DEFAULT_GENERATOR, keep_temp=False))),
         ("Install runtime",       f"cmake --install → {DEFAULT_PREFIX}", lambda: cmd_install(argparse.Namespace(prefix=DEFAULT_PREFIX, config="both"))),
         ("Codegen HelloWorld",     "quick codegen test",      lambda: cmd_codegen(argparse.Namespace(sample="HelloWorld", input=None, output="output", config="Release"))),
@@ -876,6 +877,8 @@ def main():
     p_test.add_argument("--runtime", action="store_true", help="Runtime tests only")
     p_test.add_argument("--integration", action="store_true", help="Integration tests only")
     p_test.add_argument("--all", action="store_true", help="All tests")
+    p_test.add_argument("--config", default="Release", choices=["Debug", "Release"],
+                        help="Build config for runtime/integration tests (default: Release)")
     p_test.add_argument("--coverage", action="store_true", help="Generate coverage report")
 
     # install
