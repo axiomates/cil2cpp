@@ -60,6 +60,7 @@ set(RUNTIME_SOURCES
     src/bcl/System.MdArray.cpp
     src/bcl/System.Delegate.cpp
     src/icall/icall.cpp
+    src/icall/math.cpp
     src/icall/unicode_utility.cpp
     src/async/task.cpp
     src/async/threadpool.cpp

@@ -142,18 +142,31 @@ public class ICallRegistryTests
         Assert.Equal("new_impl", result);
     }
 
-    // System.Math — now compiled from BCL IL (not icalls)
+    // System.Math — [InternalCall] with no IL body, mapped to <cmath> functions
     [Theory]
-    [InlineData("System.Math", "Abs", 1)]
-    [InlineData("System.Math", "Max", 2)]
-    [InlineData("System.Math", "Min", 2)]
-    [InlineData("System.Math", "Sqrt", 1)]
-    [InlineData("System.Math", "Sin", 1)]
-    [InlineData("System.Math", "Cos", 1)]
-    public void Lookup_SystemMath_ReturnsNull_CompiledFromIL(string type, string method, int paramCount)
+    [InlineData("System.Math", "Sqrt", 1, "cil2cpp::icall::Math_Sqrt")]
+    [InlineData("System.Math", "Sin", 1, "cil2cpp::icall::Math_Sin")]
+    [InlineData("System.Math", "Cos", 1, "cil2cpp::icall::Math_Cos")]
+    [InlineData("System.Math", "Pow", 2, "cil2cpp::icall::Math_Pow")]
+    [InlineData("System.Math", "Floor", 1, "cil2cpp::icall::Math_Floor")]
+    [InlineData("System.Math", "Ceiling", 1, "cil2cpp::icall::Math_Ceiling")]
+    public void Lookup_SystemMath_ReturnsICall(string type, string method, int paramCount, string expected)
     {
         var result = ICallRegistry.Lookup(type, method, paramCount);
-        Assert.Null(result);
+        Assert.Equal(expected, result);
+    }
+
+    // System.Math typed overloads (Abs, Max, Min) — dispatched by first param type
+    [Theory]
+    [InlineData("System.Math", "Abs", 1, "System.Double", "cil2cpp::icall::Math_Abs_double")]
+    [InlineData("System.Math", "Abs", 1, "System.Single", "cil2cpp::icall::Math_Abs_float")]
+    [InlineData("System.Math", "Abs", 1, "System.Int32", "cil2cpp::icall::Math_Abs_int")]
+    [InlineData("System.Math", "Max", 2, "System.Double", "cil2cpp::icall::Math_Max_double")]
+    [InlineData("System.Math", "Min", 2, "System.Int32", "cil2cpp::icall::Math_Min_int")]
+    public void Lookup_SystemMath_TypedOverloads(string type, string method, int paramCount, string firstParam, string expected)
+    {
+        var result = ICallRegistry.Lookup(type, method, paramCount, firstParam);
+        Assert.Equal(expected, result);
     }
 
     // Console methods compile from BCL IL (no icalls)

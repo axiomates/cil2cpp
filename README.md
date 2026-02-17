@@ -513,8 +513,8 @@ ECMA-335 标准定义了约 230 种 IL 操作码变体。CIL2CPP 的 `ConvertIns
 |------|------|------|
 | System.Object (ToString, GetHashCode, Equals, GetType) | ✅ | 运行时提供默认实现（vtable 基类）；`GetType()` 返回缓存的 `Type` 对象 |
 | System.String | ✅ | `FastAllocateString` / `get_Length` / `get_Chars` 为 icall（运行时布局），其余方法（Concat/Format/Join/Split 等）从 BCL IL 编译 |
-| Console.WriteLine / Write / ReadLine | ⚠️ | 临时 icall 映射到 C++ printf/fgets（BCL IL 依赖链极深，待完整编译） |
-| System.Math | ✅ | 从 BCL IL 编译。真正的 `[InternalCall]` 方法（如 Sqrt/Sin）由 BCL IL 内部处理 |
+| Console.WriteLine / Write / ReadLine | ✅ | BCL IL 全链路编译：Console → TextWriter → StreamWriter → Encoding → P/Invoke（Windows: kernel32!WriteFile, Linux: libSystem.Native!write） |
+| System.Math | ⚠️ | .NET 8 中 Math.Sqrt/Sin/Cos 等为 `[InternalCall]`（无 IL body），需要 icall 映射到 `<cmath>`（尚未注册） |
 | 多程序集 + 树摇 | ✅ | 默认启用：加载用户 + 第三方 + BCL 程序集，可达性分析树摇，BCL IL 全面编译 |
 | List\<T\> / Dictionary\<K,V\> | ✅ | 从 BCL IL 编译（不再使用 C++ 手动实现） |
 | LINQ | ✅ | Where/Select/OrderBy/Count/Any/All/First/Last 等，从 BCL IL 编译 |
@@ -585,7 +585,8 @@ ECMA-335 标准定义了约 230 种 IL 操作码变体。CIL2CPP 的 `ConvertIns
 |------|------|
 | P/Invoke | 基本类型 + String + blittable struct + 回调委托（函数指针）均已支持 |
 | Attribute 复杂参数 | 基本类型 + 字符串 + Type + 枚举 + 数组均已支持 |
-| Console | 临时 icall 映射到 printf/fgets（BCL 依赖链极深，待逐步移除） |
+| System.Math icall | Math.Sqrt/Sin/Cos 等为 `[InternalCall]`（无 IL body），尚未注册 icall 映射 |
+| Array.Copy icall | C++ 实现已存在但未注册 ICallRegistry，影响 List/Dictionary 等集合扩容 |
 | 异常类型 | 支持 24 种运行时异常 + 任意用户自定义异常类型（继承 Exception） |
 | 泛型约束 | 编译期验证泛型约束（struct/class/new()/接口/基类），违反时发出警告 |
 
@@ -623,9 +624,8 @@ C# 用户代码 / BCL 代码中的方法调用
 ICallRegistry 查找（~50 个 icall 映射）
   ├─ [InternalCall] 方法: GC, Monitor, Interlocked, Buffer, Thread.Sleep, ...
   │  → 无 IL 方法体，必须由 C++ 运行时实现
-  ├─ 运行时布局依赖: String.get_Length, Array.get_Length, Delegate.Combine, ...
-  │  → 访问运行时内部布局，需要 C++ 实现
-  └─ 临时映射: Console.WriteLine/Write（BCL 依赖链极深，待逐步移除）
+  └─ 运行时布局依赖: String.get_Length, Array.get_Length, Delegate.Combine, ...
+     → 访问运行时内部布局，需要 C++ 实现
     ↓ 未命中 icall 的方法
 正常 IL 编译（与用户代码相同路径）
     ↓
@@ -867,6 +867,47 @@ python tools/dev.py test --coverage
 # → 自动打开浏览器查看报告（含图表）
 # → 报告路径: CoverageResults/CoverageReport/index.html
 ```
+
+---
+
+## 已知正确性问题
+
+> 以下问题已确认但尚未修复，按优先级排列。
+
+| 问题 | 文件 | 影响 |
+|------|------|------|
+| `div.un`/`rem.un`/`shr.un` 未传 `isUnsigned: true` | IRBuilder.Methods.cs:759-767 | 高位为 1 的 unsigned 运算结果错误（ECMA-335 III.3.24/58/62） |
+| `string_to_utf8` 不处理 surrogate pair | System.String.cpp:219-256 | Emoji 和 U+10000+ 字符损坏（反向 `utf8_to_utf16` 正确处理了） |
+| `volatile_read`/`volatile_write` fence 方向反了 | cil2cpp.h:56-65 | x86 无害（TSO），**ARM/Apple Silicon 上内存序错误** |
+| `Enum_InternalGetCorElementType` 硬编码为 0x08 (int) | icall.cpp:180-185 | byte/short/long 底层类型的枚举 CorElementType 错误 |
+| `CIL2CPP_MAIN` 丢弃 argc/argv | cil2cpp.h:86-92 | `Environment.GetCommandLineArgs()` 无法工作 |
+| System.Math icall 未注册 | ICallRegistry.cs | `Math.Sqrt`/`Sin`/`Cos` 等在 .NET 8 中为 `[InternalCall]`（无 IL body），链接时 unresolved symbol |
+| `Array.Copy` icall 未注册 | ICallRegistry.cs | C++ 实现已存在（System.Array.cpp:112），但未注册 → 集合扩容静默失败 |
+| FeatureTest 未在集成测试中 | tools/dev.py | 18 个 Math 调用 + 30+ 语言特性从未端到端测试 |
+
+## 已知架构缺口
+
+| 缺口 | 文件 | 影响 |
+|------|------|------|
+| Silent stub chain 无诊断 | IRBuilder.cs, CppCodeGenerator | 三层静默 stub（HasClrInternalDependencies → HasKnownBrokenPatterns → RenderedBodyHasErrors），无日志/警告 |
+| `FilteredGenericNamespaces` 过于激进 | IRBuilder.Generics.cs:103-116 | `System.Globalization` 被完全过滤 → String.Format、int.Parse()、ToString("N2") 不可用 |
+| 缺失 BCL 接口代理 | IRBuilder.BclProxy.cs | IReadOnlyCollection\<T\>、IDictionary\<TKey,TValue\>、IComparer\<T\>、IEqualityComparer\<T\> 等常用接口未注册 |
+| Memory\<T\> / ReadOnlyMemory\<T\> 未处理 | — | 与 Span\<T\> 类似但无拦截，影响 System.IO.Pipelines 等现代 API |
+| 10+ 未引用的 icall 死代码 | icall.cpp:206-249 | Char_Is*、Int32_ToString 等已改为 BCL IL 编译，C++ 代码残留 |
+
+## 开发路线图
+
+> 按优先级分阶段实施，每个阶段为独立 commit。
+
+| 阶段 | 内容 | 状态 |
+|------|------|------|
+| **Phase A** | 关键正确性修复：unsigned 算术、surrogate pair、volatile fence | 待实施 |
+| **Phase B** | Math icall + Array.Copy 注册 + FeatureTest 集成测试 | 待实施 |
+| **Phase C** | 死代码清理 + Enum CorElementType + whitespace Unicode 补全 | 待实施 |
+| **Phase D** | Stub 诊断日志 + FilteredGenericNamespaces 修复 + BCL 接口代理 | 待实施 |
+| **Phase E** | argc/argv + Environment 改进 + Memory\<T\> 拦截 | 待实施 |
+| **Phase F** | ICU 集成（FetchContent，Unicode 字符分类） | 待实施 |
+| **Phase G** | System.IO icall + 协变返回类型 + System.Net 评估 | 待实施 |
 
 ---
 

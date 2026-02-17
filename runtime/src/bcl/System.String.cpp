@@ -6,6 +6,7 @@
 #include <cil2cpp/bcl/System.Object.h>
 #include <cil2cpp/gc.h>
 #include <cil2cpp/array.h>
+#include <cil2cpp/exception.h>
 #include <cil2cpp/type_info.h>
 
 #include <unordered_map>
@@ -210,7 +211,7 @@ Boolean string_is_null_or_whitespace(String* str) {
 
 String* string_substring(String* str, Int32 start, Int32 length) {
     if (!str || start < 0 || length < 0 || start + length > str->length) {
-        return nullptr;  // TODO: throw ArgumentOutOfRangeException
+        throw_argument_out_of_range();
     }
 
     return string_create_utf16(str->chars + start, length);
@@ -221,7 +222,7 @@ char* string_to_utf8(String* str) {
         return nullptr;
     }
 
-    // Calculate UTF-8 length
+    // Calculate UTF-8 length (with surrogate pair detection)
     size_t utf8_len = 0;
     for (Int32 i = 0; i < str->length; i++) {
         Char c = str->chars[i];
@@ -229,6 +230,11 @@ char* string_to_utf8(String* str) {
             utf8_len += 1;
         } else if (c < 0x800) {
             utf8_len += 2;
+        } else if (c >= 0xD800 && c <= 0xDBFF && i + 1 < str->length
+                   && str->chars[i + 1] >= 0xDC00 && str->chars[i + 1] <= 0xDFFF) {
+            // Surrogate pair → U+10000..U+10FFFF → 4-byte UTF-8
+            utf8_len += 4;
+            i++; // skip low surrogate
         } else {
             utf8_len += 3;
         }
@@ -244,6 +250,16 @@ char* string_to_utf8(String* str) {
         } else if (c < 0x800) {
             *p++ = static_cast<char>(0xC0 | (c >> 6));
             *p++ = static_cast<char>(0x80 | (c & 0x3F));
+        } else if (c >= 0xD800 && c <= 0xDBFF && i + 1 < str->length
+                   && str->chars[i + 1] >= 0xDC00 && str->chars[i + 1] <= 0xDFFF) {
+            // Surrogate pair: high (D800-DBFF) + low (DC00-DFFF) → codepoint
+            uint32_t cp = 0x10000 + ((static_cast<uint32_t>(c) - 0xD800) << 10)
+                        + (static_cast<uint32_t>(str->chars[i + 1]) - 0xDC00);
+            *p++ = static_cast<char>(0xF0 | (cp >> 18));
+            *p++ = static_cast<char>(0x80 | ((cp >> 12) & 0x3F));
+            *p++ = static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+            *p++ = static_cast<char>(0x80 | (cp & 0x3F));
+            i++; // skip low surrogate
         } else {
             *p++ = static_cast<char>(0xE0 | (c >> 12));
             *p++ = static_cast<char>(0x80 | ((c >> 6) & 0x3F));

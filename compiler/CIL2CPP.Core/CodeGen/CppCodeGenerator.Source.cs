@@ -325,6 +325,16 @@ public partial class CppCodeGenerator
                 if (HasKnownBrokenPatterns(method, knownTypeNames)) continue;
                 if (!emittedMethodSignatures.Add(method.GetCppSignature())) continue;
 
+                // Check known stub implementations before trial render
+                var knownBody = GetKnownStubBody(method.CppName);
+                if (knownBody != null && IsStubBody(method))
+                {
+                    sb.AppendLine($"{method.GetCppSignature()} {{");
+                    sb.AppendLine(knownBody);
+                    sb.AppendLine("}");
+                    continue;
+                }
+
                 // Trial render: render to temp buffer, check for error patterns,
                 // emit stub if errors found (avoids C++ compilation failures)
                 var trialSb = new StringBuilder();
@@ -461,16 +471,26 @@ public partial class CppCodeGenerator
             }
             if (hasProblematicType) continue;
 
-            sb.AppendLine($"{sig} {{");
-            if (method.ReturnTypeCpp == "void" || string.IsNullOrEmpty(method.ReturnTypeCpp))
-                sb.AppendLine("    // TODO: compile from IL");
-            else if (method.ReturnTypeCpp.EndsWith("*"))
-                sb.AppendLine("    return nullptr; // TODO: compile from IL");
-            else if (method.ReturnTypeCpp == "bool")
-                sb.AppendLine("    return false; // TODO: compile from IL");
+            var knownBody = GetKnownStubBody(method.CppName);
+            if (knownBody != null)
+            {
+                sb.AppendLine($"{sig} {{");
+                sb.AppendLine(knownBody);
+                sb.AppendLine("}");
+            }
             else
-                sb.AppendLine("    return {}; // TODO: compile from IL");
-            sb.AppendLine("}");
+            {
+                sb.AppendLine($"{sig} {{");
+                if (method.ReturnTypeCpp == "void" || string.IsNullOrEmpty(method.ReturnTypeCpp))
+                    sb.AppendLine("    // TODO: compile from IL");
+                else if (method.ReturnTypeCpp.EndsWith("*"))
+                    sb.AppendLine("    return nullptr; // TODO: compile from IL");
+                else if (method.ReturnTypeCpp == "bool")
+                    sb.AppendLine("    return false; // TODO: compile from IL");
+                else
+                    sb.AppendLine("    return {}; // TODO: compile from IL");
+                sb.AppendLine("}");
+            }
         }
     }
 
@@ -480,6 +500,14 @@ public partial class CppCodeGenerator
     /// </summary>
     private static void GenerateStubForMethod(StringBuilder sb, IRMethod method)
     {
+        var knownBody = GetKnownStubBody(method.CppName);
+        if (knownBody != null)
+        {
+            sb.AppendLine($"{method.GetCppSignature()} {{");
+            sb.AppendLine(knownBody);
+            sb.AppendLine("}");
+            return;
+        }
         sb.AppendLine($"// {method.DeclaringType?.ILFullName}::{method.Name} (stub — body has codegen errors)");
         sb.AppendLine($"{method.GetCppSignature()} {{");
         if (method.ReturnTypeCpp == "void" || string.IsNullOrEmpty(method.ReturnTypeCpp))

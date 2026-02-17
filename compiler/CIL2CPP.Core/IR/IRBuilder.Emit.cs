@@ -219,6 +219,35 @@ public partial class IRBuilder
             return;
         }
 
+        // IUtfChar<T>.CastFrom / CastToUInt32 — static abstract interface method intrinsics
+        // These are constrained calls to IUtfChar<Char> or IUtfChar<Byte>.
+        // The IL is: constrained. System.Char; call IUtfChar<Char>::CastFrom(uint32)
+        // The implementation is a simple type cast.
+        if (constrainedType != null && methodRef.DeclaringType is GenericInstanceType gitUtf
+            && gitUtf.ElementType.Name == "IUtfChar`1"
+            && methodRef.Name is "CastFrom" or "CastToUInt32")
+        {
+            var val = stack.Count > 0 ? stack.Pop() : "0";
+            string targetType;
+            if (methodRef.Name == "CastToUInt32")
+            {
+                targetType = "uint32_t";
+            }
+            else
+            {
+                targetType = CppNameMapper.GetCppTypeName(constrainedType.FullName);
+            }
+            var tmp = $"__t{tempCounter++}";
+            block.Instructions.Add(new IRRawCpp
+            {
+                Code = $"{targetType} {tmp} = static_cast<{targetType}>({val});",
+                ResultVar = tmp,
+                ResultTypeCpp = targetType,
+            });
+            stack.Push(tmp);
+            return;
+        }
+
         // Unsafe.SizeOf<T>() — sizeof intrinsic
         if (methodRef.DeclaringType.FullName == "System.Runtime.CompilerServices.Unsafe"
             && methodRef.Name == "SizeOf" && methodRef is GenericInstanceMethod gimSz)
@@ -1138,7 +1167,6 @@ public partial class IRBuilder
                     && ParameterTypesMatchRef(m, methodRef));
                 if (overrideMethod != null)
                 {
-                    // Direct call to the value type's override
                     irCall.FunctionName = overrideMethod.CppName;
                     isVirtual = false; // Suppress vtable dispatch
                     // Fix the 'this' argument — strip interface/base cast and re-cast
@@ -1184,11 +1212,12 @@ public partial class IRBuilder
             bool resolvedStaticConstraint = false;
             if (constrainedIrType != null)
             {
-                // Find the explicit interface implementation on the constrained type
-                // The method name in IL is the interface method name (e.g., "op_BitwiseOr")
-                // but the explicit impl on the type may also match by name + params
+                // Find the explicit interface implementation on the constrained type.
+                // The method name in IL is the interface method name (e.g., "CastFrom"),
+                // but explicit interface impls have names like "System.IUtfChar<System.Char>.CastFrom".
+                // Match by exact name OR by suffix (after the last '.').
                 var staticImpl = constrainedIrType.Methods.FirstOrDefault(m =>
-                    m.IsStatic && m.Name == methodRef.Name
+                    m.IsStatic && MatchesMethodName(m.Name, methodRef.Name)
                     && m.BasicBlocks.Count > 0
                     && ParameterTypesMatchRef(m, methodRef));
                 if (staticImpl != null)
@@ -1201,7 +1230,7 @@ public partial class IRBuilder
                     // Try matching by parameter count only (explicit interface impls
                     // may have mangled names that differ from the interface method name)
                     var candidates = constrainedIrType.Methods.Where(m =>
-                        m.IsStatic && m.Name == methodRef.Name
+                        m.IsStatic && MatchesMethodName(m.Name, methodRef.Name)
                         && m.Parameters.Count == methodRef.Parameters.Count).ToList();
                     if (candidates.Count == 1)
                     {
@@ -2246,6 +2275,22 @@ public partial class IRBuilder
     /// Check if an IR method matches a Cecil MethodReference by parameter types
     /// (for vtable dispatch slot lookup).
     /// </summary>
+    /// <summary>
+    /// Match a method name against an interface method name.
+    /// Explicit interface implementations have names like "System.IUtfChar&lt;System.Char&gt;.CastFrom"
+    /// while the interface method reference name is just "CastFrom".
+    /// Matches by exact name or by suffix after the last dot.
+    /// </summary>
+    private static bool MatchesMethodName(string implName, string interfaceMethodName)
+    {
+        if (implName == interfaceMethodName) return true;
+        // Explicit interface impl: "Namespace.IFace<T>.MethodName" — extract suffix after last '.'
+        var lastDot = implName.LastIndexOf('.');
+        if (lastDot >= 0 && implName.AsSpan(lastDot + 1).SequenceEqual(interfaceMethodName))
+            return true;
+        return false;
+    }
+
     private bool ParameterTypesMatchRef(IRMethod irMethod, MethodReference methodRef)
     {
         if (irMethod.Parameters.Count != methodRef.Parameters.Count) return false;

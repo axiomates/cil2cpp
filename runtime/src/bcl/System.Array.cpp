@@ -13,8 +13,7 @@ namespace cil2cpp {
 
 Array* array_create(TypeInfo* element_type, Int32 length) {
     if (length < 0) {
-        // TODO: throw ArgumentOutOfRangeException
-        return nullptr;
+        throw_argument_out_of_range();
     }
 
     return static_cast<Array*>(gc::alloc_array(element_type, static_cast<size_t>(length)));

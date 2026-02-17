@@ -756,15 +756,15 @@ public partial class IRBuilder
             }
             case Code.Mul: EmitBinaryOp(block, stack, "*", ref tempCounter); break;
             case Code.Div: EmitBinaryOp(block, stack, "/", ref tempCounter); break;
-            case Code.Div_Un: EmitBinaryOp(block, stack, "/", ref tempCounter); break;
+            case Code.Div_Un: EmitBinaryOp(block, stack, "/", ref tempCounter, isUnsigned: true); break;
             case Code.Rem: EmitBinaryOp(block, stack, "%", ref tempCounter); break;
-            case Code.Rem_Un: EmitBinaryOp(block, stack, "%", ref tempCounter); break;
+            case Code.Rem_Un: EmitBinaryOp(block, stack, "%", ref tempCounter, isUnsigned: true); break;
             case Code.And: EmitBinaryOp(block, stack, "&", ref tempCounter); break;
             case Code.Or: EmitBinaryOp(block, stack, "|", ref tempCounter); break;
             case Code.Xor: EmitBinaryOp(block, stack, "^", ref tempCounter); break;
             case Code.Shl: EmitBinaryOp(block, stack, "<<", ref tempCounter); break;
             case Code.Shr: EmitBinaryOp(block, stack, ">>", ref tempCounter); break;
-            case Code.Shr_Un: EmitBinaryOp(block, stack, ">>", ref tempCounter); break; // C++ unsigned >> is logical shift
+            case Code.Shr_Un: EmitBinaryOp(block, stack, ">>", ref tempCounter, isUnsigned: true); break; // C++ unsigned >> is logical shift
 
             // ===== Checked Arithmetic =====
             case Code.Add_Ovf:

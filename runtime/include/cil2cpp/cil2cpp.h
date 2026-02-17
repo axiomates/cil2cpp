@@ -51,17 +51,19 @@ inline auto to_unsigned(T v) { return static_cast<std::make_unsigned_t<std::unde
 
 // ===== Volatile Read/Write =====
 // System.Threading.Volatile.Read/Write — JIT intrinsics for volatile memory access.
-// Implemented as fence + plain read/write (equivalent to BCL IL implementation).
+// Volatile.Read = acquire: load THEN fence (prevents subsequent ops from reordering before the read).
+// Volatile.Write = release: fence THEN store (prevents preceding ops from reordering after the write).
 template<typename T>
 inline T volatile_read(T* location) {
+    T value = *location;
     std::atomic_thread_fence(std::memory_order_acquire);
-    return *location;
+    return value;
 }
 
 template<typename T>
 inline void volatile_write(T* location, T value) {
-    *location = value;
     std::atomic_thread_fence(std::memory_order_release);
+    *location = value;
 }
 
 /**

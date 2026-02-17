@@ -303,6 +303,10 @@ public class ReachabilityAnalyzer
                 case Code.Sizeof:
                 case Code.Constrained:
                     ProcessTypeRef(instr.Operand as TypeReference);
+                    // Also resolve explicit interface implementations on the constrained type.
+                    // The next instruction is call/callvirt with the interface method — we need
+                    // to find and mark the concrete implementation on the constrained type.
+                    ProcessConstrainedCall(instr.Operand as TypeReference, instr.Next);
                     break;
 
                 // Field references
@@ -341,6 +345,45 @@ public class ReachabilityAnalyzer
         var methodDef = TryResolveMethod(methodRef);
         if (methodDef != null)
             SeedMethod(methodDef);
+    }
+
+    /// <summary>
+    /// When a constrained. prefix is followed by call/callvirt, resolve the interface method
+    /// to the concrete type's explicit interface implementation and mark it reachable.
+    /// Without this, static abstract interface methods (e.g., IUtfChar&lt;Char&gt;.CastFrom)
+    /// remain as stubs because only the abstract interface method (with no body) is discovered.
+    /// </summary>
+    private void ProcessConstrainedCall(TypeReference? constrainedType, Mono.Cecil.Cil.Instruction? nextInstr)
+    {
+        if (constrainedType == null || nextInstr == null) return;
+        if (nextInstr.OpCode.Code is not (Code.Call or Code.Callvirt)) return;
+
+        var methodRef = nextInstr.Operand as MethodReference;
+        if (methodRef == null) return;
+
+        var constrainedTypeDef = TryResolve(constrainedType);
+        if (constrainedTypeDef == null) return;
+
+        var interfaceMethodName = methodRef.Name;
+
+        // Search for explicit interface implementations that match the method name
+        foreach (var method in constrainedTypeDef.Methods)
+        {
+            if (!method.IsStatic) continue;
+
+            // Exact match or explicit interface impl suffix match
+            // e.g., "CastFrom" matches "System.IUtfChar<System.Char>.CastFrom"
+            bool nameMatch = method.Name == interfaceMethodName;
+            if (!nameMatch)
+            {
+                var lastDot = method.Name.LastIndexOf('.');
+                if (lastDot >= 0 && method.Name.AsSpan(lastDot + 1).SequenceEqual(interfaceMethodName))
+                    nameMatch = true;
+            }
+
+            if (nameMatch && method.Parameters.Count == methodRef.Parameters.Count)
+                SeedMethod(method);
+        }
     }
 
     private void ProcessTypeRef(TypeReference? typeRef)

@@ -776,7 +776,7 @@ public class IRBuilderTests
         var instrs = GetMethodInstructions(module, "Program", "TestMathOps");
         var calls = instrs.OfType<IRCall>().ToList();
         var funcNames = calls.Select(c => c.FunctionName).ToList();
-        // Math methods now compile from BCL IL — calls go to mangled BCL method names
+        // Math methods are [InternalCall] — mapped to cil2cpp::icall::Math_* via ICallRegistry
         Assert.Contains(funcNames, n => n.Contains("Math") || n.Contains("abs"));
         Assert.Contains(funcNames, n => n.Contains("Math") || n.Contains("max"));
         Assert.Contains(funcNames, n => n.Contains("Math") || n.Contains("min"));
@@ -857,7 +857,7 @@ public class IRBuilderTests
         var instrs = GetMethodInstructions(module, "Program", "TestMoreMathOps");
         var calls = instrs.OfType<IRCall>().ToList();
         var funcNames = calls.Select(c => c.FunctionName).ToList();
-        // Math methods now compile from BCL IL — calls go to mangled BCL method names
+        // Math methods are [InternalCall] — mapped to cil2cpp::icall::Math_* via ICallRegistry
         Assert.Contains(funcNames, n => n.Contains("Math") || n.Contains("ceil"));
         Assert.Contains(funcNames, n => n.Contains("Math") || n.Contains("round"));
         Assert.Contains(funcNames, n => n.Contains("Math") || n.Contains("sin"));
@@ -1237,7 +1237,7 @@ public class IRBuilderTests
         Assert.Contains(calls, c => c.FunctionName.Contains("delegate_remove"));
     }
 
-    // ===== Math.Abs overloads — now compiled from BCL IL =====
+    // ===== Math.Abs overloads — [InternalCall] mapped to <cmath> via icall =====
 
     [Fact]
     public void Build_FeatureTest_TestMathAbsOverloads_HasAbsCalls()
@@ -1246,7 +1246,7 @@ public class IRBuilderTests
         var instrs = GetMethodInstructions(module, "Program", "TestMathAbsOverloads");
         var calls = instrs.OfType<IRCall>().ToList();
         var funcNames = calls.Select(c => c.FunctionName).ToList();
-        // Math.Abs overloads now compile from BCL IL — calls go to mangled BCL method names
+        // Math.Abs overloads are [InternalCall] — mapped to cil2cpp::icall::Math_Abs_* via ICallRegistry
         Assert.Contains(funcNames, n => n.Contains("Math") || n.Contains("Abs") || n.Contains("abs"));
     }
 

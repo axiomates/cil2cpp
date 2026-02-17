@@ -45,8 +45,9 @@ public static class ICallRegistry
         RegisterICall("System.String", "ToCharArray", 0, "cil2cpp::string_to_char_array");
 
         // ===== Primitive ToString =====
-        // These have IL bodies (Number formatting chain) — compile from BCL IL.
-        // HasUnknownBodyReferences will filter if they reference unresolvable types.
+        // NOT registered as icalls — constrained resolution handles the redirection.
+        // The BCL Number formatting chain uses generic methods with IUtfChar<TChar>
+        // static abstract interface methods that can't compile in AOT.
 
         // ===== System.Array =====
         RegisterICall("System.Array", "get_Length", 0, "cil2cpp::array_get_length");
@@ -141,9 +142,65 @@ public static class ICallRegistry
         RegisterICall("System.Text.Unicode.Utf8Utility", "GetPointerToFirstInvalidByte", 4,
             "cil2cpp::utf8_utility_get_pointer_to_first_invalid_byte");
 
-        // Math methods — compile from BCL IL.
-        // In .NET 8, most Math functions (Sqrt, Sin, Cos, etc.) are [InternalCall] extern methods.
-        // Their icalls will be discovered via compile errors and added back as needed.
+        // ===== System.Math (double) =====
+        // .NET 8: Math methods are [InternalCall] with no IL body (JIT replaces with CPU instructions).
+        // AOT: map to <cmath> functions via icall.
+        RegisterICallTyped("System.Math", "Abs", 1, "System.Double", "cil2cpp::icall::Math_Abs_double");
+        RegisterICallTyped("System.Math", "Abs", 1, "System.Single", "cil2cpp::icall::Math_Abs_float");
+        RegisterICallTyped("System.Math", "Abs", 1, "System.Int32", "cil2cpp::icall::Math_Abs_int");
+        RegisterICallTyped("System.Math", "Abs", 1, "System.Int64", "cil2cpp::icall::Math_Abs_long");
+        RegisterICall("System.Math", "Sqrt", 1, "cil2cpp::icall::Math_Sqrt");
+        RegisterICall("System.Math", "Sin", 1, "cil2cpp::icall::Math_Sin");
+        RegisterICall("System.Math", "Cos", 1, "cil2cpp::icall::Math_Cos");
+        RegisterICall("System.Math", "Tan", 1, "cil2cpp::icall::Math_Tan");
+        RegisterICall("System.Math", "Asin", 1, "cil2cpp::icall::Math_Asin");
+        RegisterICall("System.Math", "Acos", 1, "cil2cpp::icall::Math_Acos");
+        RegisterICall("System.Math", "Atan", 1, "cil2cpp::icall::Math_Atan");
+        RegisterICall("System.Math", "Atan2", 2, "cil2cpp::icall::Math_Atan2");
+        RegisterICall("System.Math", "Pow", 2, "cil2cpp::icall::Math_Pow");
+        RegisterICall("System.Math", "Exp", 1, "cil2cpp::icall::Math_Exp");
+        RegisterICall("System.Math", "Log", 1, "cil2cpp::icall::Math_Log");
+        RegisterICall("System.Math", "Log10", 1, "cil2cpp::icall::Math_Log10");
+        RegisterICall("System.Math", "Log2", 1, "cil2cpp::icall::Math_Log2");
+        RegisterICall("System.Math", "Floor", 1, "cil2cpp::icall::Math_Floor");
+        RegisterICall("System.Math", "Ceiling", 1, "cil2cpp::icall::Math_Ceiling");
+        RegisterICall("System.Math", "Round", 1, "cil2cpp::icall::Math_Round");
+        RegisterICall("System.Math", "Truncate", 1, "cil2cpp::icall::Math_Truncate");
+        RegisterICallTyped("System.Math", "Max", 2, "System.Double", "cil2cpp::icall::Math_Max_double");
+        RegisterICallTyped("System.Math", "Min", 2, "System.Double", "cil2cpp::icall::Math_Min_double");
+        RegisterICallTyped("System.Math", "Max", 2, "System.Int32", "cil2cpp::icall::Math_Max_int");
+        RegisterICallTyped("System.Math", "Min", 2, "System.Int32", "cil2cpp::icall::Math_Min_int");
+        RegisterICall("System.Math", "Cbrt", 1, "cil2cpp::icall::Math_Cbrt");
+        RegisterICall("System.Math", "IEEERemainder", 2, "cil2cpp::icall::Math_IEEERemainder");
+        RegisterICall("System.Math", "FusedMultiplyAdd", 3, "cil2cpp::icall::Math_FusedMultiplyAdd");
+
+        // ===== System.MathF (float) =====
+        RegisterICall("System.MathF", "Sqrt", 1, "cil2cpp::icall::MathF_Sqrt");
+        RegisterICall("System.MathF", "Sin", 1, "cil2cpp::icall::MathF_Sin");
+        RegisterICall("System.MathF", "Cos", 1, "cil2cpp::icall::MathF_Cos");
+        RegisterICall("System.MathF", "Tan", 1, "cil2cpp::icall::MathF_Tan");
+        RegisterICall("System.MathF", "Asin", 1, "cil2cpp::icall::MathF_Asin");
+        RegisterICall("System.MathF", "Acos", 1, "cil2cpp::icall::MathF_Acos");
+        RegisterICall("System.MathF", "Atan", 1, "cil2cpp::icall::MathF_Atan");
+        RegisterICall("System.MathF", "Atan2", 2, "cil2cpp::icall::MathF_Atan2");
+        RegisterICall("System.MathF", "Pow", 2, "cil2cpp::icall::MathF_Pow");
+        RegisterICall("System.MathF", "Exp", 1, "cil2cpp::icall::MathF_Exp");
+        RegisterICall("System.MathF", "Log", 1, "cil2cpp::icall::MathF_Log");
+        RegisterICall("System.MathF", "Log10", 1, "cil2cpp::icall::MathF_Log10");
+        RegisterICall("System.MathF", "Log2", 1, "cil2cpp::icall::MathF_Log2");
+        RegisterICall("System.MathF", "Floor", 1, "cil2cpp::icall::MathF_Floor");
+        RegisterICall("System.MathF", "Ceiling", 1, "cil2cpp::icall::MathF_Ceiling");
+        RegisterICall("System.MathF", "Round", 1, "cil2cpp::icall::MathF_Round");
+        RegisterICall("System.MathF", "Truncate", 1, "cil2cpp::icall::MathF_Truncate");
+        RegisterICall("System.MathF", "Max", 2, "cil2cpp::icall::MathF_Max");
+        RegisterICall("System.MathF", "Min", 2, "cil2cpp::icall::MathF_Min");
+        RegisterICall("System.MathF", "Cbrt", 1, "cil2cpp::icall::MathF_Cbrt");
+        RegisterICall("System.MathF", "FusedMultiplyAdd", 3, "cil2cpp::icall::MathF_FusedMultiplyAdd");
+
+        // ===== System.Array =====
+        // Array.Copy: C++ implementation exists (System.Array.cpp:112) but registration
+        // deferred — causes reachability cascade. TODO: investigate proper signature/approach.
+        // RegisterICall("System.Array", "Copy", 5, "cil2cpp::array_copy");
 
         // ===== System.ArgIterator =====
         // ArgIterator is 100% [InternalCall] in BCL. Our runtime uses VarArgHandle metadata

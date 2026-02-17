@@ -86,6 +86,59 @@ bool Char_IsLower(char16_t c);
 // System.Int32
 String* Int32_ToString(Int32* value);
 
+// System.Math (double)
+double Math_Abs_double(double value);
+float Math_Abs_float(float value);
+int32_t Math_Abs_int(int32_t value);
+int64_t Math_Abs_long(int64_t value);
+double Math_Sqrt(double value);
+double Math_Sin(double value);
+double Math_Cos(double value);
+double Math_Tan(double value);
+double Math_Asin(double value);
+double Math_Acos(double value);
+double Math_Atan(double value);
+double Math_Atan2(double y, double x);
+double Math_Pow(double x, double y);
+double Math_Exp(double value);
+double Math_Log(double value);
+double Math_Log10(double value);
+double Math_Log2(double value);
+double Math_Floor(double value);
+double Math_Ceiling(double value);
+double Math_Round(double value);
+double Math_Truncate(double value);
+double Math_Max_double(double a, double b);
+double Math_Min_double(double a, double b);
+int32_t Math_Max_int(int32_t a, int32_t b);
+int32_t Math_Min_int(int32_t a, int32_t b);
+double Math_Cbrt(double value);
+double Math_IEEERemainder(double x, double y);
+double Math_FusedMultiplyAdd(double x, double y, double z);
+
+// System.MathF (float)
+float MathF_Sqrt(float value);
+float MathF_Sin(float value);
+float MathF_Cos(float value);
+float MathF_Tan(float value);
+float MathF_Asin(float value);
+float MathF_Acos(float value);
+float MathF_Atan(float value);
+float MathF_Atan2(float y, float x);
+float MathF_Pow(float x, float y);
+float MathF_Exp(float value);
+float MathF_Log(float value);
+float MathF_Log10(float value);
+float MathF_Log2(float value);
+float MathF_Floor(float value);
+float MathF_Ceiling(float value);
+float MathF_Round(float value);
+float MathF_Truncate(float value);
+float MathF_Max(float a, float b);
+float MathF_Min(float a, float b);
+float MathF_Cbrt(float value);
+float MathF_FusedMultiplyAdd(float x, float y, float z);
+
 } // namespace icall
 
 // System.Text.Unicode.Utf8Utility — scalar replacements for SIMD-based BCL methods
