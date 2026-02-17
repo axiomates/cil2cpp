@@ -1937,14 +1937,26 @@ public partial class IRBuilder
             case Code.Jmp:
             {
                 // ECMA-335 III.3.37: tail-jump to method with same signature.
+                // Eval stack must be empty; current args forwarded to target.
                 // Equivalent to: return target(currentArgs...)
                 var methodRef = (MethodReference)instr.Operand!;
                 var typeCpp = GetMangledTypeNameForRef(methodRef.DeclaringType);
                 var targetName = CppNameMapper.MangleMethodName(typeCpp, methodRef.Name);
+
+                // Disambiguate overloaded methods (same logic as EmitMethodCall)
+                var ilParamKey = string.Join(",", methodRef.Parameters.Select(p =>
+                    ResolveGenericTypeRef(p.ParameterType, methodRef.DeclaringType)));
+                var lookupKey = $"{targetName}|{ilParamKey}";
+                if (_module.DisambiguatedMethodNames.TryGetValue(lookupKey, out var disambiguated))
+                    targetName = disambiguated;
+
+                // Forward current method's arguments to target
                 var args = new List<string>();
                 if (methodRef.HasThis)
                     args.Add("__this");
-                foreach (var p in method.Parameters)
+                // ECMA-335: jmp requires identical signature — forward current params
+                // Skip __arglist_handle if present (not part of the IL-visible signature)
+                foreach (var p in method.Parameters.Where(p => p.CppName != "__arglist_handle"))
                     args.Add(p.CppName);
                 var callExpr = $"{targetName}({string.Join(", ", args)})";
                 if (method.ReturnTypeCpp != "void")
@@ -1967,12 +1979,16 @@ public partial class IRBuilder
                 var ptr = stack.Count > 0 ? stack.Pop() : "nullptr";
                 var resolvedName = ResolveTypeRefOperand(typeRef);
                 var typeCpp = CppNameMapper.MangleTypeName(resolvedName);
+
+                // Ensure TypeInfo symbol exists for primitive types
+                _module.RegisterPrimitiveTypeInfo(resolvedName);
+
                 var tmp = $"__t{tempCounter++}";
+                // Two separate IRRawCpp: first declares+assigns .value, second assigns .type.
+                // The declaration is handled by AddAutoDeclarations or cross-scope pre-declaration.
                 block.Instructions.Add(new IRRawCpp
                 {
-                    Code = $"cil2cpp::TypedReference {tmp}; "
-                         + $"{tmp}.value = static_cast<void*>({ptr}); "
-                         + $"{tmp}.type = &{typeCpp}_TypeInfo;",
+                    Code = $"{tmp} = cil2cpp::TypedReference{{static_cast<void*>({ptr}), &{typeCpp}_TypeInfo}};",
                     ResultVar = tmp,
                     ResultTypeCpp = "cil2cpp::TypedReference",
                 });
@@ -1983,14 +1999,27 @@ public partial class IRBuilder
             case Code.Refanyval:
             {
                 // ECMA-335 III.4.22: extract typed pointer from TypedReference
+                // Spec requires type check (InvalidCastException on mismatch)
                 var typeRef = (TypeReference)instr.Operand!;
                 var tr = stack.Count > 0 ? stack.Pop() : "{}";
                 var resolvedName = ResolveTypeRefOperand(typeRef);
                 var typeCpp = CppNameMapper.GetCppTypeName(resolvedName);
+                var typeInfoCpp = CppNameMapper.MangleTypeName(resolvedName);
+
+                // Ensure TypeInfo symbol exists for primitive types
+                _module.RegisterPrimitiveTypeInfo(resolvedName);
+
+                // Emit runtime type check per ECMA-335 III.4.22
+                block.Instructions.Add(new IRRawCpp
+                {
+                    Code = $"if ({tr}.type != &{typeInfoCpp}_TypeInfo) cil2cpp::throw_invalid_cast();"
+                });
+
+                // Extract typed pointer (no `auto` — let AddAutoDeclarations handle declaration)
                 var tmp = $"__t{tempCounter++}";
                 block.Instructions.Add(new IRRawCpp
                 {
-                    Code = $"auto {tmp} = static_cast<{typeCpp}*>({tr}.value);",
+                    Code = $"{tmp} = static_cast<{typeCpp}*>({tr}.value);",
                     ResultVar = tmp,
                     ResultTypeCpp = $"{typeCpp}*",
                 });
@@ -2000,12 +2029,14 @@ public partial class IRBuilder
 
             case Code.Refanytype:
             {
-                // ECMA-335 III.4.23: extract type handle from TypedReference
+                // ECMA-335 III.4.23: extract RuntimeTypeHandle from TypedReference
+                // CIL2CPP represents RuntimeTypeHandle as TypeInfo* directly
                 var tr = stack.Count > 0 ? stack.Pop() : "{}";
                 var tmp = $"__t{tempCounter++}";
+                // No `auto` — let AddAutoDeclarations handle declaration
                 block.Instructions.Add(new IRRawCpp
                 {
-                    Code = $"auto {tmp} = {tr}.type;",
+                    Code = $"{tmp} = {tr}.type;",
                     ResultVar = tmp,
                     ResultTypeCpp = "cil2cpp::TypeInfo*",
                 });

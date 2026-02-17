@@ -666,6 +666,51 @@ def cmd_integration(args):
     runner.step("Source has cross-assembly method calls", multi_source_has_cross_assembly_calls)
     runner.step("Main has entry point", multi_source_has_entry_point)
 
+    # ===== Phase 6: ArglistTest (varargs + TypedReference) =====
+    header("Phase 6: ArglistTest (varargs, mkrefany, refanyval)")
+
+    arg_sample = TESTPROJECTS_DIR / "ArglistTest" / "ArglistTest.csproj"
+    arg_output = temp_dir / "arglist_output"
+    arg_build = temp_dir / "arglist_build"
+
+    def arg_codegen():
+        run(["dotnet", "run", "--project", str(CLI_PROJECT), "--",
+             "codegen", "-i", str(arg_sample), "-o", str(arg_output)],
+            capture=True)
+
+    def arg_files_exist():
+        for f in ["ArglistTest.h", "ArglistTest.cpp", "main.cpp", "CMakeLists.txt"]:
+            if not (arg_output / f).exists():
+                raise RuntimeError(f"Missing: {f}")
+
+    def arg_cmake_configure():
+        run(["cmake", "-B", str(arg_build), "-S", str(arg_output),
+             "-G", generator, *cmake_arch,
+             f"-DCMAKE_PREFIX_PATH={runtime_prefix}"],
+            capture=True)
+
+    def arg_cmake_build():
+        run(["cmake", "--build", str(arg_build), "--config", config],
+            capture=True)
+
+    def arg_run_verify():
+        exe = _exe_path(arg_build, config, "ArglistTest")
+        if not exe.exists():
+            raise RuntimeError(f"Executable not found: {exe}")
+        r = subprocess.run([str(exe)], capture_output=True, text=True, check=False)
+        if r.returncode != 0:
+            raise RuntimeError(f"ArglistTest exited with code {r.returncode}\nstderr: {r.stderr}")
+        got = r.stdout.strip()
+        expected = "3\nfixed=99 varargs=2\n60\n0\n100\n1 val=42"
+        if got != expected:
+            raise RuntimeError(f"Output mismatch.\nExpected:\n{expected}\nGot:\n{got}")
+
+    runner.step("Codegen ArglistTest", arg_codegen)
+    runner.step("Generated files exist", arg_files_exist)
+    runner.step("CMake configure", arg_cmake_configure)
+    runner.step(f"CMake build ({config})", arg_cmake_build)
+    runner.step("Run ArglistTest and verify output", arg_run_verify)
+
     # ===== Cleanup =====
     header("Cleanup")
 

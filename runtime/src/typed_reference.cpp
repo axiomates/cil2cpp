@@ -1,6 +1,5 @@
 #include "cil2cpp/typed_reference.h"
-#include <cstdio>
-#include <cstdlib>
+#include "cil2cpp/exception.h"
 
 namespace cil2cpp {
 
@@ -22,8 +21,7 @@ int32_t argiterator_get_remaining_count(ArgIterator* self) {
 
 TypedReference argiterator_get_next_arg(ArgIterator* self) {
     if (self->index >= self->count) {
-        fprintf(stderr, "ArgIterator: no more arguments\n");
-        std::abort();
+        throw_invalid_operation();  // .NET throws InvalidOperationException
     }
     auto& entry = self->entries[self->index++];
     return TypedReference{entry.ptr, entry.type};

@@ -37,6 +37,7 @@ add_executable(cil2cpp_tests
     test_memberinfo.cpp
     test_collections.cpp
     test_async.cpp
+    test_typed_reference.cpp
 )
 
 target_link_libraries(cil2cpp_tests
