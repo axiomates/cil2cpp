@@ -222,6 +222,10 @@ public partial class IRBuilder
                 typeParamMap[cecilMethod.GenericParameters[i].Name] = info.TypeArguments[i];
             }
 
+            // Validate generic constraints
+            if (cecilMethod.HasGenericParameters)
+                ValidateGenericConstraints(cecilMethod.GenericParameters, info.TypeArguments, info.MangledName);
+
             var returnTypeName = ResolveGenericTypeName(cecilMethod.ReturnType, typeParamMap);
 
             var irMethod = new IRMethod
@@ -316,6 +320,10 @@ public partial class IRBuilder
             var typeParamMap = new Dictionary<string, string>();
             for (int i = 0; i < openType.GenericParameters.Count && i < info.TypeArguments.Count; i++)
                 typeParamMap[openType.GenericParameters[i].Name] = info.TypeArguments[i];
+
+            // Validate generic constraints
+            if (openType.HasGenericParameters)
+                ValidateGenericConstraints(openType.GenericParameters, info.TypeArguments, key);
 
             var isDelegate = openType.BaseType?.FullName is "System.MulticastDelegate" or "System.Delegate";
 
@@ -728,5 +736,125 @@ public partial class IRBuilder
         }
 
         return CppNameMapper.GetCppTypeForDecl(ilTypeName);
+    }
+
+    /// <summary>
+    /// Validate generic constraints for a type or method specialization.
+    /// Emits warnings to stderr for violated constraints but does not block compilation.
+    /// </summary>
+    private void ValidateGenericConstraints(
+        IList<GenericParameter> genericParams,
+        IList<string> typeArguments,
+        string context)
+    {
+        for (int i = 0; i < genericParams.Count && i < typeArguments.Count; i++)
+        {
+            var gp = genericParams[i];
+            var argName = typeArguments[i];
+
+            // Resolve the actual type to check constraints
+            var argType = ResolveTypeForConstraintCheck(argName);
+            if (argType == null) continue;
+
+            // Check 'struct' constraint (HasNotNullableValueTypeConstraint)
+            if (gp.HasNotNullableValueTypeConstraint && !argType.IsValueType)
+            {
+                Console.Error.WriteLine(
+                    $"WARNING: Generic constraint violation in {context}: " +
+                    $"type argument '{argName}' must be a non-nullable value type (struct constraint on '{gp.Name}')");
+            }
+
+            // Check 'class' constraint (HasReferenceTypeConstraint)
+            if (gp.HasReferenceTypeConstraint && argType.IsValueType)
+            {
+                Console.Error.WriteLine(
+                    $"WARNING: Generic constraint violation in {context}: " +
+                    $"type argument '{argName}' must be a reference type (class constraint on '{gp.Name}')");
+            }
+
+            // Check 'new()' constraint (HasDefaultConstructorConstraint)
+            if (gp.HasDefaultConstructorConstraint && !argType.IsValueType)
+            {
+                var hasDefaultCtor = argType.Methods.Any(m =>
+                    m.IsConstructor && !m.IsStatic && m.Parameters.Count == 0);
+                if (!hasDefaultCtor)
+                {
+                    Console.Error.WriteLine(
+                        $"WARNING: Generic constraint violation in {context}: " +
+                        $"type argument '{argName}' must have a parameterless constructor (new() constraint on '{gp.Name}')");
+                }
+            }
+
+            // Check interface/base type constraints
+            foreach (var constraint in gp.Constraints)
+            {
+                var constraintTypeName = constraint.ConstraintType.FullName;
+                // Skip System.ValueType (handled by struct constraint above)
+                if (constraintTypeName is "System.ValueType" or "System.Object") continue;
+
+                if (!TypeSatisfiesConstraint(argType, constraintTypeName))
+                {
+                    Console.Error.WriteLine(
+                        $"WARNING: Generic constraint violation in {context}: " +
+                        $"type argument '{argName}' must implement or inherit from '{constraintTypeName}' (constraint on '{gp.Name}')");
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Resolve a type argument IL name to its Cecil TypeDefinition for constraint checking.
+    /// </summary>
+    private TypeDefinition? ResolveTypeForConstraintCheck(string ilTypeName)
+    {
+        // Try to find in our type cache → the original Cecil type
+        if (_typeCache.TryGetValue(ilTypeName, out var irType))
+        {
+            // Look up the Cecil type from the _allTypes list
+            var cecilDef = _allTypes?.FirstOrDefault(t => t.FullName == ilTypeName)?.GetCecilType();
+            if (cecilDef != null) return cecilDef;
+        }
+
+        // Try to resolve from loaded assemblies
+        try
+        {
+            foreach (var (_, asm) in _assemblySet.LoadedAssemblies)
+            {
+                var td = asm.MainModule.Types.FirstOrDefault(t => t.FullName == ilTypeName);
+                if (td != null) return td;
+            }
+        }
+        catch { /* ignore resolution failures */ }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Check if a type satisfies an interface or base type constraint.
+    /// </summary>
+    private static bool TypeSatisfiesConstraint(TypeDefinition argType, string constraintTypeName)
+    {
+        // Check direct interface implementation
+        if (argType.Interfaces.Any(i => i.InterfaceType.FullName == constraintTypeName))
+            return true;
+
+        // Walk base type chain
+        var baseType = argType.BaseType;
+        while (baseType != null)
+        {
+            if (baseType.FullName == constraintTypeName) return true;
+            // Check interfaces of base type
+            try
+            {
+                var baseDef = baseType.Resolve();
+                if (baseDef == null) break;
+                if (baseDef.Interfaces.Any(i => i.InterfaceType.FullName == constraintTypeName))
+                    return true;
+                baseType = baseDef.BaseType;
+            }
+            catch { break; }
+        }
+
+        return false;
     }
 }

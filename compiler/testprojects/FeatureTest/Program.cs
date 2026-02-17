@@ -588,6 +588,21 @@ public class IndexRangeHelper
     }
 }
 
+// Custom exception types (Phase 8.2 — exercises user-defined exception throw/catch)
+public class CustomException : Exception
+{
+    public int ErrorCode { get; }
+    public CustomException(string message, int errorCode) : base(message)
+    {
+        ErrorCode = errorCode;
+    }
+}
+
+public class DerivedCustomException : CustomException
+{
+    public DerivedCustomException(string message) : base(message, 999) { }
+}
+
 public class Program
 {
     // Static field (exercises ldsfld/stsfld)
@@ -600,6 +615,7 @@ public class Program
         TestConversions();
         TestBitwiseOps();
         TestExceptionHandling();
+        TestCustomExceptions();
         TestVirtualCalls();
         TestCasting();
         TestBoxingUnboxing();
@@ -698,6 +714,7 @@ public class Program
         TestAsyncConcurrency();
         TestAsyncEnumerable();
         TestReflectionAdvanced();
+        TestNestedExceptionHandling();
     }
 
     static void TestAsyncEnumerable()
@@ -761,6 +778,121 @@ public class Program
         {
             var parms = ctorMethod.GetParameters();
             Console.WriteLine(parms.Length); // 1 (String name)
+        }
+    }
+
+    static void TestNestedExceptionHandling()
+    {
+        // Test 1: try-catch nested in try-finally
+        try
+        {
+            try
+            {
+                throw new InvalidOperationException("inner");
+            }
+            catch (InvalidOperationException)
+            {
+                Console.WriteLine("Inner catch");
+            }
+        }
+        finally
+        {
+            Console.WriteLine("Outer finally");
+        }
+
+        // Test 2: try-finally nested in try-catch
+        try
+        {
+            try
+            {
+                throw new InvalidOperationException("inner");
+            }
+            finally
+            {
+                Console.WriteLine("Inner finally");
+            }
+        }
+        catch (InvalidOperationException)
+        {
+            Console.WriteLine("Outer catch");
+        }
+
+        // Test 3: three-layer nesting (catch throws different type to outer)
+        try
+        {
+            try
+            {
+                try
+                {
+                    throw new Exception("deep");
+                }
+                catch (Exception)
+                {
+                    Console.WriteLine("Level 3 catch");
+                    throw new InvalidOperationException("from-catch");
+                }
+            }
+            catch (InvalidOperationException)
+            {
+                Console.WriteLine("Level 2 catch");
+            }
+        }
+        finally
+        {
+            Console.WriteLine("Level 1 finally");
+        }
+
+        // Test 4: catch rethrow + outer catch
+        try
+        {
+            try
+            {
+                throw new Exception("original");
+            }
+            catch (Exception)
+            {
+                Console.WriteLine("Before rethrow");
+                throw;
+            }
+        }
+        catch (Exception)
+        {
+            Console.WriteLine("After rethrow");
+        }
+
+        // Test 5: finally runs during exception propagation
+        try
+        {
+            try
+            {
+                throw new Exception("propagating");
+            }
+            finally
+            {
+                Console.WriteLine("Finally during propagation");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine("Caught: " + ex.Message);
+        }
+
+        // Test 6: exception from finally replaces original
+        try
+        {
+            try
+            {
+                throw new Exception("original");
+            }
+            finally
+            {
+                Console.WriteLine("Finally before new throw");
+                throw new InvalidOperationException("from-finally");
+            }
+        }
+        catch (InvalidOperationException ex)
+        {
+            Console.WriteLine("Caught from finally: " + ex.Message);
         }
     }
 
@@ -859,6 +991,39 @@ public class Program
         finally
         {
             Console.WriteLine("In finally");
+        }
+    }
+
+    static void TestCustomExceptions()
+    {
+        // Test 1: throw and catch custom exception
+        try
+        {
+            throw new CustomException("custom error", 42);
+        }
+        catch (CustomException ex)
+        {
+            Console.WriteLine("Caught CustomException: " + ex.ErrorCode.ToString());
+        }
+
+        // Test 2: catch derived custom exception as base custom exception
+        try
+        {
+            throw new DerivedCustomException("derived error");
+        }
+        catch (CustomException ex)
+        {
+            Console.WriteLine("Caught DerivedCustomException as CustomException: " + ex.ErrorCode.ToString());
+        }
+
+        // Test 3: catch custom exception as base Exception
+        try
+        {
+            throw new CustomException("base catch", 7);
+        }
+        catch (Exception)
+        {
+            Console.WriteLine("Caught CustomException as Exception");
         }
     }
 
@@ -2454,15 +2619,46 @@ public class DescriptionAttribute : Attribute
     public DescriptionAttribute(string text) { Text = text; }
 }
 
+// Enum for attribute testing
+public enum Severity { Low = 0, Medium = 1, High = 2, Critical = 3 }
+
+// Attribute with Type parameter
+[AttributeUsage(AttributeTargets.All)]
+public class TypeRefAttribute : Attribute
+{
+    public Type TargetType { get; }
+    public TypeRefAttribute(Type targetType) { TargetType = targetType; }
+}
+
+// Attribute with enum parameter
+[AttributeUsage(AttributeTargets.All)]
+public class SeverityAttribute : Attribute
+{
+    public Severity Level { get; }
+    public SeverityAttribute(Severity level) { Level = level; }
+}
+
+// Attribute with array parameter
+[AttributeUsage(AttributeTargets.All)]
+public class TagsAttribute : Attribute
+{
+    public string[] Tags { get; }
+    public TagsAttribute(params string[] tags) { Tags = tags; }
+}
+
 // Type with custom attributes
 [Obsolete("Use NewClass instead")]
 [Description("A test class with attributes")]
+[TypeRef(typeof(string))]
+[Severity(Severity.High)]
+[Tags("important", "test", "example")]
 public class AttributeTestClass
 {
     [Obsolete("Use NewField")]
     public int OldField;
 
     [Description("Important method")]
+    [TypeRef(typeof(int))]
     public void AnnotatedMethod() { }
 }
 
@@ -2631,6 +2827,17 @@ public static class SpanTest
 }
 
 // P/Invoke test class
+// Struct for P/Invoke marshaling test
+[System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+public struct Point2D
+{
+    public int X;
+    public int Y;
+}
+
+// Delegate for P/Invoke callback test
+public delegate int CompareCallback(IntPtr a, IntPtr b);
+
 public static class PInvokeTest
 {
     [System.Runtime.InteropServices.DllImport("msvcrt.dll", EntryPoint = "abs")]
@@ -2638,6 +2845,10 @@ public static class PInvokeTest
 
     [System.Runtime.InteropServices.DllImport("msvcrt.dll", EntryPoint = "strlen")]
     public static extern int NativeStrLen(string s);
+
+    // P/Invoke with delegate callback (qsort uses comparison function pointer)
+    [System.Runtime.InteropServices.DllImport("msvcrt.dll", EntryPoint = "qsort")]
+    public static extern void NativeQSort(IntPtr baseAddr, int numElements, int elementSize, CompareCallback compare);
 }
 
 // Generic Variance test classes

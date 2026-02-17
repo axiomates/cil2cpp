@@ -5,6 +5,7 @@
 
 #pragma once
 
+#include <cmath>
 #include <cstdint>
 #include <limits>
 #include <type_traits>
@@ -135,6 +136,16 @@ TTarget checked_conv_un(TSource value) {
         }
     }
     return static_cast<TTarget>(uval);
+}
+
+// ===== ckfinite (ECMA-335 III.3.19) =====
+// Checks that a floating-point value is finite (not NaN or Infinity).
+// Throws ArithmeticException if not. Returns the value unchanged.
+inline double ckfinite(double val) {
+    if (!std::isfinite(val)) {
+        throw_arithmetic();
+    }
+    return val;
 }
 
 } // namespace cil2cpp

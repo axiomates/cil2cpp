@@ -3283,6 +3283,66 @@ public class IRBuilderTests
             a => a.AttributeTypeName.Contains("NullableContext"));
     }
 
+    // ===== Custom Attribute complex args (Type/Enum/Array) =====
+
+    [Fact]
+    public void Build_FeatureTest_AttributeTestClass_HasTypeRefAttribute()
+    {
+        var module = BuildFeatureTest();
+        var attrType = module.Types.First(t => t.Name == "AttributeTestClass");
+        var typeRef = attrType.CustomAttributes.FirstOrDefault(
+            a => a.AttributeTypeName == "TypeRefAttribute");
+        Assert.NotNull(typeRef);
+        Assert.Single(typeRef.ConstructorArgs);
+        Assert.Equal(AttributeArgKind.Type, typeRef.ConstructorArgs[0].Kind);
+        Assert.Equal("System.String", typeRef.ConstructorArgs[0].Value);
+    }
+
+    [Fact]
+    public void Build_FeatureTest_AttributeTestClass_HasSeverityAttribute()
+    {
+        var module = BuildFeatureTest();
+        var attrType = module.Types.First(t => t.Name == "AttributeTestClass");
+        var severity = attrType.CustomAttributes.FirstOrDefault(
+            a => a.AttributeTypeName == "SeverityAttribute");
+        Assert.NotNull(severity);
+        Assert.Single(severity.ConstructorArgs);
+        Assert.Equal(AttributeArgKind.Enum, severity.ConstructorArgs[0].Kind);
+        Assert.Equal(2L, severity.ConstructorArgs[0].Value);  // Severity.High == 2
+    }
+
+    [Fact]
+    public void Build_FeatureTest_AttributeTestClass_HasTagsAttribute()
+    {
+        var module = BuildFeatureTest();
+        var attrType = module.Types.First(t => t.Name == "AttributeTestClass");
+        var tags = attrType.CustomAttributes.FirstOrDefault(
+            a => a.AttributeTypeName == "TagsAttribute");
+        Assert.NotNull(tags);
+        Assert.Single(tags.ConstructorArgs);
+        var arrayArg = tags.ConstructorArgs[0];
+        Assert.Equal(AttributeArgKind.Array, arrayArg.Kind);
+        Assert.NotNull(arrayArg.ArrayElements);
+        Assert.Equal(3, arrayArg.ArrayElements.Count);
+        Assert.Equal("important", arrayArg.ArrayElements[0].Value);
+        Assert.Equal("test", arrayArg.ArrayElements[1].Value);
+        Assert.Equal("example", arrayArg.ArrayElements[2].Value);
+    }
+
+    [Fact]
+    public void Build_FeatureTest_AnnotatedMethod_HasTypeRefAttribute()
+    {
+        var module = BuildFeatureTest();
+        var attrType = module.Types.First(t => t.Name == "AttributeTestClass");
+        var method = attrType.Methods.First(m => m.Name == "AnnotatedMethod");
+        var typeRef = method.CustomAttributes.FirstOrDefault(
+            a => a.AttributeTypeName == "TypeRefAttribute");
+        Assert.NotNull(typeRef);
+        Assert.Single(typeRef.ConstructorArgs);
+        Assert.Equal(AttributeArgKind.Type, typeRef.ConstructorArgs[0].Kind);
+        Assert.Equal("System.Int32", typeRef.ConstructorArgs[0].Value);
+    }
+
     // ===== Multi-dimensional array tests =====
 
     [Fact]
@@ -3339,6 +3399,29 @@ public class IRBuilderTests
         var method = type.Methods.First(m => m.Name == "NativeAbs");
         // P/Invoke methods have no IL body
         Assert.Empty(method.BasicBlocks);
+    }
+
+    [Fact]
+    public void Build_FeatureTest_PInvoke_NativeQSort_HasDelegateParam()
+    {
+        var module = BuildFeatureTest();
+        var type = module.Types.First(t => t.Name == "PInvokeTest");
+        var method = type.Methods.First(m => m.Name == "NativeQSort");
+        Assert.True(method.IsPInvoke);
+        Assert.Equal("qsort", method.PInvokeEntryPoint);
+        // Last parameter should be a delegate (CompareCallback)
+        var lastParam = method.Parameters.Last();
+        Assert.NotNull(lastParam.ParameterType);
+        Assert.True(lastParam.ParameterType!.IsDelegate);
+    }
+
+    [Fact]
+    public void Build_FeatureTest_PInvoke_Point2D_IsValueType()
+    {
+        var module = BuildFeatureTest();
+        var type = module.Types.First(t => t.Name == "Point2D");
+        Assert.True(type.IsValueType);
+        Assert.Equal(2, type.Fields.Count);
     }
 
     // ===== Default Interface Methods (DIM) tests =====

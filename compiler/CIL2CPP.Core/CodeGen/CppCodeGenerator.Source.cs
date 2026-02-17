@@ -1259,17 +1259,29 @@ public partial class CppCodeGenerator
     /// </summary>
     private void EmitAttributeInfoArray(StringBuilder sb, string arrayName, List<IRCustomAttribute> attrs)
     {
-        // First, emit argument arrays for attributes that have arguments
+        // First, emit argument arrays (including nested array element arrays)
         for (int i = 0; i < attrs.Count; i++)
         {
             var attr = attrs[i];
             if (attr.ConstructorArgs.Count > 0)
             {
-                sb.AppendLine($"static cil2cpp::CustomAttributeArg {arrayName}_{i}_args[] = {{");
-                foreach (var arg in attr.ConstructorArgs)
+                // Emit nested array element arrays first
+                for (int j = 0; j < attr.ConstructorArgs.Count; j++)
                 {
+                    var arg = attr.ConstructorArgs[j];
+                    if (arg.Kind == AttributeArgKind.Array && arg.ArrayElements is { Count: > 0 })
+                    {
+                        EmitAttributeArgArray(sb, $"{arrayName}_{i}_a{j}_elems", arg.ArrayElements);
+                    }
+                }
+
+                sb.AppendLine($"static cil2cpp::CustomAttributeArg {arrayName}_{i}_args[] = {{");
+                for (int j = 0; j < attr.ConstructorArgs.Count; j++)
+                {
+                    var arg = attr.ConstructorArgs[j];
                     var valueInit = FormatAttributeArgValue(arg);
-                    sb.AppendLine($"    {{ .type_name = \"{arg.TypeName}\", {valueInit} }},");
+                    var arrayInit = FormatAttributeArgArrayFields(arg, $"{arrayName}_{i}_a{j}_elems");
+                    sb.AppendLine($"    {{ .type_name = \"{EscapeCppString(arg.TypeName)}\", {valueInit}{arrayInit} }},");
                 }
                 sb.AppendLine("};");
             }
@@ -1290,20 +1302,47 @@ public partial class CppCodeGenerator
     }
 
     /// <summary>
+    /// Emit a static array of CustomAttributeArg for array-typed attribute arguments.
+    /// </summary>
+    private void EmitAttributeArgArray(StringBuilder sb, string varName, List<IRAttributeArg> elements)
+    {
+        sb.AppendLine($"static cil2cpp::CustomAttributeArg {varName}[] = {{");
+        foreach (var elem in elements)
+        {
+            var valueInit = FormatAttributeArgValue(elem);
+            sb.AppendLine($"    {{ .type_name = \"{EscapeCppString(elem.TypeName)}\", {valueInit}, .array_elements = nullptr, .array_count = 0 }},");
+        }
+        sb.AppendLine("};");
+    }
+
+    /// <summary>
+    /// Format the array_elements and array_count fields for a CustomAttributeArg initializer.
+    /// </summary>
+    private static string FormatAttributeArgArrayFields(IRAttributeArg arg, string elemVarName)
+    {
+        if (arg.Kind == AttributeArgKind.Array && arg.ArrayElements is { Count: > 0 })
+            return $", .array_elements = {elemVarName}, .array_count = {arg.ArrayElements.Count}";
+        return ", .array_elements = nullptr, .array_count = 0";
+    }
+
+    /// <summary>
     /// Format a custom attribute argument value for C++ designated initializer.
     /// </summary>
     private static string FormatAttributeArgValue(IRAttributeArg arg)
     {
-        if (arg.Value == null)
+        if (arg.Value == null && arg.Kind != AttributeArgKind.Array)
             return ".string_val = nullptr";
 
-        return arg.TypeName switch
+        return arg.Kind switch
         {
-            "System.String" => $".string_val = \"{EscapeCppString(arg.Value.ToString() ?? "")}\"",
-            "System.Single" => $".float_val = {FormatFloat(arg.Value)}",
-            "System.Double" => $".float_val = {FormatDouble(arg.Value)}",
-            "System.Boolean" => $".int_val = {((bool)arg.Value ? 1 : 0)}",
-            "System.Char" => $".int_val = {(int)(char)arg.Value}",
+            AttributeArgKind.String => $".string_val = \"{EscapeCppString(arg.Value?.ToString() ?? "")}\"",
+            AttributeArgKind.Type => $".string_val = \"{EscapeCppString(arg.Value?.ToString() ?? "")}\"",
+            AttributeArgKind.Float when arg.TypeName == "System.Single" => $".float_val = {FormatFloat(arg.Value!)}",
+            AttributeArgKind.Float => $".float_val = {FormatDouble(arg.Value!)}",
+            AttributeArgKind.Enum => $".int_val = {Convert.ToInt64(arg.Value)}",
+            AttributeArgKind.Array => ".int_val = 0",  // value union unused for arrays
+            AttributeArgKind.Int when arg.TypeName == "System.Boolean" => $".int_val = {((bool)arg.Value! ? 1 : 0)}",
+            AttributeArgKind.Int when arg.TypeName == "System.Char" => $".int_val = {(int)(char)arg.Value!}",
             _ => $".int_val = {Convert.ToInt64(arg.Value)}",
         };
     }
@@ -1338,8 +1377,6 @@ public partial class CppCodeGenerator
                         && t.SourceKind != AssemblyKind.BCL)
             .SelectMany(t => t.Methods)
             .Where(m => m.IsPInvoke)
-            .Where(m => !m.Parameters.Any(p => p.CppTypeName.Contains("(") || p.CppTypeName.Contains(")")))
-            .Where(m => !(m.ReturnTypeCpp.Contains("(") || m.ReturnTypeCpp.Contains(")")))
             .ToList();
 
         if (pinvokeMethods.Count == 0) return;
@@ -1357,9 +1394,23 @@ public partial class CppCodeGenerator
             foreach (var method in needsExternDecl)
             {
                 var entryPoint = method.PInvokeEntryPoint ?? method.Name;
-                var retType = GetPInvokeNativeType(method.ReturnTypeCpp);
-                var paramTypes = method.Parameters.Select(p => GetPInvokeNativeType(p.CppTypeName)).ToList();
-                var paramDecl = string.Join(", ", paramTypes.Select((t, i) => $"{t} p{i}"));
+                var retType = GetPInvokeNativeType(method.ReturnTypeCpp, null);
+                var paramParts = new List<string>();
+                for (int i = 0; i < method.Parameters.Count; i++)
+                {
+                    var p = method.Parameters[i];
+                    var nativeType = GetPInvokeNativeType(p.CppTypeName, p.ParameterType);
+                    if (IsDelegateType(p.ParameterType))
+                    {
+                        // Function pointer: emit as callback type with parameter name
+                        paramParts.Add($"{nativeType}");
+                    }
+                    else
+                    {
+                        paramParts.Add($"{nativeType} p{i}");
+                    }
+                }
+                var paramDecl = string.Join(", ", paramParts);
                 sb.AppendLine($"    {retType} {entryPoint}({paramDecl});");
             }
 
@@ -1367,7 +1418,7 @@ public partial class CppCodeGenerator
             sb.AppendLine();
         }
 
-        // Generate managed wrappers that marshal String* ↔ const char*
+        // Generate managed wrappers
         sb.AppendLine("// ===== P/Invoke Wrappers =====");
         foreach (var method in pinvokeMethods)
         {
@@ -1378,15 +1429,22 @@ public partial class CppCodeGenerator
             sb.AppendLine($"// P/Invoke: {method.PInvokeModule}!{entryPoint}");
             sb.AppendLine($"{sig} {{");
 
-            // Marshal arguments: String* → const char*
+            // Marshal arguments
             var callArgs = new List<string>();
             for (int i = 0; i < method.Parameters.Count; i++)
             {
                 var param = method.Parameters[i];
                 if (IsStringType(param.CppTypeName))
                 {
-                    // Marshal String* to C string
+                    // String* → const char*
                     sb.AppendLine($"    auto __p{i} = cil2cpp::string_to_utf8({param.CppName});");
+                    callArgs.Add($"__p{i}");
+                }
+                else if (IsDelegateType(param.ParameterType))
+                {
+                    // Delegate* → C function pointer via method_ptr
+                    var fnPtrType = GetDelegateFunctionPointerType(param.ParameterType);
+                    sb.AppendLine($"    auto __p{i} = reinterpret_cast<{fnPtrType}>(reinterpret_cast<cil2cpp::Delegate*>({param.CppName})->method_ptr);");
                     callArgs.Add($"__p{i}");
                 }
                 else
@@ -1402,7 +1460,6 @@ public partial class CppCodeGenerator
             }
             else if (IsStringType(retType))
             {
-                // Marshal const char* return to String*
                 sb.AppendLine($"    auto __ret = {entryPoint}({argStr});");
                 sb.AppendLine($"    return cil2cpp::string_literal(__ret);");
             }
@@ -1418,14 +1475,42 @@ public partial class CppCodeGenerator
 
     /// <summary>
     /// Convert C++ managed type to native P/Invoke type.
-    /// String* → const char*, other types pass through.
     /// </summary>
-    private static string GetPInvokeNativeType(string cppType) => cppType switch
+    private string GetPInvokeNativeType(string cppType, IRType? paramType)
     {
-        "cil2cpp::String*" => "const char*",
-        "void" => "void",
-        _ => cppType
-    };
+        if (cppType == "cil2cpp::String*") return "const char*";
+        if (cppType == "void") return "void";
+        if (IsDelegateType(paramType)) return GetDelegateFunctionPointerType(paramType!);
+        return cppType;
+    }
+
+    /// <summary>
+    /// Check if a type is a delegate type.
+    /// </summary>
+    private static bool IsDelegateType(IRType? type) =>
+        type is { IsDelegate: true };
+
+    /// <summary>
+    /// Get the C function pointer type for a delegate type.
+    /// Looks up the delegate's Invoke method to determine the signature.
+    /// Returns "RetType(*)(ParamTypes...)" syntax.
+    /// </summary>
+    private static string GetDelegateFunctionPointerType(IRType? delegateType)
+    {
+        if (delegateType == null) return "void(*)()";
+
+        var invoke = delegateType.Methods.FirstOrDefault(m => m.Name == "Invoke");
+        if (invoke == null) return "void(*)()";
+
+        var retType = invoke.ReturnTypeCpp == "void" ? "void"
+            : invoke.ReturnTypeCpp == "cil2cpp::String*" ? "const char*"
+            : invoke.ReturnTypeCpp;
+        var paramTypes = invoke.Parameters
+            .Select(p => p.CppTypeName == "cil2cpp::String*" ? "const char*" : p.CppTypeName)
+            .ToList();
+
+        return $"{retType}(*)({string.Join(", ", paramTypes)})";
+    }
 
     private static bool IsStringType(string cppType) =>
         cppType is "cil2cpp::String*";

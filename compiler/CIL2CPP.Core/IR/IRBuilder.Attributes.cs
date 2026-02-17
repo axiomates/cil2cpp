@@ -6,7 +6,7 @@ public partial class IRBuilder
 {
     /// <summary>
     /// Collect custom attributes from a Cecil ICustomAttributeProvider.
-    /// Only extracts primitive and string constructor arguments.
+    /// Supports primitive, string, Type, enum, and array constructor arguments.
     /// </summary>
     private static List<IRCustomAttribute> CollectAttributes(ICustomAttributeProvider provider)
     {
@@ -25,19 +25,14 @@ public partial class IRBuilder
                 AttributeTypeCppName = CppNameMapper.MangleTypeName(attrTypeName),
             };
 
-            // Collect primitive/string constructor arguments
+            // Collect constructor arguments
             if (attr.HasConstructorArguments)
             {
                 foreach (var arg in attr.ConstructorArguments)
                 {
-                    if (IsSupportedAttributeArgType(arg.Type))
-                    {
-                        irAttr.ConstructorArgs.Add(new IRAttributeArg
-                        {
-                            TypeName = arg.Type.FullName,
-                            Value = arg.Value,
-                        });
-                    }
+                    var irArg = ConvertAttributeArg(arg);
+                    if (irArg != null)
+                        irAttr.ConstructorArgs.Add(irArg);
                 }
             }
 
@@ -45,6 +40,94 @@ public partial class IRBuilder
         }
 
         return result;
+    }
+
+    /// <summary>
+    /// Convert a Cecil CustomAttributeArgument to an IRAttributeArg.
+    /// Returns null if the argument type is unsupported.
+    /// </summary>
+    private static IRAttributeArg? ConvertAttributeArg(CustomAttributeArgument arg)
+    {
+        var typeName = arg.Type.FullName;
+
+        // Type argument: typeof(T)
+        if (typeName == "System.Type" && arg.Value is TypeReference typeRef)
+        {
+            return new IRAttributeArg
+            {
+                TypeName = "System.Type",
+                Kind = AttributeArgKind.Type,
+                Value = typeRef.FullName,
+            };
+        }
+
+        // Array argument
+        if (arg.Type is ArrayType arrayType && arg.Value is CustomAttributeArgument[] elements)
+        {
+            var irArg = new IRAttributeArg
+            {
+                TypeName = arrayType.FullName,
+                Kind = AttributeArgKind.Array,
+                ArrayElements = new List<IRAttributeArg>(),
+            };
+            foreach (var elem in elements)
+            {
+                var irElem = ConvertAttributeArg(elem);
+                if (irElem != null)
+                    irArg.ArrayElements.Add(irElem);
+            }
+            return irArg;
+        }
+
+        // Enum argument: resolve checks if the type is an enum
+        var resolvedType = TryResolveType(arg.Type);
+        if (resolvedType is { IsEnum: true })
+        {
+            return new IRAttributeArg
+            {
+                TypeName = typeName,
+                Kind = AttributeArgKind.Enum,
+                Value = Convert.ToInt64(arg.Value),
+            };
+        }
+
+        // Primitive / string
+        return typeName switch
+        {
+            "System.String" => new IRAttributeArg
+            {
+                TypeName = typeName,
+                Kind = AttributeArgKind.String,
+                Value = arg.Value,
+            },
+            "System.Single" or "System.Double" => new IRAttributeArg
+            {
+                TypeName = typeName,
+                Kind = AttributeArgKind.Float,
+                Value = arg.Value,
+            },
+            "System.Boolean" or "System.Byte" or "System.SByte" or
+            "System.Int16" or "System.UInt16" or
+            "System.Int32" or "System.UInt32" or
+            "System.Int64" or "System.UInt64" or
+            "System.Char" => new IRAttributeArg
+            {
+                TypeName = typeName,
+                Kind = AttributeArgKind.Int,
+                Value = arg.Value,
+            },
+            _ => null, // unsupported type
+        };
+    }
+
+    /// <summary>
+    /// Try to resolve a TypeReference to a TypeDefinition (for enum detection).
+    /// Returns null if resolution fails.
+    /// </summary>
+    private static TypeDefinition? TryResolveType(TypeReference typeRef)
+    {
+        try { return typeRef.Resolve(); }
+        catch { return null; }
     }
 
     /// <summary>
@@ -65,23 +148,6 @@ public partial class IRBuilder
         "Microsoft.CodeAnalysis.EmbeddedAttribute" => true,
         _ => false,
     };
-
-    /// <summary>
-    /// Check if a type is supported for attribute argument storage.
-    /// </summary>
-    private static bool IsSupportedAttributeArgType(TypeReference type)
-    {
-        return type.FullName switch
-        {
-            "System.Boolean" or "System.Byte" or "System.SByte" or
-            "System.Int16" or "System.UInt16" or
-            "System.Int32" or "System.UInt32" or
-            "System.Int64" or "System.UInt64" or
-            "System.Single" or "System.Double" or
-            "System.Char" or "System.String" => true,
-            _ => false,
-        };
-    }
 
     /// <summary>
     /// Populate custom attributes on all IR types, methods, and fields.

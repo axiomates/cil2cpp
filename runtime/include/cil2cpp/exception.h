@@ -10,15 +10,30 @@
 
 namespace cil2cpp {
 
+struct Array; // forward declaration for Exception fields
+
 /**
  * Base exception type.
  * Corresponds to System.Exception.
  */
 struct Exception : Object {
-    // Field names match BCL (System.Exception) for AOT-compiled IL compatibility
-    String* f_message;           // System.Exception._message
-    Exception* f_innerException; // System.Exception._innerException
-    String* f_stackTraceString;  // System.Exception._stackTraceString
+    // All BCL fields in declaration order (must match System.Exception field layout exactly
+    // for compatibility with AOT-compiled IL that inherits from Exception)
+    Object* f_exceptionMethod;           // System.Exception._exceptionMethod (MethodBase*)
+    String* f_message;                   // System.Exception._message
+    Object* f_data;                      // System.Exception._data (IDictionary*)
+    Exception* f_innerException;         // System.Exception._innerException
+    String* f_helpURL;                   // System.Exception._helpURL
+    Array* f_stackTrace;                 // System.Exception._stackTrace (Object[])
+    Array* f_watsonBuckets;              // System.Exception._watsonBuckets (byte[])
+    String* f_stackTraceString;          // System.Exception._stackTraceString
+    String* f_remoteStackTraceString;    // System.Exception._remoteStackTraceString
+    Array* f_dynamicMethods;             // System.Exception._dynamicMethods (Object[])
+    String* f_source;                    // System.Exception._source
+    UIntPtr f_ipForWatsonBuckets;        // System.Exception._ipForWatsonBuckets
+    IntPtr f_xptrs;                      // System.Exception._xptrs
+    Int32 f_xcode;                       // System.Exception._xcode
+    Int32 f_HResult;                     // System.Exception._HResult
 
     // Convenience aliases for runtime C++ code
     String*& message() { return f_message; }
@@ -128,6 +143,7 @@ extern thread_local ExceptionContext* g_exception_context;
 [[noreturn]] void throw_not_implemented();
 [[noreturn]] void throw_format();
 [[noreturn]] void throw_divide_by_zero();
+[[noreturn]] void throw_arithmetic();
 [[noreturn]] void throw_object_disposed();
 [[noreturn]] void throw_key_not_found();
 [[noreturn]] void throw_timeout();

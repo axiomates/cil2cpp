@@ -440,6 +440,180 @@ TEST_F(ExceptionTest, NestedTryCatch_InnerDoesNotCatch_OuterCatches) {
     EXPECT_TRUE(outer_caught);
 }
 
+// ===== Nested exception handling edge cases =====
+
+TEST_F(ExceptionTest, CatchThrowsNewException_CaughtByOuter) {
+    // If a catch handler throws a NEW exception, it should propagate to the outer handler
+    // (not be re-caught by the same catch handler)
+    bool inner_caught = false;
+    bool outer_caught = false;
+
+    CIL2CPP_TRY
+        CIL2CPP_TRY
+            throw_null_reference();
+        CIL2CPP_CATCH_ALL
+            inner_caught = true;
+            throw_invalid_operation();  // throw new exception from catch body
+        CIL2CPP_END_TRY
+    CIL2CPP_CATCH_ALL
+        outer_caught = true;
+    CIL2CPP_END_TRY
+
+    EXPECT_TRUE(inner_caught);
+    EXPECT_TRUE(outer_caught);
+}
+
+TEST_F(ExceptionTest, CatchThrowsSameType_NotRecaughtBySameHandler) {
+    // Throwing the same exception type from catch should NOT re-trigger the same catch
+    bool inner_caught_count = false;
+    bool outer_caught = false;
+    int inner_catch_count = 0;
+
+    CIL2CPP_TRY
+        CIL2CPP_TRY
+            throw_null_reference();
+        CIL2CPP_CATCH(cil2cpp::NullReferenceException)
+            inner_catch_count++;
+            inner_caught_count = true;
+            throw_null_reference();  // same type — must NOT re-catch here
+        CIL2CPP_END_TRY
+    CIL2CPP_CATCH_ALL
+        outer_caught = true;
+    CIL2CPP_END_TRY
+
+    EXPECT_TRUE(inner_caught_count);
+    EXPECT_EQ(inner_catch_count, 1);  // caught exactly once, not re-entered
+    EXPECT_TRUE(outer_caught);
+}
+
+TEST_F(ExceptionTest, FinallyThrows_CaughtByOuter) {
+    // If a finally block throws, the new exception should propagate to the outer handler
+    // (not cause an infinite loop by re-entering the same try)
+    bool finally_ran = false;
+    bool outer_caught = false;
+
+    CIL2CPP_TRY
+        CIL2CPP_TRY
+            throw_null_reference();
+        CIL2CPP_FINALLY
+            finally_ran = true;
+            throw_invalid_operation();  // throw from finally
+        CIL2CPP_END_TRY
+    CIL2CPP_CATCH_ALL
+        outer_caught = true;
+    CIL2CPP_END_TRY
+
+    EXPECT_TRUE(finally_ran);
+    EXPECT_TRUE(outer_caught);
+}
+
+TEST_F(ExceptionTest, FinallyThrows_NoException_CaughtByOuter) {
+    // Even when no exception is pending, throwing from finally should propagate outward
+    bool finally_ran = false;
+    bool outer_caught = false;
+
+    CIL2CPP_TRY
+        CIL2CPP_TRY
+            // no exception in try body
+        CIL2CPP_FINALLY
+            finally_ran = true;
+            throw_invalid_operation();
+        CIL2CPP_END_TRY
+    CIL2CPP_CATCH_ALL
+        outer_caught = true;
+    CIL2CPP_END_TRY
+
+    EXPECT_TRUE(finally_ran);
+    EXPECT_TRUE(outer_caught);
+}
+
+TEST_F(ExceptionTest, ThreeLayerNested_CatchRethrowDifferent) {
+    // Three layers: innermost throws, middle catches and throws different, outer catches
+    bool level3_caught = false;
+    bool level2_caught = false;
+    bool level1_finally = false;
+
+    CIL2CPP_TRY
+        CIL2CPP_TRY
+            CIL2CPP_TRY
+                throw_null_reference();
+            CIL2CPP_CATCH_ALL
+                level3_caught = true;
+                throw_invalid_operation();  // throw different type
+            CIL2CPP_END_TRY
+        CIL2CPP_CATCH_ALL
+            level2_caught = true;
+        CIL2CPP_END_TRY
+    CIL2CPP_FINALLY
+        level1_finally = true;
+    CIL2CPP_END_TRY
+
+    EXPECT_TRUE(level3_caught);
+    EXPECT_TRUE(level2_caught);
+    EXPECT_TRUE(level1_finally);
+}
+
+TEST_F(ExceptionTest, TryFinallyInsideTryCatch_PropagatesCorrectly) {
+    // try-finally nested in try-catch: finally runs, then exception caught by outer
+    bool inner_finally = false;
+    bool outer_caught = false;
+
+    CIL2CPP_TRY
+        CIL2CPP_TRY
+            throw_null_reference();
+        CIL2CPP_FINALLY
+            inner_finally = true;
+        CIL2CPP_END_TRY
+    CIL2CPP_CATCH_ALL
+        outer_caught = true;
+    CIL2CPP_END_TRY
+
+    EXPECT_TRUE(inner_finally);
+    EXPECT_TRUE(outer_caught);
+}
+
+TEST_F(ExceptionTest, TryCatchInsideTryFinally_FinallyRunsAfterCatch) {
+    // try-catch nested in try-finally: catch handles, finally still runs
+    bool inner_caught = false;
+    bool outer_finally = false;
+
+    CIL2CPP_TRY
+        CIL2CPP_TRY
+            throw_null_reference();
+        CIL2CPP_CATCH_ALL
+            inner_caught = true;
+        CIL2CPP_END_TRY
+    CIL2CPP_FINALLY
+        outer_finally = true;
+    CIL2CPP_END_TRY
+
+    EXPECT_TRUE(inner_caught);
+    EXPECT_TRUE(outer_finally);
+}
+
+TEST_F(ExceptionTest, FinallyReplacesOriginalException) {
+    // When finally throws, the new exception replaces the original
+    // (matching .NET semantics)
+    Exception* caught_ex = nullptr;
+
+    CIL2CPP_TRY
+        CIL2CPP_TRY
+            throw_null_reference();  // original exception
+        CIL2CPP_FINALLY
+            throw_invalid_operation();  // replaces original
+        CIL2CPP_END_TRY
+    CIL2CPP_CATCH_ALL
+        caught_ex = get_current_exception();
+    CIL2CPP_END_TRY
+
+    ASSERT_NE(caught_ex, nullptr);
+    // The caught exception should be InvalidOperationException (from finally),
+    // not NullReferenceException (original)
+    EXPECT_TRUE(object_is_instance_of(
+        reinterpret_cast<Object*>(caught_ex),
+        &InvalidOperationException_TypeInfo));
+}
+
 // ===== Exception context state =====
 
 TEST_F(ExceptionTest, ExceptionContext_State0InTry) {

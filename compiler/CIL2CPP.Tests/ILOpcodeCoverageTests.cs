@@ -52,7 +52,7 @@ public class ILOpcodeCoverageTests
     [Fact]
     public void KnownUnimplemented_Count()
     {
-        Assert.Equal(11, IRBuilder.KnownUnimplementedOpcodes.Count);
+        Assert.Equal(6, IRBuilder.KnownUnimplementedOpcodes.Count);
     }
 
     // ===== Per-category coverage tests =====

@@ -90,6 +90,8 @@ struct CustomAttributeArg {
         double float_val;
         const char* string_val;
     };
+    CustomAttributeArg* array_elements;  // non-null for array arguments
+    UInt32 array_count;                  // number of elements in array_elements
 };
 
 /**

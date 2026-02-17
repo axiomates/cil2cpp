@@ -8,6 +8,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <type_traits>
 
 // Platform-specific headers for stack trace capture
 #ifdef CIL2CPP_DEBUG
@@ -52,34 +53,48 @@ extern TypeInfo TaskCanceledException_TypeInfo;
 extern TypeInfo KeyNotFoundException_TypeInfo;
 
 [[noreturn]] void throw_exception(Exception* ex) {
+    // Skip contexts that are in catch (state=1) or finally (state=2) state.
+    // This prevents re-entering the same handler when an exception is thrown
+    // from within a catch or finally block — matching .NET semantics where
+    // such exceptions propagate to the enclosing try block.
+    while (g_exception_context && g_exception_context->state != 0) {
+        g_exception_context = g_exception_context->previous;
+    }
+
     if (g_exception_context) {
         g_exception_context->current_exception = ex;
         longjmp(g_exception_context->jump_buffer, 1);
-    } else {
-        // No exception handler, terminate
-        fprintf(stderr, "Unhandled exception: ");
-        if (ex && ex->f_message) {
-            // TODO: Convert string to UTF-8 and print
-            fprintf(stderr, "(exception message)\n");
-        } else {
-            fprintf(stderr, "(no message)\n");
-        }
-
-        // Print stack trace if available
-        if (ex && ex->f_stackTraceString) {
-            fprintf(stderr, "Stack trace:\n");
-            auto trace = string_to_utf8(ex->f_stackTraceString);
-            if (trace) {
-                fprintf(stderr, "%s", trace);
-            }
-        }
-
-        std::abort();
     }
+
+    // No exception handler — unhandled exception
+    fprintf(stderr, "\nUnhandled exception: ");
+    if (ex && ex->f_message) {
+        auto msg = string_to_utf8(ex->f_message);
+        if (msg) {
+            fprintf(stderr, "%s\n", msg);
+            free(msg);
+        } else {
+            fprintf(stderr, "(message decode failed)\n");
+        }
+    } else {
+        fprintf(stderr, "(no message)\n");
+    }
+
+    if (ex && ex->f_stackTraceString) {
+        auto trace = string_to_utf8(ex->f_stackTraceString);
+        if (trace) {
+            fprintf(stderr, "Stack trace:\n%s", trace);
+            free(trace);
+        }
+    }
+
+    std::abort();
 }
 
-static Exception* create_exception(TypeInfo* type, const char* message) {
-    Exception* ex = static_cast<Exception*>(gc::alloc(sizeof(Exception), type));
+template<typename T = Exception>
+static T* create_exception(TypeInfo* type, const char* message) {
+    static_assert(std::is_base_of_v<Exception, T>, "T must derive from Exception");
+    T* ex = static_cast<T*>(gc::alloc(sizeof(T), type));
     if (message) {
         ex->f_message = string_literal(message);
     }
@@ -119,19 +134,19 @@ static Exception* create_exception(TypeInfo* type, const char* message) {
 }
 
 [[noreturn]] void throw_argument_null() {
-    Exception* ex = create_exception(&ArgumentNullException_TypeInfo,
+    auto* ex = create_exception<ArgumentNullException>(&ArgumentNullException_TypeInfo,
                                       "Value cannot be null.");
     throw_exception(ex);
 }
 
 [[noreturn]] void throw_argument() {
-    Exception* ex = create_exception(&ArgumentException_TypeInfo,
+    auto* ex = create_exception<ArgumentException>(&ArgumentException_TypeInfo,
                                       "Value does not fall within the expected range.");
     throw_exception(ex);
 }
 
 [[noreturn]] void throw_argument_out_of_range() {
-    Exception* ex = create_exception(&ArgumentOutOfRangeException_TypeInfo,
+    auto* ex = create_exception<ArgumentOutOfRangeException>(&ArgumentOutOfRangeException_TypeInfo,
                                       "Specified argument was out of the range of valid values.");
     throw_exception(ex);
 }
@@ -160,8 +175,14 @@ static Exception* create_exception(TypeInfo* type, const char* message) {
     throw_exception(ex);
 }
 
+[[noreturn]] void throw_arithmetic() {
+    Exception* ex = create_exception(&ArithmeticException_TypeInfo,
+                                      "Value is not a finite number.");
+    throw_exception(ex);
+}
+
 [[noreturn]] void throw_object_disposed() {
-    Exception* ex = create_exception(&ObjectDisposedException_TypeInfo,
+    auto* ex = create_exception<ObjectDisposedException>(&ObjectDisposedException_TypeInfo,
                                       "Cannot access a disposed object.");
     throw_exception(ex);
 }
@@ -194,12 +215,12 @@ static Exception* create_exception(TypeInfo* type, const char* message) {
     char buf[256];
     snprintf(buf, sizeof(buf), "The type initializer for '%s' threw an exception.",
              type_name ? type_name : "<unknown>");
-    Exception* ex = create_exception(&TypeInitializationException_TypeInfo, buf);
+    auto* ex = create_exception<TypeInitializationException>(&TypeInitializationException_TypeInfo, buf);
     throw_exception(ex);
 }
 
 [[noreturn]] void throw_operation_canceled() {
-    Exception* ex = create_exception(&OperationCanceledException_TypeInfo,
+    auto* ex = create_exception<OperationCanceledException>(&OperationCanceledException_TypeInfo,
                                       "The operation was canceled.");
     throw_exception(ex);
 }

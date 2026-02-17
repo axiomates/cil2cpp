@@ -35,14 +35,14 @@ cil2cpp/
 │   │   ├── IL/                 #     IL 解析 (Mono.Cecil)
 │   │   ├── IR/                 #     中间表示 + 类型映射
 │   │   └── CodeGen/            #     C++ 代码生成
-│   ├── CIL2CPP.Tests/          #   编译器单元测试 (xUnit, 1117+ tests)
+│   ├── CIL2CPP.Tests/          #   编译器单元测试 (xUnit, 1236+ tests)
 │   └── testprojects/           #   测试用 C# 项目（编译器输入）
 ├── runtime/                    # C++ 运行时库 (CMake 项目)
 │   ├── CMakeLists.txt
 │   ├── cmake/                  #   CMake 包配置模板
 │   ├── include/cil2cpp/        #   头文件
 │   ├── src/                    #   GC、类型系统、异常、BCL
-│   └── tests/                  #   运行时单元测试 (Google Test, 508+ tests)
+│   └── tests/                  #   运行时单元测试 (Google Test, 461+ tests)
 └── tools/
     └── dev.py                  # 开发者 CLI (build/test/coverage/codegen/integration)
 ```
@@ -355,7 +355,7 @@ CIL2CPP 是一个 **CIL (Common Intermediate Language) → C++ 翻译器**，不
 ┌─────────────────────────────────────────────────────────┐
 │  Layer 1: CIL 指令翻译                                   │
 │  ConvertInstruction() switch — ~220 opcodes             │
-│  覆盖率: 96%+ (仅 11 个极罕见指令未实现)                  │
+│  覆盖率: 97%+ (仅 6 个极罕见指令未实现)                  │
 │  这一层决定: 能否将 IL 方法体翻译为 C++                   │
 ├─────────────────────────────────────────────────────────┤
 │  Layer 2: BCL 方法编译                                   │
@@ -372,7 +372,7 @@ CIL2CPP 是一个 **CIL (Common Intermediate Language) → C++ 翻译器**，不
 
 ### CIL 指令覆盖率 (Layer 1)
 
-ECMA-335 标准定义了约 230 种 IL 操作码变体。CIL2CPP 的 `ConvertInstruction()` switch 处理其中 ~220 种（96%+），仅 11 种极罕见指令未实现。覆盖率通过 `ILOpcodeCoverageTests` 自动验证。
+ECMA-335 标准定义了约 230 种 IL 操作码变体。CIL2CPP 的 `ConvertInstruction()` switch 处理其中 ~225 种（97%+），仅 6 种极罕见指令未实现。覆盖率通过 `ILOpcodeCoverageTests` 自动验证。
 
 #### 已处理指令分类
 
@@ -394,21 +394,18 @@ ECMA-335 标准定义了约 230 种 IL 操作码变体。CIL2CPP 的 `ConvertIns
 | 函数指针 | 3 | ldftn, ldvirtftn, calli |
 | 栈操作 | 2 | dup, pop |
 | 前缀 | 6 | nop, tail, readonly, constrained, volatile, unaligned |
-| 其他 | 2 | sizeof, localloc |
-| **合计** | **~220** | |
+| 内存操作 | 5 | sizeof, localloc, cpblk, initblk, cpobj |
+| 其他 | 2 | ckfinite, break |
+| **合计** | **~225** | |
 
-#### 未实现指令 (11 种)
+#### 未实现指令 (6 种)
 
 | 指令 | 说明 | 原因 |
 |------|------|------|
-| break | 调试器断点 | AOT 编译中无意义 |
 | no. | 优化提示前缀 | 安全忽略 |
-| cpobj | 复制值类型 | Roslyn 不生成（使用 ldobj+stobj 代替） |
-| cpblk / initblk | 内存块拷贝/初始化 | 仅 Span 内部使用，极罕见 |
 | jmp | 跳转到另一方法 | 已废弃，Roslyn 从不生成 |
 | mkrefany / refanyval / refanytype | TypedReference 操作 | .NET 不鼓励使用 (`__makeref`/`__refvalue`/`__reftype`) |
 | arglist | 变长参数列表 | C 风格变参 (`__arglist`)，极罕见 |
-| ckfinite | 检查有限数 | 罕见，可实现为 `isfinite()` |
 
 > 遇到未处理指令时，编译器生成 `/* WARNING: unsupported opcode */` 注释，不会报错。
 
@@ -513,7 +510,7 @@ ECMA-335 标准定义了约 230 种 IL 操作码变体。CIL2CPP 的 `ConvertIns
 | 自动 null 检查 | ✅ | `null_check()` 内联函数 |
 | 栈回溯 | ⚠️ | `capture_stack_trace()` — Windows: DbgHelp, POSIX: backtrace；仅 Debug |
 | using 语句 | ✅ | try/finally + BCL 接口代理（IDisposable）→ 接口分派 Dispose()，单程序集/多程序集均可工作 |
-| 嵌套 try/catch/finally | ⚠️ | 宏基于 setjmp/longjmp，支持嵌套但复杂场景可能有限 |
+| 嵌套 try/catch/finally | ✅ | 宏基于 setjmp/longjmp，完整支持多层嵌套（try-catch 嵌套 try-finally、三层嵌套、catch 重抛、finally 替换异常等） |
 
 ### 标准库 (BCL)
 
@@ -551,9 +548,9 @@ ECMA-335 标准定义了约 230 种 IL 操作码变体。CIL2CPP 的 `ConvertIns
 | CancellationToken | ✅ | `CancellationTokenSource`/`CancellationToken` 从 BCL IL 编译 |
 | 多线程 | ✅ | `Thread`（创建/Start/Join）、`Monitor`（Enter/Exit/Wait/Pulse）、`lock` 语句、`Interlocked`（Increment/Decrement/Exchange/CompareExchange）、`Thread.Sleep`、`volatile` 字段 |
 | 反射 (typeof / GetType / GetMethods / GetFields) | ✅ | `typeof(T)` / `obj.GetType()` → 缓存 `Type` 对象；13 项属性；GetMethods/GetFields/GetMethod/GetField → ManagedMethodInfo/ManagedFieldInfo；MethodInfo.Invoke/GetParameters；FieldInfo.GetValue/SetValue；MemberInfo 通用分派 |
-| 特性 (Attribute) | ⚠️ | 元数据存储 + 运行时查询（`type_has_attribute` / `type_get_attribute`）；支持基本类型 + 字符串构造参数；数组/嵌套属性参数未实现 |
+| 特性 (Attribute) | ✅ | 元数据存储 + 运行时查询（`type_has_attribute` / `type_get_attribute`）；支持基本类型 + 字符串 + Type + 枚举 + 数组构造参数 |
 | unsafe 代码 (指针, fixed, stackalloc) | ✅ | `PointerType` 解析，`fixed`（pinned local → BoehmGC 保守扫描无需实际 pin），`stackalloc` → `localloc` → 平台 `alloca` 宏 |
-| P/Invoke / DllImport | ⚠️ | extern "C" 声明 + 基本类型/String marshaling（Ansi/Unicode/Auto）；struct marshaling / callback delegate 未实现 |
+| P/Invoke / DllImport | ✅ | extern "C" 声明 + 基本类型/String marshaling（Ansi/Unicode/Auto）+ blittable struct marshaling + callback delegate（函数指针） |
 | 默认参数 / 命名参数 | ✅ | C# 编译器在调用点填充默认值，IL 中无可选参数语义 |
 | ref struct | ✅ | `IsByRefLikeAttribute` 检测 → `IsRefStruct` 标志，Span\<T\> / ReadOnlySpan\<T\> 均为 ref struct |
 | init-only setter | ✅ | 编译为普通 setter + `modreq(IsExternalInit)`，CIL2CPP 忽略 modreq |
@@ -575,7 +572,7 @@ ECMA-335 标准定义了约 230 种 IL 操作码变体。CIL2CPP 的 `ConvertIns
 
 ## 已知限制
 
-> 以下限制按架构层分类。**IL 指令翻译层 (Layer 1)** 已 96%+ 覆盖（仅 11 个极罕见指令未实现），
+> 以下限制按架构层分类。**IL 指令翻译层 (Layer 1)** 已 97%+ 覆盖（仅 6 个极罕见指令未实现），
 > 大多数"不支持"的功能属于 **BCL 依赖链 (Layer 2)** 或 **运行时 icall (Layer 3)** 层面的问题。
 
 ### BCL 依赖链限制 (Layer 2)
@@ -593,11 +590,11 @@ ECMA-335 标准定义了约 230 种 IL 操作码变体。CIL2CPP 的 `ConvertIns
 
 | 限制 | 说明 |
 |------|------|
-| P/Invoke struct marshaling | 基本类型 + String 已支持；struct 布局和回调委托未实现 |
-| Attribute 复杂参数 | 基本类型 + 字符串已支持；数组/嵌套属性/Type 参数未实现 |
+| P/Invoke | 基本类型 + String + blittable struct + 回调委托（函数指针）均已支持 |
+| Attribute 复杂参数 | 基本类型 + 字符串 + Type + 枚举 + 数组均已支持 |
 | Console | 临时 icall 映射到 printf/fgets（BCL 依赖链极深，待逐步移除） |
-| 异常类型 | 支持 24 种常见异常类型。未注册的自定义异常类型会导致链接失败 |
-| 泛型约束不验证 | 编译期不验证泛型约束，不满足约束的代码可能产生未定义行为 |
+| 异常类型 | 支持 24 种运行时异常 + 任意用户自定义异常类型（继承 Exception） |
+| 泛型约束 | 编译期验证泛型约束（struct/class/new()/接口/基类），违反时发出警告 |
 
 ### AOT 架构根本限制
 
@@ -773,7 +770,7 @@ dotnet test compiler/CIL2CPP.Tests --collect:"XPlat Code Coverage"
 | SequencePointInfo | 5 |
 | BclProxy | 20 |
 | ILOpcodeCoverage | 113 |
-| **合计** | **1230+** |
+| **合计** | **1236+** |
 
 ### 运行时单元测试 (C++ / Google Test)
 
@@ -791,7 +788,7 @@ ctest --test-dir runtime/tests/build -C Debug --output-on-failure
 | 模块 | 测试数 |
 |------|--------|
 | String | 107 |
-| Exception | 58 (1 disabled) |
+| Exception | 66 (1 disabled) |
 | Reflection | 46 |
 | Collections | 42 |
 | Type System | 39 |
@@ -804,7 +801,7 @@ ctest --test-dir runtime/tests/build -C Debug --output-on-failure
 | Async (Task/ThreadPool) | 19 |
 | Delegate | 18 |
 | Threading | 17 |
-| **合计** | **508+ (1 disabled)** |
+| **合计** | **461+ (1 disabled)** |
 
 ### 端到端集成测试
 
@@ -849,8 +846,8 @@ python tools/dev.py build                  # 编译 compiler + runtime
 python tools/dev.py build --compiler       # 仅编译 compiler
 python tools/dev.py build --runtime        # 仅编译 runtime
 python tools/dev.py test --all             # 运行全部测试（编译器 + 运行时 + 集成）
-python tools/dev.py test --compiler        # 仅编译器测试 (1230+ xUnit)
-python tools/dev.py test --runtime         # 仅运行时测试 (508+ GTest)
+python tools/dev.py test --compiler        # 仅编译器测试 (1236+ xUnit)
+python tools/dev.py test --runtime         # 仅运行时测试 (461+ GTest)
 python tools/dev.py test --coverage        # 测试 + 覆盖率 HTML 报告
 python tools/dev.py test --compiler --filter ILOpcode  # 仅 IL opcode 覆盖测试
 python tools/dev.py install                # 安装 runtime (Debug + Release)

@@ -306,6 +306,19 @@ public partial class IRBuilder
             }
         }
 
+        // Collect try-finally regions for leave instruction handling.
+        // When a 'leave' crosses a try-finally boundary (offset in try region, target >= TryEnd),
+        // we suppress the goto and let execution fall through to the finally block naturally.
+        var tryFinallyRegions = new List<(int TryStart, int TryEnd)>();
+        if (methodDef.HasExceptionHandlers)
+        {
+            foreach (var handler in methodDef.GetExceptionHandlers())
+            {
+                if (handler.HandlerType == Mono.Cecil.Cil.ExceptionHandlerType.Finally)
+                    tryFinallyRegions.Add((handler.TryStart, handler.TryEnd));
+            }
+        }
+
         // Stack simulation
         var stack = new Stack<string>();
         int tempCounter = 0;
@@ -338,6 +351,10 @@ public partial class IRBuilder
                             }
                             break;
                         case ExceptionEventKind.CatchBegin:
+                            // Exception handler entry is reachable even after throw/ret —
+                            // resume code generation (fixes missing catch body instructions)
+                            skipDeadCode = false;
+                            stack.Clear();
                             // Use GetCppTypeName (not MangleTypeName) so that runtime exception types
                             // resolve to cil2cpp::Exception etc. — the CIL2CPP_CATCH macro appends
                             // _TypeInfo which must match the runtime-declared TypeInfo names.
@@ -349,6 +366,8 @@ public partial class IRBuilder
                             stack.Push("__exc_ctx.current_exception");
                             break;
                         case ExceptionEventKind.FilterBegin:
+                            skipDeadCode = false;
+                            stack.Clear();
                             block.Instructions.Add(new IRFilterBegin());
                             // Declare __filter_result in the filter scope (before any labels)
                             block.Instructions.Add(new IRRawCpp { Code = "int32_t __filter_result = 0;" });
@@ -359,10 +378,14 @@ public partial class IRBuilder
                             _endfilterOffset = FindEndfilterOffset(instructions, instr.Offset);
                             break;
                         case ExceptionEventKind.FilterHandlerBegin:
+                            skipDeadCode = false;
+                            stack.Clear();
                             // Handler body after endfilter — push exception for handler body
                             stack.Push("(cil2cpp::Exception*)__exc_ctx.current_exception");
                             break;
                         case ExceptionEventKind.FinallyBegin:
+                            skipDeadCode = false;
+                            stack.Clear();
                             block.Instructions.Add(new IRFinallyBegin());
                             break;
                         case ExceptionEventKind.HandlerEnd:
@@ -425,7 +448,7 @@ public partial class IRBuilder
 
             try
             {
-                ConvertInstruction(instr, block, stack, irMethod, ref tempCounter, branchMergeVars);
+                ConvertInstruction(instr, block, stack, irMethod, ref tempCounter, branchMergeVars, tryFinallyRegions);
             }
             catch
             {
@@ -498,7 +521,8 @@ public partial class IRBuilder
     }
 
     private void ConvertInstruction(ILInstruction instr, IRBasicBlock block, Stack<string> stack,
-        IRMethod method, ref int tempCounter, Dictionary<int, string> branchMergeVars)
+        IRMethod method, ref int tempCounter, Dictionary<int, string> branchMergeVars,
+        List<(int TryStart, int TryEnd)> tryFinallyRegions)
     {
         switch (instr.OpCode)
         {
@@ -1513,7 +1537,14 @@ public partial class IRBuilder
             {
                 var target = (Instruction)instr.Operand!;
                 stack.Clear(); // leave clears the evaluation stack
-                block.Instructions.Add(new IRBranch { TargetLabel = $"IL_{target.Offset:X4}" });
+
+                // Check if this leave crosses a try-finally boundary.
+                // If so, suppress the goto — execution falls through to the finally block naturally.
+                bool crossesFinally = tryFinallyRegions.Any(r =>
+                    instr.Offset >= r.TryStart && instr.Offset < r.TryEnd && target.Offset >= r.TryEnd);
+
+                if (!crossesFinally)
+                    block.Instructions.Add(new IRBranch { TargetLabel = $"IL_{target.Offset:X4}" });
                 break;
             }
 
@@ -1813,6 +1844,77 @@ public partial class IRBuilder
                 break;
             }
 
+            // ===== Newly implemented opcodes (Phase 8.1) =====
+
+            case Code.Ckfinite:
+            {
+                var val = stack.Count > 0 ? stack.Pop() : "0";
+                var tmp = $"__t{tempCounter++}";
+                block.Instructions.Add(new IRRawCpp
+                {
+                    Code = $"auto {tmp} = cil2cpp::ckfinite({val});",
+                    ResultVar = tmp,
+                    ResultTypeCpp = "double",
+                });
+                stack.Push(tmp);
+                break;
+            }
+
+            case Code.Cpblk:
+            {
+                var len = stack.Count > 0 ? stack.Pop() : "0";
+                var src = stack.Count > 0 ? stack.Pop() : "nullptr";
+                var dest = stack.Count > 0 ? stack.Pop() : "nullptr";
+                block.Instructions.Add(new IRRawCpp
+                {
+                    Code = $"std::memcpy(reinterpret_cast<void*>({dest}), reinterpret_cast<const void*>({src}), static_cast<size_t>({len}));",
+                });
+                break;
+            }
+
+            case Code.Initblk:
+            {
+                var len = stack.Count > 0 ? stack.Pop() : "0";
+                var val = stack.Count > 0 ? stack.Pop() : "0";
+                var addr = stack.Count > 0 ? stack.Pop() : "nullptr";
+                block.Instructions.Add(new IRRawCpp
+                {
+                    Code = $"std::memset(reinterpret_cast<void*>({addr}), static_cast<int>({val}), static_cast<size_t>({len}));",
+                });
+                break;
+            }
+
+            case Code.Cpobj:
+            {
+                var src = stack.Count > 0 ? stack.Pop() : "nullptr";
+                var dest = stack.Count > 0 ? stack.Pop() : "nullptr";
+                var typeRef = instr.Operand as TypeReference;
+                if (typeRef != null)
+                {
+                    var resolvedName = ResolveTypeRefOperand(typeRef);
+                    var typeCpp = CppNameMapper.GetCppTypeName(resolvedName);
+                    if (typeCpp.EndsWith("*")) typeCpp = typeCpp.TrimEnd('*');
+                    block.Instructions.Add(new IRRawCpp
+                    {
+                        Code = $"std::memcpy(reinterpret_cast<void*>({dest}), reinterpret_cast<const void*>({src}), sizeof({typeCpp}));",
+                    });
+                }
+                else
+                {
+                    block.Instructions.Add(new IRComment { Text = "WARNING: cpobj without type operand" });
+                }
+                break;
+            }
+
+            case Code.Break:
+            {
+                block.Instructions.Add(new IRRawCpp
+                {
+                    Code = "// IL break (debugger breakpoint) — nop in AOT",
+                });
+                break;
+            }
+
             default:
                 block.Instructions.Add(new IRComment { Text = $"WARNING: Unsupported IL instruction: {instr}" });
                 Console.Error.WriteLine($"WARNING: Unsupported IL instruction '{instr.OpCode}' at IL_{instr.Offset:X4} in {method.CppName}");
@@ -1990,6 +2092,8 @@ public partial class IRBuilder
         Code.Ldftn, Code.Ldvirtftn, Code.Calli,
         // Misc
         Code.Sizeof, Code.Localloc,
+        // Phase 8.1: newly implemented
+        Code.Ckfinite, Code.Cpblk, Code.Initblk, Code.Cpobj, Code.Break,
     };
 
     /// <summary>
@@ -1998,16 +2102,11 @@ public partial class IRBuilder
     /// </summary>
     internal static readonly HashSet<Code> KnownUnimplementedOpcodes = new()
     {
-        Code.Break,       // Debugger breakpoint (no-op in AOT)
         Code.No,          // no. prefix (optimization hint, no-op)
-        Code.Cpobj,       // Copy value type (Roslyn uses ldobj+stobj instead)
-        Code.Cpblk,       // Copy block of memory (rare, used by Span internals)
-        Code.Initblk,     // Initialize block of memory
         Code.Jmp,         // Jump to another method (deprecated, Roslyn never emits)
         Code.Mkrefany,    // Make TypedReference (__makeref, discouraged)
         Code.Refanyval,   // Extract TypedReference value (__refvalue)
         Code.Refanytype,  // Extract TypedReference type (__reftype)
         Code.Arglist,     // Variable argument list (__arglist, C-style varargs)
-        Code.Ckfinite,    // Check for finite float (rarely emitted)
     };
 }
