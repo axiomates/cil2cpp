@@ -711,6 +711,33 @@ def cmd_integration(args):
     runner.step(f"CMake build ({config})", arg_cmake_build)
     runner.step("Run ArglistTest and verify output", arg_run_verify)
 
+    # ===== Phase 7: FeatureTest (codegen-only — comprehensive language features) =====
+    header("Phase 7: FeatureTest (codegen-only, 100+ language features)")
+
+    ft_sample = TESTPROJECTS_DIR / "FeatureTest" / "FeatureTest.csproj"
+    ft_output = temp_dir / "featuretest_output"
+
+    def ft_codegen():
+        run(["dotnet", "run", "--project", str(CLI_PROJECT), "--",
+             "codegen", "-i", str(ft_sample), "-o", str(ft_output)],
+            capture=True)
+
+    def ft_files_exist():
+        for f in ["FeatureTest.h", "FeatureTest.cpp", "main.cpp", "CMakeLists.txt"]:
+            if not (ft_output / f).exists():
+                raise RuntimeError(f"Missing: {f}")
+
+    def ft_cpp_not_empty():
+        cpp = (ft_output / "FeatureTest.cpp").read_text(encoding="utf-8", errors="replace")
+        if len(cpp) < 100000:
+            raise RuntimeError(f"FeatureTest.cpp unexpectedly small: {len(cpp)} bytes")
+        if "Program_Main" not in cpp:
+            raise RuntimeError("Entry point Program_Main not found in FeatureTest.cpp")
+
+    runner.step("Codegen FeatureTest", ft_codegen)
+    runner.step("Generated files exist", ft_files_exist)
+    runner.step("FeatureTest.cpp has entry point and is substantial", ft_cpp_not_empty)
+
     # ===== Cleanup =====
     header("Cleanup")
 
