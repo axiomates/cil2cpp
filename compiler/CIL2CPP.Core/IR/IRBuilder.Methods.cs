@@ -2204,11 +2204,4 @@ public partial class IRBuilder
         Code.No, Code.Jmp, Code.Mkrefany, Code.Refanyval, Code.Refanytype, Code.Arglist,
     };
 
-    /// <summary>
-    /// IL opcodes intentionally not implemented.
-    /// Empty — all opcodes are now handled (100% coverage).
-    /// </summary>
-    internal static readonly HashSet<Code> KnownUnimplementedOpcodes = new()
-    {
-    };
 }

@@ -501,7 +501,7 @@ ECMA-335 标准定义了约 230 种 IL 操作码变体。CIL2CPP 的 `ConvertIns
 | rethrow | ✅ | `CIL2CPP_RETHROW` |
 | 异常过滤器 (`catch when`) | ✅ | ECMA-335 Filter handler，catch-all + 条件判断 + 条件 rethrow，`CIL2CPP_FILTER` / `CIL2CPP_ENDFILTER` 宏 |
 | 自动 null 检查 | ✅ | `null_check()` 内联函数 |
-| 栈回溯 | ⚠️ | `capture_stack_trace()` — Windows: DbgHelp, POSIX: backtrace；仅 Debug |
+| 栈回溯 | ✅ | `capture_stack_trace()` — Windows: DbgHelp, POSIX: backtrace；运行时 throw 和用户 throw 均捕获；仅 Debug |
 | using 语句 | ✅ | try/finally + BCL 接口代理（IDisposable）→ 接口分派 Dispose()，单程序集/多程序集均可工作 |
 | 嵌套 try/catch/finally | ✅ | 宏基于 setjmp/longjmp，完整支持多层嵌套（try-catch 嵌套 try-finally、三层嵌套、catch 重抛、finally 替换异常等） |
 

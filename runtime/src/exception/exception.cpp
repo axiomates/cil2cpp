@@ -53,6 +53,14 @@ extern TypeInfo TaskCanceledException_TypeInfo;
 extern TypeInfo KeyNotFoundException_TypeInfo;
 
 [[noreturn]] void throw_exception(Exception* ex) {
+    // Capture stack trace for user-thrown exceptions that don't have one yet.
+    // Runtime throw_* functions already set this via create_exception(),
+    // but user code (throw new Exception(...)) goes through newobj + .ctor
+    // which doesn't capture a trace — so we capture it here at throw time.
+    if (ex && !ex->f_stackTraceString) {
+        ex->f_stackTraceString = capture_stack_trace();
+    }
+
     // Skip contexts that are in catch (state=1) or finally (state=2) state.
     // This prevents re-entering the same handler when an exception is thrown
     // from within a catch or finally block — matching .NET semantics where

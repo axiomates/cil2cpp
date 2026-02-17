@@ -7,38 +7,24 @@ namespace CIL2CPP.Tests;
 
 /// <summary>
 /// Tests that verify IL opcode coverage completeness.
-/// Ensures all ECMA-335 opcodes are either handled or explicitly listed as unimplemented.
+/// All ECMA-335 opcodes are handled — 100% coverage.
 /// </summary>
 public class ILOpcodeCoverageTests
 {
     // ===== Structural Tests (no fixture needed, millisecond-fast) =====
 
     [Fact]
-    public void HandledOpcodes_CoverAllExceptKnownUnimplemented()
+    public void HandledOpcodes_CoverAllOpcodes()
     {
         var allCodes = Enum.GetValues<Code>().ToHashSet();
         var unaccounted = allCodes
-            .Where(c => !IRBuilder.HandledOpcodes.Contains(c)
-                     && !IRBuilder.KnownUnimplementedOpcodes.Contains(c))
+            .Where(c => !IRBuilder.HandledOpcodes.Contains(c))
             .OrderBy(c => c.ToString())
             .ToList();
 
         Assert.True(unaccounted.Count == 0,
-            $"Unaccounted opcodes (not in HandledOpcodes or KnownUnimplementedOpcodes):\n"
+            $"Unaccounted opcodes (not in HandledOpcodes):\n"
             + string.Join("\n", unaccounted.Select(c => $"  Code.{c}")));
-    }
-
-    [Fact]
-    public void HandledOpcodes_NoOverlapWithKnownUnimplemented()
-    {
-        var overlap = IRBuilder.HandledOpcodes
-            .Intersect(IRBuilder.KnownUnimplementedOpcodes)
-            .OrderBy(c => c.ToString())
-            .ToList();
-
-        Assert.True(overlap.Count == 0,
-            $"Opcodes in both HandledOpcodes and KnownUnimplementedOpcodes:\n"
-            + string.Join("\n", overlap.Select(c => $"  Code.{c}")));
     }
 
     [Fact]
@@ -47,12 +33,6 @@ public class ILOpcodeCoverageTests
         Assert.True(IRBuilder.HandledOpcodes.Count >= 190,
             $"Expected at least 190 handled opcodes, got {IRBuilder.HandledOpcodes.Count}. "
             + "This guard prevents large regressions in opcode coverage.");
-    }
-
-    [Fact]
-    public void KnownUnimplemented_Count()
-    {
-        Assert.Equal(0, IRBuilder.KnownUnimplementedOpcodes.Count);
     }
 
     // ===== Per-category coverage tests =====
@@ -215,19 +195,12 @@ public class ILOpcodeRuntimeCoverageTests
     [Fact]
     public void FeatureTest_NoUnexpectedUnsupportedOpcodeWarnings()
     {
-        // Extract opcode names from KnownUnimplementedOpcodes for filtering
-        var knownNames = IRBuilder.KnownUnimplementedOpcodes
-            .Select(c => c.ToString().ToLowerInvariant())
-            .ToHashSet();
-
         var module = _fixture.GetFeatureTestReleaseModule();
         var warnings = module.GetAllMethods()
             .SelectMany(m => m.BasicBlocks)
             .SelectMany(b => b.Instructions)
             .OfType<IRComment>()
             .Where(c => c.Text.StartsWith("WARNING: Unsupported IL instruction"))
-            // Exclude warnings for opcodes that are deliberately unimplemented
-            .Where(c => !knownNames.Any(k => c.Text.ToLowerInvariant().Contains(k)))
             .Select(c => c.Text)
             .Distinct()
             .ToList();

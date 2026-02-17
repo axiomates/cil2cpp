@@ -219,6 +219,32 @@ TEST_F(ExceptionTest, ThrownException_HasStackTrace) {
     g_exception_context = ctx.previous;
 }
 
+// ===== User-thrown exception gets stack trace =====
+
+TEST_F(ExceptionTest, UserThrownException_HasStackTrace) {
+    // Simulate user throw: manually create exception (no stack trace), then throw_exception
+    auto* ex = static_cast<Exception*>(gc::alloc(sizeof(Exception), &Exception_TypeInfo));
+    ex->f_message = string_literal("user error");
+    ex->f_stackTraceString = nullptr;  // User-created exceptions have no stack trace initially
+
+    ExceptionContext ctx;
+    ctx.previous = g_exception_context;
+    ctx.current_exception = nullptr;
+    ctx.state = 0;
+    g_exception_context = &ctx;
+
+    if (setjmp(ctx.jump_buffer) == 0) {
+        throw_exception(ex);
+    } else {
+        ASSERT_NE(ctx.current_exception, nullptr);
+        // throw_exception should have captured stack trace
+        EXPECT_NE(ctx.current_exception->f_stackTraceString, nullptr);
+        EXPECT_GT(ctx.current_exception->f_stackTraceString->length, 0);
+    }
+
+    g_exception_context = ctx.previous;
+}
+
 // ===== Exception message field =====
 
 TEST_F(ExceptionTest, NullReferenceException_HasMessage) {
