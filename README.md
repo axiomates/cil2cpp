@@ -35,8 +35,8 @@ cil2cpp/
 │   │   ├── IL/                 #     IL 解析 (Mono.Cecil)
 │   │   ├── IR/                 #     中间表示 + 类型映射
 │   │   └── CodeGen/            #     C++ 代码生成
-│   ├── CIL2CPP.Tests/          #   编译器单元测试 (xUnit, 1236+ tests)
-│   └── testprojects/           #   测试用 C# 项目（编译器输入）
+│   └── CIL2CPP.Tests/          #   编译器单元测试 (xUnit, 1236+ tests)
+├── tests/                      # 测试用 C# 项目（编译器输入）
 ├── runtime/                    # C++ 运行时库 (CMake 项目)
 │   ├── CMakeLists.txt
 │   ├── cmake/                  #   CMake 包配置模板
@@ -165,12 +165,12 @@ CIL2CPP 编译器读取 C# 项目，将 IL 字节码翻译为 C++ 源代码。
 ```bash
 # Release（默认）— 无调试信息，优化体积和性能
 dotnet run --project compiler/CIL2CPP.CLI -- codegen \
-    -i compiler/testprojects/HelloWorld/HelloWorld.csproj \
+    -i tests/HelloWorld/HelloWorld.csproj \
     -o output
 
 # Debug — #line 指令 + IL 偏移注释 + 栈回溯支持
 dotnet run --project compiler/CIL2CPP.CLI -- codegen \
-    -i compiler/testprojects/HelloWorld/HelloWorld.csproj \
+    -i tests/HelloWorld/HelloWorld.csproj \
     -o output -c Debug
 ```
 

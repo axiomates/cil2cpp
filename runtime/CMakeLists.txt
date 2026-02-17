@@ -56,11 +56,11 @@ set(RUNTIME_SOURCES
     src/exception/exception.cpp
     src/bcl/System.Object.cpp
     src/bcl/System.String.cpp
-    src/bcl/System.Console.cpp
     src/bcl/System.Array.cpp
     src/bcl/System.MdArray.cpp
     src/bcl/System.Delegate.cpp
     src/icall/icall.cpp
+    src/icall/unicode_utility.cpp
     src/async/task.cpp
     src/async/threadpool.cpp
     src/async/cancellation.cpp

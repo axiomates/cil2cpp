@@ -72,7 +72,11 @@ public class IRCall : IRInstruction
             var thisExpr = Arguments[0];
             // Cast arguments to match function pointer param types (handles Dog* → Object* etc.)
             var castArgs = BuildCastArgs();
+            // CLR throws NullReferenceException on callvirt with null this — emit null check
+            var nullCheck = $"cil2cpp::null_check((void*){thisExpr}); ";
             call = $"(({fnPtrType})(cil2cpp::type_get_interface_vtable_checked(((cil2cpp::Object*){thisExpr})->__type_info, &{InterfaceTypeCppName}_TypeInfo)->methods[{VTableSlot}]))({castArgs})";
+            var stmt = ResultVar != null ? $"{ResultVar} = {call};" : $"{call};";
+            return nullCheck + stmt;
         }
         else if (IsVirtual && VTableSlot >= 0 && Arguments.Count > 0)
         {
@@ -82,7 +86,11 @@ public class IRCall : IRInstruction
             var thisExpr = Arguments[0];
             // Cast arguments to match function pointer param types (handles Dog* → Object* etc.)
             var castArgs = BuildCastArgs();
+            // CLR throws NullReferenceException on callvirt with null this — emit null check
+            var nullCheck = $"cil2cpp::null_check((void*){thisExpr}); ";
             call = $"(({fnPtrType})(((cil2cpp::Object*){thisExpr})->__type_info->vtable->methods[{VTableSlot}]))({castArgs})";
+            var stmt = ResultVar != null ? $"{ResultVar} = {call};" : $"{call};";
+            return nullCheck + stmt;
         }
         else
         {
@@ -141,7 +149,13 @@ public class IRBinaryOp : IRInstruction
     public string Right { get; set; } = "";
     public string Op { get; set; } = "";
     public string ResultVar { get; set; } = "";
-    public override string ToCpp() => $"{ResultVar} = {Left} {Op} {Right};";
+    public bool IsUnsigned { get; set; }
+    public override string ToCpp()
+    {
+        if (IsUnsigned)
+            return $"{ResultVar} = cil2cpp::to_unsigned({Left}) {Op} cil2cpp::to_unsigned({Right});";
+        return $"{ResultVar} = {Left} {Op} {Right};";
+    }
 }
 
 public class IRUnaryOp : IRInstruction
@@ -440,7 +454,7 @@ public class IRLoadFunctionPointer : IRInstruction
     public override string ToCpp()
     {
         if (IsVirtual && VTableSlot >= 0 && ObjectExpr != null)
-            return $"{ResultVar} = ((cil2cpp::Object*){ObjectExpr})->__type_info->vtable->methods[{VTableSlot}];";
+            return $"cil2cpp::null_check((void*){ObjectExpr}); {ResultVar} = ((cil2cpp::Object*){ObjectExpr})->__type_info->vtable->methods[{VTableSlot}];";
         return $"{ResultVar} = (void*){MethodCppName};";
     }
 }

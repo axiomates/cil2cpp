@@ -156,12 +156,22 @@ public class ICallRegistryTests
         Assert.Null(result);
     }
 
-    // Wildcard registrations (Console)
+    // Console methods compile from BCL IL (no icalls)
     [Theory]
-    [InlineData("System.Console", "WriteLine", 0, "cil2cpp::System::Console_WriteLine")]
-    [InlineData("System.Console", "WriteLine", 1, "cil2cpp::System::Console_WriteLine")]
-    [InlineData("System.Console", "Write", 1, "cil2cpp::System::Console_Write")]
-    [InlineData("System.Console", "ReadLine", 0, "cil2cpp::System::Console_ReadLine")]
+    [InlineData("System.Console", "WriteLine", 0)]
+    [InlineData("System.Console", "WriteLine", 1)]
+    [InlineData("System.Console", "Write", 1)]
+    [InlineData("System.Console", "ReadLine", 0)]
+    public void Lookup_Console_ReturnsNull_CompiledFromBclIL(string type, string method, int paramCount)
+    {
+        var result = ICallRegistry.Lookup(type, method, paramCount);
+        Assert.Null(result);
+    }
+
+    // Wildcard registrations (Volatile)
+    [Theory]
+    [InlineData("System.Threading.Volatile", "Read", 1, "cil2cpp::volatile_read")]
+    [InlineData("System.Threading.Volatile", "Write", 2, "cil2cpp::volatile_write")]
     public void Lookup_WildcardAndExact_ReturnsCorrectCppName(string type, string method, int paramCount, string expected)
     {
         var result = ICallRegistry.Lookup(type, method, paramCount);

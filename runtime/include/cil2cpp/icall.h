@@ -87,4 +87,15 @@ bool Char_IsLower(char16_t c);
 String* Int32_ToString(Int32* value);
 
 } // namespace icall
+
+// System.Text.Unicode.Utf8Utility — scalar replacements for SIMD-based BCL methods
+Int32 utf8_utility_transcode_to_utf8(
+    Char* pInputBuffer, Int32 inputLength,
+    uint8_t* pOutputBuffer, Int32 outputBytesRemaining,
+    Char** pInputBufferRemaining, uint8_t** pOutputBufferRemaining);
+
+uint8_t* utf8_utility_get_pointer_to_first_invalid_byte(
+    uint8_t* pInputBuffer, Int32 inputLength,
+    Int32* utf16CodeUnitCountAdjustment, Int32* scalarCountAdjustment);
+
 } // namespace cil2cpp

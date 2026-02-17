@@ -29,7 +29,7 @@ TypeInfo System_Object_TypeInfo = {
 TypeInfo System_String_TypeInfo = {
     .name = "String", .namespace_name = "System", .full_name = "System.String",
     .base_type = &System_Object_TypeInfo, .interfaces = nullptr, .interface_count = 0,
-    .instance_size = sizeof(String), .element_size = sizeof(char16_t),
+    .instance_size = sizeof(String), .element_size = 0,  // Reference type: arrays use pointer-sized elements
     .flags = TypeFlags::Sealed, .vtable = nullptr,
     .fields = nullptr, .field_count = 0, .methods = nullptr, .method_count = 0,
     .default_ctor = nullptr, .finalizer = nullptr,

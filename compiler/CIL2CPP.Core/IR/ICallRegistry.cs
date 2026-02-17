@@ -39,15 +39,10 @@ public static class ICallRegistry
         RegisterICall("System.String", "FastAllocateString", 1, "cil2cpp::string_fast_allocate");
         RegisterICall("System.String", "get_Length", 0, "cil2cpp::string_length");
         RegisterICall("System.String", "get_Chars", 1, "cil2cpp::string_get_chars");
-
-        // ===== System.Console =====
-        // TEMPORARY: Console methods are NOT [InternalCall], but their IL chain is extremely deep
-        // (Console → TextWriter → StreamWriter → Stream → Encoding → ...) and essential for HelloWorld.
-        // TODO: Remove these once the full BCL chain compiles. Track as a known non-InternalCall exception.
-        RegisterICallWildcard("System.Console", "WriteLine", "cil2cpp::System::Console_WriteLine");
-        RegisterICallWildcard("System.Console", "Write", "cil2cpp::System::Console_Write");
-        RegisterICall("System.Console", "ReadLine", 0, "cil2cpp::System::Console_ReadLine");
-        RegisterICall("System.Console", "Read", 0, "cil2cpp::System::Console_Read");
+        RegisterICall("System.String", "GetRawStringData", 0, "cil2cpp::string_get_raw_data");
+        RegisterICall("System.String", "GetPinnableReference", 0, "cil2cpp::string_get_raw_data");
+        // ToCharArray — BCL uses Unsafe.As (JIT intrinsic) which our codegen can't compile
+        RegisterICall("System.String", "ToCharArray", 0, "cil2cpp::string_to_char_array");
 
         // ===== Primitive ToString =====
         // These have IL bodies (Number formatting chain) — compile from BCL IL.
@@ -137,6 +132,14 @@ public static class ICallRegistry
             "cil2cpp::icall::RuntimeHelpers_InitializeArray");
         RegisterICall("System.Runtime.CompilerServices.RuntimeHelpers", "IsReferenceOrContainsReferences", 0,
             "cil2cpp::icall::RuntimeHelpers_IsReferenceOrContainsReferences");
+
+        // ===== System.Text.Unicode.Utf8Utility =====
+        // These BCL methods use SIMD intrinsics (SSE2/AVX2) which our codegen can't compile.
+        // Scalar C++ implementations provided in runtime/src/icall/unicode_utility.cpp.
+        RegisterICall("System.Text.Unicode.Utf8Utility", "TranscodeToUtf8", 6,
+            "cil2cpp::utf8_utility_transcode_to_utf8");
+        RegisterICall("System.Text.Unicode.Utf8Utility", "GetPointerToFirstInvalidByte", 4,
+            "cil2cpp::utf8_utility_get_pointer_to_first_invalid_byte");
 
         // Math methods — compile from BCL IL.
         // In .NET 8, most Math functions (Sqrt, Sin, Cos, etc.) are [InternalCall] extern methods.

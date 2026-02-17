@@ -191,15 +191,22 @@ public partial class CppCodeGenerator
             if (emittedTypeInfo.Contains(type.CppName)) continue;
             if (!IsValidCppIdentifier(type.CppName)) continue;
             if (!emittedTypeInfo.Add(type.CppName)) continue;
-            if (type.IsRuntimeProvided)
+            if (type.IsRuntimeProvided && IRBuilder.CoreRuntimeTypes.Contains(type.ILFullName))
             {
-                // Emit minimal TypeInfo stub for runtime-provided types
+                // Emit minimal TypeInfo stub for core runtime types (Object, String, etc.)
                 // (other types may reference these as base_type)
                 var baseName = type.BaseType != null && emittedTypeInfo.Contains(type.BaseType.CppName)
                     ? $"&{type.BaseType.CppName}_TypeInfo" : "&System_Object_TypeInfo";
                 sb.AppendLine($"cil2cpp::TypeInfo {type.CppName}_TypeInfo = {{ .name = \"{type.Name}\", " +
                     $".namespace_name = \"{type.Namespace}\", .full_name = \"{type.ILFullName}\", " +
                     $".base_type = {baseName} }};");
+                continue;
+            }
+            if (type.IsRuntimeProvided && !IRBuilder.CoreRuntimeTypes.Contains(type.ILFullName))
+            {
+                // Non-core runtime-provided types (Task, Thread, etc.): struct layout from runtime,
+                // but methods compiled from BCL IL — need full TypeInfo with vtable
+                GenerateTypeInfo(sb, type);
                 continue;
             }
             GenerateTypeInfo(sb, type);
@@ -258,7 +265,8 @@ public partial class CppCodeGenerator
         }
 
         // P/Invoke extern declarations and wrappers
-        EmitPInvokeDeclarations(sb, userTypes);
+        var emittedMethodSignatures = new HashSet<string>();
+        EmitPInvokeDeclarations(sb, userTypes, emittedMethodSignatures);
 
         // Build known type set (includes all defined types, aliases, enums, forward-declared)
         var knownTypeNames = new HashSet<string>();
@@ -272,7 +280,6 @@ public partial class CppCodeGenerator
         // Method implementations (skip delegates and InternalCall methods)
         // RuntimeProvided types: only emit methods that have compiled IL bodies
         sb.AppendLine("// ===== Method Implementations =====");
-        var emittedMethodSignatures = new HashSet<string>();
         foreach (var type in userTypes)
         {
             if (type.IsDelegate) continue;
@@ -292,7 +299,7 @@ public partial class CppCodeGenerator
                     var dimTrialSb = new StringBuilder();
                     GenerateMethodImpl(dimTrialSb, method);
                     var dimRendered = dimTrialSb.ToString();
-                    if (RenderedBodyHasErrors(dimRendered, method))
+                    if (RenderedBodyHasErrors(dimRendered, method, knownTypeNames))
                     {
                         GenerateStubForMethod(sb, method);
                         continue;
@@ -307,8 +314,6 @@ public partial class CppCodeGenerator
             {
                 if (method.IsAbstract || method.IsInternalCall || method.IsPInvoke) continue;
                 if (method.BasicBlocks.Count == 0) continue;
-                // Skip methods that have icall mappings — their calls are redirected to the runtime,
-                // so the IL body is dead code. Compiling it would require resolving internal BCL types.
                 if (method.HasICallMapping) continue;
                 // Core runtime types (Object, String, Array, etc.): only emit static methods.
                 // Non-core RuntimeProvided types (Task, Thread, CancellationToken) emit all methods.
@@ -325,7 +330,7 @@ public partial class CppCodeGenerator
                 var trialSb = new StringBuilder();
                 GenerateMethodImpl(trialSb, method);
                 var rendered = trialSb.ToString();
-                if (RenderedBodyHasErrors(rendered, method))
+                if (RenderedBodyHasErrors(rendered, method, knownTypeNames))
                 {
                     GenerateStubForMethod(sb, method);
                     continue;
@@ -841,6 +846,22 @@ public partial class CppCodeGenerator
     /// </summary>
     private string AddAutoDeclarations(string code, HashSet<string> declaredTemps)
     {
+        // Null-check prefix: "cil2cpp::null_check(...); __tN = ..."
+        // Split into prefix and assignment, then add 'auto' to the assignment part.
+        const string nullCheckPrefix = "cil2cpp::null_check(";
+        if (code.StartsWith(nullCheckPrefix))
+        {
+            var splitIdx = code.IndexOf("; __t");
+            if (splitIdx > 0)
+            {
+                var prefix = code[..(splitIdx + 2)]; // "cil2cpp::null_check(...); "
+                var rest = code[(splitIdx + 2)..];    // "__tN = ..."
+                var declared = AddAutoDeclarations(rest, declaredTemps);
+                return prefix + declared;
+            }
+            return code;
+        }
+
         // Match patterns like "__t0 = ..." but NOT "__this->..."
         if (code.StartsWith("__t") && !code.StartsWith("__this"))
         {
@@ -949,35 +970,70 @@ public partial class CppCodeGenerator
         var generatedMethodTypes = new HashSet<string>();
         foreach (var t in userTypes)
         {
-            if (!t.IsRuntimeProvided && !t.IsDelegate)
+            // Non-core runtime-provided types (Task, Thread) have methods generated from BCL IL
+            var isCoreRuntime = t.IsRuntimeProvided && IRBuilder.CoreRuntimeTypes.Contains(t.ILFullName);
+            if (!isCoreRuntime && !t.IsDelegate)
                 generatedMethodTypes.Add(t.CppName);
         }
 
         bool any = false;
         foreach (var type in userTypes)
         {
-            if (type.IsInterface || type.IsDelegate || type.IsRuntimeProvided || type.VTable.Count == 0) continue;
+            // Skip core runtime types (Object, String) but generate vtables for non-core (Task, Thread)
+            var isCoreRuntime = type.IsRuntimeProvided && IRBuilder.CoreRuntimeTypes.Contains(type.ILFullName);
+            if (type.IsInterface || type.IsDelegate || isCoreRuntime || type.VTable.Count == 0) continue;
             if (!any)
             {
                 sb.AppendLine("// ===== VTable Data =====");
                 any = true;
             }
 
+            // Build lookup of parent vtable entries for inheritance fallback
+            var parentVTableEntries = new Dictionary<int, string>();
+            {
+                var baseType = type.BaseType;
+                // Walk up the inheritance chain to find valid vtable entries
+                while (baseType != null)
+                {
+                    for (int si = 0; si < baseType.VTable.Count; si++)
+                    {
+                        if (parentVTableEntries.ContainsKey(si)) continue;
+                        var be = baseType.VTable[si];
+                        if (be.Method != null && !be.Method.IsAbstract
+                            && _declaredFunctionNames.Contains(be.Method.CppName))
+                        {
+                            parentVTableEntries[si] = GetTypedMethodPointerCast(be.Method);
+                        }
+                    }
+                    baseType = baseType.BaseType;
+                }
+            }
+
             // Method pointer array
-            var methods = string.Join(", ", type.VTable.Select(e =>
+            var methods = string.Join(", ", type.VTable.Select((e, idx) =>
             {
                 if (e.Method != null && !e.Method.IsAbstract)
                 {
-                    // If the method's declaring type is runtime-provided or not in generated types,
+                    // If the method's declaring type is a core runtime type or not in generated types,
                     // the C++ function won't exist — use fallback
                     var declType = e.Method.DeclaringType;
-                    if (declType != null && (declType.IsRuntimeProvided || !generatedMethodTypes.Contains(declType.CppName)))
+                    var isDeclCoreRuntime = declType != null && declType.IsRuntimeProvided
+                        && IRBuilder.CoreRuntimeTypes.Contains(declType.ILFullName);
+                    if (declType != null && (isDeclCoreRuntime || !generatedMethodTypes.Contains(declType.CppName)))
                         return ObjectMethodFallbacks.GetValueOrDefault(e.MethodName, "nullptr");
                     // Check if the function was actually declared in the header
                     if (!_declaredFunctionNames.Contains(e.Method.CppName))
+                    {
+                        // Fallback: inherit from parent vtable if available
+                        if (parentVTableEntries.TryGetValue(idx, out var parentMethod))
+                            return parentMethod;
                         return ObjectMethodFallbacks.GetValueOrDefault(e.MethodName, "nullptr");
+                    }
                     return GetTypedMethodPointerCast(e.Method);
                 }
+                // Method not assigned — try parent fallback
+                if (parentVTableEntries.TryGetValue(idx, out var inherited))
+                    return inherited;
                 return ObjectMethodFallbacks.GetValueOrDefault(e.MethodName, "nullptr");
             }));
             sb.AppendLine($"static void* {type.CppName}_vtable_methods[] = {{ {methods} }};");
@@ -992,14 +1048,16 @@ public partial class CppCodeGenerator
         var generatedMethodTypes = new HashSet<string>();
         foreach (var t in userTypes)
         {
-            if (!t.IsRuntimeProvided && !t.IsDelegate)
+            var isCoreRuntime = t.IsRuntimeProvided && IRBuilder.CoreRuntimeTypes.Contains(t.ILFullName);
+            if (!isCoreRuntime && !t.IsDelegate)
                 generatedMethodTypes.Add(t.CppName);
         }
 
         bool any = false;
         foreach (var type in userTypes)
         {
-            if (type.IsInterface || type.IsRuntimeProvided || type.Interfaces.Count == 0) continue;
+            var isCoreRuntime = type.IsRuntimeProvided && IRBuilder.CoreRuntimeTypes.Contains(type.ILFullName);
+            if (type.IsInterface || isCoreRuntime || type.Interfaces.Count == 0) continue;
             if (!any)
             {
                 sb.AppendLine("// ===== Interface Data =====");
@@ -1014,16 +1072,19 @@ public partial class CppCodeGenerator
         // Interface vtable method arrays and InterfaceVTable arrays
         foreach (var type in userTypes)
         {
-            if (type.IsInterface || type.IsRuntimeProvided || type.InterfaceImpls.Count == 0) continue;
+            var isCoreRt = type.IsRuntimeProvided && IRBuilder.CoreRuntimeTypes.Contains(type.ILFullName);
+            if (type.IsInterface || isCoreRt || type.InterfaceImpls.Count == 0) continue;
 
             foreach (var impl in type.InterfaceImpls)
             {
                 var methods = string.Join(", ", impl.MethodImpls.Select(m =>
                 {
                     if (m == null) return "nullptr";
-                    // If the method's declaring type is runtime-provided or not generated, use nullptr
+                    // If the method's declaring type is a core runtime type or not generated, use nullptr
                     var declType = m.DeclaringType;
-                    if (declType != null && (declType.IsRuntimeProvided || !generatedMethodTypes.Contains(declType.CppName)))
+                    var isDeclCoreRt = declType != null && declType.IsRuntimeProvided
+                        && IRBuilder.CoreRuntimeTypes.Contains(declType.ILFullName);
+                    if (declType != null && (isDeclCoreRt || !generatedMethodTypes.Contains(declType.CppName)))
                         return "nullptr";
                     // Check if the function was actually declared in the header
                     if (!_declaredFunctionNames.Contains(m.CppName))
@@ -1370,61 +1431,133 @@ public partial class CppCodeGenerator
         "fopen", "fclose", "fread", "fwrite", "fseek", "ftell"
     };
 
-    private void EmitPInvokeDeclarations(StringBuilder sb, List<IRType> userTypes)
+    // .NET internal P/Invoke modules — no extern declarations needed
+    // (QCall = CLR-internal; libSystem.* = Unix-only native shims; ucrtbase = C runtime)
+    private static readonly HashSet<string> InternalPInvokeModules = new(StringComparer.OrdinalIgnoreCase)
     {
-        var pinvokeMethods = userTypes
-            .Where(t => !t.IsInterface && !t.IsDelegate && !t.IsRuntimeProvided
-                        && t.SourceKind != AssemblyKind.BCL)
+        "QCall", "QCall.dll", "libSystem.Native", "libSystem.Globalization.Native",
+        "System.Globalization.Native", "System.Native", "System.IO.Compression.Native",
+        "System.Security.Cryptography.Native.OpenSsl", "System.Net.Security.Native",
+        "ucrtbase", "ucrtbase.dll"
+    };
+
+    private void EmitPInvokeDeclarations(StringBuilder sb, List<IRType> userTypes,
+        HashSet<string> emittedMethodSignatures)
+    {
+        // Scan ALL module types (not just deduplicated userTypes) — partial classes like
+        // Interop.Kernel32 span multiple assemblies, and deduplication drops P/Invoke methods
+        var pinvokeMethods = _module.Types
+            .Where(t => !t.IsInterface && !t.IsDelegate && !t.IsRuntimeProvided)
             .SelectMany(t => t.Methods)
-            .Where(m => m.IsPInvoke)
+            .Where(m => m.IsPInvoke
+                        && !string.IsNullOrEmpty(m.PInvokeModule)
+                        && !InternalPInvokeModules.Contains(m.PInvokeModule!))
             .ToList();
 
         if (pinvokeMethods.Count == 0) return;
 
-        // Filter out C stdlib functions that are already available via standard headers
+        // Filter out C stdlib functions and methods with delegate/function pointer parameters
+        // (our codegen doesn't produce valid C function pointer types for extern "C" declarations)
         var needsExternDecl = pinvokeMethods
             .Where(m => !CStdlibFunctions.Contains(m.PInvokeEntryPoint ?? m.Name))
+            .Where(m => !m.Parameters.Any(p =>
+                IsDelegateType(p.ParameterType) || p.CppTypeName.StartsWith("method")))
             .ToList();
 
+        // Track which entry points have valid extern "C" declarations
+        // C stdlib functions are always available via standard headers
+        var declaredEntryPoints = new HashSet<string>(CStdlibFunctions);
+        // Track the declared parameter types for each entry point (for wrapper compatibility check)
+        var declaredParamTypes = new Dictionary<string, List<string>>();
         if (needsExternDecl.Count > 0)
         {
             sb.AppendLine("// ===== P/Invoke Declarations =====");
             sb.AppendLine("extern \"C\" {");
 
+            // Deduplicate extern declarations by entry point name only
+            // (C doesn't support function overloading — same entry point = same function)
+            // Multiple __PInvoke methods may share an entry point but have different param types
+            // (e.g., ReadFile with int32_t* vs NativeOverlapped*). We pick the best candidate:
+            // prefer methods with only C-primitive params (no struct pointers like NativeOverlapped*).
+            var bestExternCandidate = new Dictionary<string, (IRMethod method, int score)>();
             foreach (var method in needsExternDecl)
             {
                 var entryPoint = method.PInvokeEntryPoint ?? method.Name;
                 var retType = GetPInvokeNativeType(method.ReturnTypeCpp, null);
-                var paramParts = new List<string>();
-                for (int i = 0; i < method.Parameters.Count; i++)
+                if (!IsCppPrimitiveOrPointerType(retType)) continue;
+
+                bool hasNonPointerType = false;
+                int structPointerCount = 0;
+                foreach (var p in method.Parameters)
                 {
-                    var p = method.Parameters[i];
-                    var nativeType = GetPInvokeNativeType(p.CppTypeName, p.ParameterType);
-                    if (IsDelegateType(p.ParameterType))
+                    var nt = GetPInvokeNativeType(p.CppTypeName, p.ParameterType);
+                    if (!IsCppPrimitiveOrPointerType(nt)) { hasNonPointerType = true; break; }
+                    // Count struct pointers (pointer to non-primitive type)
+                    if (nt.EndsWith("*"))
                     {
-                        // Function pointer: emit as callback type with parameter name
-                        paramParts.Add($"{nativeType}");
-                    }
-                    else
-                    {
-                        paramParts.Add($"{nativeType} p{i}");
+                        var baseType = nt.TrimEnd('*').Trim();
+                        if (!IsCppPrimitiveType(baseType) && baseType != "void")
+                            structPointerCount++;
                     }
                 }
+                if (hasNonPointerType) continue;
+
+                // Lower score = better candidate (fewer struct pointers)
+                if (!bestExternCandidate.TryGetValue(entryPoint, out var existing) ||
+                    structPointerCount < existing.score)
+                {
+                    bestExternCandidate[entryPoint] = (method, structPointerCount);
+                }
+            }
+
+            // Emit extern declarations from the best candidates
+            foreach (var (entryPoint, (method, _)) in bestExternCandidate.OrderBy(kv => kv.Key))
+            {
+                var retType = GetPInvokeNativeType(method.ReturnTypeCpp, null);
+                var nativeParamTypes = new List<string>();
+                foreach (var p in method.Parameters)
+                    nativeParamTypes.Add(GetPInvokeNativeType(p.CppTypeName, p.ParameterType));
+
+                var paramParts = new List<string>();
+                for (int i = 0; i < method.Parameters.Count; i++)
+                    paramParts.Add($"{nativeParamTypes[i]} p{i}");
                 var paramDecl = string.Join(", ", paramParts);
                 sb.AppendLine($"    {retType} {entryPoint}({paramDecl});");
+                declaredEntryPoints.Add(entryPoint);
+                declaredParamTypes[entryPoint] = nativeParamTypes;
             }
 
             sb.AppendLine("}");
             sb.AppendLine();
         }
 
-        // Generate managed wrappers
+        // Generate managed wrappers (deduplicate by C++ signature)
+        // Only generate wrappers for entry points that have a valid extern "C" declaration
+        // AND whose parameter types match the declared extern (to avoid type mismatches).
+        // Multiple __PInvoke inner methods with the same entry point and compatible types
+        // each get their own wrapper (they may have different C++ names).
         sb.AppendLine("// ===== P/Invoke Wrappers =====");
         foreach (var method in pinvokeMethods)
         {
             var entryPoint = method.PInvokeEntryPoint ?? method.Name;
-            var retType = method.ReturnTypeCpp;
+            if (!declaredEntryPoints.Contains(entryPoint)) continue;
             var sig = method.GetCppSignature();
+            if (!emittedMethodSignatures.Add(sig)) continue; // skip exact duplicates
+
+            // Check parameter type compatibility with the declared extern
+            if (declaredParamTypes.TryGetValue(entryPoint, out var externParamTypes))
+            {
+                if (method.Parameters.Count != externParamTypes.Count) continue;
+                bool compatible = true;
+                for (int i = 0; i < method.Parameters.Count; i++)
+                {
+                    var methodType = GetPInvokeNativeType(method.Parameters[i].CppTypeName,
+                        method.Parameters[i].ParameterType);
+                    if (methodType != externParamTypes[i]) { compatible = false; break; }
+                }
+                if (!compatible) continue;
+            }
+            var retType = method.ReturnTypeCpp;
 
             sb.AppendLine($"// P/Invoke: {method.PInvokeModule}!{entryPoint}");
             sb.AppendLine($"{sig} {{");
@@ -1436,13 +1569,11 @@ public partial class CppCodeGenerator
                 var param = method.Parameters[i];
                 if (IsStringType(param.CppTypeName))
                 {
-                    // String* → const char*
                     sb.AppendLine($"    auto __p{i} = cil2cpp::string_to_utf8({param.CppName});");
                     callArgs.Add($"__p{i}");
                 }
                 else if (IsDelegateType(param.ParameterType))
                 {
-                    // Delegate* → C function pointer via method_ptr
                     var fnPtrType = GetDelegateFunctionPointerType(param.ParameterType);
                     sb.AppendLine($"    auto __p{i} = reinterpret_cast<{fnPtrType}>(reinterpret_cast<cil2cpp::Delegate*>({param.CppName})->method_ptr);");
                     callArgs.Add($"__p{i}");
@@ -1482,6 +1613,17 @@ public partial class CppCodeGenerator
         if (cppType == "void") return "void";
         if (IsDelegateType(paramType)) return GetDelegateFunctionPointerType(paramType!);
         return cppType;
+    }
+
+    /// <summary>
+    /// Check if a C++ type is a primitive, pointer, or void (valid for extern "C" return types).
+    /// </summary>
+    private static bool IsCppPrimitiveOrPointerType(string cppType)
+    {
+        if (cppType.EndsWith("*")) return true;
+        return cppType is "void" or "bool" or "int8_t" or "uint8_t" or "int16_t" or "uint16_t"
+            or "int32_t" or "uint32_t" or "int64_t" or "uint64_t" or "float" or "double"
+            or "char16_t" or "intptr_t" or "uintptr_t";
     }
 
     /// <summary>

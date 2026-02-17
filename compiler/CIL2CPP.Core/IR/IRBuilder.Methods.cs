@@ -11,7 +11,7 @@ public partial class IRBuilder
         var cppName = CppNameMapper.MangleMethodName(declaringType.CppName, methodDef.Name);
         // op_Explicit/op_Implicit: C# allows return-type overloading, C++ doesn't.
         // Append return type to disambiguate.
-        if (methodDef.Name is "op_Explicit" or "op_Implicit")
+        if (methodDef.Name is "op_Explicit" or "op_Implicit" or "op_CheckedExplicit" or "op_CheckedImplicit")
         {
             var retMangled = CppNameMapper.MangleTypeName(methodDef.ReturnTypeName);
             cppName = $"{cppName}_{retMangled}";
@@ -233,6 +233,7 @@ public partial class IRBuilder
         _pendingVolatile = false; // Reset between methods
         _constrainedType = null;
         _inFilterRegion = false;
+        _tempPtrTypes.Clear();
         _endfilterOffset = -1;
         var block = new IRBasicBlock { Id = 0 };
         irMethod.BasicBlocks.Add(block);
@@ -266,6 +267,11 @@ public partial class IRBuilder
         var branchTargets = new HashSet<int>();
         // Track stack-merge variables at branch targets (for dup+brtrue pattern)
         var branchMergeVars = new Dictionary<int, string>();
+        // Save full stack snapshots at conditional branch targets.
+        // When a branch target is reached after dead code (e.g., after unconditional br),
+        // the linear stack simulation has stale values. We restore the saved snapshot
+        // to correctly handle ternary-like IL patterns (e.g., ldarg; brtrue T; ldc X; br M; T: ldc Y; M: stind).
+        var branchTargetStacks = new Dictionary<int, string[]>();
         foreach (var instr in instructions)
         {
             if (ILInstructionCategory.IsBranch(instr.OpCode))
@@ -434,6 +440,24 @@ public partial class IRBuilder
             {
                 var wasDeadCode = skipDeadCode;
                 skipDeadCode = false; // Resume processing at branch targets
+
+                // Restore stack from saved snapshot when arriving from dead code.
+                // After an unconditional branch (br/ret/throw), the linear stack simulation
+                // retains stale values from the dead code path. These MUST be cleared to
+                // prevent corruption. If a conditional branch saved a stack snapshot for this
+                // target, restore it; otherwise clear to empty (the default for most targets).
+                if (wasDeadCode)
+                {
+                    stack.Clear();
+                    if (branchTargetStacks.TryGetValue(instr.Offset, out var savedStack))
+                    {
+                        foreach (var item in savedStack)
+                            stack.Push(item);
+                    }
+                }
+
+                // Ternary merge: if an unconditional br created merge variables for this target,
+                // the fall-through path must assign its current stack values to those same variables.
                 // Merge stack at branch targets: if a conditional branch saved a merge variable
                 // for this offset, the fall-through path may have a different stack top.
                 // Insert an assignment to unify both paths (fixes dup+brtrue delegate caching pattern).
@@ -462,7 +486,7 @@ public partial class IRBuilder
 
             try
             {
-                ConvertInstruction(instr, block, stack, irMethod, ref tempCounter, branchMergeVars, tryFinallyRegions);
+                ConvertInstruction(instr, block, stack, irMethod, ref tempCounter, branchMergeVars, branchTargetStacks, branchTargets, tryFinallyRegions);
             }
             catch
             {
@@ -534,8 +558,11 @@ public partial class IRBuilder
         return true;
     }
 
+
+
     private void ConvertInstruction(ILInstruction instr, IRBasicBlock block, Stack<string> stack,
         IRMethod method, ref int tempCounter, Dictionary<int, string> branchMergeVars,
+        Dictionary<int, string[]> branchTargetStacks, HashSet<int> branchTargets,
         List<(int TryStart, int TryEnd)> tryFinallyRegions)
     {
         switch (instr.OpCode)
@@ -715,8 +742,18 @@ public partial class IRBuilder
                 break;
 
             // ===== Arithmetic =====
-            case Code.Add: EmitBinaryOp(block, stack, "+", ref tempCounter); break;
-            case Code.Sub: EmitBinaryOp(block, stack, "-", ref tempCounter); break;
+            case Code.Add:
+            case Code.Sub:
+            {
+                // IL add/sub on typed pointers uses byte offsets, but C++ pointer
+                // arithmetic scales by element size. Detect pointer operands and
+                // cast through uint8_t* for correct byte-level arithmetic.
+                var op = instr.OpCode == Code.Add ? "+" : "-";
+                if (TryEmitPointerArithmetic(block, stack, op, method, ref tempCounter))
+                    break;
+                EmitBinaryOp(block, stack, op, ref tempCounter);
+                break;
+            }
             case Code.Mul: EmitBinaryOp(block, stack, "*", ref tempCounter); break;
             case Code.Div: EmitBinaryOp(block, stack, "/", ref tempCounter); break;
             case Code.Div_Un: EmitBinaryOp(block, stack, "/", ref tempCounter); break;
@@ -798,9 +835,9 @@ public partial class IRBuilder
             // ===== Comparison =====
             case Code.Ceq: EmitBinaryOp(block, stack, "==", ref tempCounter); break;
             case Code.Cgt: EmitBinaryOp(block, stack, ">", ref tempCounter); break;
-            case Code.Cgt_Un: EmitBinaryOp(block, stack, ">", ref tempCounter); break;
+            case Code.Cgt_Un: EmitBinaryOp(block, stack, ">", ref tempCounter, isUnsigned: true); break;
             case Code.Clt: EmitBinaryOp(block, stack, "<", ref tempCounter); break;
-            case Code.Clt_Un: EmitBinaryOp(block, stack, "<", ref tempCounter); break;
+            case Code.Clt_Un: EmitBinaryOp(block, stack, "<", ref tempCounter, isUnsigned: true); break;
 
             // ===== Branching =====
             case Code.Br:
@@ -816,6 +853,12 @@ public partial class IRBuilder
                         Value = stack.Peek()
                     });
                 }
+                // NOTE: Ternary patterns (ldarg; brtrue T; ldc X; br M; T: ldc Y; M: stind)
+                // lose the dead-path value (X) after goto. The stack restoration at T
+                // restores the correct address from the brtrue snapshot, preventing crashes
+                // like *(int32_t*)-1. The merge point uses the live path's value (Y) for
+                // both paths, which is a minor semantic issue but avoids type-system
+                // complications from merge variables.
                 block.Instructions.Add(new IRBranch { TargetLabel = $"IL_{target.Offset:X4}" });
                 break;
             }
@@ -830,6 +873,10 @@ public partial class IRBuilder
                 if (stack.Count > 0 && !branchMergeVars.ContainsKey(target.Offset)
                     && IsValidMergeVariable(stack.Peek()))
                     branchMergeVars[target.Offset] = stack.Peek();
+                // Save full stack snapshot for branch target (ternary pattern support).
+                // After popping the condition, the remaining stack is what the target sees.
+                if (stack.Count > 0 && !branchTargetStacks.ContainsKey(target.Offset))
+                    branchTargetStacks[target.Offset] = stack.Reverse().ToArray();
                 block.Instructions.Add(new IRConditionalBranch
                 {
                     Condition = cond,
@@ -848,6 +895,9 @@ public partial class IRBuilder
                 if (stack.Count > 0 && !branchMergeVars.ContainsKey(target.Offset)
                     && IsValidMergeVariable(stack.Peek()))
                     branchMergeVars[target.Offset] = stack.Peek();
+                // Save full stack snapshot for branch target (ternary pattern support)
+                if (stack.Count > 0 && !branchTargetStacks.ContainsKey(target.Offset))
+                    branchTargetStacks[target.Offset] = stack.Reverse().ToArray();
                 block.Instructions.Add(new IRConditionalBranch
                 {
                     Condition = $"!({cond})",
@@ -858,46 +908,44 @@ public partial class IRBuilder
 
             case Code.Beq:
             case Code.Beq_S:
-                EmitComparisonBranch(block, stack, "==", instr);
+                EmitComparisonBranch(block, stack, "==", instr, branchTargetStacks: branchTargetStacks);
                 break;
             case Code.Bne_Un:
             case Code.Bne_Un_S:
-                EmitComparisonBranch(block, stack, "!=", instr);
+                EmitComparisonBranch(block, stack, "!=", instr, branchTargetStacks: branchTargetStacks);
                 break;
             case Code.Bge:
             case Code.Bge_S:
-                EmitComparisonBranch(block, stack, ">=", instr);
+                EmitComparisonBranch(block, stack, ">=", instr, branchTargetStacks: branchTargetStacks);
                 break;
             case Code.Bgt:
             case Code.Bgt_S:
-                EmitComparisonBranch(block, stack, ">", instr);
+                EmitComparisonBranch(block, stack, ">", instr, branchTargetStacks: branchTargetStacks);
                 break;
             case Code.Ble:
             case Code.Ble_S:
-                EmitComparisonBranch(block, stack, "<=", instr);
+                EmitComparisonBranch(block, stack, "<=", instr, branchTargetStacks: branchTargetStacks);
                 break;
             case Code.Blt:
             case Code.Blt_S:
-                EmitComparisonBranch(block, stack, "<", instr);
+                EmitComparisonBranch(block, stack, "<", instr, branchTargetStacks: branchTargetStacks);
                 break;
             // Unsigned branches (ECMA-335 III.3.6-3.12): treat operands as unsigned
-            // C++ types from our codegen are already unsigned for uint/ulong/char,
-            // so the standard operators work correctly for the common C# patterns.
             case Code.Bge_Un:
             case Code.Bge_Un_S:
-                EmitComparisonBranch(block, stack, ">=", instr);
+                EmitComparisonBranch(block, stack, ">=", instr, isUnsigned: true, branchTargetStacks: branchTargetStacks);
                 break;
             case Code.Bgt_Un:
             case Code.Bgt_Un_S:
-                EmitComparisonBranch(block, stack, ">", instr);
+                EmitComparisonBranch(block, stack, ">", instr, isUnsigned: true, branchTargetStacks: branchTargetStacks);
                 break;
             case Code.Ble_Un:
             case Code.Ble_Un_S:
-                EmitComparisonBranch(block, stack, "<=", instr);
+                EmitComparisonBranch(block, stack, "<=", instr, isUnsigned: true, branchTargetStacks: branchTargetStacks);
                 break;
             case Code.Blt_Un:
             case Code.Blt_Un_S:
-                EmitComparisonBranch(block, stack, "<", instr);
+                EmitComparisonBranch(block, stack, "<", instr, isUnsigned: true, branchTargetStacks: branchTargetStacks);
                 break;
 
             // ===== Switch =====
@@ -1103,6 +1151,22 @@ public partial class IRBuilder
             case Code.Ldsflda:
             {
                 var fieldRef = (FieldReference)instr.Operand!;
+
+                // PrivateImplementationDetails fields with RVA data: their InitialValue
+                // contains the actual byte blob from the PE file. Use RegisterArrayInitData
+                // to create a properly initialized static const array instead of referencing
+                // the zero-initialized statics struct.
+                if (fieldRef.DeclaringType.Name.Contains("PrivateImplementationDetails"))
+                {
+                    var fieldDef = fieldRef.Resolve();
+                    if (fieldDef?.InitialValue is { Length: > 0 })
+                    {
+                        var initId = _module.RegisterArrayInitData(fieldDef.InitialValue);
+                        stack.Push($"(uint8_t*){initId}");
+                        break;
+                    }
+                }
+
                 var typeCppName = GetMangledTypeNameForRef(fieldRef.DeclaringType);
                 var fieldCacheKey = ResolveCacheKey(fieldRef.DeclaringType);
                 EmitCctorGuardIfNeeded(block, fieldCacheKey, typeCppName);
@@ -1949,6 +2013,25 @@ public partial class IRBuilder
                 var lookupKey = $"{targetName}|{ilParamKey}";
                 if (_module.DisambiguatedMethodNames.TryGetValue(lookupKey, out var disambiguated))
                     targetName = disambiguated;
+                else if (methodRef.Parameters.Count > 0)
+                {
+                    var declTypeDef = methodRef.DeclaringType.Resolve();
+                    if (declTypeDef != null
+                        && RuntimeProvidedTypes.Contains(declTypeDef.FullName)
+                        && !CoreRuntimeTypes.Contains(declTypeDef.FullName))
+                    {
+                        var overloadCount = declTypeDef.Methods.Count(m => m.Name == methodRef.Name);
+                        if (overloadCount > 1)
+                        {
+                            var ilSuffix = string.Join("_", methodRef.Parameters.Select(p =>
+                            {
+                                var resolved = ResolveGenericTypeRef(p.ParameterType, methodRef.DeclaringType);
+                                return CppNameMapper.MangleTypeName(resolved.TrimEnd('*', '&', ' '));
+                            }));
+                            targetName = $"{targetName}__{ilSuffix}";
+                        }
+                    }
+                }
 
                 // Forward current method's arguments to target
                 var args = new List<string>();

@@ -26,7 +26,123 @@ public partial class IRBuilder
         });
     }
 
-    private void EmitBinaryOp(IRBasicBlock block, Stack<string> stack, string op, ref int tempCounter)
+    /// <summary>
+    /// IL add/sub on typed pointers uses byte offsets, but C++ pointer arithmetic
+    /// scales by element size. When one operand is a typed pointer (element size > 1),
+    /// cast through uint8_t* for correct byte-level arithmetic.
+    /// Returns true if pointer arithmetic was emitted, false to fall through to normal emit.
+    /// </summary>
+    private bool TryEmitPointerArithmetic(IRBasicBlock block, Stack<string> stack, string op,
+        IRMethod irMethod, ref int tempCounter)
+    {
+        if (stack.Count < 2) return false;
+
+        var items = stack.ToArray(); // [0]=top (right), [1]=second from top (left)
+        var right = items[0];
+        var left = items.Length > 1 ? items[1] : "0";
+
+        var leftPtrType = GetTypedPointerType(left, irMethod);
+        var rightPtrType = GetTypedPointerType(right, irMethod);
+
+        // Neither is a typed pointer → not pointer arithmetic
+        if (leftPtrType == null && rightPtrType == null) return false;
+
+        // Pop the two operands
+        stack.Pop(); // right
+        stack.Pop(); // left
+
+        var tmp = $"__t{tempCounter++}";
+
+        if (leftPtrType != null && rightPtrType != null && op == "-")
+        {
+            // ptr - ptr: IL yields byte distance, C++ yields element count.
+            // Cast both to uint8_t* so subtraction gives byte count.
+            block.Instructions.Add(new IRRawCpp
+            {
+                Code = $"{tmp} = (intptr_t)((uint8_t*){left} - (uint8_t*){right});",
+                ResultVar = tmp,
+                ResultTypeCpp = "intptr_t",
+            });
+            // Result is intptr_t, not a pointer — don't track
+        }
+        else if (leftPtrType != null)
+        {
+            // ptr +/- integer: byte-level offset. Cast through uint8_t*.
+            block.Instructions.Add(new IRRawCpp
+            {
+                Code = $"{tmp} = ({leftPtrType})((uint8_t*){left} {op} {right});",
+                ResultVar = tmp,
+                ResultTypeCpp = leftPtrType,
+            });
+            _tempPtrTypes[tmp] = leftPtrType;
+        }
+        else // rightPtrType != null && op == "+"
+        {
+            // integer + ptr: byte-level offset. Cast through uint8_t*.
+            block.Instructions.Add(new IRRawCpp
+            {
+                Code = $"{tmp} = ({rightPtrType})((uint8_t*){right} {op} {left});",
+                ResultVar = tmp,
+                ResultTypeCpp = rightPtrType,
+            });
+            _tempPtrTypes[tmp] = rightPtrType;
+        }
+
+        stack.Push(tmp);
+        return true;
+    }
+
+    /// <summary>
+    /// Check if an expression is a typed pointer with element size > 1 byte.
+    /// Returns the pointer C++ type (e.g. "char16_t*") or null.
+    /// </summary>
+    private string? GetTypedPointerType(string expr, IRMethod irMethod)
+    {
+        // Check local variables: loc_N
+        if (expr.StartsWith("loc_") && int.TryParse(expr["loc_".Length..], out var locIdx))
+        {
+            var local = irMethod.Locals.FirstOrDefault(l => l.Index == locIdx);
+            if (local != null)
+                return ClassifyPointerType(local.CppTypeName);
+        }
+
+        // Check parameters by name (e.g., "pChars", "ptr", etc.)
+        var param = irMethod.Parameters.FirstOrDefault(p => p.CppName == expr);
+        if (param != null)
+            return ClassifyPointerType(param.CppTypeName);
+
+        // Check previously computed temp pointer types
+        if (_tempPtrTypes.TryGetValue(expr, out var tempType))
+            return tempType;
+
+        // Check explicit cast patterns: (type*)expr
+        if (expr.StartsWith("(") && expr.Contains("*)"))
+        {
+            var closeIdx = expr.IndexOf("*)");
+            if (closeIdx > 1)
+            {
+                var castType = expr[1..closeIdx] + "*";
+                return ClassifyPointerType(castType);
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Returns the type if it's a typed pointer with element size > 1 byte, null otherwise.
+    /// </summary>
+    private static string? ClassifyPointerType(string cppTypeName)
+    {
+        if (!cppTypeName.EndsWith("*")) return null;
+        var baseType = cppTypeName[..^1].TrimEnd();
+        // Skip byte-sized element types — their arithmetic is already correct
+        if (baseType is "uint8_t" or "int8_t" or "void") return null;
+        return cppTypeName;
+    }
+
+    private void EmitBinaryOp(IRBasicBlock block, Stack<string> stack, string op, ref int tempCounter,
+        bool isUnsigned = false)
     {
         var right = stack.Count > 0 ? stack.Pop() : "0";
         var left = stack.Count > 0 ? stack.Pop() : "0";
@@ -34,27 +150,48 @@ public partial class IRBuilder
         // cgt.un with nullptr: "ptr > nullptr" is invalid in C++.
         // IL uses "ldloc; ldnull; cgt.un" as an idiom for "ptr != null".
         if (op == ">" && (right == "nullptr" || left == "nullptr"))
+        {
             op = "!=";
+            isUnsigned = false; // no unsigned cast needed for null check
+        }
         // Similarly, clt.un with nullptr is "nullptr != ptr" pattern
         if (op == "<" && (right == "nullptr" || left == "nullptr"))
+        {
             op = "!=";
+            isUnsigned = false;
+        }
 
         var tmp = $"__t{tempCounter++}";
         block.Instructions.Add(new IRBinaryOp
         {
-            Left = left, Right = right, Op = op, ResultVar = tmp
+            Left = left, Right = right, Op = op, ResultVar = tmp, IsUnsigned = isUnsigned
         });
         stack.Push(tmp);
     }
 
-    private void EmitComparisonBranch(IRBasicBlock block, Stack<string> stack, string op, ILInstruction instr)
+    private void EmitComparisonBranch(IRBasicBlock block, Stack<string> stack, string op, ILInstruction instr,
+        bool isUnsigned = false, Dictionary<int, string[]>? branchTargetStacks = null)
     {
         var right = stack.Count > 0 ? stack.Pop() : "0";
         var left = stack.Count > 0 ? stack.Pop() : "0";
+
+        // Unsigned branch with nullptr → rewrite to != (null check idiom)
+        if (isUnsigned && (right == "nullptr" || left == "nullptr"))
+        {
+            op = "!=";
+            isUnsigned = false;
+        }
+
         var target = (Instruction)instr.Operand!;
+        // Save full stack snapshot for branch target (ternary pattern support)
+        if (branchTargetStacks != null && stack.Count > 0 && !branchTargetStacks.ContainsKey(target.Offset))
+            branchTargetStacks[target.Offset] = stack.Reverse().ToArray();
+        var condition = isUnsigned
+            ? $"cil2cpp::to_unsigned({left}) {op} cil2cpp::to_unsigned({right})"
+            : $"{left} {op} {right}";
         block.Instructions.Add(new IRConditionalBranch
         {
-            Condition = $"{left} {op} {right}",
+            Condition = condition,
             TrueLabel = $"IL_{target.Offset:X4}"
         });
     }
@@ -139,6 +276,262 @@ public partial class IRBuilder
             return;
         }
 
+        // Unsafe.SkipInit<T>(out T) — JIT intrinsic that does nothing
+        // IL body throws PlatformNotSupportedException as fallback for non-JIT,
+        // but in AOT it should be a no-op (just suppress definite assignment check)
+        if (methodRef.DeclaringType.FullName == "System.Runtime.CompilerServices.Unsafe"
+            && methodRef.Name == "SkipInit")
+        {
+            if (stack.Count > 0) stack.Pop(); // discard the 'out' ref argument
+            return;
+        }
+
+        // Unsafe.CopyBlockUnaligned / CopyBlock — memcpy intrinsics
+        if (methodRef.DeclaringType.FullName == "System.Runtime.CompilerServices.Unsafe"
+            && methodRef.Name is "CopyBlockUnaligned" or "CopyBlock")
+        {
+            var byteCount = stack.Count > 0 ? stack.Pop() : "0";
+            var source = stack.Count > 0 ? stack.Pop() : "nullptr";
+            var dest = stack.Count > 0 ? stack.Pop() : "nullptr";
+            block.Instructions.Add(new IRRawCpp
+            {
+                Code = $"std::memcpy((void*){dest}, (void*){source}, (size_t){byteCount});"
+            });
+            return;
+        }
+
+        // Unsafe.InitBlockUnaligned / InitBlock — memset intrinsics
+        if (methodRef.DeclaringType.FullName == "System.Runtime.CompilerServices.Unsafe"
+            && methodRef.Name is "InitBlockUnaligned" or "InitBlock")
+        {
+            var byteCount = stack.Count > 0 ? stack.Pop() : "0";
+            var value = stack.Count > 0 ? stack.Pop() : "0";
+            var dest = stack.Count > 0 ? stack.Pop() : "nullptr";
+            block.Instructions.Add(new IRRawCpp
+            {
+                Code = $"std::memset((void*){dest}, (int){value}, (size_t){byteCount});"
+            });
+            return;
+        }
+
+        // Unsafe.ReadUnaligned<T>(ref byte) — unaligned read intrinsic
+        if (methodRef.DeclaringType.FullName == "System.Runtime.CompilerServices.Unsafe"
+            && methodRef.Name == "ReadUnaligned" && methodRef is GenericInstanceMethod gimRu
+            && gimRu.GenericArguments.Count == 1 && methodRef.Parameters.Count == 1)
+        {
+            var src = stack.Count > 0 ? stack.Pop() : "nullptr";
+            var typeArg = gimRu.GenericArguments[0];
+            var resolvedType = typeArg is GenericParameter gpRu && _activeTypeParamMap != null
+                && _activeTypeParamMap.TryGetValue(gpRu.Name, out var rRu) ? rRu : typeArg.FullName;
+            var cppType = CppNameMapper.GetCppTypeName(resolvedType);
+            if (cppType.EndsWith("*")) cppType = cppType.TrimEnd('*');
+            var tmp = $"__t{tempCounter++}";
+            block.Instructions.Add(new IRRawCpp
+            {
+                Code = $"{cppType} {tmp}; std::memcpy(&{tmp}, (void*){src}, sizeof({cppType}));",
+                ResultVar = tmp,
+                ResultTypeCpp = cppType,
+            });
+            stack.Push(tmp);
+            return;
+        }
+
+        // Unsafe.WriteUnaligned<T>(ref byte, T) — unaligned write intrinsic
+        if (methodRef.DeclaringType.FullName == "System.Runtime.CompilerServices.Unsafe"
+            && methodRef.Name == "WriteUnaligned" && methodRef is GenericInstanceMethod gimWu
+            && gimWu.GenericArguments.Count == 1 && methodRef.Parameters.Count == 2)
+        {
+            var value = stack.Count > 0 ? stack.Pop() : "0";
+            var dest = stack.Count > 0 ? stack.Pop() : "nullptr";
+            var typeArg = gimWu.GenericArguments[0];
+            var resolvedType = typeArg is GenericParameter gpWu && _activeTypeParamMap != null
+                && _activeTypeParamMap.TryGetValue(gpWu.Name, out var rWu) ? rWu : typeArg.FullName;
+            var cppType = CppNameMapper.GetCppTypeName(resolvedType);
+            if (cppType.EndsWith("*")) cppType = cppType.TrimEnd('*');
+            block.Instructions.Add(new IRRawCpp
+            {
+                Code = $"{{ {cppType} __wu_val = {value}; std::memcpy((void*){dest}, &__wu_val, sizeof({cppType})); }}"
+            });
+            return;
+        }
+
+        // Unsafe.AsRef<T>(in T) / Unsafe.AsRef<T>(void*) — ref identity / pointer cast
+        if (methodRef.DeclaringType.FullName == "System.Runtime.CompilerServices.Unsafe"
+            && methodRef.Name == "AsRef" && methodRef.Parameters.Count == 1)
+        {
+            // AsRef is identity (ref T → ref T) or (void* → ref T) — just pass through
+            // The argument is already a pointer in our model
+            // No-op: leave stack as is
+            return;
+        }
+
+        // Unsafe.Subtract<T>(ref T, int) — pointer arithmetic (subtract)
+        if (methodRef.DeclaringType.FullName == "System.Runtime.CompilerServices.Unsafe"
+            && methodRef.Name == "Subtract" && methodRef.Parameters.Count == 2)
+        {
+            var offset = stack.Count > 0 ? stack.Pop() : "0";
+            var ptr = stack.Count > 0 ? stack.Pop() : "nullptr";
+            var tmp = $"__t{tempCounter++}";
+            block.Instructions.Add(new IRRawCpp
+            {
+                Code = $"auto {tmp} = {ptr} - {offset};"
+            });
+            stack.Push(tmp);
+            return;
+        }
+
+        // Unsafe.AreSame<T>(ref T, ref T) — pointer equality
+        if (methodRef.DeclaringType.FullName == "System.Runtime.CompilerServices.Unsafe"
+            && methodRef.Name == "AreSame" && methodRef.Parameters.Count == 2)
+        {
+            var right = stack.Count > 0 ? stack.Pop() : "nullptr";
+            var left = stack.Count > 0 ? stack.Pop() : "nullptr";
+            var tmp = $"__t{tempCounter++}";
+            block.Instructions.Add(new IRRawCpp
+            {
+                Code = $"auto {tmp} = ({left} == {right});"
+            });
+            stack.Push(tmp);
+            return;
+        }
+
+        // Unsafe.ByteOffset<T>(ref T, ref T) — byte difference between two pointers
+        if (methodRef.DeclaringType.FullName == "System.Runtime.CompilerServices.Unsafe"
+            && methodRef.Name == "ByteOffset" && methodRef.Parameters.Count == 2)
+        {
+            var right = stack.Count > 0 ? stack.Pop() : "nullptr";
+            var left = stack.Count > 0 ? stack.Pop() : "nullptr";
+            var tmp = $"__t{tempCounter++}";
+            block.Instructions.Add(new IRRawCpp
+            {
+                Code = $"auto {tmp} = (intptr_t)((uint8_t*){right} - (uint8_t*){left});"
+            });
+            stack.Push(tmp);
+            return;
+        }
+
+        // Unsafe.IsNullRef<T>(ref T) — null reference check
+        if (methodRef.DeclaringType.FullName == "System.Runtime.CompilerServices.Unsafe"
+            && methodRef.Name == "IsNullRef" && methodRef.Parameters.Count == 1)
+        {
+            var ptr = stack.Count > 0 ? stack.Pop() : "nullptr";
+            var tmp = $"__t{tempCounter++}";
+            block.Instructions.Add(new IRRawCpp
+            {
+                Code = $"auto {tmp} = ({ptr} == nullptr);"
+            });
+            stack.Push(tmp);
+            return;
+        }
+
+        // Unsafe.NullRef<T>() — null reference
+        if (methodRef.DeclaringType.FullName == "System.Runtime.CompilerServices.Unsafe"
+            && methodRef.Name == "NullRef" && methodRef.Parameters.Count == 0)
+        {
+            stack.Push("nullptr");
+            return;
+        }
+
+        // Unsafe.AddByteOffset<T>(ref T, IntPtr/nuint) — byte offset addition
+        if (methodRef.DeclaringType.FullName == "System.Runtime.CompilerServices.Unsafe"
+            && methodRef.Name == "AddByteOffset" && methodRef.Parameters.Count == 2)
+        {
+            var offset = stack.Count > 0 ? stack.Pop() : "0";
+            var ptr = stack.Count > 0 ? stack.Pop() : "nullptr";
+            var tmp = $"__t{tempCounter++}";
+            block.Instructions.Add(new IRRawCpp
+            {
+                Code = $"auto {tmp} = (decltype({ptr}))((uint8_t*){ptr} + (intptr_t){offset});"
+            });
+            stack.Push(tmp);
+            return;
+        }
+
+        // Unsafe.SubtractByteOffset<T>(ref T, IntPtr/nuint) — byte offset subtraction
+        if (methodRef.DeclaringType.FullName == "System.Runtime.CompilerServices.Unsafe"
+            && methodRef.Name == "SubtractByteOffset" && methodRef.Parameters.Count == 2)
+        {
+            var offset = stack.Count > 0 ? stack.Pop() : "0";
+            var ptr = stack.Count > 0 ? stack.Pop() : "nullptr";
+            var tmp = $"__t{tempCounter++}";
+            block.Instructions.Add(new IRRawCpp
+            {
+                Code = $"auto {tmp} = (decltype({ptr}))((uint8_t*){ptr} - (intptr_t){offset});"
+            });
+            stack.Push(tmp);
+            return;
+        }
+
+        // Unsafe.As<T>(object) — cast object to T (single type arg version)
+        if (methodRef.DeclaringType.FullName == "System.Runtime.CompilerServices.Unsafe"
+            && methodRef.Name == "As" && methodRef is GenericInstanceMethod gimAs1
+            && gimAs1.GenericArguments.Count == 1 && methodRef.Parameters.Count == 1)
+        {
+            var val = stack.Count > 0 ? stack.Pop() : "nullptr";
+            var toTypeArg = gimAs1.GenericArguments[0];
+            var resolvedTo = toTypeArg is GenericParameter gpAs1 && _activeTypeParamMap != null
+                && _activeTypeParamMap.TryGetValue(gpAs1.Name, out var rAs1) ? rAs1 : toTypeArg.FullName;
+            var cppTo = CppNameMapper.GetCppTypeForDecl(resolvedTo);
+            if (!cppTo.EndsWith("*")) cppTo += "*";
+            var tmp = $"__t{tempCounter++}";
+            block.Instructions.Add(new IRRawCpp
+            {
+                Code = $"auto {tmp} = reinterpret_cast<{cppTo}>({val});",
+                ResultVar = tmp,
+                ResultTypeCpp = cppTo,
+            });
+            stack.Push(tmp);
+            return;
+        }
+
+        // Unsafe.AsPointer<T>(ref T) — ref to void* cast
+        if (methodRef.DeclaringType.FullName == "System.Runtime.CompilerServices.Unsafe"
+            && methodRef.Name == "AsPointer" && methodRef.Parameters.Count == 1)
+        {
+            var src = stack.Count > 0 ? stack.Pop() : "nullptr";
+            var tmp = $"__t{tempCounter++}";
+            block.Instructions.Add(new IRRawCpp
+            {
+                Code = $"auto {tmp} = (void*){src};"
+            });
+            stack.Push(tmp);
+            return;
+        }
+        // Debug: catch AsPointer with different declaring type
+        if (methodRef.Name == "AsPointer" && methodRef.Parameters.Count == 1)
+        {
+            Console.Error.WriteLine($"[DIAG] AsPointer not intercepted: DeclaringType='{methodRef.DeclaringType.FullName}'");
+        }
+
+        // Unsafe.Unbox<T>(object) — unbox to ref T
+        if (methodRef.DeclaringType.FullName == "System.Runtime.CompilerServices.Unsafe"
+            && methodRef.Name == "Unbox" && methodRef is GenericInstanceMethod gimUnbox
+            && gimUnbox.GenericArguments.Count == 1)
+        {
+            var obj = stack.Count > 0 ? stack.Pop() : "nullptr";
+            var typeArg = gimUnbox.GenericArguments[0];
+            var resolvedType = typeArg is GenericParameter gpUb && _activeTypeParamMap != null
+                && _activeTypeParamMap.TryGetValue(gpUb.Name, out var rUb) ? rUb : typeArg.FullName;
+            var cppType = CppNameMapper.GetCppTypeName(resolvedType);
+            if (!cppType.EndsWith("*")) cppType += "*";
+            var tmp = $"__t{tempCounter++}";
+            block.Instructions.Add(new IRRawCpp
+            {
+                Code = $"auto {tmp} = ({cppType})cil2cpp::unbox({obj});",
+                ResultVar = tmp,
+                ResultTypeCpp = cppType,
+            });
+            stack.Push(tmp);
+            return;
+        }
+
+        // MemoryMarshal JIT intrinsics — their IL bodies use Unsafe.* which are also intrinsics
+        if (methodRef.DeclaringType.FullName == "System.Runtime.InteropServices.MemoryMarshal"
+            && methodRef is GenericInstanceMethod mmGim)
+        {
+            if (TryEmitMemoryMarshalIntrinsic(block, stack, methodRef, mmGim, ref tempCounter))
+                return;
+        }
         // Vector128<T>.get_Count — return 0 (disable SIMD paths, force scalar fallback)
         if (methodRef.DeclaringType.FullName.StartsWith("System.Runtime.Intrinsics.Vector128")
             && (methodRef.Name == "get_Count" || methodRef.Name == "get_IsHardwareAccelerated"))
@@ -245,7 +638,9 @@ public partial class IRBuilder
                 {
                     var elemArgName = ResolveGenericTypeRef(spanGit.GenericArguments[0], methodRef.DeclaringType);
                     var elemCpp = CppNameMapper.GetCppTypeForDecl(elemArgName);
-                    elemPtrType = elemCpp.EndsWith("*") ? elemCpp : elemCpp + "*";
+                    // array_data returns void*; cast to element pointer type
+                    // For reference types (String*), need String** since array stores pointers
+                    elemPtrType = elemCpp + "*";
                 }
                 // Array → Span/ReadOnlySpan: construct from array data + length
                 block.Instructions.Add(new IRRawCpp
@@ -267,6 +662,91 @@ public partial class IRBuilder
             }
             stack.Push(tmp);
             return;
+        }
+
+        // Span<T>/ReadOnlySpan<T> constructors — JIT intrinsic bodies can't be AOT compiled
+        // Intercept .ctor(T[], int, int), .ctor(T[]), and .ctor(void*, int)
+        if (methodRef.Name == ".ctor" && methodRef.HasThis
+            && (methodRef.DeclaringType.FullName.StartsWith("System.Span`1")
+                || methodRef.DeclaringType.FullName.StartsWith("System.ReadOnlySpan`1")))
+        {
+            // Determine element type for pointer casts
+            // For reference types (e.g. String), the array stores pointers, so elemPtrType = String**
+            var elemPtrType = "void*";
+            if (methodRef.DeclaringType is GenericInstanceType spanCtorGit
+                && spanCtorGit.GenericArguments.Count > 0)
+            {
+                var elemArgName = ResolveGenericTypeRef(spanCtorGit.GenericArguments[0],
+                    methodRef.DeclaringType);
+                var elemCpp = CppNameMapper.GetCppTypeForDecl(elemArgName);
+                // GetCppTypeForDecl already returns T* for reference types, add another *
+                elemPtrType = elemCpp.EndsWith("*") ? elemCpp + "*" : elemCpp + "*";
+            }
+
+            // Helper to emit field access — thisPtr can be &loc (ldloca) or a pointer
+            // Wrap in parens to handle &loc correctly: (&loc)->f_x
+            string spanAccess(string thisPtr, string field) => $"({thisPtr})->{field}";
+
+            if (methodRef.Parameters.Count == 3)
+            {
+                // .ctor(T[] array, int start, int length)
+                var length = stack.Count > 0 ? stack.Pop() : "0";
+                var start = stack.Count > 0 ? stack.Pop() : "0";
+                var array = stack.Count > 0 ? stack.Pop() : "nullptr";
+                var thisPtr = stack.Count > 0 ? stack.Pop() : "__this";
+                block.Instructions.Add(new IRRawCpp
+                {
+                    Code = $"{spanAccess(thisPtr, "f_reference")} = ({elemPtrType})cil2cpp::array_data({array}) + {start}; " +
+                           $"{spanAccess(thisPtr, "f_length")} = {length};"
+                });
+                return;
+            }
+            else if (methodRef.Parameters.Count == 1
+                && methodRef.Parameters[0].ParameterType.IsArray)
+            {
+                // .ctor(T[] array)
+                var array = stack.Count > 0 ? stack.Pop() : "nullptr";
+                var thisPtr = stack.Count > 0 ? stack.Pop() : "__this";
+                block.Instructions.Add(new IRRawCpp
+                {
+                    Code = $"if ({array}) {{ " +
+                           $"{spanAccess(thisPtr, "f_reference")} = ({elemPtrType})cil2cpp::array_data({array}); " +
+                           $"{spanAccess(thisPtr, "f_length")} = cil2cpp::array_length({array}); " +
+                           $"}} else {{ " +
+                           $"{spanAccess(thisPtr, "f_reference")} = nullptr; " +
+                           $"{spanAccess(thisPtr, "f_length")} = 0; }}"
+                });
+                return;
+            }
+            else if (methodRef.Parameters.Count == 2
+                && methodRef.Parameters[0].ParameterType.FullName is "System.Void*"
+                    or "System.IntPtr")
+            {
+                // .ctor(void* pointer, int length)
+                var length = stack.Count > 0 ? stack.Pop() : "0";
+                var pointer = stack.Count > 0 ? stack.Pop() : "nullptr";
+                var thisPtr = stack.Count > 0 ? stack.Pop() : "__this";
+                block.Instructions.Add(new IRRawCpp
+                {
+                    Code = $"{spanAccess(thisPtr, "f_reference")} = ({elemPtrType}){pointer}; " +
+                           $"{spanAccess(thisPtr, "f_length")} = {length};"
+                });
+                return;
+            }
+            else if (methodRef.Parameters.Count == 2
+                && methodRef.Parameters[0].ParameterType.IsByReference)
+            {
+                // .ctor(ref T reference, int length) — internal ByReference ctor
+                var length = stack.Count > 0 ? stack.Pop() : "0";
+                var reference = stack.Count > 0 ? stack.Pop() : "nullptr";
+                var thisPtr = stack.Count > 0 ? stack.Pop() : "__this";
+                block.Instructions.Add(new IRRawCpp
+                {
+                    Code = $"{spanAccess(thisPtr, "f_reference")} = ({elemPtrType}){reference}; " +
+                           $"{spanAccess(thisPtr, "f_length")} = {length};"
+                });
+                return;
+            }
         }
 
         // Special: Delegate.Invoke — emit IRDelegateInvoke instead of normal call
@@ -316,6 +796,66 @@ public partial class IRBuilder
             {
                 Code = $"std::memcpy(cil2cpp::array_data({arr}), {fieldHandle}, sizeof({fieldHandle}));"
             });
+            return;
+        }
+
+        // JIT intrinsic: RuntimeHelpers.CreateSpan<T>(RuntimeFieldHandle)
+        // Creates a ReadOnlySpan<T> pointing directly to static init data.
+        if (methodRef.DeclaringType.FullName == "System.Runtime.CompilerServices.RuntimeHelpers"
+            && methodRef.Name == "CreateSpan"
+            && methodRef is GenericInstanceMethod createSpanGim && createSpanGim.GenericArguments.Count == 1
+            && methodRef.Parameters.Count == 1)
+        {
+            var fieldHandle = stack.Count > 0 ? stack.Pop() : "0";
+            var elemTypeRef = ResolveTypeRefOperand(createSpanGim.GenericArguments[0]);
+            var elemCpp = CppNameMapper.GetCppTypeName(elemTypeRef);
+            if (elemCpp.EndsWith("*")) elemCpp = elemCpp.TrimEnd('*');
+            // Build ReadOnlySpan<T> type name
+            var spanIlName = $"System.ReadOnlySpan`1<{elemTypeRef}>";
+            var spanCpp = CppNameMapper.GetCppTypeName(spanIlName);
+            if (spanCpp.EndsWith("*")) spanCpp = spanCpp.TrimEnd('*');
+            var tmp = $"__t{tempCounter++}";
+            // Look up the data blob size from the init data ID (__arr_init_N)
+            // and compute element count = byteSize / sizeof(T)
+            int blobBytes = 0;
+            if (fieldHandle.StartsWith("__arr_init_") && int.TryParse(fieldHandle["__arr_init_".Length..], out var blobIdx)
+                && blobIdx >= 0 && blobIdx < _module.ArrayInitDataBlobs.Count)
+            {
+                blobBytes = _module.ArrayInitDataBlobs[blobIdx].Data.Length;
+            }
+            // Get element size from C++ type name for compile-time length computation
+            int elemSize = elemCpp switch
+            {
+                "int8_t" or "uint8_t" or "bool" => 1,
+                "int16_t" or "uint16_t" or "char16_t" => 2,
+                "int32_t" or "uint32_t" or "float" => 4,
+                "int64_t" or "uint64_t" or "double" => 8,
+                _ => 0 // unknown — fall back to runtime sizeof
+            };
+            string lengthExpr;
+            if (blobBytes > 0 && elemSize > 0)
+                lengthExpr = (blobBytes / elemSize).ToString();
+            else
+                lengthExpr = $"static_cast<int32_t>(sizeof({fieldHandle}) / sizeof({elemCpp}))";
+            block.Instructions.Add(new IRRawCpp
+            {
+                Code = $"{spanCpp} {tmp} = {{0}}; {tmp}.f_reference = ({elemCpp}*){fieldHandle}; {tmp}.f_length = {lengthExpr};"
+            });
+            stack.Push(tmp);
+            return;
+        }
+
+        // JIT intrinsic: RuntimeHelpers.IsReferenceOrContainsReferences<T>()
+        // Resolve to compile-time constant based on type argument T.
+        if (methodRef.DeclaringType.FullName == "System.Runtime.CompilerServices.RuntimeHelpers"
+            && methodRef.Name == "IsReferenceOrContainsReferences"
+            && methodRef is GenericInstanceMethod isRefGim && isRefGim.GenericArguments.Count == 1)
+        {
+            var typeArg = ResolveTypeRefOperand(isRefGim.GenericArguments[0]);
+            bool isRef = IsReferenceOrContainsReferences(typeArg);
+            var tmp = $"__t{tempCounter++}";
+            block.Instructions.Add(new IRRawCpp { Code = $"{tmp} = {(isRef ? "true" : "false")};" });
+            stack.Push(tmp);
             return;
         }
 
@@ -386,7 +926,7 @@ public partial class IRBuilder
             var typeCpp = GetMangledTypeNameForRef(methodRef.DeclaringType);
             var funcName = CppNameMapper.MangleMethodName(typeCpp, methodRef.Name);
             // op_Explicit/op_Implicit: disambiguate by return type (matches ConvertMethod)
-            if (methodRef.Name is "op_Explicit" or "op_Implicit")
+            if (methodRef.Name is "op_Explicit" or "op_Implicit" or "op_CheckedExplicit" or "op_CheckedImplicit")
             {
                 var retMangled = CppNameMapper.MangleTypeName(methodRef.ReturnType.FullName);
                 funcName = $"{funcName}_{retMangled}";
@@ -398,6 +938,29 @@ public partial class IRBuilder
             var lookupKey = $"{funcName}|{ilParamKey}";
             if (_module.DisambiguatedMethodNames.TryGetValue(lookupKey, out var disambiguated))
                 funcName = disambiguated;
+            else if (methodRef.Parameters.Count > 0)
+            {
+                var declTypeDef = methodRef.DeclaringType.Resolve();
+                // Only for non-core RuntimeProvided types (Task, Thread, etc.)
+                // CoreRuntime types (Object, String, Array) have their methods in the runtime,
+                // so they don't need disambiguation at emit time.
+                if (declTypeDef != null
+                    && RuntimeProvidedTypes.Contains(declTypeDef.FullName)
+                    && !CoreRuntimeTypes.Contains(declTypeDef.FullName))
+                {
+                    var baseName = methodRef.Name;
+                    var overloadCount = declTypeDef.Methods.Count(m => m.Name == baseName);
+                    if (overloadCount > 1)
+                    {
+                        var ilSuffix = string.Join("_", methodRef.Parameters.Select(p =>
+                        {
+                            var resolved = ResolveGenericTypeRef(p.ParameterType, methodRef.DeclaringType);
+                            return CppNameMapper.MangleTypeName(resolved.TrimEnd('*', '&', ' '));
+                        }));
+                        funcName = $"{funcName}__{ilSuffix}";
+                    }
+                }
+            }
 
             irCall.FunctionName = funcName;
         }
@@ -912,6 +1475,81 @@ public partial class IRBuilder
         if (TryEmitExceptionNewObj(block, stack, ctorRef, ref tempCounter))
             return;
 
+        // Span<T>/ReadOnlySpan<T> newobj — inline constructor for JIT intrinsic bodies
+        if (ctorRef.DeclaringType.FullName.StartsWith("System.Span`1")
+            || ctorRef.DeclaringType.FullName.StartsWith("System.ReadOnlySpan`1"))
+        {
+            var spanTypeCpp = GetMangledTypeNameForRef(ctorRef.DeclaringType);
+            var spanTmp = $"__t{tempCounter++}";
+            var elemPtrType = "void*";
+            if (ctorRef.DeclaringType is GenericInstanceType spanGit2
+                && spanGit2.GenericArguments.Count > 0)
+            {
+                var elemArgName = ResolveGenericTypeRef(spanGit2.GenericArguments[0],
+                    ctorRef.DeclaringType);
+                var elemCpp = CppNameMapper.GetCppTypeForDecl(elemArgName);
+                elemPtrType = elemCpp + "*";
+            }
+
+            if (ctorRef.Parameters.Count == 3)
+            {
+                var length = stack.Count > 0 ? stack.Pop() : "0";
+                var start = stack.Count > 0 ? stack.Pop() : "0";
+                var array = stack.Count > 0 ? stack.Pop() : "nullptr";
+                block.Instructions.Add(new IRRawCpp
+                {
+                    Code = $"{spanTypeCpp} {spanTmp} = {{0}}; " +
+                           $"{spanTmp}.f_reference = ({elemPtrType})cil2cpp::array_data({array}) + {start}; " +
+                           $"{spanTmp}.f_length = {length};"
+                });
+                stack.Push(spanTmp);
+                return;
+            }
+            else if (ctorRef.Parameters.Count == 1
+                && ctorRef.Parameters[0].ParameterType.IsArray)
+            {
+                var array = stack.Count > 0 ? stack.Pop() : "nullptr";
+                block.Instructions.Add(new IRRawCpp
+                {
+                    Code = $"{spanTypeCpp} {spanTmp} = {{0}}; " +
+                           $"if ({array}) {{ " +
+                           $"{spanTmp}.f_reference = ({elemPtrType})cil2cpp::array_data({array}); " +
+                           $"{spanTmp}.f_length = cil2cpp::array_length({array}); }}"
+                });
+                stack.Push(spanTmp);
+                return;
+            }
+            else if (ctorRef.Parameters.Count == 2
+                && ctorRef.Parameters[0].ParameterType.FullName is "System.Void*" or "System.IntPtr")
+            {
+                var length = stack.Count > 0 ? stack.Pop() : "0";
+                var pointer = stack.Count > 0 ? stack.Pop() : "nullptr";
+                block.Instructions.Add(new IRRawCpp
+                {
+                    Code = $"{spanTypeCpp} {spanTmp} = {{0}}; " +
+                           $"{spanTmp}.f_reference = ({elemPtrType}){pointer}; " +
+                           $"{spanTmp}.f_length = {length};"
+                });
+                stack.Push(spanTmp);
+                return;
+            }
+            else if (ctorRef.Parameters.Count == 2
+                && ctorRef.Parameters[0].ParameterType.IsByReference)
+            {
+                // newobj .ctor(ref T reference, int length) — internal ByReference ctor
+                var length = stack.Count > 0 ? stack.Pop() : "0";
+                var reference = stack.Count > 0 ? stack.Pop() : "nullptr";
+                block.Instructions.Add(new IRRawCpp
+                {
+                    Code = $"{spanTypeCpp} {spanTmp} = {{0}}; " +
+                           $"{spanTmp}.f_reference = ({elemPtrType}){reference}; " +
+                           $"{spanTmp}.f_length = {length};"
+                });
+                stack.Push(spanTmp);
+                return;
+            }
+        }
+
         var cacheKey = ResolveCacheKey(ctorRef.DeclaringType);
         var typeCpp = GetMangledTypeNameForRef(ctorRef.DeclaringType);
         var tmp = $"__t{tempCounter++}";
@@ -961,7 +1599,67 @@ public partial class IRBuilder
                 ResolveGenericTypeRef(p.ParameterType, ctorRef.DeclaringType)));
             var lookupKey = $"{ctorName}|{ilParamKey}";
             if (_module.DisambiguatedMethodNames.TryGetValue(lookupKey, out var disambiguatedCtor))
+            {
                 ctorName = disambiguatedCtor;
+            }
+            else if (ctorRef.Parameters.Count > 0)
+            {
+                // Fallback 1: try to find the method directly on the IRType
+                var targetType = _module.Types.FirstOrDefault(t => t.CppName == typeCpp);
+                if (targetType == null && typeCpp.EndsWith("_"))
+                    targetType = _module.Types.FirstOrDefault(t => t.CppName == typeCpp.TrimEnd('_'));
+                bool resolved = false;
+                if (targetType != null)
+                {
+                    var ctorCount = targetType.Methods.Count(m => m.Name == ".ctor");
+                    if (ctorCount > 1)
+                    {
+                        var candidates = targetType.Methods
+                            .Where(m => m.Name == ".ctor" && m.Parameters.Count == ctorRef.Parameters.Count + 1)
+                            .ToList();
+                        if (candidates.Count == 1)
+                        {
+                            ctorName = candidates[0].CppName;
+                            resolved = true;
+                        }
+                        else if (candidates.Count > 1)
+                        {
+                            foreach (var c in candidates)
+                            {
+                                var cParams = c.Parameters.Skip(1).Select(p => p.CppTypeName).ToList();
+                                var callParams = ctorRef.Parameters.Select(p =>
+                                    CppNameMapper.GetCppTypeName(ResolveGenericTypeRef(p.ParameterType, ctorRef.DeclaringType))).ToList();
+                                if (cParams.SequenceEqual(callParams))
+                                {
+                                    ctorName = c.CppName;
+                                    resolved = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                // Fallback 2: if IRType not available, use Cecil for RuntimeProvided types
+                if (!resolved)
+                {
+                    var declTypeDef = ctorRef.DeclaringType.Resolve();
+                    if (declTypeDef != null
+                        && RuntimeProvidedTypes.Contains(declTypeDef.FullName)
+                        && !CoreRuntimeTypes.Contains(declTypeDef.FullName))
+                    {
+                        var overloadCount = declTypeDef.Methods.Count(m => m.Name == ".ctor");
+                        if (overloadCount > 1)
+                        {
+                            var ilSuffix = string.Join("_", ctorRef.Parameters.Select(p =>
+                            {
+                                var res = ResolveGenericTypeRef(p.ParameterType, ctorRef.DeclaringType);
+                                return CppNameMapper.MangleTypeName(res.TrimEnd('*', '&', ' '));
+                            }));
+                            ctorName = $"{ctorName}__{ilSuffix}";
+                        }
+                    }
+                }
+            }
         }
 
         // Collect constructor arguments
@@ -977,7 +1675,16 @@ public partial class IRBuilder
         CastArgumentsToParameterTypes(args, ctorRef);
 
         // Value types: allocate on stack instead of heap
-        if (_typeCache.TryGetValue(cacheKey, out var irType) && irType.IsValueType)
+        // Check both IR type cache and Cecil for value type detection
+        bool isValueType = false;
+        if (_typeCache.TryGetValue(cacheKey, out var irType))
+            isValueType = irType.IsValueType;
+        else
+        {
+            // Fallback: check Cecil directly (handles BCL generic types not yet in cache)
+            try { isValueType = ctorRef.DeclaringType.Resolve()?.IsValueType == true; } catch { }
+        }
+        if (isValueType)
         {
             block.Instructions.Add(new IRDeclareLocal { TypeName = typeCpp, VarName = tmp });
             var allArgs = new List<string> { $"&{tmp}" };
@@ -1271,6 +1978,23 @@ public partial class IRBuilder
     /// </summary>
     private string ResolveGenericTypeRef(TypeReference typeRef, TypeReference declaringType)
     {
+        // Handle compound types that may contain generic parameters
+        if (typeRef is ArrayType arrType)
+        {
+            var elemResolved = ResolveGenericTypeRef(arrType.ElementType, declaringType);
+            return elemResolved + "[]";
+        }
+        if (typeRef is ByReferenceType byRefType)
+        {
+            var elemResolved = ResolveGenericTypeRef(byRefType.ElementType, declaringType);
+            return elemResolved + "&";
+        }
+        if (typeRef is PointerType ptrType)
+        {
+            var elemResolved = ResolveGenericTypeRef(ptrType.ElementType, declaringType);
+            return elemResolved + "*";
+        }
+
         // Resolve generic parameters — first check method-level map, then type-level
         if (typeRef is GenericParameter gp)
         {
@@ -1387,6 +2111,20 @@ public partial class IRBuilder
             var resolved = SubstituteMethodGenericParams(byRef.ElementType, gim);
             if (resolved != byRef.ElementType)
                 return new ByReferenceType(resolved);
+        }
+
+        if (typeRef is PointerType ptrType)
+        {
+            var resolved = SubstituteMethodGenericParams(ptrType.ElementType, gim);
+            if (resolved != ptrType.ElementType)
+                return new PointerType(resolved);
+        }
+
+        if (typeRef is ArrayType arrType)
+        {
+            var resolved = SubstituteMethodGenericParams(arrType.ElementType, gim);
+            if (resolved != arrType.ElementType)
+                return new ArrayType(resolved, arrType.Rank);
         }
 
         return typeRef;
@@ -1614,4 +2352,175 @@ public partial class IRBuilder
         Code.Ldelem_I or Code.Stelem_I => "intptr_t",
         _ => "cil2cpp::Object*"
     };
+
+    /// <summary>
+    /// Intercept MemoryMarshal JIT intrinsics at call sites.
+    /// Their IL bodies use Unsafe.*/RuntimeHelpers.* which are also JIT intrinsics,
+    /// so the IL bodies can't be compiled to C++. We emit inline C++ instead.
+    /// </summary>
+    private bool TryEmitMemoryMarshalIntrinsic(IRBasicBlock block, Stack<string> stack,
+        MethodReference methodRef, GenericInstanceMethod gim, ref int tempCounter)
+    {
+        var methodName = methodRef.Name;
+        var typeArgs = gim.GenericArguments;
+        if (typeArgs.Count == 0) return false;
+
+        var elemIlName = ResolveTypeRefOperand(typeArgs[0]);
+        var elemCpp = CppNameMapper.GetCppTypeForDecl(elemIlName);
+        // For reference types (String*), element pointer is String**
+        var elemPtrCpp = elemCpp + "*";
+
+        // For methods accessing span.f_reference, verify the span type has that field.
+        // Opaque BCL Span<T> types (empty struct declarations) don't have f_reference.
+        bool SpanTypeHasFields()
+        {
+            if (methodRef.Parameters.Count < 1) return false;
+            // Try both Span<T> and ReadOnlySpan<T> with the resolved element type
+            var spanKeys = new[]
+            {
+                $"System.Span`1<{elemIlName}>",
+                $"System.ReadOnlySpan`1<{elemIlName}>"
+            };
+            foreach (var key in spanKeys)
+            {
+                if (_typeCache.TryGetValue(key, out var spanIrType)
+                    && spanIrType.Fields.Any(f => f.Name is "_reference" or "f_reference"))
+                    return true;
+            }
+            return false;
+        }
+
+        switch (methodName)
+        {
+            // GetReference<T>(Span<T>) / GetReference<T>(ReadOnlySpan<T>) → span.f_reference
+            case "GetReference":
+            {
+                if (methodRef.Parameters.Count != 1 || !SpanTypeHasFields()) return false;
+                var span = stack.Count > 0 ? stack.Pop() : "{}";
+                var tmp = $"__t{tempCounter++}";
+                block.Instructions.Add(new IRRawCpp
+                {
+                    Code = $"{tmp} = ({elemPtrCpp}){span}.f_reference;"
+                });
+                stack.Push(tmp);
+                return true;
+            }
+
+            // GetNonNullPinnableReference<T>(Span<T>/ReadOnlySpan<T>)
+            // Returns f_reference if non-empty, or (T*)(uintptr_t)1 if empty (non-null sentinel for pinning)
+            case "GetNonNullPinnableReference":
+            {
+                if (methodRef.Parameters.Count != 1 || !SpanTypeHasFields()) return false;
+                var span = stack.Count > 0 ? stack.Pop() : "{}";
+                var tmp = $"__t{tempCounter++}";
+                block.Instructions.Add(new IRRawCpp
+                {
+                    Code = $"{tmp} = {span}.f_length != 0 ? ({elemPtrCpp}){span}.f_reference : ({elemPtrCpp})(uintptr_t)1;"
+                });
+                stack.Push(tmp);
+                return true;
+            }
+
+            // GetArrayDataReference<T>(T[]) → (T*)array_data(arr)
+            case "GetArrayDataReference":
+            {
+                if (methodRef.Parameters.Count != 1) return false;
+                var arr = stack.Count > 0 ? stack.Pop() : "nullptr";
+                var tmp = $"__t{tempCounter++}";
+                block.Instructions.Add(new IRRawCpp
+                {
+                    Code = $"{tmp} = ({elemPtrCpp})cil2cpp::array_data({arr});"
+                });
+                stack.Push(tmp);
+                return true;
+            }
+
+            // Read<T>(ReadOnlySpan<byte>) → *(T*)span.f_reference
+            case "Read":
+            {
+                if (methodRef.Parameters.Count != 1) return false;
+                var span = stack.Count > 0 ? stack.Pop() : "{}";
+                var tmp = $"__t{tempCounter++}";
+                block.Instructions.Add(new IRRawCpp
+                {
+                    Code = $"{tmp} = *({elemCpp}*){span}.f_reference;"
+                });
+                stack.Push(tmp);
+                return true;
+            }
+
+            // CreateSpan<T>(ref T, int) / CreateReadOnlySpan<T>(ref T, int)
+            case "CreateSpan":
+            case "CreateReadOnlySpan":
+            {
+                if (methodRef.Parameters.Count != 2) return false;
+                var length = stack.Count > 0 ? stack.Pop() : "0";
+                var refPtr = stack.Count > 0 ? stack.Pop() : "nullptr";
+                // Construct the Span/ReadOnlySpan type name from the element type
+                var spanPrefix = methodName == "CreateSpan" ? "System.Span`1" : "System.ReadOnlySpan`1";
+                var spanIlName = $"{spanPrefix}<{elemIlName}>";
+                var retCpp = CppNameMapper.GetCppTypeName(spanIlName);
+                if (retCpp.EndsWith("*")) retCpp = retCpp.TrimEnd('*');
+                var tmp = $"__t{tempCounter++}";
+                block.Instructions.Add(new IRRawCpp
+                {
+                    Code = $"{retCpp} {tmp} = {{0}}; {tmp}.f_reference = ({elemPtrCpp}){refPtr}; {tmp}.f_length = {length};"
+                });
+                stack.Push(tmp);
+                return true;
+            }
+
+            // AsBytes<T>(ReadOnlySpan<T>) → reinterpret as ReadOnlySpan<byte>
+            // AsBytes<T>(Span<T>) → reinterpret as Span<byte>
+            case "AsBytes":
+            {
+                if (methodRef.Parameters.Count != 1) return false;
+                var span = stack.Count > 0 ? stack.Pop() : "{}";
+                var retTypeName = ResolveGenericTypeRef(methodRef.ReturnType, methodRef.DeclaringType);
+                var retCpp = CppNameMapper.GetCppTypeName(retTypeName);
+                if (retCpp.EndsWith("*")) retCpp = retCpp.TrimEnd('*');
+                var elemSizeof = $"sizeof({elemCpp})";
+                var tmp = $"__t{tempCounter++}";
+                block.Instructions.Add(new IRRawCpp
+                {
+                    Code = $"{retCpp} {tmp} = {{0}}; " +
+                           $"{tmp}.f_reference = (uint8_t*){span}.f_reference; " +
+                           $"{tmp}.f_length = {span}.f_length * {elemSizeof};"
+                });
+                stack.Push(tmp);
+                return true;
+            }
+
+            default:
+                return false;
+        }
+    }
+
+    /// <summary>
+    /// Compile-time evaluation of RuntimeHelpers.IsReferenceOrContainsReferences&lt;T&gt;().
+    /// Returns true if T is a reference type or a value type containing reference fields.
+    /// </summary>
+    private bool IsReferenceOrContainsReferences(string ilTypeName)
+    {
+        // Well-known BCL primitive/simple value types
+        if (ilTypeName is "System.Byte" or "System.SByte" or "System.Int16" or "System.UInt16"
+            or "System.Int32" or "System.UInt32" or "System.Int64" or "System.UInt64"
+            or "System.Single" or "System.Double" or "System.Boolean" or "System.Char"
+            or "System.IntPtr" or "System.UIntPtr" or "System.Decimal"
+            or "System.DateTime" or "System.TimeSpan" or "System.Guid"
+            or "System.Threading.CancellationToken" or "System.Void")
+            return false;
+
+        // Check if it's a type in our IR
+        if (_typeCache.TryGetValue(ilTypeName, out var irType))
+        {
+            if (!irType.IsValueType) return true; // reference type
+            if (irType.IsEnum) return false; // enums are simple value types
+            // Value type — check if any field is a reference type
+            return irType.Fields.Any(f => IsReferenceOrContainsReferences(f.FieldTypeName));
+        }
+
+        // Conservative default for unknown types
+        return true;
+    }
 }

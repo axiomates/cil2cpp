@@ -407,7 +407,7 @@ public partial class IRBuilder
                     var returnTypeName = ResolveGenericTypeName(methodDef.ReturnType, typeParamMap);
                     var cppName = CppNameMapper.MangleMethodName(info.MangledName, methodDef.Name);
                     // op_Explicit/op_Implicit: disambiguate by return type (C++ can't overload by return type)
-                    if (methodDef.Name is "op_Explicit" or "op_Implicit")
+                    if (methodDef.Name is "op_Explicit" or "op_Implicit" or "op_CheckedExplicit" or "op_CheckedImplicit")
                         cppName = $"{cppName}_{CppNameMapper.MangleTypeName(returnTypeName)}";
 
                     var irMethod = new IRMethod
@@ -676,6 +676,17 @@ public partial class IRBuilder
         var key = ResolveCacheKey(typeRef);
         if (_typeCache.TryGetValue(key, out var irType))
             return irType.CppName;
+        // For generic instance types, use MangleGenericInstanceTypeName to avoid
+        // trailing underscore from '>' → '_' that MangleTypeName produces
+        var backtickIdx = key.IndexOf('`');
+        if (backtickIdx > 0 && key.Contains('<'))
+        {
+            var angleBracket = key.IndexOf('<');
+            var openTypeName = key[..angleBracket];
+            var argsStr = key[(angleBracket + 1)..^1];
+            var args = argsStr.Split(',').Select(a => a.Trim()).ToList();
+            return CppNameMapper.MangleGenericInstanceTypeName(openTypeName, args);
+        }
         return CppNameMapper.MangleTypeName(key);
     }
 

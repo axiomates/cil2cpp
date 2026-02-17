@@ -187,7 +187,11 @@ public partial class CppCodeGenerator
         CollectUnknownValueTypeFields(userTypes, definedTypeNames, unknownValueTypeStubs);
         foreach (var stubName in unknownValueTypeStubs)
         {
-            sb.AppendLine($"struct {stubName} {{ }}; // opaque BCL internal type");
+            // Span/ReadOnlySpan opaque stubs need f_reference + f_length for field access
+            if (stubName.StartsWith("System_Span_1_") || stubName.StartsWith("System_ReadOnlySpan_1_"))
+                sb.AppendLine($"struct {stubName} {{ void* f_reference; int32_t f_length; }}; // opaque Span stub");
+            else
+                sb.AppendLine($"struct {stubName} {{ }}; // opaque BCL internal type");
             emittedStructs.Add(stubName);
             definedTypeNames.Add(stubName);
         }
@@ -542,13 +546,16 @@ public partial class CppCodeGenerator
     /// </summary>
     private static bool HasUnknownParameterTypes(IRMethod method, HashSet<string> knownTypeNames)
     {
-        // Check for function pointer types (IL function pointer types have "()" syntax in type names)
+        // Check for function pointer types (IL function pointer types have "()" syntax in type names
+        // or produce "method" prefix in mangled names)
         foreach (var param in method.Parameters)
         {
-            if (param.CppTypeName.Contains("(") || param.CppTypeName.Contains(")"))
+            if (param.CppTypeName.Contains("(") || param.CppTypeName.Contains(")")
+                || param.CppTypeName.StartsWith("method"))
                 return true;
         }
-        if (method.ReturnTypeCpp.Contains("(") || method.ReturnTypeCpp.Contains(")"))
+        if (method.ReturnTypeCpp.Contains("(") || method.ReturnTypeCpp.Contains(")")
+            || method.ReturnTypeCpp.StartsWith("method"))
             return true;
 
         // Check return type
@@ -1100,14 +1107,10 @@ public partial class CppCodeGenerator
                 if (instr is IR.IRCall call && !string.IsNullOrEmpty(call.FunctionName))
                 {
                     var funcName = call.FunctionName;
-                    // Skip runtime functions (cil2cpp:: namespace)
                     if (funcName.StartsWith("cil2cpp::")) continue;
-                    // Skip cctor guards
                     if (funcName.EndsWith("_ensure_cctor")) continue;
-                    // Check if the function is declared
                     if (!_declaredFunctionNames.Contains(funcName))
                         return true;
-                    // Check for overload mismatch (wrong number of arguments)
                     if (_declaredFunctionParamCounts.TryGetValue(funcName, out var validCounts))
                     {
                         if (!validCounts.Contains(call.Arguments.Count))
@@ -1125,6 +1128,22 @@ public partial class CppCodeGenerator
     /// </summary>
     private bool HasKnownBrokenPatterns(IR.IRMethod method, HashSet<string> knownTypeNames)
     {
+        // JIT intrinsics have self-recursive IL bodies — the JIT replaces them with
+        // CPU instructions or constants at runtime. AOT: detect and stub them.
+        // Covers: System.Runtime.Intrinsics.X86.*, MemoryMarshal.GetArrayDataReference, etc.
+        if (method.DeclaringType?.ILFullName?.Contains("System.Runtime.Intrinsics") == true)
+            return true;
+        // Detect self-recursion: method calls itself (JIT intrinsics with no real IL body)
+        var selfCallPattern = $"{method.CppName}(";
+        foreach (var block in method.BasicBlocks)
+        {
+            foreach (var instr in block.Instructions)
+            {
+                if (instr.ToCpp().Contains(selfCallPattern))
+                    return true;
+            }
+        }
+
         foreach (var block in method.BasicBlocks)
         {
             foreach (var instr in block.Instructions)
@@ -1145,7 +1164,6 @@ public partial class CppCodeGenerator
             return true;
 
         // Pattern 2: (uintptr_t) cast followed by struct field access
-        // Catches MethodTable mishandling: (uintptr_t)(__t1) then .f_BaseSize
         if (code.Contains("(uintptr_t)(") && code.Contains(".f_"))
             return true;
 
@@ -1162,32 +1180,26 @@ public partial class CppCodeGenerator
             return true;
 
         // Pattern 5: array_get/array_set/array_length called with non-Array argument
-        // These require cil2cpp::Array* but BCL IL may pass Object*
-        if (code.Contains("array_length(0)") || code.Contains("array_length(__t"))
-        {
-            // Check if the argument looks like a non-Array type
-            // If it's just a number (0) or a temp var, the real type might not be Array
-            if (code.Contains("array_length(0)"))
-                return true;
-        }
-
-        // Pattern 6: Interop_Kernel32 or Interop_ calls with shifted arguments
-        // These P/Invoke wrappers often have wrong argument types
-        if (code.Contains("Interop_Kernel32_") || code.Contains("Interop_User32_"))
+        if (code.Contains("array_length(0)"))
             return true;
 
+        // Pattern 6: removed
+
         // Pattern 7: Invalid stind pattern: &param = &local (address-of on both sides)
-        // This occurs when stind.ref is emitted for ref parameters incorrectly
         if (code.StartsWith("&") && code.Contains(" = &"))
             return true;
 
-        // Pattern 8: (uintptr_t)(__tN) — MethodTable/RuntimeHelpers pattern
-        // These functions use JIT intrinsics that produce uintptr_t casts on structs
-        if (code.Contains("(uintptr_t)("))
+        // Pattern 7b: GCFrameRegistration uses void** but locals may be intptr_t*
+        if (code.Contains("GCFrameRegistration__ctor"))
+            return true;
+
+        // Pattern 8: (uintptr_t) cast ONLY when combined with struct member access
+        // Standalone (uintptr_t)(ptr) is valid C++ for pointer→int conversion (e.g., fixed/Span)
+        // Pattern 2 already catches (uintptr_t)( + .f_ — this catches additional struct patterns
+        if (code.Contains("(uintptr_t)(") && (code.Contains("->f_") || code.Contains("sizeof(")))
             return true;
 
         // Pattern 9: Unresolved generic type params in interface vtable casts
-        // e.g., System_IEquatable_1_T* — the _T suffix is an unresolved generic param
         if (code.Contains("_1_T*") || code.Contains("_1_T,") || code.Contains("_2_T*")
             || code.Contains("_1_TKey*") || code.Contains("_1_TValue*")
             || code.Contains("_1_TResult*")
@@ -1231,11 +1243,20 @@ public partial class CppCodeGenerator
     /// that will cause MSVC compilation errors. Used as a final safety net
     /// after all IR-level checks have passed.
     /// </summary>
-    private bool RenderedBodyHasErrors(string rendered, IR.IRMethod method)
+    private bool RenderedBodyHasErrors(string rendered, IR.IRMethod method, HashSet<string>? knownTypes = null)
     {
         // Method-level check: __this referenced in static methods
         if (method.IsStatic && rendered.Contains("__this"))
             return true;
+
+        // Method-level check: method returns intptr_t/uintptr_t but body has (void*) casts
+        // that feed into return values (Unsafe.AsPointer producing void* that MSVC can't implicitly
+        // convert to intptr_t). Detect any auto __tN = (void*)expr; return __tN; pattern.
+        if (method.ReturnTypeCpp is "intptr_t" or "uintptr_t"
+            && rendered.Contains("= (void*)"))
+        {
+            return true;
+        }
 
         // Check each line for known error patterns
         foreach (var line in rendered.AsSpan().EnumerateLines())
@@ -1245,6 +1266,19 @@ public partial class CppCodeGenerator
 
             if (RenderedLineHasError(s))
                 return true;
+
+            // Check for references to undeclared _statics globals
+            var staticsIdx = s.IndexOf("_statics.", StringComparison.Ordinal);
+            if (staticsIdx > 0)
+            {
+                // Extract type name before "_statics." — find the start of the identifier
+                var start = staticsIdx - 1;
+                while (start > 0 && (char.IsLetterOrDigit(s[start - 1]) || s[start - 1] == '_'))
+                    start--;
+                var typeName = s[start..staticsIdx];
+                if (typeName.Length > 0 && knownTypes != null && !knownTypes.Contains(typeName))
+                    return true;
+            }
         }
 
         // Multi-line pattern: Object* variable from byref dereference used where typed ptr expected
@@ -1349,6 +1383,10 @@ public partial class CppCodeGenerator
                             || rhs.Contains(" / ") || rhs.Contains(" % ") || rhs.Contains(" | ")
                             || rhs.Contains(" & ") || rhs.Contains(" ^ "))
                             return true;
+                        // __tN = expr < N / expr > N / expr <= N / expr >= N (comparison → bool, not Object*)
+                        if (rhs.Contains(" < ") || rhs.Contains(" > ") ||
+                            rhs.Contains(" <= ") || rhs.Contains(" >= "))
+                            return true;
                         // __tN = -value (negation of non-pointer value)
                         if (rhs.StartsWith("-") && !rhs.Contains("nullptr") && !rhs.Contains("("))
                             return true;
@@ -1393,21 +1431,30 @@ public partial class CppCodeGenerator
 
         // Multi-line pattern: cross-scope assignment without cast between incompatible types
         // __tN = (TypeA*)(void*)... then later __tN = __tM where __tM is different TypeB*
+        // Only flag when the SAME __tN variable appears in both cast and plain assignment
         if (rendered.Contains("(void*)"))
         {
-            bool hasCast = false;
-            bool hasPlainAssign = false;
+            var castVars = new HashSet<string>();
+            var plainAssignVars = new HashSet<string>();
             foreach (var line in rendered.AsSpan().EnumerateLines())
             {
                 var s2 = line.ToString().TrimStart();
-                // Track if any __tN is assigned from a typed pointer cast (with or without auto)
-                if (s2.Contains("__t") && s2.Contains("*)(void*)") && s2.Contains(" = "))
-                    hasCast = true;
-                // Check for plain __tN = __tM; without any cast
-                if (s2.StartsWith("__t") && s2.Contains(" = __t") && !s2.Contains("(") && s2.EndsWith(";"))
-                    hasPlainAssign = true;
+                // Track __tN = (TypeA*)(void*)... → variable receives a pointer cast
+                if (s2.StartsWith("__t") && !s2.StartsWith("__this") && s2.Contains("*)(void*)"))
+                {
+                    var eqIdx = s2.IndexOf(" = ");
+                    if (eqIdx > 0)
+                        castVars.Add(s2[..eqIdx]);
+                }
+                // Track __tN = __tM; → plain assignment without cast
+                if (s2.StartsWith("__t") && !s2.StartsWith("__this") && s2.Contains(" = __t") && !s2.Contains("(") && s2.EndsWith(";"))
+                {
+                    var eqIdx = s2.IndexOf(" = ");
+                    if (eqIdx > 0)
+                        plainAssignVars.Add(s2[..eqIdx]);
+                }
             }
-            if (hasCast && hasPlainAssign)
+            if (castVars.Overlaps(plainAssignVars))
                 return true;
         }
 
@@ -1484,12 +1531,10 @@ public partial class CppCodeGenerator
                     var spIdx = s.IndexOf(' ', 5);
                     if (spIdx > 5) arrayGetVars.Add(s[5..spIdx]);
                 }
-                // array_set with pointer value: array_set<T>(arr, idx, ptr)
-                // where ptr is a pointer variable (loc_N that's known pointer)
-                if (s.Contains("array_set<") && !s.Contains("array_set<cil2cpp::"))
+                // array_set with pointer value in 3rd arg — reference type stored as value
+                // Only flag if the 3rd argument is clearly a pointer cast (e.g., (TypeName*)expr)
+                if (s.Contains("array_set<"))
                 {
-                    // Check if last argument ends with *)
-                    // Pattern: array_set<X>(arr, idx, loc_N) where X is not a pointer type
                     var setIdx = s.IndexOf("array_set<");
                     var closeAngle = s.IndexOf('>', setIdx + 10);
                     if (closeAngle > setIdx + 10)
@@ -1497,11 +1542,36 @@ public partial class CppCodeGenerator
                         var typeArg = s[(setIdx + 10)..closeAngle];
                         if (!typeArg.EndsWith("*"))
                         {
-                            // If any argument after the second is cast to this type
-                            // or is a pointer variable, it's a mismatch
-                            // For now, check if the method also has array_get of same type with pointer cast
-                            if (arrayGetVars.Count > 0)
-                                return true;
+                            // Check if the 3rd arg is a pointer-cast expression (indicates ref type mismatch)
+                            var argsStart = s.IndexOf('(', closeAngle);
+                            if (argsStart > 0)
+                            {
+                                var argsStr = s[(argsStart + 1)..];
+                                // Count commas to find 3rd arg
+                                var commaCount = 0;
+                                var argStart = 0;
+                                for (int ci = 0; ci < argsStr.Length; ci++)
+                                {
+                                    if (argsStr[ci] == ',' && ++commaCount == 2)
+                                    {
+                                        argStart = ci + 1;
+                                        break;
+                                    }
+                                }
+                                if (commaCount >= 2)
+                                {
+                                    var thirdArg = argsStr[argStart..].Trim().TrimEnd(';', ')').Trim();
+                                    // Flag if 3rd arg is a pointer cast like (Type*)expr
+                                    if (thirdArg.Contains("*)"))
+                                        return true;
+                                    // Flag if 3rd arg is a method parameter with pointer type
+                                    // (reference type stored as value in array — needs pointer)
+                                    var matchParam = method.Parameters.FirstOrDefault(
+                                        p => p.Name == thirdArg && p.CppTypeName.EndsWith("*"));
+                                    if (matchParam != null)
+                                        return true;
+                                }
+                            }
                         }
                     }
                 }
@@ -1552,6 +1622,36 @@ public partial class CppCodeGenerator
             method.Parameters.Any(p => p.CppTypeName == "void*"))
             return true;
 
+        // Method-level: void* local returned from intptr_t/uintptr_t function
+        // In .NET, IntPtr and void* are identical; in C++ they're incompatible
+        if ((method.ReturnTypeCpp is "intptr_t" or "uintptr_t") && rendered.Contains("void* loc_"))
+            return true;
+
+        // Method-level: Span ctor called with intptr_t/uintptr_t parameter as actual argument
+        // Only flag when the Span ctor call line actually contains the intptr_t param as argument
+        if (rendered.Contains("Span_1_") && rendered.Contains("__ctor"))
+        {
+            var intptrParams = method.Parameters
+                .Where(p => p.CppTypeName is "intptr_t" or "uintptr_t")
+                .Select(p => p.Name)
+                .ToHashSet();
+            if (intptrParams.Count > 0)
+            {
+                foreach (var line in rendered.AsSpan().EnumerateLines())
+                {
+                    var s2 = line.ToString().TrimStart();
+                    if (s2.Contains("Span_1_") && s2.Contains("__ctor"))
+                    {
+                        foreach (var param in intptrParams)
+                        {
+                            if (s2.Contains($", {param},") || s2.Contains($", {param})"))
+                                return true;
+                        }
+                    }
+                }
+            }
+        }
+
         // Method-level: calls to Array_IndexOf/LastIndexOf with nested generic element types
         // where the function declaration has wrong param type due to double-underscore mangling
         if (rendered.Contains("System_Array_IndexOf_") || rendered.Contains("System_Array_LastIndexOf_"))
@@ -1563,16 +1663,88 @@ public partial class CppCodeGenerator
                 var s = line.ToString().TrimStart();
                 if ((s.Contains("System_Array_IndexOf_") || s.Contains("System_Array_LastIndexOf_")) &&
                     s.Contains("(cil2cpp::Array*)"))
-                {
-                    // The function expects Array* but declaration has wrong type
                     return true;
-                }
             }
         }
 
         // Method-level: ActivityTracker Guid manipulation with pointer arithmetic type mismatch
         if (method.CppName.Contains("AddIdToGuid"))
             return true;
+
+        // Method-level: Encoding GetCharsWithFallback — Span<Char> passed as ReadOnlySpan<Byte>,
+        // cross-scope type mismatch between DecoderFallback* and ReadOnlySpan, etc.
+        if (method.CppName.Contains("GetCharsWithFallback") &&
+            (method.CppName.Contains("UTF8Encoding") || method.CppName.Contains("ASCIIEncoding")))
+        {
+            return true;
+        }
+
+        // Method-level: EventSource_WriteEventString — EventData* → intptr_t mismatch
+        if (method.CppName.Contains("EventSource_WriteEventString"))
+        {
+            return true;
+        }
+
+        // Method-level: EventProvider_EncodeObject — static_cast<uint64_t>(&pointer) repeated
+        if (method.CppName.Contains("EventProvider_EncodeObject"))
+        {
+            return true;
+        }
+
+        // Method-level: CancellationToken_ThrowOperationCanceledException — IL maps CancellationToken
+        // struct value into f_innerException (Exception*), which is a struct→pointer C2440
+        if (method.CppName.Contains("CancellationToken_ThrowOperationCanceledException"))
+        {
+            return true;
+        }
+
+        // Method-level: RuntimeResourceSet_GetObject — assigns Dictionary<string,ResourceLocator>*
+        // to f_caseInsensitiveTable which is declared as Dictionary<string,Object>*
+        if (method.CppName.Contains("RuntimeResourceSet_GetObject"))
+        {
+            return true;
+        }
+
+        // Method-level: Thread.StartCore — references f_priority which doesn't exist on ManagedThread
+        if (method.CppName.Contains("Thread_StartCore"))
+        {
+            return true;
+        }
+
+        // Method-level: RuntimeParameterInfo .ctor — references f_MemberImpl which doesn't exist
+        // on ManagedParameterInfo (BCL internal field not mapped to runtime struct)
+        if (method.CppName.Contains("RuntimeParameterInfo__ctor__System_Reflection_RuntimeParameterInfo_System_Reflection_MemberInfo"))
+        {
+            return true;
+        }
+
+        // Method-level: RegistryKey.GetValue — calls Interop_Advapi32_RegQueryValueEx with
+        // int32_t* where uint32_t* is expected (parameter 6 type mismatch)
+        if (method.CppName.Contains("RegistryKey_GetValue__System_String_System_Object"))
+        {
+            return true;
+        }
+
+        // Method-level: TraceLoggingDataCollector.AddArray — __t2 declared as pointer then
+        // redefined via auto (pre-declared temp conflicts with auto declaration)
+        if (method.CppName.Contains("TraceLoggingDataCollector_AddArray"))
+        {
+            return true;
+        }
+
+        // Method-level: ValueTuple`4<String,...>.GetHashCode — takes &f_Item1/&f_Item4 (String**)
+        // and assigns to String* temp variable (address-of ref type field yields double pointer)
+        if (method.CppName.Contains("ValueTuple_4_System_String_System_Int32_System_Int32_System_String_GetHashCode"))
+        {
+            return true;
+        }
+
+        // Method-level: Interop.Kernel32.LocalFree(void*) — calls LocalFree(IntPtr) overload
+        // but void* doesn't implicitly convert to intptr_t in MSVC
+        if (method.CppName == "Interop_Kernel32_LocalFree__System_Void")
+        {
+            return true;
+        }
 
         // Method-level: EventPipe methods using intptr_t fields with Span ctors
         if (method.CppName.Contains("DispatchEventsToEventListeners") ||
@@ -1661,6 +1833,78 @@ public partial class CppCodeGenerator
             }
         }
 
+        // Multi-line: uintptr_t/intptr_t temp passed as function argument or assigned to void* variable
+        // In .NET JIT, IntPtr/UIntPtr and void* are identical (native int = pointer).
+        // In C++, uintptr_t is an integer type incompatible with pointer types.
+        // BCL IL uses conv.u/conv.i to cast pointers → integers before P/Invoke calls,
+        // but our generated wrappers keep typed pointer parameters → type mismatch (C2664/C2440).
+        if (rendered.Contains("(uintptr_t)(") || rendered.Contains("(intptr_t)("))
+        {
+            var uintptrTemps = new HashSet<string>();
+            var voidPtrVars = new HashSet<string>();
+            foreach (var line in rendered.AsSpan().EnumerateLines())
+            {
+                var s = line.ToString().TrimStart();
+                // Track auto __tN = (uintptr_t/intptr_t)(expr)
+                if (s.StartsWith("auto ") && (s.Contains("= (uintptr_t)(") || s.Contains("= (intptr_t)(")))
+                {
+                    var spIdx = s.IndexOf(' ', 5);
+                    if (spIdx > 5)
+                        uintptrTemps.Add(s[5..spIdx]);
+                }
+                // Track void* loc_N declarations
+                if (s.StartsWith("void* ") && s.Contains(" = "))
+                {
+                    var eqIdx = s.IndexOf(' ', 6);
+                    if (eqIdx > 6)
+                        voidPtrVars.Add(s[6..eqIdx]);
+                }
+            }
+            if (uintptrTemps.Count > 0)
+            {
+                foreach (var line in rendered.AsSpan().EnumerateLines())
+                {
+                    var s = line.ToString().TrimStart();
+                    foreach (var t in uintptrTemps)
+                    {
+                        // Passed as function argument: func(t, ...) or func(..., t)
+                        // Exclude: if/while conditions, and simple auto assignments
+                        if (s.Contains($"({t},") || s.Contains($"({t})") ||
+                             s.Contains($", {t},") || s.Contains($", {t})"))
+                        {
+                            if (s.StartsWith("if ") || s.StartsWith("while "))
+                                continue;
+                            // Skip stackalloc — uintptr_t is the correct type for allocation size
+                            if (s.Contains("CIL2CPP_STACKALLOC"))
+                                continue;
+                            // Skip Buffer_Memmove — its size parameter IS uintptr_t/size_t
+                            if (s.Contains("Buffer_Memmove"))
+                                continue;
+                            if (s.StartsWith("auto "))
+                            {
+                                // Skip simple assignments: auto __tM = (__tN); or auto __tM = __tN;
+                                var eqPos = s.IndexOf(" = ");
+                                if (eqPos >= 0)
+                                {
+                                    var rhs = s[(eqPos + 3)..].TrimEnd(';').Trim();
+                                    if (rhs == t || rhs == $"({t})")
+                                        continue;
+                                }
+                                return true; // function call result: auto __tM = func(__tN, ...);
+                            }
+                            return true;
+                        }
+                        // Assigned to void* variable
+                        foreach (var v in voidPtrVars)
+                        {
+                            if (s == $"{v} = {t};")
+                                return true;
+                        }
+                    }
+                }
+            }
+        }
+
         return false;
     }
 
@@ -1673,10 +1917,17 @@ public partial class CppCodeGenerator
         if (s.StartsWith("&") && s.Contains(" = "))
             return true;
 
+        // Pattern: ->f_m_value on primitive types (System_Single = float, System_Double = double)
+        // These are aliased to C++ primitives and don't have the f_m_value field
+        if (s.Contains("->f_m_value"))
+            return true;
+
         // Pattern: Interop calls with wrong types (P/Invoke wrappers)
         if (s.Contains("Interop_GetRandomBytes(") || s.Contains("Interop_Globalization_"))
             return true;
-        if (s.Contains("RuntimeHelpers_CreateSpan"))
+        // Note: RuntimeHelpers.CreateSpan<T>(RuntimeFieldHandle) is now intercepted in IRBuilder
+        // and produces inline span init code. Only catch unintercepted CreateSpan calls.
+        if (s.Contains("RuntimeHelpers_CreateSpan") && s.Contains("(") && !s.Contains("f_reference"))
             return true;
 
         // Pattern: string_length called with non-String arg (Object* from array_get)
@@ -1712,12 +1963,25 @@ public partial class CppCodeGenerator
         if (s.Contains("methodSystem_") || s.Contains("reinterpret_cast<void(*)("))
             return true;
 
-        // Pattern: (cil2cpp::Exception*)__tN or (cil2cpp::Exception*)loc_N
-        // where the variable might be a value type (CancellationToken), not a pointer
+        // Pattern: f_innerException = (cil2cpp::Exception*)<value_type>
+        // Only flag when the cast source is a value type variable (not a pointer).
+        // Pointer-to-pointer casts like (Exception*)__str_N or (Exception*)__tN compile fine via C-style cast.
+        // The real error is struct-to-pointer like (Exception*)cancellationToken.
         if (s.Contains("->f_innerException = (cil2cpp::Exception*)") &&
             !s.Contains("(cil2cpp::Exception*)nullptr") &&
             !s.Contains("(cil2cpp::Exception*)(void*)"))
-            return true;
+        {
+            // Extract what follows (cil2cpp::Exception*)
+            var castIdx = s.IndexOf("(cil2cpp::Exception*)");
+            if (castIdx >= 0)
+            {
+                var val = s[(castIdx + 21)..].TrimEnd(';').Trim();
+                // __str_N and __tN are always auto-typed (pointers) → C-style cast compiles fine
+                // Everything else (loc_N value types, bare params) → could be struct-to-pointer error
+                if (!val.StartsWith("__str") && !val.StartsWith("__t") && !val.StartsWith("("))
+                    return true;
+            }
+        }
 
         // Pattern: enum type pointer cast where value expected
         // e.g., (System_Resources_UltimateResourceFallbackLocation*)__t5 in function args
@@ -1732,8 +1996,24 @@ public partial class CppCodeGenerator
 
         // Pattern: ReadOnlySpan/Span struct cast to void*
         // BCL code casts Span structs but C++ can't implicit-cast struct to void*
+        // Exclude: function names containing Span type where (void*) is in arguments
+        // Exclude: function pointer type params like (void(*)(Stream*, ReadOnlySpan_1_Byte))
         if ((s.Contains("ReadOnlySpan_1_") || s.Contains("Span_1_")) && s.Contains("(void*)"))
-            return true;
+        {
+            // Find the Span type in the line and check what follows the containing identifier
+            var spanIdx = s.IndexOf("Span_1_");
+            // Walk to end of the identifier containing Span_1_
+            var endIdx = spanIdx;
+            while (endIdx < s.Length && (char.IsLetterOrDigit(s[endIdx]) || s[endIdx] == '_'))
+                endIdx++;
+            // If identifier is followed by '(' → function call name → safe
+            // If identifier is followed by '*)' → pointer-to-Span cast → problematic
+            // If identifier is followed by ')' without '*' → function pointer param type → safe
+            if (endIdx < s.Length && s[endIdx] == '*')
+                return true; // (SpanType*)(void*) — pointer cast to Span
+            if (endIdx >= s.Length)
+                return true; // truncated line — flag as error
+        }
 
         // Pattern: intptr_t in Span constructor or Marshal calls
         // e.g., Marshal_StringToCoTaskMemUni creating Span from intptr_t
@@ -1752,6 +2032,22 @@ public partial class CppCodeGenerator
         if (s.Contains("NlsGetDefaultLocaleName") || s.Contains("NlsGetAdjustedCalendarArray"))
             return true;
 
+        // Pattern: ValueListBuilder method called with wrong this (temp var instead of pointer)
+        if (s.Contains("ValueListBuilder_1_"))
+        {
+            var fnEnd = s.LastIndexOf('(');
+            if (fnEnd > 0)
+            {
+                var afterParen = s[(fnEnd + 1)..].TrimStart();
+                // First arg should be a pointer (&loc_, __this, etc.)
+                // If it starts with __t (temp, likely ReadOnlySpan), it's wrong
+                if (afterParen.StartsWith("__t") && !afterParen.StartsWith("__this"))
+                    return true;
+                if (afterParen.Length > 0 && char.IsDigit(afterParen[0]))
+                    return true;
+            }
+        }
+
         // Pattern: array_data result cast to wrong pointer depth
         // e.g., f_reference = (cil2cpp::Object*)cil2cpp::array_data(  — should be Object**
         if (s.Contains("= (cil2cpp::Object*)cil2cpp::array_data("))
@@ -1759,32 +2055,26 @@ public partial class CppCodeGenerator
 
         // Pattern: Span type confusion in function argument
         // Span_1_System_Char passed where ReadOnlySpan_1_System_Byte expected
-        if (s.Contains("System_Span_1_System_Char") && s.Contains("ReadOnlySpan_1_System_Byte"))
-            return true;
+        // Exclude: function signatures (end with '{'), function pointer types ('(*)'),
+        // and lines where both types appear in the function name (before first '(')
+        if (s.Contains("System_Span_1_System_Char") && s.Contains("ReadOnlySpan_1_System_Byte")
+            && !s.TrimEnd().EndsWith("{") && !s.Contains("(*)"))
+        {
+            var firstParen = s.IndexOf('(');
+            if (firstParen < 0 || !(s[..firstParen].Contains("Span_1_System_Char") &&
+                                     s[..firstParen].Contains("ReadOnlySpan_1_System_Byte")))
+                return true;
+        }
 
         // Pattern: static_cast<uint64_t>(ptr) — pointer to uint64 needs reinterpret_cast
-        if (s.Contains("static_cast<uint64_t>("))
+        // Only flag when the argument looks like a pointer variable (contains * or ->)
+        // Don't flag integer widening conversions like static_cast<uint64_t>(count)
+        if (s.Contains("static_cast<uint64_t>(") && (s.Contains("->") || s.Contains("*)")))
             return true;
 
         // Pattern: Guid* subtracted from uint8_t* (pointer arithmetic type mismatch)
         if (s.Contains("System_Guid*") && s.Contains("uint8_t*") && s.Contains("-"))
             return true;
-
-        // Pattern: ValueListBuilder method called with int first arg (missing this)
-        // Look for the actual '(' opening the call arguments — comes after the full function name
-        if (s.Contains("ValueListBuilder_1_"))
-        {
-            // Find the opening paren of the function call arguments
-            var fnEnd = s.LastIndexOf('(');
-            if (fnEnd > 0)
-            {
-                var afterParen = s[(fnEnd + 1)..].TrimStart();
-                // First arg should be a pointer (vlb, &loc_, __this)
-                // If it starts with a digit, the this pointer is missing
-                if (afterParen.Length > 0 && char.IsDigit(afterParen[0]))
-                    return true;
-            }
-        }
 
         // Pattern: interface type assignment (class* → interface*)
         // CultureInfo* → IFormatProvider*, etc.
@@ -1829,12 +2119,15 @@ public partial class CppCodeGenerator
             return true;
 
         // Pattern: GCHandle_Alloc with int first arg (should be Object*)
-        if (s.Contains("GCHandle_Alloc(") && !s.Contains("(cil2cpp::Object*)"))
+        // Handle disambiguated names: GCHandle_Alloc__System_Object_...(2, 1)
+        if (s.Contains("GCHandle_Alloc") && !s.Contains("(cil2cpp::Object*)"))
         {
-            var idx = s.IndexOf("GCHandle_Alloc(");
-            if (idx >= 0)
+            var allocIdx = s.IndexOf("GCHandle_Alloc");
+            // Find the opening paren of the call arguments
+            var parenIdx = s.IndexOf('(', allocIdx);
+            if (parenIdx >= 0)
             {
-                var afterParen = s[(idx + 15)..].TrimStart();
+                var afterParen = s[(parenIdx + 1)..].TrimStart();
                 if (afterParen.Length > 0 && (char.IsDigit(afterParen[0]) || afterParen[0] == '-'))
                     return true;
             }
@@ -1947,6 +2240,117 @@ public partial class CppCodeGenerator
                     return true;
             }
         }
+
+        // Pattern: SpanHelpers pointer alignment — bitwise AND of pointer with integer (C2296)
+        if (s.Contains("SpanHelpers_UnalignedCount"))
+            return true;
+
+        // Pattern: TimeSpanFormat_FormatG/FormatC — wrong arg order (missing TimeSpan first arg)
+        if (s.Contains("TimeSpanFormat_FormatG(") || s.Contains("TimeSpanFormat_FormatC("))
+            return true;
+
+        // Pattern: EventPipeMetadataGenerator_WriteToBuffer — char16_t* → uint8_t* mismatch
+        if (s.Contains("EventPipeMetadataGenerator_WriteToBuffer("))
+            return true;
+
+        // Pattern: GetThreadIOPendingFlag with wrong arg types
+        if (s.Contains("GetThreadIOPendingFlag("))
+            return true;
+
+        // Pattern: String ctor called with uintptr_t arg (needs char16_t*)
+        if (s.Contains("String__ctor") && s.Contains("(uintptr_t)"))
+            return true;
+
+        // Pattern: ReadUnalignedI4 with uintptr_t arg (needs int32_t*)
+        if (s.Contains("ReadUnalignedI4("))
+            return true;
+
+        // Pattern: FreeHGlobal/AllocHGlobal — intptr_t ↔ void* mismatch
+        if (s.Contains("FreeHGlobal(") || s.Contains("AllocHGlobal(") || s.Contains("LocalAlloc(") || s.Contains("LocalFree("))
+            return true;
+
+        // Pattern: FindStringOrdinal — wrong arg types
+        if (s.Contains("FindStringOrdinal("))
+            return true;
+
+        // Pattern: GetCalendarInfoEx — char16_t*/intptr_t mismatch
+        if (s.Contains("GetCalendarInfoEx"))
+            return true;
+
+        // Pattern: Span ctor with intptr_t arg where void* expected
+        if (s.Contains("Span_1_") && s.Contains("__ctor") && s.Contains("(intptr_t)"))
+            return true;
+
+        // Pattern: Marshal_Copy — void*/intptr_t mismatch
+        if (s.Contains("Marshal_Copy"))
+            return true;
+
+        // Pattern: ValueStringBuilder — wrong this pointer (String* instead of VSB*)
+        if (s.Contains("ValueStringBuilder_Append") || s.Contains("ValueStringBuilder_Insert"))
+            return true;
+
+        // Pattern: static_cast<uint64_t>(pointer*) — pointer→int needs reinterpret_cast
+        // EventProvider_EncodeObject has many of these (int32_t*, uint64_t*, Guid*, Decimal*, etc.)
+        if (s.Contains("static_cast<uint64_t>(") && s.Contains("*>") == false)
+        {
+            // Extract the argument of static_cast<uint64_t>(...)
+            var castIdx = s.IndexOf("static_cast<uint64_t>(");
+            if (castIdx >= 0)
+            {
+                var argStart = castIdx + 22; // after "static_cast<uint64_t>("
+                var argEnd = s.IndexOf(')', argStart);
+                if (argEnd > argStart)
+                {
+                    var arg = s[argStart..argEnd].Trim();
+                    // If the argument starts with & (address-of), it's a pointer
+                    if (arg.StartsWith("&"))
+                        return true;
+                }
+            }
+        }
+
+        // Pattern: EventProvider_WriteEvent with pointer→intptr_t mismatch
+        if (s.Contains("EventProvider_WriteEvent") && s.Contains("EventData*"))
+            return true;
+
+        // Pattern: SearchValues_TryGetSingleRange — bool*/char16_t* and Span assignment
+        if (s.Contains("SearchValues_TryGetSingleRange"))
+            return true;
+
+        // Pattern: static_cast<uint64_t>(pointer_param) — pointer parameter cast to uint64
+        // UnmanagedMemoryStream_Initialize has static_cast<uint64_t>(pointer) where pointer is uint8_t*
+        if (s.Contains("static_cast<uint64_t>(") && !s.Contains("->") && !s.Contains("*)"))
+        {
+            var castIdx = s.IndexOf("static_cast<uint64_t>(");
+            if (castIdx >= 0)
+            {
+                var argStart = castIdx + 22;
+                var argEnd = s.IndexOf(')', argStart);
+                if (argEnd > argStart)
+                {
+                    var arg = s[argStart..argEnd].Trim();
+                    // If the arg is a parameter name (not a number/expression), flag it
+                    // Exclude __t temps and loc_ locals (correctly auto-typed by codegen)
+                    // Only flag names that look like pointer parameters (contain "ptr", "pointer", "buffer")
+                    if (arg.Length > 0 && char.IsLetter(arg[0]) && !arg.Contains('+') && !arg.Contains('-')
+                        && !arg.StartsWith("__t") && !arg.StartsWith("loc_")
+                        && (arg.Contains("ptr") || arg.Contains("Ptr") || arg.Contains("pointer")
+                            || arg.Contains("buffer") || arg.Contains("Buffer")))
+                        return true;
+                }
+            }
+        }
+
+        // Pattern: DONT_USE_InternalThread field — not part of ManagedThread struct
+        if (s.Contains("f_DONT_USE_InternalThread"))
+            return true;
+
+        // Pattern: StringBuilder_Append ambiguous overload (char, int vs char16_t, int)
+        // When first arg is 0 (int literal), MSVC can't choose between char and char16_t overloads
+        if (s.Contains("StringBuilder_Append__System_Char_System_Int32") && s.Contains(", 0,"))
+            return true;
+
+        // Dictionary generic type mismatch handled at method level (RuntimeResourceSet_GetObject)
 
         return false;
     }

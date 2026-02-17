@@ -5,6 +5,7 @@
 #include <cil2cpp/bcl/System.String.h>
 #include <cil2cpp/bcl/System.Object.h>
 #include <cil2cpp/gc.h>
+#include <cil2cpp/array.h>
 #include <cil2cpp/type_info.h>
 
 #include <unordered_map>
@@ -26,7 +27,7 @@ TypeInfo String_TypeInfo = {
     .interfaces = nullptr,
     .interface_count = 0,
     .instance_size = sizeof(String),
-    .element_size = sizeof(Char),
+    .element_size = 0,  // Reference type: arrays store pointers (sizeof(void*) fallback in alloc_array)
     .flags = TypeFlags::Sealed,
     .vtable = nullptr,
     .fields = nullptr,
@@ -277,6 +278,29 @@ String* string_fast_allocate(Int32 length) {
     String* str = static_cast<String*>(gc::alloc(size, &System::String_TypeInfo));
     str->length = length;
     return str;
+}
+
+Array* string_to_char_array(String* str) {
+    if (!str) return nullptr;
+    Int32 len = str->length;
+    if (len == 0) {
+        // Return empty array (equivalent to Array.Empty<char>())
+        return static_cast<Array*>(array_create(&System::String_TypeInfo, 0));
+    }
+    // Char TypeInfo uses element_size = sizeof(Char) = 2
+    // We need a TypeInfo for Char elements — use a static local
+    static TypeInfo Char_TypeInfo = {
+        .name = "Char", .namespace_name = "System", .full_name = "System.Char",
+        .base_type = nullptr, .interfaces = nullptr, .interface_count = 0,
+        .instance_size = sizeof(Char), .element_size = sizeof(Char),
+        .flags = TypeFlags::ValueType | TypeFlags::Primitive, .vtable = nullptr,
+        .fields = nullptr, .field_count = 0, .methods = nullptr, .method_count = 0,
+        .default_ctor = nullptr, .finalizer = nullptr,
+        .interface_vtables = nullptr, .interface_vtable_count = 0,
+    };
+    auto* arr = static_cast<Array*>(array_create(&Char_TypeInfo, len));
+    std::memcpy(array_data(arr), str->chars, len * sizeof(Char));
+    return arr;
 }
 
 } // namespace cil2cpp

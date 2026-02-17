@@ -237,16 +237,11 @@ public partial class CppCodeGenerator
         sb.AppendLine();
 
         // P/Invoke native library linking (filter out .NET internal modules)
-        var internalPInvokeModules = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-            { "QCall", "QCall.dll", "libSystem.Native", "libSystem.Globalization.Native",
-              "System.Globalization.Native", "System.Native", "System.IO.Compression.Native",
-              "System.Security.Cryptography.Native.OpenSsl", "System.Net.Security.Native",
-              "ucrtbase", "ucrtbase.dll" };
         var pinvokeModules = _module.Types
             .SelectMany(t => t.Methods)
             .Where(m => m.IsPInvoke && !string.IsNullOrEmpty(m.PInvokeModule))
             .Select(m => m.PInvokeModule!)
-            .Where(m => !internalPInvokeModules.Contains(m))
+            .Where(m => !InternalPInvokeModules.Contains(m))
             .Distinct()
             .ToList();
         if (pinvokeModules.Count > 0)
@@ -271,7 +266,7 @@ public partial class CppCodeGenerator
         sb.AppendLine();
 
         sb.AppendLine("if(MSVC)");
-        sb.AppendLine($"    target_compile_options({projectName} PRIVATE");
+        sb.AppendLine($"    target_compile_options({projectName} PRIVATE /utf-8");
         sb.AppendLine("        $<$<CONFIG:Debug>:/Zi /Od /RTC1>");
         sb.AppendLine("        $<$<CONFIG:Release>:/O2 /DNDEBUG>");
         sb.AppendLine("    )");

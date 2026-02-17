@@ -32,9 +32,22 @@
 // BCL types
 #include "bcl/System.Object.h"
 #include "bcl/System.String.h"
-#include "bcl/System.Console.h"
 
 namespace cil2cpp {
+
+// ===== Unsigned Comparison Helper =====
+// Used by cgt.un / clt.un IL opcodes which interpret operands as unsigned.
+// E.g., (int)(-55233) compared unsigned becomes (uint32_t)(4294912063).
+template<typename T, std::enable_if_t<std::is_integral_v<T> && !std::is_same_v<T, bool>, int> = 0>
+inline auto to_unsigned(T v) { return static_cast<std::make_unsigned_t<T>>(v); }
+
+inline auto to_unsigned(bool v) { return static_cast<unsigned>(v); }
+
+template<typename T, std::enable_if_t<std::is_pointer_v<T>, int> = 0>
+inline auto to_unsigned(T v) { return reinterpret_cast<uintptr_t>(v); }
+
+template<typename T, std::enable_if_t<std::is_enum_v<T>, int> = 0>
+inline auto to_unsigned(T v) { return static_cast<std::make_unsigned_t<std::underlying_type_t<T>>>(v); }
 
 // ===== Volatile Read/Write =====
 // System.Threading.Volatile.Read/Write — JIT intrinsics for volatile memory access.

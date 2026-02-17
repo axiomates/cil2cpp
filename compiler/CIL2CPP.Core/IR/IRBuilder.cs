@@ -213,6 +213,10 @@ public partial class IRBuilder
     // volatile. prefix flag — set by Code.Volatile, consumed by next field access
     private bool _pendingVolatile;
 
+    // Track typed pointer types for temp variables (for byte-level pointer arithmetic).
+    // Maps temp var name (e.g. "__t6") to its C++ pointer type (e.g. "char16_t*").
+    private readonly Dictionary<string, string> _tempPtrTypes = new();
+
     // constrained. prefix type — set by Code.Constrained, consumed by next callvirt
     private TypeReference? _constrainedType;
 
@@ -320,10 +324,17 @@ public partial class IRBuilder
 
         // Pass 1: Create all type shells (no fields/methods yet)
         // Skip open generic types — they are templates, not concrete types
+        // Partial classes (e.g., Interop.Kernel32) may span multiple assemblies —
+        // reuse the existing IRType so methods from all assemblies merge onto one type.
         foreach (var typeDef in _allTypes)
         {
             if (typeDef.HasGenericParameters)
                 continue;
+
+            // Partial class from another assembly — reuse existing IRType
+            if (_typeCache.ContainsKey(typeDef.FullName))
+                continue;
+
             var irType = CreateTypeShell(typeDef);
 
             // Classify type origin and runtime-provided status

@@ -113,6 +113,17 @@ inline Char string_get_chars(String* str, Int32 index) {
     return str->chars[index];
 }
 
+inline Char* string_get_raw_data(String* str) {
+    return str ? &str->f_firstChar : nullptr;
+}
+
+/**
+ * Convert string to char[] array.
+ * Icall for String.ToCharArray() — needed because the BCL implementation
+ * uses Unsafe.As (JIT intrinsic) which our codegen cannot compile.
+ */
+Array* string_to_char_array(String* str);
+
 // String search, transformation, format, join, split — compile from BCL IL.
 // Only core functions (create, concat, equals, substring, hash) remain in runtime.
 

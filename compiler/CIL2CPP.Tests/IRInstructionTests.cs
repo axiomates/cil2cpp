@@ -77,7 +77,7 @@ public class IRInstructionTests
             ResultVar = "__t0"
         };
         instr.Arguments.Add("__this");
-        Assert.Equal("__t0 = ((cil2cpp::String*(*)(Animal*))(((" +
+        Assert.Equal("cil2cpp::null_check((void*)__this); __t0 = ((cil2cpp::String*(*)(Animal*))(((" +
             "cil2cpp::Object*)__this)->__type_info->vtable->methods[0]))((Animal*)__this);", instr.ToCpp());
     }
 
@@ -552,7 +552,7 @@ public class IRInstructionTests
         };
         var code = instr.ToCpp();
         Assert.Contains("((cil2cpp::Object*)obj)->__type_info->vtable->methods[3]", code);
-        Assert.StartsWith("__t0 = ", code);
+        Assert.StartsWith("cil2cpp::null_check((void*)obj); __t0 = ", code);
     }
 
     [Fact]

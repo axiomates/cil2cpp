@@ -31,7 +31,6 @@ add_executable(cil2cpp_tests
     test_exception.cpp
     test_delegate.cpp
     test_boxing.cpp
-    test_console.cpp
     test_threading.cpp
     test_reflection.cpp
     test_memberinfo.cpp

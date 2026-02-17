@@ -50,10 +50,10 @@ public class SampleAssemblyFixture : IDisposable
     {
         SolutionRoot = FindSolutionRoot();
 
-        var helloWorldProj = Path.Combine(SolutionRoot, "compiler", "testprojects", "HelloWorld", "HelloWorld.csproj");
-        var arrayTestProj = Path.Combine(SolutionRoot, "compiler", "testprojects", "ArrayTest", "ArrayTest.csproj");
-        var featureTestProj = Path.Combine(SolutionRoot, "compiler", "testprojects", "FeatureTest", "FeatureTest.csproj");
-        var multiAssemblyTestProj = Path.Combine(SolutionRoot, "compiler", "testprojects", "MultiAssemblyTest", "MultiAssemblyTest.csproj");
+        var helloWorldProj = Path.Combine(SolutionRoot, "tests", "HelloWorld", "HelloWorld.csproj");
+        var arrayTestProj = Path.Combine(SolutionRoot, "tests", "ArrayTest", "ArrayTest.csproj");
+        var featureTestProj = Path.Combine(SolutionRoot, "tests", "FeatureTest", "FeatureTest.csproj");
+        var multiAssemblyTestProj = Path.Combine(SolutionRoot, "tests", "MultiAssemblyTest", "MultiAssemblyTest.csproj");
 
         EnsureBuilt(helloWorldProj);
         EnsureBuilt(arrayTestProj);
@@ -61,15 +61,15 @@ public class SampleAssemblyFixture : IDisposable
         EnsureBuilt(multiAssemblyTestProj); // Also builds MathLib as ProjectReference
 
         HelloWorldDllPath = Path.Combine(SolutionRoot,
-            "compiler", "testprojects", "HelloWorld", "bin", "Debug", "net8.0", "HelloWorld.dll");
+            "tests", "HelloWorld", "bin", "Debug", "net8.0", "HelloWorld.dll");
         ArrayTestDllPath = Path.Combine(SolutionRoot,
-            "compiler", "testprojects", "ArrayTest", "bin", "Debug", "net8.0", "ArrayTest.dll");
+            "tests", "ArrayTest", "bin", "Debug", "net8.0", "ArrayTest.dll");
         FeatureTestDllPath = Path.Combine(SolutionRoot,
-            "compiler", "testprojects", "FeatureTest", "bin", "Debug", "net8.0", "FeatureTest.dll");
+            "tests", "FeatureTest", "bin", "Debug", "net8.0", "FeatureTest.dll");
         MultiAssemblyTestDllPath = Path.Combine(SolutionRoot,
-            "compiler", "testprojects", "MultiAssemblyTest", "bin", "Debug", "net8.0", "MultiAssemblyTest.dll");
+            "tests", "MultiAssemblyTest", "bin", "Debug", "net8.0", "MultiAssemblyTest.dll");
         MathLibDllPath = Path.Combine(SolutionRoot,
-            "compiler", "testprojects", "MultiAssemblyTest", "bin", "Debug", "net8.0", "MathLib.dll");
+            "tests", "MultiAssemblyTest", "bin", "Debug", "net8.0", "MathLib.dll");
 
         if (!File.Exists(HelloWorldDllPath))
             throw new InvalidOperationException($"HelloWorld.dll not found at {HelloWorldDllPath}");
