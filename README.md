@@ -355,7 +355,7 @@ CIL2CPP 是一个 **CIL (Common Intermediate Language) → C++ 翻译器**，不
 ┌─────────────────────────────────────────────────────────┐
 │  Layer 1: CIL 指令翻译                                   │
 │  ConvertInstruction() switch — ~220 opcodes             │
-│  覆盖率: 97%+ (仅 6 个极罕见指令未实现)                  │
+│  覆盖率: 100% (全部 ~230 种操作码已实现)                  │
 │  这一层决定: 能否将 IL 方法体翻译为 C++                   │
 ├─────────────────────────────────────────────────────────┤
 │  Layer 2: BCL 方法编译                                   │
@@ -372,7 +372,7 @@ CIL2CPP 是一个 **CIL (Common Intermediate Language) → C++ 翻译器**，不
 
 ### CIL 指令覆盖率 (Layer 1)
 
-ECMA-335 标准定义了约 230 种 IL 操作码变体。CIL2CPP 的 `ConvertInstruction()` switch 处理其中 ~225 种（97%+），仅 6 种极罕见指令未实现。覆盖率通过 `ILOpcodeCoverageTests` 自动验证。
+ECMA-335 标准定义了约 230 种 IL 操作码变体。CIL2CPP 的 `ConvertInstruction()` switch 已实现全部操作码，覆盖率 100%。覆盖率通过 `ILOpcodeCoverageTests` 自动验证。
 
 #### 已处理指令分类
 
@@ -393,21 +393,14 @@ ECMA-335 标准定义了约 230 种 IL 操作码变体。CIL2CPP 的 `ConvertIns
 | 对象模型 | 12 | castclass, isinst, box, unbox, initobj, throw, rethrow, leave, ... |
 | 函数指针 | 3 | ldftn, ldvirtftn, calli |
 | 栈操作 | 2 | dup, pop |
-| 前缀 | 6 | nop, tail, readonly, constrained, volatile, unaligned |
+| 前缀 | 7 | nop, tail, readonly, constrained, volatile, unaligned, no. |
 | 内存操作 | 5 | sizeof, localloc, cpblk, initblk, cpobj |
+| TypedReference | 3 | mkrefany, refanyval, refanytype |
+| 变长参数 | 2 | arglist, jmp |
 | 其他 | 2 | ckfinite, break |
-| **合计** | **~225** | |
+| **合计** | **~230** | |
 
-#### 未实现指令 (6 种)
-
-| 指令 | 说明 | 原因 |
-|------|------|------|
-| no. | 优化提示前缀 | 安全忽略 |
-| jmp | 跳转到另一方法 | 已废弃，Roslyn 从不生成 |
-| mkrefany / refanyval / refanytype | TypedReference 操作 | .NET 不鼓励使用 (`__makeref`/`__refvalue`/`__reftype`) |
-| arglist | 变长参数列表 | C 风格变参 (`__arglist`)，极罕见 |
-
-> 遇到未处理指令时，编译器生成 `/* WARNING: unsupported opcode */` 注释，不会报错。
+> 全部 ECMA-335 IL 操作码均已实现，`KnownUnimplementedOpcodes` 为空集。
 
 ### C# 功能参考表
 
@@ -572,8 +565,8 @@ ECMA-335 标准定义了约 230 种 IL 操作码变体。CIL2CPP 的 `ConvertIns
 
 ## 已知限制
 
-> 以下限制按架构层分类。**IL 指令翻译层 (Layer 1)** 已 97%+ 覆盖（仅 6 个极罕见指令未实现），
-> 大多数"不支持"的功能属于 **BCL 依赖链 (Layer 2)** 或 **运行时 icall (Layer 3)** 层面的问题。
+> 以下限制按架构层分类。**IL 指令翻译层 (Layer 1)** 已 100% 覆盖（全部 ~230 种操作码已实现），
+> 所有"不支持"的功能属于 **BCL 依赖链 (Layer 2)** 或 **运行时 icall (Layer 3)** 层面的问题。
 
 ### BCL 依赖链限制 (Layer 2)
 

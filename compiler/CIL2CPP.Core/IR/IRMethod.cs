@@ -46,6 +46,7 @@ public class IRMethod
     /// </summary>
     public bool HasICallMapping { get; set; }
     public bool IsNewSlot { get; set; }
+    public bool IsVarArg { get; set; }
     public bool IsPInvoke { get; set; }
     public string? PInvokeModule { get; set; }
     public string? PInvokeEntryPoint { get; set; }

@@ -410,6 +410,68 @@ public partial class IRBuilder
         }
         args.Reverse();
 
+        // Handle varargs call sites: package extra arguments into VarArgHandle.
+        // The handle is stored separately to avoid CastArgumentsToParameterTypes
+        // corrupting it (it would try to cast intptr_t using the first vararg param type).
+        string? varargHandleArg = null;
+        if (methodRef.CallingConvention == MethodCallingConvention.VarArg)
+        {
+            // Resolve method definition to get fixed param count
+            int fixedCount;
+            try
+            {
+                var resolved = methodRef.Resolve();
+                fixedCount = resolved?.Parameters.Count ?? args.Count;
+            }
+            catch
+            {
+                fixedCount = args.Count; // fallback: treat all as fixed
+            }
+
+            if (fixedCount < args.Count)
+            {
+                var varargArgs = args.GetRange(fixedCount, args.Count - fixedCount);
+                args.RemoveRange(fixedCount, args.Count - fixedCount);
+
+                var vc = tempCounter++;
+                var entries = new List<string>();
+                for (int i = 0; i < varargArgs.Count; i++)
+                {
+                    var paramType = methodRef.Parameters[fixedCount + i].ParameterType;
+                    var resolvedTypeName = ResolveGenericTypeRef(paramType, methodRef.DeclaringType);
+                    var cppDeclType = CppNameMapper.GetCppTypeForDecl(resolvedTypeName);
+                    var typeInfoName = CppNameMapper.MangleTypeName(resolvedTypeName);
+
+                    // Ensure TypeInfo exists for primitive vararg types
+                    _module.RegisterPrimitiveTypeInfo(resolvedTypeName);
+
+                    // Store vararg value in temporary variable
+                    var tempName = $"__vararg_{vc}_{i}";
+                    block.Instructions.Add(new IRRawCpp
+                    {
+                        Code = $"{cppDeclType} {tempName} = {varargArgs[i]};"
+                    });
+                    entries.Add($"{{(void*)&{tempName}, &{typeInfoName}_TypeInfo}}");
+                }
+
+                // Build VarArgEntry array + VarArgHandle
+                var entriesName = $"__vararg_entries_{vc}";
+                var handleName = $"__vararg_handle_{vc}";
+                block.Instructions.Add(new IRRawCpp
+                {
+                    Code = $"cil2cpp::VarArgEntry {entriesName}[] = {{ {string.Join(", ", entries)} }}; "
+                         + $"cil2cpp::VarArgHandle {handleName} = {{{entriesName}, {varargArgs.Count}}};"
+                });
+
+                varargHandleArg = $"reinterpret_cast<intptr_t>(&{handleName})";
+            }
+            else
+            {
+                // No vararg arguments at this call site — pass null handle
+                varargHandleArg = "static_cast<intptr_t>(0)";
+            }
+        }
+
         // Interlocked _obj methods: void* params/return, cast to/from concrete types
         bool isInterlockedObj = mappedName != null && mappedName.EndsWith("_obj")
             && mappedName.Contains("Interlocked");
@@ -434,12 +496,14 @@ public partial class IRBuilder
             }
             else if (mappedName != null && methodRef.HasThis)
             {
-                // BCL mapped value type instance methods (Int32.ToString, etc.)
-                // 'this' is a pointer (&x) but the mapped function expects a value — dereference
+                // BCL mapped value type instance methods:
+                // 'this' is a pointer (&x). Most icalls expect a value (dereference),
+                // but mutable value types like ArgIterator need the pointer (no dereference).
                 bool isValueTarget = false;
                 try { isValueTarget = methodRef.DeclaringType.Resolve()?.IsValueType == true; }
                 catch { }
-                if (isValueTarget)
+                if (isValueTarget
+                    && methodRef.DeclaringType.FullName != "System.ArgIterator")
                     thisArg = $"*({thisArg})";
             }
             else if (!irCall.IsVirtual && mappedName == null
@@ -478,6 +542,10 @@ public partial class IRBuilder
         {
             CastArgumentsToParameterTypes(args, methodRef, mappedName != null);
         }
+
+        // Append vararg handle AFTER CastArgumentsToParameterTypes (which only sees fixed args)
+        if (varargHandleArg != null)
+            args.Add(varargHandleArg);
 
         irCall.Arguments.AddRange(args);
 

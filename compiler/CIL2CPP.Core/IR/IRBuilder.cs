@@ -59,6 +59,10 @@ public partial class IRBuilder
         "System.Threading.Thread",
         "System.Threading.CancellationToken",
         "System.Threading.CancellationTokenSource",
+
+        // TypedReference + ArgIterator — struct defined in typed_reference.h
+        "System.TypedReference",
+        "System.ArgIterator",
     };
 
     /// <summary>
@@ -83,6 +87,9 @@ public partial class IRBuilder
         "System.Reflection.MethodInfo",
         "System.Reflection.FieldInfo",
         "System.Reflection.ParameterInfo",
+        // TypedReference + ArgIterator: all methods handled by runtime / icall
+        "System.TypedReference",
+        "System.ArgIterator",
     };
 
     /// <summary>

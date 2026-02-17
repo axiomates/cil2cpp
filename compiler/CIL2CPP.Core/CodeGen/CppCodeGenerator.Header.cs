@@ -898,6 +898,9 @@ public partial class CppCodeGenerator
         // threading.h — ManagedThread is in cil2cpp namespace but no using alias;
         // still needs to be skipped since runtime defines the struct
         "System_Threading_Thread",
+        // typed_reference.h
+        "System_TypedReference",
+        "System_ArgIterator",
     };
 
     /// <summary>
@@ -1576,8 +1579,9 @@ public partial class CppCodeGenerator
             method.CppName.Contains("EventData_SetMetadata"))
             return true;
 
-        // Method-level: TypedReference (refanytype is unsupported IL instruction)
-        if (rendered.Contains("refanytype"))
+        // Method-level: BCL's System.TypedReference methods reference internal CLR field layout
+        // (_value, _type) that doesn't match our TypedReference struct.
+        if (method.CppName.Contains("System_TypedReference_"))
             return true;
 
         // Method-level: DBNull comparison (BCL uses DBNull.Value as sentinel, compared with Object*)

@@ -72,6 +72,7 @@ set(RUNTIME_SOURCES
     src/reflection/memberinfo.cpp
     src/collections/list.cpp
     src/collections/dictionary.cpp
+    src/typed_reference.cpp
 )
 
 # Create static library

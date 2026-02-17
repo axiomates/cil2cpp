@@ -104,6 +104,20 @@ public partial class IRBuilder
             irMethod.Parameters.Add(irParam);
         }
 
+        // Detect varargs calling convention (C# __arglist)
+        if (cecilMethod.CallingConvention == MethodCallingConvention.VarArg)
+        {
+            irMethod.IsVarArg = true;
+            irMethod.Parameters.Add(new IRParameter
+            {
+                Name = "__arglist_handle",
+                CppName = "__arglist_handle",
+                CppTypeName = "intptr_t",
+                ILTypeName = "System.IntPtr",
+                Index = irMethod.Parameters.Count,
+            });
+        }
+
         // Local variables
         foreach (var localDef in methodDef.GetLocalVariables())
         {
@@ -1915,6 +1929,98 @@ public partial class IRBuilder
                 break;
             }
 
+            // ===== Phase 8 remaining: previously KnownUnimplemented =====
+
+            case Code.No: // no. prefix: optimization hint for JIT, safe to ignore in AOT
+                break;
+
+            case Code.Jmp:
+            {
+                // ECMA-335 III.3.37: tail-jump to method with same signature.
+                // Equivalent to: return target(currentArgs...)
+                var methodRef = (MethodReference)instr.Operand!;
+                var typeCpp = GetMangledTypeNameForRef(methodRef.DeclaringType);
+                var targetName = CppNameMapper.MangleMethodName(typeCpp, methodRef.Name);
+                var args = new List<string>();
+                if (methodRef.HasThis)
+                    args.Add("__this");
+                foreach (var p in method.Parameters)
+                    args.Add(p.CppName);
+                var callExpr = $"{targetName}({string.Join(", ", args)})";
+                if (method.ReturnTypeCpp != "void")
+                {
+                    block.Instructions.Add(new IRReturn { Value = callExpr });
+                }
+                else
+                {
+                    block.Instructions.Add(new IRRawCpp { Code = $"{callExpr};" });
+                    block.Instructions.Add(new IRReturn());
+                }
+                stack.Clear();
+                break;
+            }
+
+            case Code.Mkrefany:
+            {
+                // ECMA-335 III.4.14: create TypedReference from managed pointer + type
+                var typeRef = (TypeReference)instr.Operand!;
+                var ptr = stack.Count > 0 ? stack.Pop() : "nullptr";
+                var resolvedName = ResolveTypeRefOperand(typeRef);
+                var typeCpp = CppNameMapper.MangleTypeName(resolvedName);
+                var tmp = $"__t{tempCounter++}";
+                block.Instructions.Add(new IRRawCpp
+                {
+                    Code = $"cil2cpp::TypedReference {tmp}; "
+                         + $"{tmp}.value = static_cast<void*>({ptr}); "
+                         + $"{tmp}.type = &{typeCpp}_TypeInfo;",
+                    ResultVar = tmp,
+                    ResultTypeCpp = "cil2cpp::TypedReference",
+                });
+                stack.Push(tmp);
+                break;
+            }
+
+            case Code.Refanyval:
+            {
+                // ECMA-335 III.4.22: extract typed pointer from TypedReference
+                var typeRef = (TypeReference)instr.Operand!;
+                var tr = stack.Count > 0 ? stack.Pop() : "{}";
+                var resolvedName = ResolveTypeRefOperand(typeRef);
+                var typeCpp = CppNameMapper.GetCppTypeName(resolvedName);
+                var tmp = $"__t{tempCounter++}";
+                block.Instructions.Add(new IRRawCpp
+                {
+                    Code = $"auto {tmp} = static_cast<{typeCpp}*>({tr}.value);",
+                    ResultVar = tmp,
+                    ResultTypeCpp = $"{typeCpp}*",
+                });
+                stack.Push(tmp);
+                break;
+            }
+
+            case Code.Refanytype:
+            {
+                // ECMA-335 III.4.23: extract type handle from TypedReference
+                var tr = stack.Count > 0 ? stack.Pop() : "{}";
+                var tmp = $"__t{tempCounter++}";
+                block.Instructions.Add(new IRRawCpp
+                {
+                    Code = $"auto {tmp} = {tr}.type;",
+                    ResultVar = tmp,
+                    ResultTypeCpp = "cil2cpp::TypeInfo*",
+                });
+                stack.Push(tmp);
+                break;
+            }
+
+            case Code.Arglist:
+            {
+                // ECMA-335 III.3.2: push RuntimeArgumentHandle for varargs iteration
+                // The __arglist_handle parameter is added by Pass 3 for varargs methods
+                stack.Push("__arglist_handle");
+                break;
+            }
+
             default:
                 block.Instructions.Add(new IRComment { Text = $"WARNING: Unsupported IL instruction: {instr}" });
                 Console.Error.WriteLine($"WARNING: Unsupported IL instruction '{instr.OpCode}' at IL_{instr.Offset:X4} in {method.CppName}");
@@ -2094,19 +2200,15 @@ public partial class IRBuilder
         Code.Sizeof, Code.Localloc,
         // Phase 8.1: newly implemented
         Code.Ckfinite, Code.Cpblk, Code.Initblk, Code.Cpobj, Code.Break,
+        // Phase 8: previously KnownUnimplemented, now fully handled
+        Code.No, Code.Jmp, Code.Mkrefany, Code.Refanyval, Code.Refanytype, Code.Arglist,
     };
 
     /// <summary>
     /// IL opcodes intentionally not implemented.
-    /// These are either extremely rare, deprecated, or not emitted by Roslyn.
+    /// Empty — all opcodes are now handled (100% coverage).
     /// </summary>
     internal static readonly HashSet<Code> KnownUnimplementedOpcodes = new()
     {
-        Code.No,          // no. prefix (optimization hint, no-op)
-        Code.Jmp,         // Jump to another method (deprecated, Roslyn never emits)
-        Code.Mkrefany,    // Make TypedReference (__makeref, discouraged)
-        Code.Refanyval,   // Extract TypedReference value (__refvalue)
-        Code.Refanytype,  // Extract TypedReference type (__reftype)
-        Code.Arglist,     // Variable argument list (__arglist, C-style varargs)
     };
 }

@@ -141,6 +141,14 @@ public static class ICallRegistry
         // Math methods — compile from BCL IL.
         // In .NET 8, most Math functions (Sqrt, Sin, Cos, etc.) are [InternalCall] extern methods.
         // Their icalls will be discovered via compile errors and added back as needed.
+
+        // ===== System.ArgIterator =====
+        // ArgIterator is 100% [InternalCall] in BCL. Our runtime uses VarArgHandle metadata
+        // constructed at call sites and passed as intptr_t to varargs methods.
+        RegisterICall("System.ArgIterator", ".ctor", 1, "cil2cpp::argiterator_init");
+        RegisterICall("System.ArgIterator", "GetRemainingCount", 0, "cil2cpp::argiterator_get_remaining_count");
+        RegisterICall("System.ArgIterator", "GetNextArg", 0, "cil2cpp::argiterator_get_next_arg");
+        RegisterICall("System.ArgIterator", "End", 0, "cil2cpp::argiterator_end");
     }
 
     // ===== Registration methods =====
