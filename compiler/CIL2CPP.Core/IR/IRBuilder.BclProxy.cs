@@ -109,6 +109,52 @@ public partial class IRBuilder
             new BclMethodSpec("Insert", "System.Void", new[] { "System.Int32", "T" }),
             new BclMethodSpec("RemoveAt", "System.Void", new[] { "System.Int32" }),
         }, IsGeneric: true, GenericArity: 1),
+        ["System.Collections.Generic.IReadOnlyCollection`1"] = new("System.Collections.Generic", "IReadOnlyCollection", new[]
+        {
+            new BclMethodSpec("get_Count", "System.Int32", Array.Empty<string>()),
+        }, IsGeneric: true, GenericArity: 1),
+        ["System.Collections.Generic.IReadOnlyList`1"] = new("System.Collections.Generic", "IReadOnlyList", new[]
+        {
+            new BclMethodSpec("get_Item", "T", new[] { "System.Int32" }),
+        }, IsGeneric: true, GenericArity: 1),
+        ["System.Collections.Generic.ISet`1"] = new("System.Collections.Generic", "ISet", new[]
+        {
+            new BclMethodSpec("Add", "System.Boolean", new[] { "T" }),
+            new BclMethodSpec("Contains", "System.Boolean", new[] { "T" }),
+            new BclMethodSpec("IsSubsetOf", "System.Boolean", new[] { "System.Collections.Generic.IEnumerable`1<T>" }),
+            new BclMethodSpec("IsSupersetOf", "System.Boolean", new[] { "System.Collections.Generic.IEnumerable`1<T>" }),
+            new BclMethodSpec("UnionWith", "System.Void", new[] { "System.Collections.Generic.IEnumerable`1<T>" }),
+            new BclMethodSpec("IntersectWith", "System.Void", new[] { "System.Collections.Generic.IEnumerable`1<T>" }),
+            new BclMethodSpec("ExceptWith", "System.Void", new[] { "System.Collections.Generic.IEnumerable`1<T>" }),
+        }, IsGeneric: true, GenericArity: 1),
+        ["System.Collections.Generic.IComparer`1"] = new("System.Collections.Generic", "IComparer", new[]
+        {
+            new BclMethodSpec("Compare", "System.Int32", new[] { "T", "T" }),
+        }, IsGeneric: true, GenericArity: 1),
+        ["System.Collections.Generic.IEqualityComparer`1"] = new("System.Collections.Generic", "IEqualityComparer", new[]
+        {
+            new BclMethodSpec("Equals", "System.Boolean", new[] { "T", "T" }),
+            new BclMethodSpec("GetHashCode", "System.Int32", new[] { "T" }),
+        }, IsGeneric: true, GenericArity: 1),
+        ["System.Collections.Generic.IDictionary`2"] = new("System.Collections.Generic", "IDictionary", new[]
+        {
+            new BclMethodSpec("get_Item", "TValue", new[] { "TKey" }),
+            new BclMethodSpec("set_Item", "System.Void", new[] { "TKey", "TValue" }),
+            new BclMethodSpec("get_Keys", "System.Collections.Generic.ICollection`1<TKey>", Array.Empty<string>()),
+            new BclMethodSpec("get_Values", "System.Collections.Generic.ICollection`1<TValue>", Array.Empty<string>()),
+            new BclMethodSpec("Add", "System.Void", new[] { "TKey", "TValue" }),
+            new BclMethodSpec("ContainsKey", "System.Boolean", new[] { "TKey" }),
+            new BclMethodSpec("Remove", "System.Boolean", new[] { "TKey" }),
+            new BclMethodSpec("TryGetValue", "System.Boolean", new[] { "TKey", "TValue&" }),
+        }, IsGeneric: true, GenericArity: 2),
+        ["System.Collections.Generic.IReadOnlyDictionary`2"] = new("System.Collections.Generic", "IReadOnlyDictionary", new[]
+        {
+            new BclMethodSpec("get_Item", "TValue", new[] { "TKey" }),
+            new BclMethodSpec("get_Keys", "System.Collections.Generic.IEnumerable`1<TKey>", Array.Empty<string>()),
+            new BclMethodSpec("get_Values", "System.Collections.Generic.IEnumerable`1<TValue>", Array.Empty<string>()),
+            new BclMethodSpec("ContainsKey", "System.Boolean", new[] { "TKey" }),
+            new BclMethodSpec("TryGetValue", "System.Boolean", new[] { "TKey", "TValue&" }),
+        }, IsGeneric: true, GenericArity: 2),
         ["System.Collections.Generic.IAsyncEnumerable`1"] = new("System.Collections.Generic", "IAsyncEnumerable", new[]
         {
             new BclMethodSpec("GetAsyncEnumerator", "System.Collections.Generic.IAsyncEnumerator`1<T>", new[] { "System.Threading.CancellationToken" }),
@@ -248,6 +294,29 @@ public partial class IRBuilder
                 if (_typeCache.TryGetValue("System.IDisposable", out var iDisposable))
                     type.Interfaces.Add(iDisposable);
             }
+            // IReadOnlyCollection<T> extends IEnumerable<T>, IEnumerable
+            else if (type.ILFullName.StartsWith("System.Collections.Generic.IReadOnlyCollection`1<"))
+            {
+                var tArg = type.ILFullName["System.Collections.Generic.IReadOnlyCollection`1<".Length..^1];
+                var iEnumT = $"System.Collections.Generic.IEnumerable`1<{tArg}>";
+                if (_typeCache.TryGetValue(iEnumT, out var iEnumerableT))
+                    type.Interfaces.Add(iEnumerableT);
+                if (_typeCache.TryGetValue("System.Collections.IEnumerable", out var iEnumerable2))
+                    type.Interfaces.Add(iEnumerable2);
+            }
+            // IReadOnlyList<T> extends IReadOnlyCollection<T>, IEnumerable<T>, IEnumerable
+            else if (type.ILFullName.StartsWith("System.Collections.Generic.IReadOnlyList`1<"))
+            {
+                var tArg = type.ILFullName["System.Collections.Generic.IReadOnlyList`1<".Length..^1];
+                var iReadOnlyCollT = $"System.Collections.Generic.IReadOnlyCollection`1<{tArg}>";
+                if (_typeCache.TryGetValue(iReadOnlyCollT, out var iReadOnlyColl))
+                    type.Interfaces.Add(iReadOnlyColl);
+                var iEnumT = $"System.Collections.Generic.IEnumerable`1<{tArg}>";
+                if (_typeCache.TryGetValue(iEnumT, out var iEnumerableT))
+                    type.Interfaces.Add(iEnumerableT);
+                if (_typeCache.TryGetValue("System.Collections.IEnumerable", out var iEnumerable3))
+                    type.Interfaces.Add(iEnumerable3);
+            }
             // IAsyncEnumerator<T> extends IAsyncDisposable
             else if (type.ILFullName.StartsWith("System.Collections.Generic.IAsyncEnumerator`1<"))
             {
@@ -291,27 +360,34 @@ public partial class IRBuilder
     }
 
     /// <summary>
-    /// Replaces "T" placeholder with the actual generic argument in type names.
-    /// For generic interfaces with arity 1, "T" maps to typeArgs[0].
-    /// Also handles "T[]" → "TypeName[]" and nested generic references like
-    /// "System.Collections.Generic.IEnumerator`1&lt;T&gt;" → substituted form.
+    /// Replaces generic argument placeholders with actual type arguments.
+    /// For arity-1 interfaces: "T" → typeArgs[0].
+    /// For arity-2 interfaces: "TKey" → typeArgs[0], "TValue" → typeArgs[1].
+    /// Also handles "T[]", "TValue&amp;", and nested generic references.
     /// </summary>
     private static string SubstituteGenericArgs(string typeName, List<string>? typeArgs)
     {
         if (typeArgs == null || typeArgs.Count == 0)
             return typeName;
 
-        // Simple "T" replacement
-        if (typeName == "T")
-            return typeArgs[0];
+        if (typeArgs.Count == 1)
+        {
+            // Simple "T" replacement
+            if (typeName == "T") return typeArgs[0];
+            if (typeName == "T[]") return typeArgs[0] + "[]";
+            if (typeName.Contains("<T>"))
+                return typeName.Replace("<T>", $"<{typeArgs[0]}>");
+            return typeName;
+        }
 
-        // "T[]" → "TypeName[]"
-        if (typeName == "T[]")
-            return typeArgs[0] + "[]";
-
-        // Nested generic: "Some.Type`1<T>" → "Some.Type`1<ActualType>"
-        if (typeName.Contains("<T>"))
-            return typeName.Replace("<T>", $"<{typeArgs[0]}>");
+        // Multi-param: TKey → typeArgs[0], TValue → typeArgs[1]
+        var result = typeName;
+        if (result == "TKey") return typeArgs[0];
+        if (result == "TValue") return typeArgs[1];
+        if (result == "TValue&") return typeArgs[1] + "&";
+        result = result.Replace("<TKey>", $"<{typeArgs[0]}>");
+        result = result.Replace("<TValue>", $"<{typeArgs[1]}>");
+        if (result != typeName) return result;
 
         return typeName;
     }
