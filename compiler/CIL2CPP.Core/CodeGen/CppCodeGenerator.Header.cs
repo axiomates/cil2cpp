@@ -1195,13 +1195,8 @@ public partial class CppCodeGenerator
         if (code.Contains("volatile_write((bool*)"))
             return true;
 
-        // Pattern 4: Unsafe_AsRef / Unsafe_Add / Unsafe_SizeOf calls
-        // These are JIT intrinsics with no compilable IL bodies —
-        // calling them produces wrong types in the output.
-        if (code.Contains("Unsafe_AsRef_") || code.Contains("Unsafe_Add_")
-            || code.Contains("Unsafe_SizeOf_") || code.Contains("Unsafe_ReadUnaligned_")
-            || code.Contains("Unsafe_WriteUnaligned_") || code.Contains("Unsafe_As_"))
-            return true;
+        // Pattern 4: removed — Unsafe specializations now compile as valid C++ functions.
+        // Callers of broken Unsafe stubs are caught by stage 3 (CallsUndeclaredOrMismatchedFunctions).
 
         // Pattern 5: array_get/array_set/array_length called with non-Array argument
         if (code.Contains("array_length(0)"))

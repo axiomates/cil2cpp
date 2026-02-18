@@ -561,31 +561,38 @@ public partial class IRBuilder
             if (TryEmitMemoryMarshalIntrinsic(block, stack, methodRef, mmGim, ref tempCounter))
                 return;
         }
-        // Vector128<T>.get_Count — return 0 (disable SIMD paths, force scalar fallback)
-        if (methodRef.DeclaringType.FullName.StartsWith("System.Runtime.Intrinsics.Vector128")
-            && (methodRef.Name == "get_Count" || methodRef.Name == "get_IsHardwareAccelerated"))
+        // SIMD IsSupported/IsHardwareAccelerated/get_Count → return 0 (disable SIMD, force scalar fallback)
+        // Covers: Vector64/128/256/512, System.Numerics.Vector (not Vector2/3/4), all X86/Wasm intrinsics
         {
-            if (methodRef.HasThis && stack.Count > 0) stack.Pop(); // discard 'this'
-            var tmp = $"__t{tempCounter++}";
-            block.Instructions.Add(new IRRawCpp { Code = $"int32_t {tmp} = 0;" });
-            stack.Push(tmp);
-            return;
-        }
+            var declType = methodRef.DeclaringType.FullName;
+            bool isSimdType = declType.StartsWith("System.Runtime.Intrinsics.")
+                || declType == "System.Numerics.Vector"
+                || declType.StartsWith("System.Numerics.Vector`");
 
-        // Vector128 operations — stub as no-ops (SIMD disabled)
-        if (methodRef.DeclaringType.FullName.StartsWith("System.Runtime.Intrinsics.Vector128"))
-        {
-            // Pop all arguments
-            for (int i = 0; i < methodRef.Parameters.Count; i++)
-                if (stack.Count > 0) stack.Pop();
-            if (methodRef.HasThis && stack.Count > 0) stack.Pop();
-            if (!IsVoidReturnType(methodRef.ReturnType))
+            if (isSimdType && methodRef.Name is "get_IsSupported" or "get_IsHardwareAccelerated" or "get_Count")
             {
+                if (methodRef.HasThis && stack.Count > 0) stack.Pop();
                 var tmp = $"__t{tempCounter++}";
-                block.Instructions.Add(new IRRawCpp { Code = $"auto {tmp} = 0; // Vector128 stub" });
+                block.Instructions.Add(new IRRawCpp { Code = $"int32_t {tmp} = 0;" });
                 stack.Push(tmp);
+                return;
             }
-            return;
+
+            // SIMD operations → stub as no-ops (unreachable: guarded by IsSupported==false)
+            if (isSimdType)
+            {
+                for (int i = 0; i < methodRef.Parameters.Count; i++)
+                    if (stack.Count > 0) stack.Pop();
+                if (methodRef.HasThis && stack.Count > 0) stack.Pop();
+                if (!IsVoidReturnType(methodRef.ReturnType))
+                {
+                    var tmp = $"__t{tempCounter++}";
+                    var retType = ResolveCallReturnType(methodRef);
+                    block.Instructions.Add(new IRRawCpp { Code = $"{retType} {tmp} = {{}}; // SIMD stub" });
+                    stack.Push(tmp);
+                }
+                return;
+            }
         }
 
         // Array.Empty<T>() — return a zero-length array
