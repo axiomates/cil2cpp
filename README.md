@@ -775,6 +775,8 @@ runtime/CMakeLists.txt
 
 测试覆盖：类型映射 (CppNameMapper)、构建配置 (BuildConfiguration)、IR 模块/方法/指令、C++ 代码生成器、程序集解析 (AssemblyResolver/AssemblySet)、可达性分析 (ReachabilityAnalyzer)。
 
+**测试 fixture 缓存机制：** `SampleAssemblyFixture` 使用 xUnit 的 `ICollectionFixture<T>` 模式，在整个测试运行期间只创建一次。每个 sample（HelloWorld、ArrayTest、FeatureTest、MultiAssemblyTest）的 `AssemblySet`、`ReachabilityResult`、`IRModule` 均为 lazy 初始化并缓存（Release + Debug 分别缓存），所有标记 `[Collection("SampleAssembly")]` 的测试类共享同一实例。1240+ 个测试实际只构建 4 个 sample DLL + 最多 7 个 IRModule（3 Release + 2 Debug + 2 Context-only），避免重复编译。
+
 ```bash
 # 运行测试
 dotnet test compiler/CIL2CPP.Tests
