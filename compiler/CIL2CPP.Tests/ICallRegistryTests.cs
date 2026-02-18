@@ -92,13 +92,11 @@ public class ICallRegistryTests
     }
 
     // RuntimeHelpers
-    [Theory]
-    [InlineData("System.Runtime.CompilerServices.RuntimeHelpers", "InitializeArray", 2, "cil2cpp::icall::RuntimeHelpers_InitializeArray")]
-    [InlineData("System.Runtime.CompilerServices.RuntimeHelpers", "IsReferenceOrContainsReferences", 0, "cil2cpp::icall::RuntimeHelpers_IsReferenceOrContainsReferences")]
-    public void Lookup_RuntimeHelpers_ReturnsCorrectCppName(string type, string method, int paramCount, string expected)
+    [Fact]
+    public void Lookup_RuntimeHelpers_InitializeArray_ReturnsCorrectCppName()
     {
-        var result = ICallRegistry.Lookup(type, method, paramCount);
-        Assert.Equal(expected, result);
+        var result = ICallRegistry.Lookup("System.Runtime.CompilerServices.RuntimeHelpers", "InitializeArray", 2);
+        Assert.Equal("cil2cpp::icall::RuntimeHelpers_InitializeArray", result);
     }
 
     // Negative cases

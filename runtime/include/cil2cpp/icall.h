@@ -53,18 +53,11 @@ Int64 Interlocked_CompareExchange_i64(Int64* location, Int64 value, Int64 compar
 void* Interlocked_Exchange_obj(void* location, void* value);
 void* Interlocked_CompareExchange_obj(void* location, void* value, void* comparand);
 
-// System.ArgumentNullException
-void ArgumentNullException_ThrowIfNull(Object* arg, String* paramName);
-
-// System.ThrowHelper (BCL internal)
-void ThrowHelper_ThrowArgumentException(Int32 resource);
-
 // System.Threading.Thread
 void Thread_Sleep(Int32 milliseconds);
 
 // System.Runtime.CompilerServices.RuntimeHelpers
 void RuntimeHelpers_InitializeArray(Object* array, void* fieldHandle);
-bool RuntimeHelpers_IsReferenceOrContainsReferences();
 
 // System.Enum
 Object* Enum_InternalBoxEnum(void* enumType, Int64 value);
@@ -72,19 +65,6 @@ Int32 Enum_InternalGetCorElementType(void* enumType);
 
 // System.Delegate (internal)
 Object* Delegate_InternalAlloc(void* type);
-Object* Delegate_BindToMethodInfo(Object* target, void* method, void* methodType, Int32 flags);
-
-// System.Char (primitive classification)
-bool Char_IsWhiteSpace(char16_t c);
-bool Char_IsAsciiDigit(char16_t c);
-bool Char_IsAscii(char16_t c);
-bool Char_IsLetter(char16_t c);
-bool Char_IsDigit(char16_t c);
-bool Char_IsUpper(char16_t c);
-bool Char_IsLower(char16_t c);
-
-// System.Int32
-String* Int32_ToString(Int32* value);
 
 // System.Math (double)
 double Math_Abs_double(double value);

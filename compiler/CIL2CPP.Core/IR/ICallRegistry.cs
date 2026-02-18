@@ -61,7 +61,6 @@ public static class ICallRegistry
         RegisterICall("System.MulticastDelegate", "Combine", 2, "cil2cpp::delegate_combine");
         RegisterICall("System.MulticastDelegate", "Remove", 2, "cil2cpp::delegate_remove");
         RegisterICall("System.Delegate", "InternalAlloc", 1, "cil2cpp::icall::Delegate_InternalAlloc");
-        RegisterICall("System.Delegate", "BindToMethodInfo", 4, "cil2cpp::icall::Delegate_BindToMethodInfo");
 
         // ===== System.Enum =====
         RegisterICall("System.Enum", "InternalBoxEnum", 2, "cil2cpp::icall::Enum_InternalBoxEnum");
@@ -131,8 +130,8 @@ public static class ICallRegistry
         // ===== System.Runtime.CompilerServices.RuntimeHelpers =====
         RegisterICall("System.Runtime.CompilerServices.RuntimeHelpers", "InitializeArray", 2,
             "cil2cpp::icall::RuntimeHelpers_InitializeArray");
-        RegisterICall("System.Runtime.CompilerServices.RuntimeHelpers", "IsReferenceOrContainsReferences", 0,
-            "cil2cpp::icall::RuntimeHelpers_IsReferenceOrContainsReferences");
+        // RuntimeHelpers.IsReferenceOrContainsReferences<T>() is resolved at compile time
+        // in IRBuilder.Emit.cs (compile-time generic type evaluation).
 
         // ===== System.Text.Unicode.Utf8Utility =====
         // These BCL methods use SIMD intrinsics (SSE2/AVX2) which our codegen can't compile.

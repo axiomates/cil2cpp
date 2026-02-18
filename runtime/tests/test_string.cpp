@@ -204,18 +204,54 @@ TEST_F(StringTest, Substring_Middle) {
     std::free(utf8);
 }
 
-TEST_F(StringTest, Substring_NullString_ReturnsNull) {
-    EXPECT_EQ(string_substring(nullptr, 0, 5), nullptr);
+TEST_F(StringTest, Substring_NullString_Throws) {
+    ExceptionContext ctx;
+    ctx.previous = g_exception_context;
+    ctx.current_exception = nullptr;
+    ctx.state = 0;
+    g_exception_context = &ctx;
+    if (setjmp(ctx.jump_buffer) == 0) {
+        string_substring(nullptr, 0, 5);
+        g_exception_context = ctx.previous;
+        FAIL() << "Expected ArgumentOutOfRangeException";
+    } else {
+        g_exception_context = ctx.previous;
+        EXPECT_NE(ctx.current_exception, nullptr);
+    }
 }
 
-TEST_F(StringTest, Substring_OutOfBounds_ReturnsNull) {
+TEST_F(StringTest, Substring_OutOfBounds_Throws) {
     String* str = string_create_utf8("Hi");
-    EXPECT_EQ(string_substring(str, 0, 10), nullptr);
+    ExceptionContext ctx;
+    ctx.previous = g_exception_context;
+    ctx.current_exception = nullptr;
+    ctx.state = 0;
+    g_exception_context = &ctx;
+    if (setjmp(ctx.jump_buffer) == 0) {
+        string_substring(str, 0, 10);
+        g_exception_context = ctx.previous;
+        FAIL() << "Expected ArgumentOutOfRangeException";
+    } else {
+        g_exception_context = ctx.previous;
+        EXPECT_NE(ctx.current_exception, nullptr);
+    }
 }
 
-TEST_F(StringTest, Substring_NegativeStart_ReturnsNull) {
+TEST_F(StringTest, Substring_NegativeStart_Throws) {
     String* str = string_create_utf8("Hi");
-    EXPECT_EQ(string_substring(str, -1, 1), nullptr);
+    ExceptionContext ctx;
+    ctx.previous = g_exception_context;
+    ctx.current_exception = nullptr;
+    ctx.state = 0;
+    g_exception_context = &ctx;
+    if (setjmp(ctx.jump_buffer) == 0) {
+        string_substring(str, -1, 1);
+        g_exception_context = ctx.previous;
+        FAIL() << "Expected ArgumentOutOfRangeException";
+    } else {
+        g_exception_context = ctx.previous;
+        EXPECT_NE(ctx.current_exception, nullptr);
+    }
 }
 
 // ===== string_to_utf8 =====
@@ -345,9 +381,21 @@ TEST_F(StringTest, Substring_ZeroLength) {
     EXPECT_EQ(sub->length, 0);
 }
 
-TEST_F(StringTest, Substring_NegativeLength_ReturnsNull) {
+TEST_F(StringTest, Substring_NegativeLength_Throws) {
     String* str = string_create_utf8("Hi");
-    EXPECT_EQ(string_substring(str, 0, -1), nullptr);
+    ExceptionContext ctx;
+    ctx.previous = g_exception_context;
+    ctx.current_exception = nullptr;
+    ctx.state = 0;
+    g_exception_context = &ctx;
+    if (setjmp(ctx.jump_buffer) == 0) {
+        string_substring(str, 0, -1);
+        g_exception_context = ctx.previous;
+        FAIL() << "Expected ArgumentOutOfRangeException";
+    } else {
+        g_exception_context = ctx.previous;
+        EXPECT_NE(ctx.current_exception, nullptr);
+    }
 }
 
 // ===== string_get_hash_code edge cases =====

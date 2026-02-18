@@ -62,9 +62,20 @@ TEST_F(ArrayTest, Create_ZeroLength) {
     EXPECT_EQ(arr->length, 0);
 }
 
-TEST_F(ArrayTest, Create_NegativeLength_ReturnsNull) {
-    Array* arr = array_create(&Int32ElementType, -1);
-    EXPECT_EQ(arr, nullptr);
+TEST_F(ArrayTest, Create_NegativeLength_Throws) {
+    ExceptionContext ctx;
+    ctx.previous = g_exception_context;
+    ctx.current_exception = nullptr;
+    ctx.state = 0;
+    g_exception_context = &ctx;
+    if (setjmp(ctx.jump_buffer) == 0) {
+        array_create(&Int32ElementType, -1);
+        g_exception_context = ctx.previous;
+        FAIL() << "Expected OverflowException";
+    } else {
+        g_exception_context = ctx.previous;
+        EXPECT_NE(ctx.current_exception, nullptr);
+    }
 }
 
 TEST_F(ArrayTest, Length_Helper) {
