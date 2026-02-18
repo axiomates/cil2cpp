@@ -11,6 +11,13 @@
 
 namespace cil2cpp {
 
+// Global storage for command-line arguments
+static int g_argc = 0;
+static char** g_argv = nullptr;
+
+int runtime_get_argc() { return g_argc; }
+char** runtime_get_argv() { return g_argv; }
+
 void runtime_init() {
     gc::init();
     threadpool::init();
@@ -22,6 +29,11 @@ void runtime_init() {
     SetConsoleOutputCP(65001);
     SetConsoleCP(65001);
 #endif
+}
+
+void runtime_set_args(int argc, char** argv) {
+    g_argc = argc;
+    g_argv = argv;
 }
 
 void runtime_shutdown() {

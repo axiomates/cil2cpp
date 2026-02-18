@@ -21,6 +21,9 @@ Int32 Environment_get_TickCount();
 Int64 Environment_get_TickCount64();
 Int32 Environment_get_ProcessorCount();
 Int32 Environment_get_CurrentManagedThreadId();
+void Environment_Exit(Int32 exitCode);
+Object* Environment_GetCommandLineArgs();
+String* Environment_GetEnvironmentVariable(String* variable);
 
 // System.Buffer
 void Buffer_Memmove(void* dest, void* src, UInt64 len);

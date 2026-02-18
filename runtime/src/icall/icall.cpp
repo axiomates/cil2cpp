@@ -4,6 +4,7 @@
  * C++ implementations for BCL [InternalCall] methods.
  */
 
+#include <cil2cpp/cil2cpp.h>
 #include <cil2cpp/icall.h>
 #include <cil2cpp/string.h>
 #include <cil2cpp/array.h>
@@ -14,6 +15,7 @@
 #include <cil2cpp/reflection.h>
 
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
 #include <thread>
 
@@ -50,6 +52,46 @@ Int32 Environment_get_ProcessorCount() {
 Int32 Environment_get_CurrentManagedThreadId() {
     // Return a hash of the native thread ID as a managed thread ID
     return static_cast<Int32>(std::hash<std::thread::id>{}(std::this_thread::get_id()) & 0x7FFFFFFF);
+}
+
+void Environment_Exit(Int32 exitCode) {
+    runtime_shutdown();
+    std::exit(exitCode);
+}
+
+Object* Environment_GetCommandLineArgs() {
+    int argc = runtime_get_argc();
+    char** argv = runtime_get_argv();
+
+    // Create a String[] array
+    static TypeInfo stringArrayType = {
+        .name = "String[]",
+        .namespace_name = "System",
+        .full_name = "System.String[]",
+        .base_type = nullptr,
+        .interfaces = nullptr,
+        .interface_count = 0,
+        .instance_size = sizeof(void*),
+        .element_size = sizeof(void*),
+        .flags = TypeFlags::None,
+    };
+
+    auto* arr = array_create(&stringArrayType, argc);
+    auto** data = reinterpret_cast<String**>(array_data(arr));
+    for (int i = 0; i < argc; i++) {
+        data[i] = argv ? string_create_utf8(argv[i]) : string_create_utf8("");
+    }
+    return reinterpret_cast<Object*>(arr);
+}
+
+String* Environment_GetEnvironmentVariable(String* variable) {
+    if (!variable) return nullptr;
+    auto* name = string_to_utf8(variable);
+    if (!name) return nullptr;
+    const char* value = std::getenv(name);
+    std::free(name);
+    if (!value) return nullptr;
+    return string_create_utf8(value);
 }
 
 // ===== System.Buffer =====

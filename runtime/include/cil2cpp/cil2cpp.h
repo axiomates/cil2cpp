@@ -73,6 +73,16 @@ inline void volatile_write(T* location, T value) {
 void runtime_init();
 
 /**
+ * Store command-line arguments for Environment.GetCommandLineArgs().
+ * Should be called immediately after runtime_init().
+ */
+void runtime_set_args(int argc, char** argv);
+
+/// Access stored command-line arguments.
+int runtime_get_argc();
+char** runtime_get_argv();
+
+/**
  * Shutdown the CIL2CPP runtime.
  * Performs final GC and cleanup.
  */
@@ -88,6 +98,7 @@ inline void System_Object_Finalize(void*) {} // Finalize is a no-op for System.O
 #define CIL2CPP_MAIN(EntryClass, EntryMethod) \
     int main(int argc, char* argv[]) { \
         cil2cpp::runtime_init(); \
+        cil2cpp::runtime_set_args(argc, argv); \
         EntryMethod(); \
         cil2cpp::runtime_shutdown(); \
         return 0; \
