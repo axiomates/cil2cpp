@@ -3,6 +3,7 @@
  */
 
 #include <cil2cpp/cil2cpp.h>
+#include <cil2cpp/gchandle.h>
 #include <cil2cpp/unicode.h>
 
 #ifdef _WIN32
@@ -21,6 +22,7 @@ char** runtime_get_argv() { return g_argv; }
 
 void runtime_init() {
     gc::init();
+    gchandle_init();
     threadpool::init();
     unicode::init();
 

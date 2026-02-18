@@ -63,12 +63,27 @@ Int64 Interlocked_Exchange_i64(Int64* location, Int64 value);
 Int64 Interlocked_CompareExchange_i64(Int64* location, Int64 value, Int64 comparand);
 void* Interlocked_Exchange_obj(void* location, void* value);
 void* Interlocked_CompareExchange_obj(void* location, void* value, void* comparand);
+void Interlocked_MemoryBarrier();
 
 // System.Threading.Thread
 void Thread_Sleep(Int32 milliseconds);
+void Thread_SpinWait(Int32 iterations);
+Boolean Thread_Yield();
+Int32 Thread_get_OptimalMaxSpinWaitsPerSpinIteration();
+Object* Thread_get_CurrentThread();
+UInt64 Thread_GetCurrentOSThreadId();
 
 // System.Runtime.CompilerServices.RuntimeHelpers
 void RuntimeHelpers_InitializeArray(Object* array, void* fieldHandle);
+Boolean RuntimeHelpers_TryEnsureSufficientExecutionStack();
+void RuntimeHelpers_EnsureSufficientExecutionStack();
+void* RuntimeHelpers_GetObjectMethodTablePointer(Object* obj);
+
+// System.Runtime.InteropServices.GCHandle
+intptr_t GCHandle_InternalAlloc(void* obj, Int32 type);
+void GCHandle_InternalFree(intptr_t handle);
+void GCHandle_InternalSet(intptr_t handle, void* obj);
+void* GCHandle_InternalGet(intptr_t handle);
 
 // System.Enum
 Object* Enum_InternalBoxEnum(void* enumType, Int64 value);

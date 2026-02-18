@@ -115,6 +115,7 @@ public partial class IRBuilder
         "System.Reflection.RuntimePropertyInfo",
         "System.Reflection.RuntimeConstructorInfo",
         "System.Reflection.MetadataImport",
+        "System.Reflection.RuntimeCustomAttributeData",
         // CLR-internal binder/dispatch
         "System.DefaultBinder",
         "System.DBNull",
@@ -126,6 +127,12 @@ public partial class IRBuilder
         "System.Reflection.RuntimeAssembly", // CLR internal assembly type
         "System.Threading.WaitHandle",      // Uses CLR-internal SafeWaitHandle patterns
         "System.Runtime.InteropServices.PosixSignalRegistration", // Uses CLR-internal interop
+        // CLR-internal threading types
+        "System.Threading.ThreadInt64PersistentCounter",
+        "System.Threading.IAsyncLocal",
+        // Globalization internal types
+        "System.Globalization.CalendarId",
+        "System.Globalization.EraInfo",
     };
 
     /// <summary>

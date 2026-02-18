@@ -111,13 +111,29 @@ public partial class IRBuilder
     [
         "System.Runtime.Intrinsics",
         "System.Runtime.InteropServices",
+        "System.Runtime.Loader",
         "System.Reflection",
         "System.Diagnostics",
         "System.Diagnostics.Tracing",
         "System.Resources",
         "System.Security",
         "System.Net",
+        "System.Buffers.IndexOfAnyAsciiSearcher",  // SIMD-dependent search internals
         "Internal",
+    ];
+
+    /// <summary>
+    /// Types that should be filtered from generic specialization arguments only.
+    /// More aggressive than ClrInternalTypeNames — these types may still compile as types,
+    /// but creating generic specializations like List&lt;TimeZoneInfo&gt; produces stubs.
+    /// </summary>
+    private static readonly HashSet<string> FilteredGenericArgTypes =
+    [
+        "System.TimeZoneInfo",
+        "System.Runtime.ExceptionServices.ExceptionDispatchInfo",
+        "Internal.Win32.RegistryKey",
+        "System.Attribute",
+        "System.AttributeUsageAttribute",
     ];
 
     private void CollectGenericType(TypeReference typeRef)
@@ -152,8 +168,18 @@ public partial class IRBuilder
                 FilteredGenericNamespaces.Any(f => argNs.StartsWith(f)))
                 return;
 
-            if (ClrInternalTypeNames.Contains(argFullName))
+            if (ClrInternalTypeNames.Contains(argFullName) ||
+                FilteredGenericArgTypes.Contains(argFullName))
                 return;
+
+            // Also check nested types: "Outer/Inner" should match if "Outer" is CLR-internal
+            if (argFullName.Contains('/'))
+            {
+                var outerTypeName = argFullName[..argFullName.IndexOf('/')];
+                if (ClrInternalTypeNames.Contains(outerTypeName) ||
+                    FilteredGenericArgTypes.Contains(outerTypeName))
+                    return;
+            }
         }
 
         var openTypeName = git.ElementType.FullName;

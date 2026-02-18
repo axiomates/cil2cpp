@@ -118,6 +118,8 @@ public static class ICallRegistry
         RegisterICallTyped("System.Threading.Interlocked", "CompareExchange", 3, "System.Object&", "cil2cpp::icall::Interlocked_CompareExchange_obj");
         RegisterICallTyped("System.Threading.Interlocked", "Add", 2, "System.Int32&", "cil2cpp::icall::Interlocked_Add_i32");
         RegisterICallTyped("System.Threading.Interlocked", "Add", 2, "System.Int64&", "cil2cpp::icall::Interlocked_Add_i64");
+        RegisterICall("System.Threading.Interlocked", "MemoryBarrier", 0, "cil2cpp::icall::Interlocked_MemoryBarrier");
+        RegisterICall("System.Threading.Interlocked", "MemoryBarrierProcessWide", 0, "cil2cpp::icall::Interlocked_MemoryBarrier");
 
         // ===== System.Threading.Volatile =====
         // JIT intrinsics for volatile memory access. Implemented as template functions
@@ -127,6 +129,14 @@ public static class ICallRegistry
 
         // ===== System.Threading.Thread =====
         RegisterICall("System.Threading.Thread", "Sleep", 1, "cil2cpp::icall::Thread_Sleep");
+        RegisterICall("System.Threading.Thread", "SpinWait", 1, "cil2cpp::icall::Thread_SpinWait");
+        RegisterICall("System.Threading.Thread", "YieldInternal", 0, "cil2cpp::icall::Thread_Yield");
+        RegisterICall("System.Threading.Thread", "get_OptimalMaxSpinWaitsPerSpinIteration", 0,
+            "cil2cpp::icall::Thread_get_OptimalMaxSpinWaitsPerSpinIteration");
+        RegisterICall("System.Threading.Thread", "get_CurrentThread", 0,
+            "cil2cpp::icall::Thread_get_CurrentThread");
+        RegisterICall("System.Threading.Thread", "GetCurrentOSThreadId", 0,
+            "cil2cpp::icall::Thread_GetCurrentOSThreadId");
 
         // ===== System.Environment =====
         RegisterICall("System.Environment", "get_NewLine", 0, "cil2cpp::icall::Environment_get_NewLine");
@@ -141,8 +151,15 @@ public static class ICallRegistry
         // ===== System.GC =====
         RegisterICall("System.GC", "Collect", 0, "cil2cpp::gc_collect");
         RegisterICall("System.GC", "SuppressFinalize", 1, "cil2cpp::gc_suppress_finalize");
+        RegisterICall("System.GC", "_SuppressFinalize", 1, "cil2cpp::gc_suppress_finalize");
         RegisterICall("System.GC", "KeepAlive", 1, "cil2cpp::gc_keep_alive");
         RegisterICall("System.GC", "_Collect", 2, "cil2cpp::gc_collect");
+        RegisterICall("System.GC", "_WaitForPendingFinalizers", 0, "cil2cpp::gc_noop"); // no-op with BoehmGC
+        RegisterICall("System.GC", "_ReRegisterForFinalize", 1, "cil2cpp::gc_noop"); // no-op
+        RegisterICall("System.GC", "GetTotalMemory", 1, "cil2cpp::gc_get_total_memory");
+        RegisterICall("System.GC", "GetGCMemoryInfo", 0, "cil2cpp::gc_noop"); // TODO: proper implementation
+        RegisterICall("System.GC", "AllocateUninitializedArray", 2, "cil2cpp::gc_allocate_uninitialized_array");
+        RegisterICall("System.GC", "GetAllocatedBytesForCurrentThread", 0, "cil2cpp::gc_get_total_memory_simple");
 
         // ===== System.Buffer =====
         RegisterICall("System.Buffer", "Memmove", 3, "cil2cpp::icall::Buffer_Memmove");
@@ -150,6 +167,12 @@ public static class ICallRegistry
         RegisterICall("System.Buffer", "__ZeroMemory", 2, "cil2cpp::icall::Buffer_ZeroMemory");
         RegisterICall("System.Buffer", "__BulkMoveWithWriteBarrier", 3, "cil2cpp::icall::Buffer_BulkMoveWithWriteBarrier");
         RegisterICall("System.Buffer", "BlockCopy", 5, "cil2cpp::icall::Buffer_BlockCopy");
+
+        // ===== System.Runtime.InteropServices.GCHandle =====
+        RegisterICall("System.Runtime.InteropServices.GCHandle", "InternalAlloc", 2, "cil2cpp::icall::GCHandle_InternalAlloc");
+        RegisterICall("System.Runtime.InteropServices.GCHandle", "InternalFree", 1, "cil2cpp::icall::GCHandle_InternalFree");
+        RegisterICall("System.Runtime.InteropServices.GCHandle", "InternalSet", 2, "cil2cpp::icall::GCHandle_InternalSet");
+        RegisterICall("System.Runtime.InteropServices.GCHandle", "InternalGet", 1, "cil2cpp::icall::GCHandle_InternalGet");
 
         // ===== System.Runtime.InteropServices.Marshal =====
         RegisterICall("System.Runtime.InteropServices.Marshal", "AllocHGlobal", 1, "cil2cpp::icall::Marshal_AllocHGlobal");
@@ -170,6 +193,12 @@ public static class ICallRegistry
             "cil2cpp::icall::RuntimeHelpers_InitializeArray");
         // RuntimeHelpers.IsReferenceOrContainsReferences<T>() is resolved at compile time
         // in IRBuilder.Emit.cs (compile-time generic type evaluation).
+        RegisterICall("System.Runtime.CompilerServices.RuntimeHelpers", "TryEnsureSufficientExecutionStack", 0,
+            "cil2cpp::icall::RuntimeHelpers_TryEnsureSufficientExecutionStack");
+        RegisterICall("System.Runtime.CompilerServices.RuntimeHelpers", "EnsureSufficientExecutionStack", 0,
+            "cil2cpp::icall::RuntimeHelpers_EnsureSufficientExecutionStack");
+        RegisterICall("System.Runtime.CompilerServices.RuntimeHelpers", "GetObjectMethodTablePointer", 1,
+            "cil2cpp::icall::RuntimeHelpers_GetObjectMethodTablePointer");
 
         // ===== System.Text.Unicode.Utf8Utility =====
         // These BCL methods use SIMD intrinsics (SSE2/AVX2) which our codegen can't compile.

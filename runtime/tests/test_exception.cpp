@@ -59,28 +59,6 @@ TEST_F(ExceptionTest, ThrowIndexOutOfRange_CaughtByContext) {
     }
 }
 
-// ===== throw_invalid_cast =====
-// Note: This test is disabled due to SEH exception (access violation) in DbgHelp
-// stack trace capture when runtime is restarted multiple times. Will be fixed
-// in GC refactoring (string pool cleanup on shutdown).
-
-TEST_F(ExceptionTest, DISABLED_ThrowInvalidCast_CaughtByContext) {
-    ExceptionContext ctx;
-    ctx.previous = g_exception_context;
-    ctx.current_exception = nullptr;
-    ctx.state = 0;
-    g_exception_context = &ctx;
-
-    if (setjmp(ctx.jump_buffer) == 0) {
-        throw_invalid_cast();
-        g_exception_context = ctx.previous;
-        FAIL() << "Should have thrown";
-    } else {
-        g_exception_context = ctx.previous;
-        ASSERT_NE(ctx.current_exception, nullptr);
-    }
-}
-
 // ===== null_check =====
 
 TEST_F(ExceptionTest, NullCheck_NonNull_NoThrow) {

@@ -79,6 +79,7 @@ endif()
 set(RUNTIME_SOURCES
     src/runtime.cpp
     src/gc/gc.cpp
+    src/gc/gchandle.cpp
     src/type_system/type_info.cpp
     src/exception/exception.cpp
     src/bcl/System.Object.cpp

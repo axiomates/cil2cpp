@@ -129,4 +129,27 @@ inline void gc_keep_alive(void* obj) {
     _gc_keep_alive_sink = obj;
 }
 
+/// No-op GC operation (used for finalizer-related stubs with BoehmGC)
+inline void gc_noop() {}
+inline void gc_noop(void*) {}
+
+/// GC.GetTotalMemory — returns approximate heap size
+inline Int64 gc_get_total_memory(bool forceFullCollection) {
+    if (forceFullCollection) gc::collect();
+    return static_cast<Int64>(gc::get_stats().current_heap_size);
+}
+
+/// GC.GetTotalMemory (no param version)
+inline Int64 gc_get_total_memory_simple() {
+    return static_cast<Int64>(gc::get_stats().current_heap_size);
+}
+
+/// GC.AllocateUninitializedArray<T>(int length, bool pinned)
+/// FIXME: without generic type info at runtime, can't create properly typed array
+inline void* gc_allocate_uninitialized_array(Int32 length, Int32 pinned) {
+    (void)length;
+    (void)pinned;
+    return nullptr;
+}
+
 } // namespace cil2cpp

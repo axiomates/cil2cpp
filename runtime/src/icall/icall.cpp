@@ -14,10 +14,23 @@
 #include <cil2cpp/threading.h>
 #include <cil2cpp/reflection.h>
 
+#include <atomic>
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <thread>
+
+#if defined(_MSC_VER)
+#include <intrin.h>
+#endif
+
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#elif defined(__linux__)
+#include <sys/syscall.h>
+#include <unistd.h>
+#endif
 
 namespace cil2cpp {
 namespace icall {
@@ -195,13 +208,68 @@ void* Interlocked_CompareExchange_obj(void* location, void* value, void* compara
     return interlocked::compare_exchange_obj(static_cast<Object**>(location), static_cast<Object*>(value), static_cast<Object*>(comparand));
 }
 
+void Interlocked_MemoryBarrier() {
+    std::atomic_thread_fence(std::memory_order_seq_cst);
+}
+
 // ===== System.Threading.Thread =====
 
 void Thread_Sleep(Int32 milliseconds) {
     thread::sleep(milliseconds);
 }
 
+void Thread_SpinWait(Int32 iterations) {
+    for (Int32 i = 0; i < iterations; ++i) {
+#if defined(_MSC_VER)
+        _mm_pause();
+#elif defined(__x86_64__) || defined(__i386__)
+        __builtin_ia32_pause();
+#else
+        // ARM: yield hint
+        std::this_thread::yield();
+#endif
+    }
+}
+
+Boolean Thread_Yield() {
+    std::this_thread::yield();
+    return 1; // Always succeeds
+}
+
+Int32 Thread_get_OptimalMaxSpinWaitsPerSpinIteration() {
+    return 70; // Same default as .NET runtime
+}
+
+Object* Thread_get_CurrentThread() {
+    // FIXME: Return a proper Thread object. For now, return nullptr.
+    // BCL code often null-checks this, so returning nullptr is safe enough for basic scenarios.
+    return nullptr;
+}
+
+UInt64 Thread_GetCurrentOSThreadId() {
+#ifdef _WIN32
+    return static_cast<UInt64>(::GetCurrentThreadId());
+#elif defined(__linux__)
+    return static_cast<UInt64>(::syscall(SYS_gettid));
+#else
+    return 0;
+#endif
+}
+
 // ===== System.Runtime.CompilerServices.RuntimeHelpers =====
+
+Boolean RuntimeHelpers_TryEnsureSufficientExecutionStack() {
+    return 1; // Always succeeds in AOT — we don't have stack probing
+}
+
+void RuntimeHelpers_EnsureSufficientExecutionStack() {
+    // No-op in AOT
+}
+
+void* RuntimeHelpers_GetObjectMethodTablePointer(Object* obj) {
+    if (!obj) return nullptr;
+    return const_cast<TypeInfo*>(obj->__type_info);
+}
 
 void RuntimeHelpers_InitializeArray(Object* array, void* fieldHandle) {
     // This is typically handled by the compiler via InitializeArray intrinsic,

@@ -326,6 +326,46 @@ public class ReachabilityAnalyzer
         if (typeFullName.StartsWith("System.Reflection.Emit."))
             return true;
 
+        // AssemblyLoadContext — CLR-only dynamic assembly loading, no AOT equivalent
+        if (typeFullName.StartsWith("System.Runtime.Loader."))
+            return true;
+
+        // PortableThreadPool — CLR managed thread pool internals; CIL2CPP has its own thread pool
+        if (typeFullName.StartsWith("System.Threading.PortableThreadPool"))
+            return true;
+
+        // StackFrame/StackFrameHelper — CLR-internal stack walking; CIL2CPP runtime
+        // provides its own stack trace via DbgHelp (Windows) / backtrace (Linux)
+        if (typeFullName.StartsWith("System.Diagnostics.StackFrame"))
+            return true;
+
+        // Platform-specific SIMD intrinsics — require hardware feature detection
+        // that doesn't exist in AOT. Vector128/256/512 types kept (used as fields by System.Buffers)
+        if (typeFullName.StartsWith("System.Runtime.Intrinsics.X86.") ||
+            typeFullName.StartsWith("System.Runtime.Intrinsics.Arm.") ||
+            typeFullName.StartsWith("System.Runtime.Intrinsics.Wasm."))
+            return true;
+
+        // Interop P/Invoke wrappers for OS-specific subsystems
+        // Note: Interop/Kernel32 NOT excluded (LowLevelMonitor embeds CRITICAL_SECTION)
+        // Note: Top-level Interop types NOT excluded (INPUT_RECORD embedded in ConsolePal)
+        if (typeFullName.StartsWith("Interop/Advapi32") ||
+            typeFullName.StartsWith("Interop/NtDll") ||
+            typeFullName.StartsWith("Interop/Ucrtbase") ||
+            typeFullName.StartsWith("Interop/BCrypt") ||
+            typeFullName.StartsWith("Interop/Ole32") ||
+            typeFullName.StartsWith("Interop/Globalization") ||
+            typeFullName.StartsWith("Interop/User32"))
+            return true;
+
+        // Internal.Win32 — Windows registry/interop, not useful in AOT
+        if (typeFullName.StartsWith("Internal.Win32."))
+            return true;
+
+        // COM interop — requires COM runtime infrastructure
+        if (typeFullName.StartsWith("System.ComAwareWeakReference"))
+            return true;
+
         return false;
     }
 
