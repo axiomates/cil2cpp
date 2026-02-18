@@ -290,10 +290,14 @@ public partial class CppCodeGenerator
                 foreach (var method in type.Methods)
                 {
                     if (method.IsAbstract || method.BasicBlocks.Count == 0) continue;
-                    if (HasUnknownParameterTypes(method, knownTypeNames)) continue;
-                    if (HasUnknownBodyReferences(method, knownTypeNames)) continue;
-                    if (CallsUndeclaredOrMismatchedFunctions(method)) continue;
-                    if (HasKnownBrokenPatterns(method, knownTypeNames)) continue;
+                    if (HasUnknownParameterTypes(method, knownTypeNames))
+                        { TrackStub(method, "unknown parameter types"); continue; }
+                    if (HasUnknownBodyReferences(method, knownTypeNames))
+                        { TrackStub(method, "unknown body references"); continue; }
+                    if (CallsUndeclaredOrMismatchedFunctions(method))
+                        { TrackStub(method, "undeclared/mismatched function calls"); continue; }
+                    if (HasKnownBrokenPatterns(method, knownTypeNames))
+                        { TrackStub(method, "known broken patterns"); continue; }
                     if (!emittedMethodSignatures.Add(method.GetCppSignature())) continue;
                     // Trial render for DIM methods too
                     var dimTrialSb = new StringBuilder();
@@ -301,6 +305,7 @@ public partial class CppCodeGenerator
                     var dimRendered = dimTrialSb.ToString();
                     if (RenderedBodyHasErrors(dimRendered, method, knownTypeNames))
                     {
+                        TrackStub(method, "rendered body has errors");
                         GenerateStubForMethod(sb, method);
                         continue;
                     }
@@ -319,10 +324,14 @@ public partial class CppCodeGenerator
                 // Non-core RuntimeProvided types (Task, Thread, CancellationToken) emit all methods.
                 if (type.IsRuntimeProvided && !method.IsStatic
                     && IRBuilder.CoreRuntimeTypes.Contains(type.ILFullName)) continue;
-                if (HasUnknownParameterTypes(method, knownTypeNames)) continue;
-                if (HasUnknownBodyReferences(method, knownTypeNames)) continue;
-                if (CallsUndeclaredOrMismatchedFunctions(method)) continue;
-                if (HasKnownBrokenPatterns(method, knownTypeNames)) continue;
+                if (HasUnknownParameterTypes(method, knownTypeNames))
+                    { TrackStub(method, "unknown parameter types"); continue; }
+                if (HasUnknownBodyReferences(method, knownTypeNames))
+                    { TrackStub(method, "unknown body references"); continue; }
+                if (CallsUndeclaredOrMismatchedFunctions(method))
+                    { TrackStub(method, "undeclared/mismatched function calls"); continue; }
+                if (HasKnownBrokenPatterns(method, knownTypeNames))
+                    { TrackStub(method, "known broken patterns"); continue; }
                 if (!emittedMethodSignatures.Add(method.GetCppSignature())) continue;
 
                 // Check known stub implementations before trial render
@@ -342,6 +351,7 @@ public partial class CppCodeGenerator
                 var rendered = trialSb.ToString();
                 if (RenderedBodyHasErrors(rendered, method, knownTypeNames))
                 {
+                    TrackStub(method, "rendered body has errors");
                     GenerateStubForMethod(sb, method);
                     continue;
                 }
@@ -480,6 +490,7 @@ public partial class CppCodeGenerator
             }
             else
             {
+                TrackStub(method, "missing method body (runtime-provided/unreachable)");
                 sb.AppendLine($"{sig} {{");
                 if (method.ReturnTypeCpp == "void" || string.IsNullOrEmpty(method.ReturnTypeCpp))
                     sb.AppendLine("    // TODO: compile from IL");

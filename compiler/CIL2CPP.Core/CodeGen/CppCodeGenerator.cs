@@ -115,6 +115,12 @@ public partial class CppCodeGenerator
     /// </summary>
     private HashSet<string> _emittedStructDefs = new();
 
+    /// <summary>
+    /// Tracks all methods that were stubbed during code generation, with reasons.
+    /// Used to generate a diagnostic report (stubbed_methods.txt).
+    /// </summary>
+    private readonly List<StubbedMethodInfo> _stubbedMethods = new();
+
     public CppCodeGenerator(IRModule module, BuildConfiguration? config = null)
     {
         _module = module;
@@ -142,6 +148,13 @@ public partial class CppCodeGenerator
 
         // Generate CMakeLists.txt
         output.CMakeFile = GenerateCMakeLists();
+
+        // Generate stub diagnostics report
+        if (_stubbedMethods.Count > 0)
+        {
+            output.StubReportFile = GenerateStubReport();
+            PrintStubSummary();
+        }
 
         return output;
     }
@@ -317,6 +330,59 @@ public partial class CppCodeGenerator
         }
         return sb.ToString();
     }
+
+    private GeneratedFile GenerateStubReport()
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine($"// CIL2CPP Stub Report — {_stubbedMethods.Count} methods stubbed");
+        sb.AppendLine($"// Assembly: {_module.Name}");
+        sb.AppendLine();
+
+        // Group by reason
+        var groups = _stubbedMethods
+            .GroupBy(m => m.Reason)
+            .OrderByDescending(g => g.Count());
+
+        foreach (var group in groups)
+        {
+            sb.AppendLine($"// === {group.Key} ({group.Count()}) ===");
+            foreach (var m in group.OrderBy(m => m.TypeName).ThenBy(m => m.MethodName))
+            {
+                sb.AppendLine($"  {m.TypeName}::{m.MethodName}");
+            }
+            sb.AppendLine();
+        }
+
+        return new GeneratedFile
+        {
+            FileName = "stubbed_methods.txt",
+            Content = sb.ToString()
+        };
+    }
+
+    private void PrintStubSummary()
+    {
+        var groups = _stubbedMethods
+            .GroupBy(m => m.Reason)
+            .OrderByDescending(g => g.Count());
+
+        Console.Error.WriteLine($"[CIL2CPP] {_stubbedMethods.Count} methods stubbed:");
+        foreach (var group in groups)
+        {
+            Console.Error.WriteLine($"  {group.Key}: {group.Count()}");
+        }
+        Console.Error.WriteLine("  Details: stubbed_methods.txt");
+    }
+
+    private void TrackStub(IRMethod method, string reason)
+    {
+        _stubbedMethods.Add(new StubbedMethodInfo(
+            method.DeclaringType?.ILFullName ?? "?",
+            method.Name,
+            method.CppName,
+            reason
+        ));
+    }
 }
 
 public class GeneratedOutput
@@ -325,6 +391,7 @@ public class GeneratedOutput
     public GeneratedFile SourceFile { get; set; } = new();
     public GeneratedFile? MainFile { get; set; }
     public GeneratedFile? CMakeFile { get; set; }
+    public GeneratedFile? StubReportFile { get; set; }
 
     /// <summary>
     /// Write all generated files to a directory.
@@ -342,8 +409,14 @@ public class GeneratedOutput
         {
             File.WriteAllText(Path.Combine(outputDir, CMakeFile.FileName), CMakeFile.Content);
         }
+        if (StubReportFile != null)
+        {
+            File.WriteAllText(Path.Combine(outputDir, StubReportFile.FileName), StubReportFile.Content);
+        }
     }
 }
+
+public record StubbedMethodInfo(string TypeName, string MethodName, string CppName, string Reason);
 
 public class GeneratedFile
 {

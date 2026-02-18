@@ -100,6 +100,13 @@ public partial class IRBuilder
     /// Namespaces whose generic specializations should be skipped (BCL internal).
     /// These types can't be usefully compiled to C++.
     /// </summary>
+    /// <summary>
+    /// Namespaces whose generic specializations should be skipped.
+    /// Only filter namespaces with types that truly can't compile to C++
+    /// (JIT intrinsics, COM interop, runtime internals).
+    /// Removed: System.Globalization (needed for number/string formatting),
+    ///          System.IO (needed for Console BCL chain).
+    /// </summary>
     private static readonly HashSet<string> FilteredGenericNamespaces =
     [
         "System.Runtime.Intrinsics",
@@ -107,10 +114,8 @@ public partial class IRBuilder
         "System.Reflection",
         "System.Diagnostics",
         "System.Diagnostics.Tracing",
-        "System.Globalization",
         "System.Resources",
         "System.Security",
-        "System.IO",
         "System.Net",
         "Internal",
     ];
