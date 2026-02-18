@@ -142,9 +142,9 @@ public partial class CppCodeGenerator
         {
             sb.AppendLine("// ===== Runtime TypeInfo Aliases =====");
             if (needsObjectAlias)
-                sb.AppendLine("static cil2cpp::TypeInfo& System_Object_TypeInfo = cil2cpp::System_Object_TypeInfo;");
+                sb.AppendLine("cil2cpp::TypeInfo& System_Object_TypeInfo = cil2cpp::System_Object_TypeInfo;");
             if (needsStringAlias)
-                sb.AppendLine("static cil2cpp::TypeInfo& System_String_TypeInfo = cil2cpp::System_String_TypeInfo;");
+                sb.AppendLine("cil2cpp::TypeInfo& System_String_TypeInfo = cil2cpp::System_String_TypeInfo;");
             sb.AppendLine();
         }
 
@@ -153,7 +153,7 @@ public partial class CppCodeGenerator
         sb.AppendLine("// ===== Runtime Base Type TypeInfo Stubs =====");
         foreach (var (mangledName, ilName) in GetRuntimeBaseTypeInfoStubs())
         {
-            sb.AppendLine($"static cil2cpp::TypeInfo {mangledName}_TypeInfo = {{ " +
+            sb.AppendLine($"cil2cpp::TypeInfo {mangledName}_TypeInfo = {{ " +
                 $".name = \"{ilName.Split('.').Last()}\", " +
                 $".namespace_name = \"{string.Join(".", ilName.Split('.').SkipLast(1))}\", " +
                 $".full_name = \"{ilName}\", " +
@@ -179,13 +179,16 @@ public partial class CppCodeGenerator
         // Type info definitions (skip runtime-provided types — already defined in runtime)
         sb.AppendLine("// ===== Type Info =====");
         var emittedTypeInfo = new HashSet<string>();
-        // Collect types that already have TypeInfo definitions (primitives, exceptions, base type stubs)
+        // Collect types that already have TypeInfo definitions (primitives, exceptions, base type stubs, aliases)
         foreach (var entry in _module.PrimitiveTypeInfos.Values)
             emittedTypeInfo.Add(entry.CppMangledName);
         foreach (var (mangledName, _) in GetExceptionTypeInfoAliases())
             emittedTypeInfo.Add(mangledName);
         foreach (var (mangledName, _) in GetRuntimeBaseTypeInfoStubs())
             emittedTypeInfo.Add(mangledName);
+        // Runtime TypeInfo aliases (Object, String) — already emitted as references above
+        if (needsObjectAlias) emittedTypeInfo.Add("System_Object");
+        if (needsStringAlias) emittedTypeInfo.Add("System_String");
         foreach (var type in userTypes)
         {
             if (emittedTypeInfo.Contains(type.CppName)) continue;

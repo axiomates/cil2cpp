@@ -122,7 +122,12 @@ public partial class CppCodeGenerator
             // Skip types whose TypeInfo is already declared in runtime headers
             if (runtimeDeclaredTypeInfos.Contains(type.CppName)) continue;
             if (!IsValidCppIdentifier(type.CppName)) continue;
-            sb.AppendLine($"extern cil2cpp::TypeInfo {type.CppName}_TypeInfo;");
+            // Types with a runtime TypeInfo alias (Object, String) are defined as
+            // TypeInfo& references in the source — header must match
+            if (GetRuntimeTypeInfoAlias(type.ILFullName) != null)
+                sb.AppendLine($"extern cil2cpp::TypeInfo& {type.CppName}_TypeInfo;");
+            else
+                sb.AppendLine($"extern cil2cpp::TypeInfo {type.CppName}_TypeInfo;");
         }
         // Primitive type TypeInfo declarations (for array element types)
         foreach (var entry in _module.PrimitiveTypeInfos.Values)

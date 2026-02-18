@@ -463,8 +463,11 @@ public partial class IRBuilder
 
                     irType.Methods.Add(irMethod);
 
-                    // Convert method body with generic substitution context
-                    if (methodDef.HasBody && !methodDef.IsAbstract)
+                    // Convert method body with generic substitution context.
+                    // Only convert reachable methods — same check as Pass 3 (line 427).
+                    // Unreachable methods keep BasicBlocks empty → not declared in header.
+                    if (methodDef.HasBody && !methodDef.IsAbstract
+                        && _reachability.IsReachable(methodDef))
                     {
                         // Skip methods with CLR-internal dependencies — generate stub instead
                         if (HasClrInternalDependencies(methodDef))
