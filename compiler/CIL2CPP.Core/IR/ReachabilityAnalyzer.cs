@@ -30,8 +30,9 @@ public class ReachabilityAnalyzer
     private readonly HashSet<string> _processedMethods = new();
 
     // Track dispatched virtual method slots for deferred override resolution.
-    // Key: "MethodName/ParamCount"
-    private readonly HashSet<string> _dispatchedVirtualSlots = new();
+    // Each slot records the declaring type so we only match overrides in subtypes/implementors.
+    private readonly List<(string MethodName, int ParamCount, TypeDefinition DeclaringType)> _dispatchedVirtualSlots = new();
+    private readonly HashSet<string> _dispatchedSlotKeys = new(); // dedup by "DeclaringType::Name/Count"
 
     public ReachabilityAnalyzer(AssemblySet assemblySet)
     {
@@ -171,33 +172,82 @@ public class ReachabilityAnalyzer
 
     /// <summary>
     /// Track a virtual method as dispatched and mark overrides in all reachable types.
+    /// Only considers types that inherit from or implement the declaring type.
     /// </summary>
     private void DispatchVirtualSlot(MethodDefinition method)
     {
-        var slot = $"{method.Name}/{method.Parameters.Count}";
-        if (!_dispatchedVirtualSlots.Add(slot))
+        var key = $"{method.DeclaringType.FullName}::{method.Name}/{method.Parameters.Count}";
+        if (!_dispatchedSlotKeys.Add(key))
             return;
+
+        _dispatchedVirtualSlots.Add((method.Name, method.Parameters.Count, method.DeclaringType));
 
         // Check all already-reachable types for overrides of this slot
         foreach (var type in _result.ReachableTypes.ToArray())
         {
-            MarkOverrideIfExists(type, method.Name, method.Parameters.Count);
+            if (InheritsFromOrImplements(type, method.DeclaringType))
+                MarkOverrideIfExists(type, method.Name, method.Parameters.Count);
         }
     }
 
     /// <summary>
     /// When a type becomes reachable, check if it overrides any dispatched virtual slot.
+    /// Only matches slots whose declaring type is an ancestor/interface of this type.
     /// </summary>
     private void MarkDispatchedOverrides(TypeDefinition type)
     {
-        foreach (var slot in _dispatchedVirtualSlots)
+        // Snapshot: MarkOverrideIfExists → SeedMethod → DispatchVirtualSlot can add entries
+        var snapshot = _dispatchedVirtualSlots.ToArray();
+        foreach (var (methodName, paramCount, declaringType) in snapshot)
         {
-            var parts = slot.Split('/');
-            if (parts.Length == 2 && int.TryParse(parts[1], out var paramCount))
-            {
-                MarkOverrideIfExists(type, parts[0], paramCount);
-            }
+            if (InheritsFromOrImplements(type, declaringType))
+                MarkOverrideIfExists(type, methodName, paramCount);
         }
+    }
+
+    /// <summary>
+    /// Check if <paramref name="type"/> inherits from or implements <paramref name="target"/>.
+    /// Used to narrow virtual dispatch to only relevant subtypes.
+    /// </summary>
+    private bool InheritsFromOrImplements(TypeDefinition type, TypeDefinition target)
+    {
+        // Walk base type chain
+        var current = type;
+        while (current != null)
+        {
+            if (current.FullName == target.FullName)
+                return true;
+            if (current.BaseType == null) break;
+            current = TryResolve(current.BaseType);
+        }
+
+        // Check interfaces (recursive — interfaces can extend interfaces)
+        return ImplementsInterface(type, target.FullName);
+    }
+
+    private bool ImplementsInterface(TypeDefinition type, string targetFullName)
+    {
+        foreach (var iface in type.Interfaces)
+        {
+            var ifaceRef = iface.InterfaceType;
+            // Handle generic instances: compare element type name
+            var ifaceName = ifaceRef is GenericInstanceType git
+                ? git.ElementType.FullName
+                : ifaceRef.FullName;
+            if (ifaceName == targetFullName) return true;
+
+            var ifaceDef = TryResolve(ifaceRef);
+            if (ifaceDef != null && ImplementsInterface(ifaceDef, targetFullName))
+                return true;
+        }
+        // Also check base type's interfaces
+        if (type.BaseType != null)
+        {
+            var baseDef = TryResolve(type.BaseType);
+            if (baseDef != null && ImplementsInterface(baseDef, targetFullName))
+                return true;
+        }
+        return false;
     }
 
     private void MarkOverrideIfExists(TypeDefinition type, string methodName, int paramCount)
