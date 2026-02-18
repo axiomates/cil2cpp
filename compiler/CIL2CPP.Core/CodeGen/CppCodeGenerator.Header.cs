@@ -313,11 +313,30 @@ public partial class CppCodeGenerator
         if (userTypes.Any(t => t.HasCctor))
             sb.AppendLine();
 
-        // String literal initializer declaration
+        // String literal initializer and extern declarations
         if (_module.StringLiterals.Count > 0)
         {
             sb.AppendLine("// String literal initializer");
             sb.AppendLine("void __init_string_literals();");
+            sb.AppendLine();
+
+            // Extern declarations for string literal variables (defined in data file)
+            sb.AppendLine("// String literal extern declarations");
+            foreach (var (_, literal) in _module.StringLiterals)
+            {
+                sb.AppendLine($"extern cil2cpp::String* {literal.Id};");
+            }
+            sb.AppendLine();
+        }
+
+        // Extern declarations for array initializer data (defined in data file)
+        if (_module.ArrayInitDataBlobs.Count > 0)
+        {
+            sb.AppendLine("// Array initializer data extern declarations");
+            foreach (var blob in _module.ArrayInitDataBlobs)
+            {
+                sb.AppendLine($"extern const unsigned char {blob.Id}[];");
+            }
             sb.AppendLine();
         }
 

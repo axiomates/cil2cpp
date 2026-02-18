@@ -128,6 +128,29 @@ public partial class CppCodeGenerator
     }
 
     /// <summary>
+    /// Set of emitted method signatures across all source files.
+    /// Populated by data file (P/Invoke) and method files, consumed by stub file.
+    /// </summary>
+    private readonly HashSet<string> _emittedMethodSignatures = new();
+
+    /// <summary>
+    /// Filtered user types (deduped, no open generics). Shared across all generation phases.
+    /// </summary>
+    private List<IRType> _userTypes = new();
+
+    /// <summary>
+    /// Known type names for stub/error checking. Populated during data file generation.
+    /// </summary>
+    private HashSet<string> _knownTypeNames = new();
+
+    /// <summary>
+    /// Minimum IR instructions per method partition. Each TU re-parses the full header,
+    /// so partitions need enough method code to amortize that overhead.
+    /// ~20000 instructions ≈ 13k-17k C++ lines per partition (ratio ~0.7 lines/instruction).
+    /// </summary>
+    private const int MinInstructionsPerPartition = 20000;
+
+    /// <summary>
     /// Generate all C++ files for the module.
     /// </summary>
     public GeneratedOutput Generate()
@@ -137,8 +160,27 @@ public partial class CppCodeGenerator
         // Generate header file with all type declarations
         output.HeaderFile = GenerateHeader();
 
-        // Generate source file with all implementations
-        output.SourceFile = GenerateSource();
+        // Build shared userTypes list (used by all source generators)
+        var seenTypeNames = new HashSet<string>();
+        _userTypes = _module.Types
+            .Where(t => !CppNameMapper.IsCompilerGeneratedType(t.ILFullName))
+            .Where(t => !HasUnresolvedGenericParams(t))
+            .Where(t => seenTypeNames.Add(t.CppName))
+            .ToList();
+
+        // Build known type set
+        _knownTypeNames = new HashSet<string>();
+        foreach (var t in _userTypes)
+            _knownTypeNames.Add(t.CppName);
+        foreach (var ilName in IRBuilder.RuntimeProvidedTypes)
+            _knownTypeNames.Add(CppNameMapper.MangleTypeName(ilName));
+        foreach (var (mangled, _) in GetRuntimeProvidedTypeAliases())
+            _knownTypeNames.Add(mangled);
+
+        // Generate split source files
+        output.DataFile = GenerateDataFile();
+        output.MethodFiles = GenerateMethodFiles();
+        output.StubFile = GenerateStubFile();
 
         // Generate main entry point only for executable projects (with entry point)
         if (_module.EntryPoint != null)
@@ -147,7 +189,7 @@ public partial class CppCodeGenerator
         }
 
         // Generate CMakeLists.txt
-        output.CMakeFile = GenerateCMakeLists();
+        output.CMakeFile = GenerateCMakeLists(output);
 
         // Generate stub diagnostics report
         if (_stubbedMethods.Count > 0)
@@ -203,7 +245,7 @@ public partial class CppCodeGenerator
         };
     }
 
-    private GeneratedFile GenerateCMakeLists()
+    private GeneratedFile GenerateCMakeLists(GeneratedOutput output)
     {
         var sb = new StringBuilder();
         var projectName = _module.Name;
@@ -230,13 +272,15 @@ public partial class CppCodeGenerator
         {
             sb.AppendLine($"add_executable({projectName}");
             sb.AppendLine("    main.cpp");
-            sb.AppendLine($"    {projectName}.cpp");
+            foreach (var sf in output.AllSourceFiles)
+                sb.AppendLine($"    {sf.FileName}");
             sb.AppendLine(")");
         }
         else
         {
             sb.AppendLine($"add_library({projectName} STATIC");
-            sb.AppendLine($"    {projectName}.cpp");
+            foreach (var sf in output.AllSourceFiles)
+                sb.AppendLine($"    {sf.FileName}");
             sb.AppendLine(")");
             sb.AppendLine();
             sb.AppendLine($"target_include_directories({projectName} PUBLIC");
@@ -280,7 +324,7 @@ public partial class CppCodeGenerator
         sb.AppendLine();
 
         sb.AppendLine("if(MSVC)");
-        sb.AppendLine($"    target_compile_options({projectName} PRIVATE /utf-8");
+        sb.AppendLine($"    target_compile_options({projectName} PRIVATE /utf-8 /MP");
         sb.AppendLine("        $<$<CONFIG:Debug>:/Zi /Od /RTC1>");
         sb.AppendLine("        $<$<CONFIG:Release>:/O2 /DNDEBUG>");
         sb.AppendLine("    )");
@@ -389,7 +433,59 @@ public partial class CppCodeGenerator
 public class GeneratedOutput
 {
     public GeneratedFile HeaderFile { get; set; } = new();
-    public GeneratedFile SourceFile { get; set; } = new();
+
+    /// <summary>
+    /// Data file: string literals, array init data, static fields, TypeInfo, VTable,
+    /// interface data, reflection metadata, ensure_cctor, P/Invoke wrappers.
+    /// </summary>
+    public GeneratedFile DataFile { get; set; } = new();
+
+    /// <summary>
+    /// Method implementation files (partitioned for parallel compilation).
+    /// </summary>
+    public List<GeneratedFile> MethodFiles { get; set; } = new();
+
+    /// <summary>
+    /// Stub file: fallback implementations for methods called but not compiled.
+    /// </summary>
+    public GeneratedFile StubFile { get; set; } = new();
+
+    /// <summary>
+    /// Backward-compatible alias — returns DataFile for tests checking data content.
+    /// </summary>
+    public GeneratedFile SourceFile => DataFile;
+
+    /// <summary>
+    /// Concatenation of all source file contents (data + methods + stubs).
+    /// Useful for tests that search across all generated C++ code.
+    /// </summary>
+    public string AllSourceContent
+    {
+        get
+        {
+            var sb = new StringBuilder();
+            sb.Append(DataFile.Content);
+            foreach (var mf in MethodFiles)
+                sb.Append(mf.Content);
+            sb.Append(StubFile.Content);
+            return sb.ToString();
+        }
+    }
+
+    /// <summary>
+    /// All source files (data + methods + stubs) for CMake and WriteToDirectory.
+    /// </summary>
+    public IEnumerable<GeneratedFile> AllSourceFiles
+    {
+        get
+        {
+            yield return DataFile;
+            foreach (var mf in MethodFiles)
+                yield return mf;
+            yield return StubFile;
+        }
+    }
+
     public GeneratedFile? MainFile { get; set; }
     public GeneratedFile? CMakeFile { get; set; }
     public GeneratedFile? StubReportFile { get; set; }
@@ -401,7 +497,10 @@ public class GeneratedOutput
     {
         Directory.CreateDirectory(outputDir);
         File.WriteAllText(Path.Combine(outputDir, HeaderFile.FileName), HeaderFile.Content);
-        File.WriteAllText(Path.Combine(outputDir, SourceFile.FileName), SourceFile.Content);
+        foreach (var sourceFile in AllSourceFiles)
+        {
+            File.WriteAllText(Path.Combine(outputDir, sourceFile.FileName), sourceFile.Content);
+        }
         if (MainFile != null)
         {
             File.WriteAllText(Path.Combine(outputDir, MainFile.FileName), MainFile.Content);

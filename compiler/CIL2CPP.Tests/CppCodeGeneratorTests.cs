@@ -182,9 +182,9 @@ public class CppCodeGeneratorTests
         var gen = new CppCodeGenerator(module);
         var output = gen.Generate();
 
-        Assert.Contains("Calculator_Add", output.SourceFile.Content);
-        Assert.Contains("__t0 = a + b;", output.SourceFile.Content);
-        Assert.Contains("return __t0;", output.SourceFile.Content);
+        Assert.Contains("Calculator_Add", output.AllSourceContent);
+        Assert.Contains("__t0 = a + b;", output.AllSourceContent);
+        Assert.Contains("return __t0;", output.AllSourceContent);
     }
 
     [Fact]
@@ -216,7 +216,7 @@ public class CppCodeGeneratorTests
         var gen = new CppCodeGenerator(module);
         var output = gen.Generate();
 
-        Assert.Equal("TestApp.cpp", output.SourceFile.FileName);
+        Assert.Equal("TestApp_data.cpp", output.SourceFile.FileName);
     }
 
     // ===== Main Generation =====
@@ -378,9 +378,9 @@ public class CppCodeGeneratorTests
         var gen = new CppCodeGenerator(module, BuildConfiguration.Debug);
         var output = gen.Generate();
 
-        Assert.Contains("#line 10", output.SourceFile.Content);
-        Assert.Contains("C:/src/test.cs", output.SourceFile.Content); // Forward slashes
-        Assert.Contains("/* IL_0000 */", output.SourceFile.Content);
+        Assert.Contains("#line 10", output.AllSourceContent);
+        Assert.Contains("C:/src/test.cs", output.AllSourceContent); // Forward slashes
+        Assert.Contains("/* IL_0000 */", output.AllSourceContent);
     }
 
     // ===== GeneratedOutput =====
@@ -397,7 +397,7 @@ public class CppCodeGeneratorTests
         {
             output.WriteToDirectory(tempDir);
             Assert.True(File.Exists(Path.Combine(tempDir, "TestApp.h")));
-            Assert.True(File.Exists(Path.Combine(tempDir, "TestApp.cpp")));
+            Assert.True(File.Exists(Path.Combine(tempDir, "TestApp_data.cpp")));
             Assert.True(File.Exists(Path.Combine(tempDir, "main.cpp")));
             Assert.True(File.Exists(Path.Combine(tempDir, "CMakeLists.txt")));
         }
@@ -418,7 +418,7 @@ public class CppCodeGeneratorTests
         var gen = new CppCodeGenerator(module);
         var output = gen.Generate();
 
-        Assert.Contains("static const unsigned char __arr_init_0[]", output.SourceFile.Content);
+        Assert.Contains("const unsigned char __arr_init_0[]", output.SourceFile.Content);
         Assert.Contains("0x01", output.SourceFile.Content);
         Assert.Contains("0x02", output.SourceFile.Content);
         Assert.Contains("0xFF", output.SourceFile.Content);
@@ -641,7 +641,7 @@ public class CppCodeGeneratorTests
         var gen = new CppCodeGenerator(module);
         var output = gen.Generate();
 
-        Assert.Contains("auto __t0 = 1 + 2;", output.SourceFile.Content);
+        Assert.Contains("auto __t0 = 1 + 2;", output.AllSourceContent);
     }
 
     [Fact]
@@ -667,7 +667,7 @@ public class CppCodeGeneratorTests
         var gen = new CppCodeGenerator(module);
         var output = gen.Generate();
 
-        Assert.Contains("auto __t1000000 = 1 + 2;", output.SourceFile.Content);
+        Assert.Contains("auto __t1000000 = 1 + 2;", output.AllSourceContent);
     }
 
     // ===== Label Scope Handling =====
@@ -692,9 +692,9 @@ public class CppCodeGeneratorTests
         var gen = new CppCodeGenerator(module);
         var output = gen.Generate();
 
-        Assert.Contains("IL_0000:", output.SourceFile.Content);
+        Assert.Contains("IL_0000:", output.AllSourceContent);
         // Verify label scope braces are present
-        var methodContent = output.SourceFile.Content;
+        var methodContent = output.AllSourceContent;
         Assert.Contains("{", methodContent); // opening scope
     }
 
@@ -1167,7 +1167,7 @@ public class CppCodeGeneratorTests
         var gen = new CppCodeGenerator(module);
         var output = gen.Generate();
 
-        Assert.Contains("Wrapper_1_System_Int32_GetValue", output.SourceFile.Content);
+        Assert.Contains("Wrapper_1_System_Int32_GetValue", output.AllSourceContent);
     }
 
     [Fact]

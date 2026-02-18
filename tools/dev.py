@@ -480,9 +480,13 @@ def cmd_integration(args):
             capture=True)
 
     def hw_files_exist():
-        for f in ["HelloWorld.h", "HelloWorld.cpp", "main.cpp", "CMakeLists.txt"]:
+        for f in ["HelloWorld.h", "HelloWorld_data.cpp", "HelloWorld_stubs.cpp",
+                   "main.cpp", "CMakeLists.txt"]:
             if not (hw_output / f).exists():
                 raise RuntimeError(f"Missing: {f}")
+        # At least one methods file must exist
+        if not list(hw_output.glob("HelloWorld_methods_*.cpp")):
+            raise RuntimeError("No HelloWorld_methods_*.cpp files found")
 
     def hw_cmake_configure():
         run(["cmake", "-B", str(hw_build), "-S", str(hw_output),
@@ -578,13 +582,17 @@ def cmd_integration(args):
             capture=True)
 
     def dbg_has_line_directives():
-        src = (dbg_output / "HelloWorld.cpp").read_text(encoding="utf-8", errors="replace")
-        if "#line" not in src:
+        # #line directives are in method files
+        all_src = "".join(f.read_text(encoding="utf-8", errors="replace")
+                          for f in sorted(dbg_output.glob("HelloWorld_methods_*.cpp")))
+        if "#line" not in all_src:
             raise RuntimeError("No #line directives found in Debug output")
 
     def dbg_has_il_comments():
-        src = (dbg_output / "HelloWorld.cpp").read_text(encoding="utf-8", errors="replace")
-        if not re.search(r"/\* IL_", src):
+        # IL offset comments are in method files
+        all_src = "".join(f.read_text(encoding="utf-8", errors="replace")
+                          for f in sorted(dbg_output.glob("HelloWorld_methods_*.cpp")))
+        if not re.search(r"/\* IL_", all_src):
             raise RuntimeError("No IL offset comments found in Debug output")
 
     def dbg_build_and_run():
@@ -611,7 +619,7 @@ def cmd_integration(args):
     header("Phase 4: String literals")
 
     def str_has_literal_calls():
-        src = (hw_output / "HelloWorld.cpp").read_text(encoding="utf-8", errors="replace")
+        src = (hw_output / "HelloWorld_data.cpp").read_text(encoding="utf-8", errors="replace")
         if "string_literal" not in src:
             raise RuntimeError("No string_literal calls found")
         if "Hello, CIL2CPP!" not in src:
@@ -637,7 +645,8 @@ def cmd_integration(args):
             capture=True)
 
     def multi_files_exist():
-        for f in ["MultiAssemblyTest.h", "MultiAssemblyTest.cpp", "main.cpp", "CMakeLists.txt"]:
+        for f in ["MultiAssemblyTest.h", "MultiAssemblyTest_data.cpp",
+                   "MultiAssemblyTest_stubs.cpp", "main.cpp", "CMakeLists.txt"]:
             if not (multi_output / f).exists():
                 raise RuntimeError(f"Missing: {f}")
 
@@ -649,10 +658,12 @@ def cmd_integration(args):
             raise RuntimeError("Counter type not found in header")
 
     def multi_source_has_cross_assembly_calls():
-        src = (multi_output / "MultiAssemblyTest.cpp").read_text(encoding="utf-8", errors="replace")
-        if "MathLib_MathUtils_Add" not in src:
+        # Cross-assembly calls are in method files + data file
+        all_src = "".join(f.read_text(encoding="utf-8", errors="replace")
+                          for f in sorted(multi_output.glob("MultiAssemblyTest_*.cpp")))
+        if "MathLib_MathUtils_Add" not in all_src:
             raise RuntimeError("Cross-assembly MathUtils_Add call not found")
-        if "MathLib_Counter" not in src:
+        if "MathLib_Counter" not in all_src:
             raise RuntimeError("Cross-assembly Counter usage not found")
 
     def multi_source_has_entry_point():
@@ -679,7 +690,8 @@ def cmd_integration(args):
             capture=True)
 
     def arg_files_exist():
-        for f in ["ArglistTest.h", "ArglistTest.cpp", "main.cpp", "CMakeLists.txt"]:
+        for f in ["ArglistTest.h", "ArglistTest_data.cpp", "ArglistTest_stubs.cpp",
+                   "main.cpp", "CMakeLists.txt"]:
             if not (arg_output / f).exists():
                 raise RuntimeError(f"Missing: {f}")
 
@@ -723,20 +735,23 @@ def cmd_integration(args):
             capture=True)
 
     def ft_files_exist():
-        for f in ["FeatureTest.h", "FeatureTest.cpp", "main.cpp", "CMakeLists.txt"]:
+        for f in ["FeatureTest.h", "FeatureTest_data.cpp", "FeatureTest_stubs.cpp",
+                   "main.cpp", "CMakeLists.txt"]:
             if not (ft_output / f).exists():
                 raise RuntimeError(f"Missing: {f}")
 
     def ft_cpp_not_empty():
-        cpp = (ft_output / "FeatureTest.cpp").read_text(encoding="utf-8", errors="replace")
-        if len(cpp) < 100000:
-            raise RuntimeError(f"FeatureTest.cpp unexpectedly small: {len(cpp)} bytes")
-        if "Program_Main" not in cpp:
-            raise RuntimeError("Entry point Program_Main not found in FeatureTest.cpp")
+        # Total source content across all generated files
+        all_src = "".join(f.read_text(encoding="utf-8", errors="replace")
+                          for f in sorted(ft_output.glob("FeatureTest_*.cpp")))
+        if len(all_src) < 100000:
+            raise RuntimeError(f"FeatureTest source files unexpectedly small: {len(all_src)} bytes")
+        if "Program_Main" not in all_src:
+            raise RuntimeError("Entry point Program_Main not found in FeatureTest source files")
 
     runner.step("Codegen FeatureTest", ft_codegen)
     runner.step("Generated files exist", ft_files_exist)
-    runner.step("FeatureTest.cpp has entry point and is substantial", ft_cpp_not_empty)
+    runner.step("FeatureTest source files have entry point and are substantial", ft_cpp_not_empty)
 
     # ===== Cleanup =====
     header("Cleanup")
