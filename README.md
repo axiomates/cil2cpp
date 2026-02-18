@@ -344,25 +344,43 @@ public class Program
 }
 ```
 
-**输出 (C++)**:
+**输出 (C++，简化)**:
 
 ```cpp
-struct Calculator {
-    cil2cpp::TypeInfo* __type_info;
-    cil2cpp::UInt32 __sync_block;
-    int32_t f_result;
+// ---- HelloWorld.h ----
+
+struct Calculator {                          // 用户类 → 平坦 C 结构体
+    cil2cpp::TypeInfo* __type_info;          //   运行时类型信息指针
+    cil2cpp::UInt32    __sync_block;         //   Monitor 锁 ID
+    int32_t f_result;                        //   private int _result
 };
+
+int32_t Calculator_Add(Calculator* __this, int32_t a, int32_t b);
+void    Calculator__ctor(Calculator* __this);
+
+// ---- HelloWorld.cpp ----（实际文件含完整 BCL 实现，约 14 万行）
 
 int32_t Calculator_Add(Calculator* __this, int32_t a, int32_t b) {
     return a + b;
 }
 
 void Program_Main() {
-    cil2cpp::System::Console_WriteLine(__str_0);
-    auto __t0 = (Calculator*)cil2cpp::gc::alloc(sizeof(Calculator), &Calculator_TypeInfo);
+    System_Console_ensure_cctor();                      // 静态构造函数守卫
+    System_Console_WriteLine__System_String(             // Console.WriteLine(string)
+        (cil2cpp::String*)(void*)__str_45);              //   — BCL IL 全链路编译，非 icall
+    auto __t0 = (Calculator*)cil2cpp::gc::alloc(
+        sizeof(Calculator), &Calculator_TypeInfo);       // new Calculator()
     Calculator__ctor(__t0);
-    cil2cpp::System::Console_WriteLine(Calculator_Add(__t0, 10, 20));
+    auto __t1 = Calculator_Add(__t0, 10, 20);            // calc.Add(10, 20)
+    System_Console_ensure_cctor();
+    System_Console_WriteLine__System_Int32(__t1);         // Console.WriteLine(int)
 }
+
+// Console.WriteLine 的调用链（全部由 BCL IL 编译生成）：
+//   System_Console_WriteLine__System_String
+//     → System_IO_TextWriter_WriteLine__System_String   (TextWriter.cs)
+//       → System_IO_StreamWriter_Write__System_String   (StreamWriter.cs)
+//         → ... → Interop_Kernel32_WriteFile            (P/Invoke → WriteFile)
 ```
 
 ---
