@@ -27,6 +27,10 @@ public class SampleAssemblyFixture : IDisposable
     private ReachabilityResult? _arrayTestReleaseReach;
     private AssemblySet? _featureTestReleaseSet;
     private ReachabilityResult? _featureTestReleaseReach;
+    private AssemblySet? _multiAssemblyTestReleaseSet;
+    private ReachabilityResult? _multiAssemblyTestReleaseReach;
+    private AssemblySet? _mathLibReleaseSet;
+    private ReachabilityResult? _mathLibReleaseReach;
 
     // Cached IRModule per sample — Release config (lazy-initialized)
     private IRModule? _helloWorldReleaseModule;
@@ -35,6 +39,8 @@ public class SampleAssemblyFixture : IDisposable
     private AssemblyReader? _arrayTestReleaseReader;
     private IRModule? _featureTestReleaseModule;
     private AssemblyReader? _featureTestReleaseReader;
+    private IRModule? _multiAssemblyTestReleaseModule;
+    private AssemblyReader? _multiAssemblyTestReleaseReader;
 
     // Cached IRModule per sample — Debug config (lazy-initialized)
     private AssemblySet? _helloWorldDebugSet;
@@ -125,6 +131,33 @@ public class SampleAssemblyFixture : IDisposable
     }
 
     /// <summary>
+    /// Get cached AssemblySet + ReachabilityResult for MultiAssemblyTest sample (Release config).
+    /// </summary>
+    public (AssemblySet Set, ReachabilityResult Reach) GetMultiAssemblyTestReleaseContext()
+    {
+        if (_multiAssemblyTestReleaseSet == null)
+        {
+            _multiAssemblyTestReleaseSet = new AssemblySet(MultiAssemblyTestDllPath);
+            _multiAssemblyTestReleaseReach = new ReachabilityAnalyzer(_multiAssemblyTestReleaseSet).Analyze();
+        }
+        return (_multiAssemblyTestReleaseSet, _multiAssemblyTestReleaseReach!);
+    }
+
+    /// <summary>
+    /// Get cached AssemblySet + ReachabilityResult for MathLib sample (Release config).
+    /// Uses library mode since MathLib has no entry point.
+    /// </summary>
+    public (AssemblySet Set, ReachabilityResult Reach) GetMathLibReleaseContext()
+    {
+        if (_mathLibReleaseSet == null)
+        {
+            _mathLibReleaseSet = new AssemblySet(MathLibDllPath);
+            _mathLibReleaseReach = new ReachabilityAnalyzer(_mathLibReleaseSet).Analyze();
+        }
+        return (_mathLibReleaseSet, _mathLibReleaseReach!);
+    }
+
+    /// <summary>
     /// Get cached IRModule for HelloWorld (Release config). Built once, shared by all tests.
     /// </summary>
     public IRModule GetHelloWorldReleaseModule()
@@ -167,6 +200,21 @@ public class SampleAssemblyFixture : IDisposable
             _featureTestReleaseModule = builder.Build(set, reach);
         }
         return _featureTestReleaseModule;
+    }
+
+    /// <summary>
+    /// Get cached IRModule for MultiAssemblyTest (Release config). Built once, shared by all tests.
+    /// </summary>
+    public IRModule GetMultiAssemblyTestReleaseModule()
+    {
+        if (_multiAssemblyTestReleaseModule == null)
+        {
+            var (set, reach) = GetMultiAssemblyTestReleaseContext();
+            _multiAssemblyTestReleaseReader = new AssemblyReader(MultiAssemblyTestDllPath);
+            var builder = new IRBuilder(_multiAssemblyTestReleaseReader);
+            _multiAssemblyTestReleaseModule = builder.Build(set, reach);
+        }
+        return _multiAssemblyTestReleaseModule;
     }
 
     /// <summary>
@@ -244,11 +292,14 @@ public class SampleAssemblyFixture : IDisposable
         _helloWorldReleaseReader?.Dispose();
         _arrayTestReleaseReader?.Dispose();
         _featureTestReleaseReader?.Dispose();
+        _multiAssemblyTestReleaseReader?.Dispose();
         _helloWorldDebugReader?.Dispose();
         _featureTestDebugReader?.Dispose();
         _helloWorldReleaseSet?.Dispose();
         _arrayTestReleaseSet?.Dispose();
         _featureTestReleaseSet?.Dispose();
+        _multiAssemblyTestReleaseSet?.Dispose();
+        _mathLibReleaseSet?.Dispose();
         _helloWorldDebugSet?.Dispose();
         _featureTestDebugSet?.Dispose();
     }

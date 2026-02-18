@@ -1969,16 +1969,11 @@ public class IRBuilderTests
         Assert.True(stringFunc!.IsDelegate);
     }
 
-    // Build path with explicit AssemblySet + Reachability
+    // Build path with explicit AssemblySet + Reachability (uses fixture cache)
     [Fact]
     public void Build_MultiAssembly_HelloWorld_ProducesModule()
     {
-        using var set = new AssemblySet(_fixture.HelloWorldDllPath);
-        var reachability = new ReachabilityAnalyzer(set).Analyze();
-
-        using var reader = new AssemblyReader(_fixture.HelloWorldDllPath);
-        var builder = new IRBuilder(reader);
-        var module = builder.Build(set, reachability);
+        var module = _fixture.GetHelloWorldReleaseModule();
 
         Assert.NotNull(module);
         Assert.Equal("HelloWorld", module.Name);
@@ -1988,12 +1983,7 @@ public class IRBuilderTests
     [Fact]
     public void Build_MultiAssembly_HelloWorld_SetsSourceKind()
     {
-        using var set = new AssemblySet(_fixture.HelloWorldDllPath);
-        var reachability = new ReachabilityAnalyzer(set).Analyze();
-
-        using var reader = new AssemblyReader(_fixture.HelloWorldDllPath);
-        var builder = new IRBuilder(reader);
-        var module = builder.Build(set, reachability);
+        var module = _fixture.GetHelloWorldReleaseModule();
 
         var programType = module.FindType("Program");
         Assert.NotNull(programType);
@@ -2003,12 +1993,7 @@ public class IRBuilderTests
     [Fact]
     public void Build_MultiAssembly_HelloWorld_MarksRuntimeProvided()
     {
-        using var set = new AssemblySet(_fixture.HelloWorldDllPath);
-        var reachability = new ReachabilityAnalyzer(set).Analyze();
-
-        using var reader = new AssemblyReader(_fixture.HelloWorldDllPath);
-        var builder = new IRBuilder(reader);
-        var module = builder.Build(set, reachability);
+        var module = _fixture.GetHelloWorldReleaseModule();
 
         // User types should NOT be runtime-provided
         var programType = module.FindType("Program");
@@ -2019,12 +2004,7 @@ public class IRBuilderTests
     [Fact]
     public void Build_MultiAssembly_MultiAssemblyTest_CrossAssemblyTypes()
     {
-        using var set = new AssemblySet(_fixture.MultiAssemblyTestDllPath);
-        var reachability = new ReachabilityAnalyzer(set).Analyze();
-
-        using var reader = new AssemblyReader(_fixture.MultiAssemblyTestDllPath);
-        var builder = new IRBuilder(reader);
-        var module = builder.Build(set, reachability);
+        var module = _fixture.GetMultiAssemblyTestReleaseModule();
 
         // Should have types from both assemblies
         Assert.Contains(module.Types, t => t.Name == "Program");
@@ -2034,12 +2014,7 @@ public class IRBuilderTests
     [Fact]
     public void Build_MultiAssembly_HasEntryPoint()
     {
-        using var set = new AssemblySet(_fixture.HelloWorldDllPath);
-        var reachability = new ReachabilityAnalyzer(set).Analyze();
-
-        using var reader = new AssemblyReader(_fixture.HelloWorldDllPath);
-        var builder = new IRBuilder(reader);
-        var module = builder.Build(set, reachability);
+        var module = _fixture.GetHelloWorldReleaseModule();
 
         Assert.NotNull(module.EntryPoint);
     }

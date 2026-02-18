@@ -18,9 +18,7 @@ public class ReachabilityAnalyzerTests
     [Fact]
     public void Analyze_HelloWorld_FindsProgramType()
     {
-        using var set = new AssemblySet(_fixture.HelloWorldDllPath);
-        var analyzer = new ReachabilityAnalyzer(set);
-        var result = analyzer.Analyze();
+        var (_, result) = _fixture.GetHelloWorldReleaseContext();
 
         var programType = result.ReachableTypes.FirstOrDefault(t => t.Name == "Program");
         Assert.NotNull(programType);
@@ -29,9 +27,7 @@ public class ReachabilityAnalyzerTests
     [Fact]
     public void Analyze_HelloWorld_FindsMainMethod()
     {
-        using var set = new AssemblySet(_fixture.HelloWorldDllPath);
-        var analyzer = new ReachabilityAnalyzer(set);
-        var result = analyzer.Analyze();
+        var (_, result) = _fixture.GetHelloWorldReleaseContext();
 
         var mainMethod = result.ReachableMethods.FirstOrDefault(
             m => m.Name == "Main" && m.DeclaringType.Name == "Program");
@@ -41,9 +37,7 @@ public class ReachabilityAnalyzerTests
     [Fact]
     public void Analyze_HelloWorld_FindsCalculatorType()
     {
-        using var set = new AssemblySet(_fixture.HelloWorldDllPath);
-        var analyzer = new ReachabilityAnalyzer(set);
-        var result = analyzer.Analyze();
+        var (_, result) = _fixture.GetHelloWorldReleaseContext();
 
         // Calculator is used in HelloWorld's Main
         var calcType = result.ReachableTypes.FirstOrDefault(t => t.Name == "Calculator");
@@ -53,9 +47,7 @@ public class ReachabilityAnalyzerTests
     [Fact]
     public void Analyze_HelloWorld_ReachableTypesCountIsReasonable()
     {
-        using var set = new AssemblySet(_fixture.HelloWorldDllPath);
-        var analyzer = new ReachabilityAnalyzer(set);
-        var result = analyzer.Analyze();
+        var (_, result) = _fixture.GetHelloWorldReleaseContext();
 
         // HelloWorld user assembly should have a small number of reachable types
         var userTypes = result.ReachableTypes
@@ -68,9 +60,7 @@ public class ReachabilityAnalyzerTests
     [Fact]
     public void Analyze_HelloWorld_ReachableMethods_NotEmpty()
     {
-        using var set = new AssemblySet(_fixture.HelloWorldDllPath);
-        var analyzer = new ReachabilityAnalyzer(set);
-        var result = analyzer.Analyze();
+        var (_, result) = _fixture.GetHelloWorldReleaseContext();
 
         Assert.NotEmpty(result.ReachableMethods);
     }
@@ -78,9 +68,7 @@ public class ReachabilityAnalyzerTests
     [Fact]
     public void Analyze_MultiAssemblyTest_FindsCrossAssemblyTypes()
     {
-        using var set = new AssemblySet(_fixture.MultiAssemblyTestDllPath);
-        var analyzer = new ReachabilityAnalyzer(set);
-        var result = analyzer.Analyze();
+        var (_, result) = _fixture.GetMultiAssemblyTestReleaseContext();
 
         // Should find types from MultiAssemblyTest
         Assert.Contains(result.ReachableTypes, t => t.Name == "Program");
@@ -95,9 +83,7 @@ public class ReachabilityAnalyzerTests
     [Fact]
     public void Analyze_MultiAssemblyTest_LoadsMathLibAssembly()
     {
-        using var set = new AssemblySet(_fixture.MultiAssemblyTestDllPath);
-        var analyzer = new ReachabilityAnalyzer(set);
-        analyzer.Analyze();
+        var (set, _) = _fixture.GetMultiAssemblyTestReleaseContext();
 
         // MathLib should have been auto-loaded during analysis
         Assert.True(set.LoadedAssemblies.ContainsKey("MathLib"));
@@ -106,9 +92,7 @@ public class ReachabilityAnalyzerTests
     [Fact]
     public void Analyze_MultiAssemblyTest_FindsMathUtilsMethods()
     {
-        using var set = new AssemblySet(_fixture.MultiAssemblyTestDllPath);
-        var analyzer = new ReachabilityAnalyzer(set);
-        var result = analyzer.Analyze();
+        var (_, result) = _fixture.GetMultiAssemblyTestReleaseContext();
 
         // MathUtils.Add is called from Main
         Assert.Contains(result.ReachableMethods,
@@ -126,9 +110,7 @@ public class ReachabilityAnalyzerTests
     [Fact]
     public void Analyze_MultiAssemblyTest_FindsInterfaceImplementation()
     {
-        using var set = new AssemblySet(_fixture.MultiAssemblyTestDllPath);
-        var analyzer = new ReachabilityAnalyzer(set);
-        var result = analyzer.Analyze();
+        var (_, result) = _fixture.GetMultiAssemblyTestReleaseContext();
 
         // Adder.Calculate implements ICalculator.Calculate
         Assert.Contains(result.ReachableMethods,
@@ -138,9 +120,7 @@ public class ReachabilityAnalyzerTests
     [Fact]
     public void IsReachable_Type_ReturnsTrueForReachable()
     {
-        using var set = new AssemblySet(_fixture.HelloWorldDllPath);
-        var analyzer = new ReachabilityAnalyzer(set);
-        var result = analyzer.Analyze();
+        var (set, result) = _fixture.GetHelloWorldReleaseContext();
 
         var programType = set.RootAssembly.MainModule.Types
             .First(t => t.Name == "Program");
@@ -150,9 +130,7 @@ public class ReachabilityAnalyzerTests
     [Fact]
     public void IsReachable_Method_ReturnsTrueForReachable()
     {
-        using var set = new AssemblySet(_fixture.HelloWorldDllPath);
-        var analyzer = new ReachabilityAnalyzer(set);
-        var result = analyzer.Analyze();
+        var (set, result) = _fixture.GetHelloWorldReleaseContext();
 
         var mainMethod = set.RootAssembly.MainModule.Types
             .First(t => t.Name == "Program").Methods
@@ -164,9 +142,7 @@ public class ReachabilityAnalyzerTests
     public void Analyze_FeatureTest_HandlesComplexPatterns()
     {
         // FeatureTest has delegates, generics, interfaces, etc.
-        using var set = new AssemblySet(_fixture.FeatureTestDllPath);
-        var analyzer = new ReachabilityAnalyzer(set);
-        var result = analyzer.Analyze();
+        var (_, result) = _fixture.GetFeatureTestReleaseContext();
 
         Assert.Contains(result.ReachableTypes, t => t.Name == "Program");
         Assert.True(result.ReachableTypes.Count >= 5);
@@ -176,9 +152,7 @@ public class ReachabilityAnalyzerTests
     public void Analyze_MathLib_LibraryMode_SeedsPublicTypes()
     {
         // MathLib has no entry point — should seed all public types
-        using var set = new AssemblySet(_fixture.MathLibDllPath);
-        var analyzer = new ReachabilityAnalyzer(set);
-        var result = analyzer.Analyze();
+        var (_, result) = _fixture.GetMathLibReleaseContext();
 
         Assert.Contains(result.ReachableTypes, t => t.Name == "MathUtils");
         Assert.Contains(result.ReachableTypes, t => t.Name == "Counter");
@@ -188,9 +162,7 @@ public class ReachabilityAnalyzerTests
     [Fact]
     public void Analyze_MathLib_LibraryMode_SeedsPublicMethods()
     {
-        using var set = new AssemblySet(_fixture.MathLibDllPath);
-        var analyzer = new ReachabilityAnalyzer(set);
-        var result = analyzer.Analyze();
+        var (_, result) = _fixture.GetMathLibReleaseContext();
 
         // Public methods should be seeded
         Assert.Contains(result.ReachableMethods,
@@ -202,9 +174,7 @@ public class ReachabilityAnalyzerTests
     [Fact]
     public void Analyze_MultiAssemblyTest_MarksBaseTypes()
     {
-        using var set = new AssemblySet(_fixture.MultiAssemblyTestDllPath);
-        var analyzer = new ReachabilityAnalyzer(set);
-        var result = analyzer.Analyze();
+        var (_, result) = _fixture.GetMultiAssemblyTestReleaseContext();
 
         // ICalculator interface should be reachable
         var iCalcType = result.ReachableTypes.FirstOrDefault(t => t.Name == "ICalculator");
@@ -214,9 +184,7 @@ public class ReachabilityAnalyzerTests
     [Fact]
     public void Analyze_FeatureTest_FindsNestedTypes()
     {
-        using var set = new AssemblySet(_fixture.FeatureTestDllPath);
-        var analyzer = new ReachabilityAnalyzer(set);
-        var result = analyzer.Analyze();
+        var (_, result) = _fixture.GetFeatureTestReleaseContext();
 
         // FeatureTest with lambdas/delegates likely has compiler-generated nested types
         var nestedTypes = result.ReachableTypes.Where(t => t.IsNested).ToList();
@@ -226,9 +194,7 @@ public class ReachabilityAnalyzerTests
     [Fact]
     public void Analyze_ArrayTest_FindsArrayUsages()
     {
-        using var set = new AssemblySet(_fixture.ArrayTestDllPath);
-        var analyzer = new ReachabilityAnalyzer(set);
-        var result = analyzer.Analyze();
+        var (_, result) = _fixture.GetArrayTestReleaseContext();
 
         // ArrayTest uses arrays, so Newarr/Ldelem/Stelem should be processed
         Assert.Contains(result.ReachableTypes, t => t.Name == "Program");
@@ -238,9 +204,8 @@ public class ReachabilityAnalyzerTests
     [Fact]
     public void Analyze_MultipleRuns_SameResultCounts()
     {
-        // Verify determinism
-        using var set1 = new AssemblySet(_fixture.HelloWorldDllPath);
-        var result1 = new ReachabilityAnalyzer(set1).Analyze();
+        // Verify determinism: compare cached result with a fresh run
+        var (_, result1) = _fixture.GetHelloWorldReleaseContext();
 
         using var set2 = new AssemblySet(_fixture.HelloWorldDllPath);
         var result2 = new ReachabilityAnalyzer(set2).Analyze();
@@ -252,9 +217,7 @@ public class ReachabilityAnalyzerTests
     [Fact]
     public void Analyze_HelloWorld_ProcessesConstructors()
     {
-        using var set = new AssemblySet(_fixture.HelloWorldDllPath);
-        var analyzer = new ReachabilityAnalyzer(set);
-        var result = analyzer.Analyze();
+        var (_, result) = _fixture.GetHelloWorldReleaseContext();
 
         // Constructors of reachable types should be included
         var ctors = result.ReachableMethods
@@ -266,9 +229,7 @@ public class ReachabilityAnalyzerTests
     [Fact]
     public void Analyze_FeatureTest_FieldTypesReachable()
     {
-        using var set = new AssemblySet(_fixture.FeatureTestDllPath);
-        var analyzer = new ReachabilityAnalyzer(set);
-        var result = analyzer.Analyze();
+        var (_, result) = _fixture.GetFeatureTestReleaseContext();
 
         // Types used as field types should be reachable
         Assert.True(result.ReachableTypes.Count >= 3);
@@ -286,9 +247,7 @@ public class ReachabilityAnalyzerTests
     [Fact]
     public void Analyze_MathLib_LibraryMode_DoesNotSeedPrivateTypes()
     {
-        using var set = new AssemblySet(_fixture.MathLibDllPath);
-        var analyzer = new ReachabilityAnalyzer(set);
-        var result = analyzer.Analyze();
+        var (set, result) = _fixture.GetMathLibReleaseContext();
 
         // Non-public types (if any exist in MathLib) should NOT be seeded directly,
         // though they may be pulled in transitively.

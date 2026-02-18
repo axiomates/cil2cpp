@@ -80,9 +80,10 @@ cil2cpp/
              │       ↓                 (从入口点/公共类型出发)       │
              │ IRBuilder.Build() ──→ 中间表示（8 遍，见下文）        │
              │       ↓                                             │
-             │ CppCodeGenerator ──→ C++ 头文件 + 源文件 + CMake     │
-             │                      (试渲染 + 错误检测 + 自动 stub) │     .h / .cpp
-             └─────────────────────────────────────────────────────┘ ──→ CMakeLists.txt
+             │ CppCodeGenerator ──→ C++ 头文件 + 多源文件 + CMake    │
+             │                      (多文件分割 + 试渲染 + 自动 stub)│     .h / *_data.cpp
+             └─────────────────────────────────────────────────────┘ ──→ *_methods_N.cpp
+                                                                        CMakeLists.txt
                                                                             ↓
                                                                          cmake + C++ 编译器
                                                                             ↓
@@ -138,6 +139,24 @@ Console.WriteLine → TextWriter.WriteLine → StreamWriter.Write → Encoding.G
 - **静态字段** → `<Type>_statics` 全局结构体 + `_ensure_cctor()` 初始化守卫
 - **虚方法调用** → `obj->__type_info->vtable->methods[slot]` 函数指针调用
 - **接口分派** → `type_get_interface_vtable()` 查找接口实现表
+
+#### 多文件分割与并行编译
+
+生成的 C++ 代码自动拆分为多个编译单元（translation units），利用 MSVC `/MP` 并行编译加速：
+
+```
+output/
+├── HelloWorld.h              ← 统一头文件（所有类型声明 + 前向引用）
+├── HelloWorld_data.cpp       ← 静态数据（TypeInfo、VTable、字符串字面量、P/Invoke）
+├── HelloWorld_methods_0.cpp  ← 方法实现分区 0
+├── HelloWorld_methods_1.cpp  ← 方法实现分区 1
+├── ...                       ← 按指令数自动分区（每分区 ~20000 条 IR 指令）
+├── HelloWorld_stubs.cpp      ← 未实现方法的默认 stub
+├── main.cpp                  ← 入口点（可执行项目）
+└── CMakeLists.txt            ← 自动列出所有源文件 + /MP 编译选项
+```
+
+分区策略：按 IR 指令数（`MinInstructionsPerPartition = 20000`）均匀分割方法，每个 `.cpp` 文件约 13k-17k 行 C++ 代码。MSVC 的 `/MP` 标志允许多核同时编译各分区，显著缩短大项目的 C++ 编译时间。
 
 ### 多层安全网：自动 stub 机制
 
@@ -775,7 +794,7 @@ runtime/CMakeLists.txt
 
 测试覆盖：类型映射 (CppNameMapper)、构建配置 (BuildConfiguration)、IR 模块/方法/指令、C++ 代码生成器、程序集解析 (AssemblyResolver/AssemblySet)、可达性分析 (ReachabilityAnalyzer)。
 
-**测试 fixture 缓存机制：** `SampleAssemblyFixture` 使用 xUnit 的 `ICollectionFixture<T>` 模式，在整个测试运行期间只创建一次。每个 sample（HelloWorld、ArrayTest、FeatureTest、MultiAssemblyTest）的 `AssemblySet`、`ReachabilityResult`、`IRModule` 均为 lazy 初始化并缓存（Release + Debug 分别缓存），所有标记 `[Collection("SampleAssembly")]` 的测试类共享同一实例。1240+ 个测试实际只构建 4 个 sample DLL + 最多 7 个 IRModule（3 Release + 2 Debug + 2 Context-only），避免重复编译。
+**测试 fixture 缓存机制：** `SampleAssemblyFixture` 使用 xUnit 的 `ICollectionFixture<T>` 模式，在整个测试运行期间只创建一次。每个 sample（HelloWorld、ArrayTest、FeatureTest、MultiAssemblyTest、MathLib）的 `AssemblySet`、`ReachabilityResult`、`IRModule` 均为 lazy 初始化并缓存（Release + Debug 分别缓存），所有标记 `[Collection("SampleAssembly")]` 的测试类共享同一实例。1240+ 个测试实际只构建 4 个 sample DLL + 最多 9 个缓存对象（4 Release Module + 2 Debug Module + 2 Context-only + 1 MathLib Context），避免重复编译。**新增测试时必须使用 fixture 缓存的 `GetXxxReleaseContext()` / `GetXxxReleaseModule()` 方法获取编译结果，禁止在测试方法中直接 `new AssemblySet()` + `new ReachabilityAnalyzer()`。**
 
 ```bash
 # 运行测试
