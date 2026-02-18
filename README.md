@@ -50,30 +50,109 @@ cil2cpp/
 │   │   ├── IL/                 #     IL 解析 (Mono.Cecil)
 │   │   ├── IR/                 #     中间表示 + 类型映射
 │   │   └── CodeGen/            #     C++ 代码生成
-│   └── CIL2CPP.Tests/          #   编译器单元测试 (xUnit, 1236+ tests)
+│   └── CIL2CPP.Tests/          #   编译器单元测试 (xUnit, 1240+ tests)
 ├── tests/                      # 测试用 C# 项目（编译器输入）
 ├── runtime/                    # C++ 运行时库 (CMake 项目)
 │   ├── CMakeLists.txt
 │   ├── cmake/                  #   CMake 包配置模板
 │   ├── include/cil2cpp/        #   头文件
 │   ├── src/                    #   GC、类型系统、异常、BCL
-│   └── tests/                  #   运行时单元测试 (Google Test, 461+ tests)
+│   └── tests/                  #   运行时单元测试 (Google Test, 446+ tests)
 └── tools/
     └── dev.py                  # 开发者 CLI (build/test/coverage/codegen/integration)
 ```
 
 ## 工作原理
 
+### 编译流水线全景
+
 ```
-.csproj → dotnet build → .NET DLL (IL) → CIL2CPP → C++ 代码 + CMakeLists.txt → C++ 编译器 → 原生可执行文件
+ C# 源码                    CIL2CPP 编译器 (C#)                             原生编译
+─────────    ┌─────────────────────────────────────────────────────┐    ──────────────
+             │                                                     │
+ .csproj ──→ │ dotnet build ──→ .NET DLL (IL)                      │
+             │       ↓                                             │
+             │ Mono.Cecil ──→ 读取 IL 字节码 + 类型元数据            │
+             │       ↓         (Debug: 同时读取 PDB 源码行号映射)    │
+             │ AssemblySet ──→ 加载用户 + 第三方 + BCL 程序集        │
+             │       ↓         (deps.json 依赖发现 + 自动解析)       │
+             │ ReachabilityAnalyzer ──→ 可达性分析（树摇）           │
+             │       ↓                 (从入口点/公共类型出发)       │
+             │ IRBuilder.Build() ──→ 中间表示（7 遍，见下文）        │
+             │       ↓                                             │
+             │ CppCodeGenerator ──→ C++ 头文件 + 源文件 + CMake     │
+             │                      (试渲染 + 错误检测 + 自动 stub) │     .h / .cpp
+             └─────────────────────────────────────────────────────┘ ──→ CMakeLists.txt
+                                                                            ↓
+                                                                         cmake + C++ 编译器
+                                                                            ↓
+    C++ 运行时 (cil2cpp::runtime) ──────────────────────── find_package ──→ 链接
+    BoehmGC / 类型系统 / 异常 / 线程池                                       ↓
+                                                                       原生可执行文件
 ```
 
-1. **IL 解析** — Mono.Cecil 读取 .NET 程序集中的 IL 字节码
-2. **IR 构建** — 将 IL 指令转换为中间表示（7 遍：类型外壳 → 字段/基类 → 方法壳 → VTable → 接口 → 方法体 → 合成方法）
-3. **C++ 生成** — 将 IR 翻译为 C++ 头文件、源文件、入口点和 CMakeLists.txt
-4. **原生编译** — 使用 C++ 编译器编译生成的代码，通过 `find_package` 链接 CIL2CPP 运行时
+### IR 构建：7 遍流水线
 
-## 工作流程
+编译器的核心是 `IRBuilder.Build()`，将 Mono.Cecil 的 IL 数据转换为中间表示 (IR)，分 7 遍完成：
+
+| 遍次 | 名称 | 做什么 | 为什么需要这个顺序 |
+|------|------|--------|-------------------|
+| Pass 1 | 类型外壳 | 创建所有 `IRType`（名称、标志、命名空间） | 后续遍次需要通过名称查找类型 |
+| Pass 2 | 字段与基类 | 填充字段、基类引用、接口列表、静态构造函数 | VTable 构建需要知道继承链 |
+| Pass 3 | 方法壳 | 创建 `IRMethod`（签名、参数），不含方法体 | 方法体中的 call 指令需要能找到目标方法 |
+| Pass 3.5 | 泛型单态化 | 收集所有泛型实例化 → 生成具体类型/方法 | `List<int>` → `List_1_System_Int32` 独立类型 |
+| Pass 4 | VTable | 按继承链递归构建虚方法表 | 方法体中的 callvirt 需要 VTable 槽号 |
+| Pass 5 | 接口映射 | 构建 InterfaceVTable（接口→实现方法映射） | 接口分派需要知道实现方法地址 |
+| Pass 6 | 方法体 | IL 栈模拟 → 变量赋值，生成 `IRInstruction` | 依赖 Pass 3-5：call 解析、VTable 槽号、接口映射 |
+| Pass 7 | 方法合成 | record 的 ToString/Equals/GetHashCode/Clone | 替换编译器生成的引用 EqualityComparer 的方法体 |
+
+### BCL 编译策略：Unity IL2CPP 模型
+
+CIL2CPP 采用与 Unity IL2CPP 相同的策略：**所有有 IL 方法体的 BCL 方法直接从 IL 编译为 C++**，与用户代码走完全相同的编译路径。仅在最底层保留 `[InternalCall]` 方法的 C++ 手写实现（icall）。
+
+```
+  方法调用
+    ↓
+  ICallRegistry 查找 (~50 个映射)
+    ├─ 命中 → [InternalCall] 方法，无 IL 方法体
+    │         GC / Monitor / Interlocked / Buffer / Math 等
+    │         → 调用 C++ 运行时实现
+    │
+    └─ 未命中 → 正常 IL 编译（BCL 方法与用户方法相同路径）
+               → 生成 C++ 函数
+```
+
+这意味着 `Console.WriteLine("Hello")` 的完整调用链全部从 IL 编译：
+
+```
+Console.WriteLine → TextWriter.WriteLine → StreamWriter.Write → Encoding.GetBytes → P/Invoke → WriteFile
+```
+
+### C++ 代码生成策略
+
+生成的 C++ 代码将每个 .NET 类型映射为 C++ struct，每个方法映射为独立的 C 函数：
+
+- **引用类型** → `struct` + `__type_info` 指针 + `__sync_block` + 用户字段，通过 `gc::alloc()` 堆分配
+- **值类型** → 普通 `struct`（无对象头），栈分配，按值传递
+- **实例方法** → `RetType FuncName(ThisType* __this, ...)` — 显式 this 参数
+- **静态字段** → `<Type>_statics` 全局结构体 + `_ensure_cctor()` 初始化守卫
+- **虚方法调用** → `obj->__type_info->vtable->methods[slot]` 函数指针调用
+- **接口分派** → `type_get_interface_vtable()` 查找接口实现表
+
+### 多层安全网：自动 stub 机制
+
+BCL 中部分方法的 IL 引用了 CLR 内部类型（RuntimeType、QCallTypeHandle 等），无法编译为 C++。编译器有 4 层安全网自动检测并 stub 化这些方法：
+
+1. **HasClrInternalDependencies** — IR 级：方法引用 CLR 内部类型 → 替换为返回默认值的 stub
+2. **HasKnownBrokenPatterns** — 预渲染：JIT intrinsics、自递归等已知问题模式 → 跳过
+3. **RenderedBodyHasErrors** — 试渲染：将方法体渲染为 C++ 后检测 MSVC 编译错误模式 → stub 化
+4. **GenerateMissingMethodStubImpls** — 兜底：所有声明但未定义的函数 → 生成默认 stub
+
+每次 codegen 会生成 `stubbed_methods.txt` 报告，列出所有被 stub 化的方法及原因。
+
+---
+
+## 使用方法
 
 完整流程分为 4 步。步骤 1 只需执行一次，步骤 2-4 每次生成时执行。
 
@@ -81,28 +160,11 @@ cil2cpp/
 
 将 CIL2CPP 运行时编译为静态库并安装到指定路径，供后续生成的 C++ 项目通过 CMake `find_package` 引用。
 
-| 项目 | 说明 |
-|------|------|
-| **前提条件** | CMake 3.20+、C++ 20 编译器。此步骤不需要 .NET SDK |
-| **输入** | `runtime/` 目录（C++ 源码） |
-| **输出** | 安装目录，包含头文件、静态库和 CMake 包配置文件 |
-| **用途** | 生成的 C++ 项目通过 `find_package(cil2cpp REQUIRED)` 自动找到并链接此运行时 |
-
-**可选项：**
-
-| 选项 | 说明 | 示例 |
-|------|------|------|
-| `--config` | 构建配置 | `Debug` 或 `Release` |
-| `--prefix` | 安装路径（必填） | `C:/cil2cpp` 或 `/usr/local` |
-| `-G` | CMake 生成器 | `"Visual Studio 17 2022"`、`"Ninja"` |
-
-**命令：**
-
 ```bash
-# 1. 配置（生成构建系统）
+# 1. 配置
 cmake -B build -S runtime
 
-# 2. 编译静态库（建议同时编译 Release 和 Debug）
+# 2. 编译（建议同时编译 Release 和 Debug）
 cmake --build build --config Release
 cmake --build build --config Debug
 
@@ -111,7 +173,8 @@ cmake --install build --config Release --prefix <安装路径>
 cmake --install build --config Debug --prefix <安装路径>
 ```
 
-**安装后的目录结构：**
+<details>
+<summary>安装后的目录结构</summary>
 
 ```
 <安装路径>/
@@ -147,27 +210,27 @@ cmake --install build --config Debug --prefix <安装路径>
         └── cil2cppTargets-debug.cmake
 ```
 
+</details>
+
 **依赖说明：**
-- **BoehmGC (bdwgc v8.2.12)** — 保守式垃圾收集器，构建运行时时通过 FetchContent 自动下载（缓存在 `runtime/.deps/`，删除 `build/` 不会重新下载）。MSVC 需要 libatomic_ops（同样自动下载）
-- **gc.lib / gcd.lib** — BoehmGC 静态库，随运行时一起安装。消费者通过 `find_package(cil2cpp)` 自动链接，无需手动配置
-- Windows Debug 模式自动链接 `dbghelp`（用于栈回溯符号解析）
-- Linux/macOS 自动链接 pthreads
-- 所有依赖通过 CMake target 传递，消费者无需手动添加
+- **BoehmGC (bdwgc v8.2.12)** — 保守式垃圾收集器，通过 FetchContent 自动下载（缓存在 `runtime/.deps/`）
+- gc.lib / gcd.lib 随运行时一起安装，消费者通过 `find_package(cil2cpp)` 自动链接
+- Windows Debug 自动链接 `dbghelp`（栈回溯），Linux/macOS 自动链接 pthreads
+- 所有依赖通过 CMake target 传递，消费者无需手动配置
 
 ---
 
 ### 步骤 2：生成 C++ 代码
 
-CIL2CPP 编译器读取 C# 项目，将 IL 字节码翻译为 C++ 源代码。
+```bash
+# Release（默认）
+dotnet run --project compiler/CIL2CPP.CLI -- codegen \
+    -i tests/HelloWorld/HelloWorld.csproj -o output
 
-| 项目 | 说明 |
-|------|------|
-| **前提条件** | .NET 8 SDK（`dotnet` 在 PATH 中） |
-| **输入** | `.csproj` 文件（C# 项目文件，不是 .dll） |
-| **输出** | C++ 头文件、源文件、入口点（仅可执行程序）和 CMakeLists.txt |
-| **用途** | 输出的文件在步骤 3 中被 C++ 编译器编译为原生二进制 |
-
-**可选项：**
+# Debug — #line 指令 + IL 偏移注释 + 栈回溯支持
+dotnet run --project compiler/CIL2CPP.CLI -- codegen \
+    -i tests/HelloWorld/HelloWorld.csproj -o output -c Debug
+```
 
 | 选项 | 说明 | 默认值 |
 |------|------|--------|
@@ -175,79 +238,19 @@ CIL2CPP 编译器读取 C# 项目，将 IL 字节码翻译为 C++ 源代码。
 | `-o, --output` | 输出目录（必填） | — |
 | `-c, --configuration` | 构建配置 | `Release` |
 
-**命令：**
-
-```bash
-# Release（默认）— 无调试信息，优化体积和性能
-dotnet run --project compiler/CIL2CPP.CLI -- codegen \
-    -i tests/HelloWorld/HelloWorld.csproj \
-    -o output
-
-# Debug — #line 指令 + IL 偏移注释 + 栈回溯支持
-dotnet run --project compiler/CIL2CPP.CLI -- codegen \
-    -i tests/HelloWorld/HelloWorld.csproj \
-    -o output -c Debug
-```
-
-**内部执行步骤：**
-
-```
-                  CIL2CPP 编译器内部
-┌─────────────────────────────────────────────────────────────┐
-│ 1. dotnet build       自动编译 .csproj，定位输出 DLL          │
-│ 2. Mono.Cecil 读取    解析 DLL 中的类型、方法、IL 指令         │
-│    (Debug: 同时读取 PDB 符号文件获取源码行号映射)              │
-│ 3. IR 构建            IL → 中间表示（7 遍）                   │
-│    Pass 1: 创建类型外壳（名称、标志）                         │
-│    Pass 2: 填充字段、基类、接口                               │
-│    Pass 3: 创建方法壳（签名，不含方法体）                      │
-│    Pass 4: 构建 VTable                                      │
-│    Pass 5: 构建接口实现映射                                  │
-│    Pass 6: 转换方法体（栈模拟 → 变量赋值，VTable 已就绪）      │
-│    Pass 7: 合成方法（record ToString/Equals/GetHashCode 等） │
-│ 4. C++ 代码生成       IR → .h + .cpp + main.cpp + CMake      │
-└─────────────────────────────────────────────────────────────┘
-```
-
-**生成的文件：**
+生成的文件：
 
 | 文件 | 内容 | 条件 |
 |------|------|------|
-| `<Name>.h` | 结构体声明、方法签名、TypeInfo 外部声明、静态字段存储 | 始终生成 |
-| `<Name>.cpp` | 方法实现、TypeInfo 定义、字符串字面量初始化、GC 根注册 | 始终生成 |
-| `main.cpp` | `CIL2CPP_MAIN` 宏（运行时初始化 → 入口方法 → 运行时关闭） | 仅可执行程序 |
-| `CMakeLists.txt` | CMake 构建配置（`find_package(cil2cpp)` + 编译选项） | 始终生成 |
-
-**CLI 命令一览：**
-
-| 命令 | 用途 | 说明 |
-|------|------|------|
-| `codegen` | 生成 C++ 代码（推荐） | 3 步：读取程序集 → 构建 IR → 生成 C++ |
-| `compile` | 完整编译流程 | 4 步（第 4 步原生编译尚未集成） |
-| `dump` | 调试用，输出 IL 信息 | 仅输出到控制台，不生成文件 |
+| `<Name>.h` | 结构体声明、方法签名、TypeInfo、静态字段 | 始终 |
+| `<Name>.cpp` | 方法实现、TypeInfo 定义、字符串字面量 | 始终 |
+| `main.cpp` | 运行时初始化 → 入口方法 → 运行时关闭 | 仅可执行程序 |
+| `CMakeLists.txt` | CMake 配置（`find_package(cil2cpp)` + 编译选项） | 始终 |
+| `stubbed_methods.txt` | Stub 诊断报告（被 stub 化的方法及原因） | 有 stub 时 |
 
 ---
 
 ### 步骤 3：编译为原生可执行文件
-
-使用 CMake 和 C++ 编译器将步骤 2 生成的代码编译为原生二进制。
-
-| 项目 | 说明 |
-|------|------|
-| **前提条件** | 步骤 1 已完成（运行时已安装）、步骤 2 已完成（C++ 已生成）、CMake + C++ 编译器 |
-| **输入** | 步骤 2 的输出目录（包含 CMakeLists.txt 和 .h/.cpp 文件） |
-| **输出** | 原生可执行文件（.exe / ELF）或静态库（.lib / .a） |
-| **用途** | 直接运行；库项目可通过 CMake 被其他 C++ 项目引用 |
-
-**可选项：**
-
-| 选项 | 说明 | 备注 |
-|------|------|------|
-| `-DCMAKE_PREFIX_PATH` | 运行时安装路径（必填） | 即步骤 1 的 `--prefix` 值 |
-| `--config` | 构建配置 | `Debug` 或 `Release` |
-| `-G` | CMake 生成器 | 同步骤 1 |
-
-**命令：**
 
 ```bash
 # 配置（find_package 在此步解析运行时位置）
@@ -262,7 +265,6 @@ cmake --build build_output --config Release
 find_package(cil2cpp REQUIRED)
 target_link_libraries(HelloWorld PRIVATE cil2cpp::runtime)
 ```
-所有运行时头文件和库路径由 `find_package` 自动解析，无需手动配置。
 
 ---
 
@@ -529,7 +531,7 @@ ECMA-335 标准定义了约 230 种 IL 操作码变体。CIL2CPP 的 `ConvertIns
 | System.Object (ToString, GetHashCode, Equals, GetType) | ✅ | 运行时提供默认实现（vtable 基类）；`GetType()` 返回缓存的 `Type` 对象 |
 | System.String | ✅ | `FastAllocateString` / `get_Length` / `get_Chars` 为 icall（运行时布局），其余方法（Concat/Format/Join/Split 等）从 BCL IL 编译 |
 | Console.WriteLine / Write / ReadLine | ✅ | BCL IL 全链路编译：Console → TextWriter → StreamWriter → Encoding → P/Invoke（Windows: kernel32!WriteFile, Linux: libSystem.Native!write） |
-| System.Math | ⚠️ | .NET 8 中 Math.Sqrt/Sin/Cos 等为 `[InternalCall]`（无 IL body），需要 icall 映射到 `<cmath>`（尚未注册） |
+| System.Math / MathF | ✅ | Math.Sqrt/Sin/Cos/Pow 等 ~40 个 `[InternalCall]` 方法已映射到 `<cmath>`（double + float 版本） |
 | 多程序集 + 树摇 | ✅ | 默认启用：加载用户 + 第三方 + BCL 程序集，可达性分析树摇，BCL IL 全面编译 |
 | List\<T\> / Dictionary\<K,V\> | ✅ | 从 BCL IL 编译（不再使用 C++ 手动实现） |
 | LINQ | ✅ | Where/Select/OrderBy/Count/Any/All/First/Last 等，从 BCL IL 编译 |
@@ -600,8 +602,8 @@ ECMA-335 标准定义了约 230 种 IL 操作码变体。CIL2CPP 的 `ConvertIns
 |------|------|
 | P/Invoke | 基本类型 + String + blittable struct + 回调委托（函数指针）均已支持 |
 | Attribute 复杂参数 | 基本类型 + 字符串 + Type + 枚举 + 数组均已支持 |
-| System.Math icall | Math.Sqrt/Sin/Cos 等为 `[InternalCall]`（无 IL body），尚未注册 icall 映射 |
-| Array.Copy icall | C++ 实现已存在但未注册 ICallRegistry，影响 List/Dictionary 等集合扩容 |
+| System.Math / MathF | ✅ ~40 个 icall 已注册（Sqrt/Sin/Cos/Pow/Log/Floor/Ceiling 等 double + float） |
+| Array.Copy | ✅ 已注册 ICallRegistry（3 参数和 5 参数重载） |
 | 异常类型 | 支持 24 种运行时异常 + 任意用户自定义异常类型（继承 Exception） |
 | 泛型约束 | 编译期验证泛型约束（struct/class/new()/接口/基类），违反时发出警告 |
 
@@ -778,7 +780,7 @@ dotnet test compiler/CIL2CPP.Tests --collect:"XPlat Code Coverage"
 | SequencePointInfo | 5 |
 | BclProxy | 20 |
 | ILOpcodeCoverage | 113 |
-| **合计** | **1236+** |
+| **合计** | **1240+** |
 
 ### 运行时单元测试 (C++ / Google Test)
 
@@ -809,7 +811,7 @@ ctest --test-dir runtime/tests/build -C Debug --output-on-failure
 | Async (Task/ThreadPool) | 19 |
 | Delegate | 18 |
 | Threading | 17 |
-| **合计** | **461+ (1 disabled)** |
+| **合计** | **446+ (1 disabled)** |
 
 ### 端到端集成测试
 
@@ -827,7 +829,9 @@ python tools/dev.py integration
 | Debug 配置 | #line 指令、IL 注释、Debug build + run | 4 |
 | 字符串字面量 | string_literal、__init_string_literals | 2 |
 | 多程序集 | 跨程序集类型/方法、MathLib 引用、BCL IL 编译 | 5 |
-| **合计** | | **23** |
+| ArglistTest | 变长参数（codegen → build → run → 验证输出） | 5 |
+| FeatureTest | 综合语言特性（codegen-only，100+ 特性验证） | 3 |
+| **合计** | | **31** |
 
 ### 全部运行
 
@@ -885,46 +889,28 @@ python tools/dev.py test --coverage
 
 ---
 
-## 已知正确性问题
+## 待改进项
 
-> 以下问题已确认但尚未修复，按优先级排列。
-
-| 问题 | 文件 | 影响 |
-|------|------|------|
-| `div.un`/`rem.un`/`shr.un` 未传 `isUnsigned: true` | IRBuilder.Methods.cs:759-767 | 高位为 1 的 unsigned 运算结果错误（ECMA-335 III.3.24/58/62） |
-| `string_to_utf8` 不处理 surrogate pair | System.String.cpp:219-256 | Emoji 和 U+10000+ 字符损坏（反向 `utf8_to_utf16` 正确处理了） |
-| `volatile_read`/`volatile_write` fence 方向反了 | cil2cpp.h:56-65 | x86 无害（TSO），**ARM/Apple Silicon 上内存序错误** |
-| `Enum_InternalGetCorElementType` 硬编码为 0x08 (int) | icall.cpp:180-185 | byte/short/long 底层类型的枚举 CorElementType 错误 |
-| `CIL2CPP_MAIN` 丢弃 argc/argv | cil2cpp.h:86-92 | `Environment.GetCommandLineArgs()` 无法工作 |
-| System.Math icall 未注册 | ICallRegistry.cs | `Math.Sqrt`/`Sin`/`Cos` 等在 .NET 8 中为 `[InternalCall]`（无 IL body），链接时 unresolved symbol |
-| `Array.Copy` icall 未注册 | ICallRegistry.cs | C++ 实现已存在（System.Array.cpp:112），但未注册 → 集合扩容静默失败 |
-| FeatureTest 未在集成测试中 | tools/dev.py | 18 个 Math 调用 + 30+ 语言特性从未端到端测试 |
-
-## 已知架构缺口
-
-| 缺口 | 文件 | 影响 |
-|------|------|------|
-| Silent stub chain 无诊断 | IRBuilder.cs, CppCodeGenerator | 三层静默 stub（HasClrInternalDependencies → HasKnownBrokenPatterns → RenderedBodyHasErrors），无日志/警告 |
-| `FilteredGenericNamespaces` 过于激进 | IRBuilder.Generics.cs:103-116 | `System.Globalization` 被完全过滤 → String.Format、int.Parse()、ToString("N2") 不可用 |
-| 缺失 BCL 接口代理 | IRBuilder.BclProxy.cs | IReadOnlyCollection\<T\>、IDictionary\<TKey,TValue\>、IComparer\<T\>、IEqualityComparer\<T\> 等常用接口未注册 |
-| Memory\<T\> / ReadOnlyMemory\<T\> 未处理 | — | 与 Span\<T\> 类似但无拦截，影响 System.IO.Pipelines 等现代 API |
-| 10+ 未引用的 icall 死代码 | icall.cpp:206-249 | Char_Is*、Int32_ToString 等已改为 BCL IL 编译，C++ 代码残留 |
+| 项目 | 影响 |
+|------|------|
+| Memory\<T\> / ReadOnlyMemory\<T\> 未拦截 | 与 Span\<T\> 类似但无拦截，影响 System.IO.Pipelines 等现代 API |
+| ICU 集成缺失 | Unicode 字符分类（IsLetter/IsUpper 等）依赖 ICU，目前使用简化实现 |
+| System.Net | 网络层底层 icall 未实现 → 整个命名空间不可用 |
+| FeatureTest C++ 编译 | codegen 成功但异步相关代码存在类型不匹配，仅作 codegen-only 测试 |
 
 ---
 
 ## 开发路线图
 
-> 按优先级分阶段实施，每个阶段为独立 commit。
-
 | 阶段 | 内容 | 状态 |
 |------|------|------|
-| **Phase A** | 关键正确性修复：unsigned 算术、surrogate pair、volatile fence | 待实施 |
-| **Phase B** | Math icall + Array.Copy 注册 + FeatureTest 集成测试 | 待实施 |
-| **Phase C** | 死代码清理 + Enum CorElementType + whitespace Unicode 补全 | 待实施 |
-| **Phase D** | Stub 诊断日志 + FilteredGenericNamespaces 修复 + BCL 接口代理 | 待实施 |
-| **Phase E** | argc/argv + Environment 改进 + Memory\<T\> 拦截 | 待实施 |
+| **Phase A** | 关键正确性修复：unsigned 算术、surrogate pair、volatile fence | ✅ 已完成 |
+| **Phase B** | Math icall + KnownStubs 数字格式化 + FeatureTest 集成测试 | ✅ 已完成 |
+| **Phase C** | 死代码清理 + Enum CorElementType 修复 | ✅ 已完成 |
+| **Phase D** | Stub 诊断报告 + FilteredGenericNamespaces + BCL 接口代理 | ✅ 已完成 |
+| **Phase E** | argc/argv + Environment icalls (Exit/GetEnv/GetCommandLineArgs) | ✅ 已完成 |
 | **Phase F** | ICU 集成（FetchContent，Unicode 字符分类） | 待实施 |
-| **Phase G** | System.IO icall + 协变返回类型 + System.Net 评估 | 待实施 |
+| **Phase G** | Memory\<T\> 拦截 + System.IO 改进 + System.Net 评估 | 待实施 |
 
 ## 参考
 
