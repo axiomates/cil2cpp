@@ -71,6 +71,20 @@ inline bool unsigned_gt(T1 a, T2 b) { return to_unsigned(a) > to_unsigned(b); }
 template<typename T1, typename T2, std::enable_if_t<!std::is_floating_point_v<T1> && !std::is_floating_point_v<T2>, int> = 0>
 inline bool unsigned_lt(T1 a, T2 b) { return to_unsigned(a) < to_unsigned(b); }
 
+// bge.un on floats: true if a >= b OR unordered. !(a < b) handles NaN correctly.
+// bge.un on integers: compare as unsigned.
+template<typename T, std::enable_if_t<std::is_floating_point_v<T>, int> = 0>
+inline bool unsigned_ge(T a, T b) { return !(a < b); }
+
+template<typename T, std::enable_if_t<std::is_floating_point_v<T>, int> = 0>
+inline bool unsigned_le(T a, T b) { return !(a > b); }
+
+template<typename T1, typename T2, std::enable_if_t<!std::is_floating_point_v<T1> && !std::is_floating_point_v<T2>, int> = 0>
+inline bool unsigned_ge(T1 a, T2 b) { return to_unsigned(a) >= to_unsigned(b); }
+
+template<typename T1, typename T2, std::enable_if_t<!std::is_floating_point_v<T1> && !std::is_floating_point_v<T2>, int> = 0>
+inline bool unsigned_le(T1 a, T2 b) { return to_unsigned(a) <= to_unsigned(b); }
+
 // ===== Volatile Read/Write =====
 // System.Threading.Volatile.Read/Write — JIT intrinsics for volatile memory access.
 // Volatile.Read = acquire: load THEN fence (prevents subsequent ops from reordering before the read).

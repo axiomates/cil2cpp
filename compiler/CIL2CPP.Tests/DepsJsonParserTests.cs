@@ -4,12 +4,12 @@ using CIL2CPP.Tests.Fixtures;
 
 namespace CIL2CPP.Tests;
 
-[Collection("SampleAssembly")]
+[Collection("DllPaths")]
 public class DepsJsonParserTests
 {
-    private readonly SampleAssemblyFixture _fixture;
+    private readonly DllPathsFixture _fixture;
 
-    public DepsJsonParserTests(SampleAssemblyFixture fixture)
+    public DepsJsonParserTests(DllPathsFixture fixture)
     {
         _fixture = fixture;
     }

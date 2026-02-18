@@ -416,12 +416,12 @@ public class RuntimeLocatorTests
     }
 }
 
-[Collection("SampleAssembly")]
+[Collection("DllPaths")]
 public class RuntimeLocatorIntegrationTests
 {
-    private readonly SampleAssemblyFixture _fixture;
+    private readonly DllPathsFixture _fixture;
 
-    public RuntimeLocatorIntegrationTests(SampleAssemblyFixture fixture)
+    public RuntimeLocatorIntegrationTests(DllPathsFixture fixture)
     {
         _fixture = fixture;
     }

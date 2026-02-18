@@ -5,12 +5,12 @@ using CIL2CPP.Tests.Fixtures;
 
 namespace CIL2CPP.Tests;
 
-[Collection("SampleAssembly")]
+[Collection("DllPaths")]
 public class AssemblyReaderTests
 {
-    private readonly SampleAssemblyFixture _fixture;
+    private readonly DllPathsFixture _fixture;
 
-    public AssemblyReaderTests(SampleAssemblyFixture fixture)
+    public AssemblyReaderTests(DllPathsFixture fixture)
     {
         _fixture = fixture;
     }

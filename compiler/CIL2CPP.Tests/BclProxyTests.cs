@@ -6,12 +6,12 @@ using CIL2CPP.Tests.Fixtures;
 
 namespace CIL2CPP.Tests;
 
-[Collection("SampleAssembly")]
+[Collection("FeatureTest")]
 public class BclProxyTests
 {
-    private readonly SampleAssemblyFixture _fixture;
+    private readonly FeatureTestFixture _fixture;
 
-    public BclProxyTests(SampleAssemblyFixture fixture)
+    public BclProxyTests(FeatureTestFixture fixture)
     {
         _fixture = fixture;
     }
@@ -19,8 +19,8 @@ public class BclProxyTests
     private IRModule BuildFeatureTest(BuildConfiguration? config = null)
     {
         if (config == null || !config.ReadDebugSymbols)
-            return _fixture.GetFeatureTestReleaseModule();
-        return _fixture.GetFeatureTestDebugModule();
+            return _fixture.GetReleaseModule();
+        return _fixture.GetDebugModule();
     }
 
     // ===== Non-Generic BCL Interface Proxies =====

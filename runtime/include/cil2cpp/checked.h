@@ -85,16 +85,26 @@ T checked_mul_un(T a, T b) {
 template<typename TTarget, typename TSource>
 TTarget checked_conv(TSource value) {
     if constexpr (std::is_floating_point_v<TSource>) {
-        // Float/double → integer: range-check directly.
-        // is_signed_v/make_unsigned_t don't apply to floating-point types.
+        // Float/double → integer: NaN and Infinity must throw (ECMA-335 conv.ovf.*).
+        // NaN fails all comparisons (IEEE 754), so range checks alone don't catch it.
+        if (!std::isfinite(value)) throw_overflow();
         if constexpr (std::is_signed_v<TTarget>) {
-            if (value < static_cast<TSource>(std::numeric_limits<TTarget>::min()) ||
-                value > static_cast<TSource>(std::numeric_limits<TTarget>::max()))
-                throw_overflow();
+            // Use power-of-2 bounds that are exactly representable as double.
+            // numeric_limits<int64_t>::max() (2^63-1) rounds UP to 2^63 in double,
+            // so using > with max() would let 2^63 pass → static_cast UB.
+            // Instead: lower = -2^(N-1) (exact), upper = 2^(N-1) (exact, exclusive).
+            constexpr TSource upper = static_cast<TSource>(1ULL << (sizeof(TTarget) * 8 - 1));
+            if (value < -upper || value >= upper) throw_overflow();
         } else {
-            if (value < static_cast<TSource>(0) ||
-                value > static_cast<TSource>(std::numeric_limits<TTarget>::max()))
-                throw_overflow();
+            if (value < static_cast<TSource>(0)) throw_overflow();
+            if constexpr (sizeof(TTarget) < 8) {
+                constexpr TSource upper = static_cast<TSource>(1ULL << (sizeof(TTarget) * 8));
+                if (value >= upper) throw_overflow();
+            } else {
+                // 2^64: can't compute 1ULL<<64 (UB). Use 2 * 2^63 instead.
+                constexpr TSource upper = static_cast<TSource>(1ULL << 63) * static_cast<TSource>(2);
+                if (value >= upper) throw_overflow();
+            }
         }
     } else if constexpr (std::is_signed_v<TSource> && std::is_signed_v<TTarget>) {
         // signed -> signed
@@ -134,11 +144,19 @@ TTarget checked_conv(TSource value) {
 template<typename TTarget, typename TSource>
 TTarget checked_conv_un(TSource value) {
     if constexpr (std::is_floating_point_v<TSource>) {
-        // Float/double source: range-check directly (make_unsigned_t is invalid for floats).
-        // Treat the float value as a non-negative number for unsigned interpretation.
-        if (value < static_cast<TSource>(0) ||
-            value > static_cast<TSource>(std::numeric_limits<TTarget>::max()))
-            throw_overflow();
+        // Float/double source: NaN/Infinity must throw. Range-check with exact bounds.
+        if (!std::isfinite(value) || value < static_cast<TSource>(0)) throw_overflow();
+        if constexpr (std::is_signed_v<TTarget>) {
+            constexpr TSource upper = static_cast<TSource>(1ULL << (sizeof(TTarget) * 8 - 1));
+            if (value >= upper) throw_overflow();
+        } else if constexpr (sizeof(TTarget) < 8) {
+            constexpr TSource upper = static_cast<TSource>(1ULL << (sizeof(TTarget) * 8));
+            if (value >= upper) throw_overflow();
+        } else {
+            // 2^64: can't compute 1ULL<<64 (UB). Use 2 * 2^63 instead.
+            constexpr TSource upper = static_cast<TSource>(1ULL << 63) * static_cast<TSource>(2);
+            if (value >= upper) throw_overflow();
+        }
         return static_cast<TTarget>(value);
     } else {
         using USource = std::make_unsigned_t<TSource>;

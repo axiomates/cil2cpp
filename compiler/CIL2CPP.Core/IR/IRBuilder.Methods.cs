@@ -582,11 +582,20 @@ public partial class IRBuilder
                 stack.Push(((sbyte)instr.Operand!).ToString());
                 break;
             case Code.Ldc_I4:
-                stack.Push(((int)instr.Operand!).ToString());
+            {
+                var val = (int)instr.Operand!;
+                // INT32_MIN: C++ parses -2147483648 as -(2147483648LL) on MSVC (long is 32-bit),
+                // giving type long long instead of int. Use subtraction form to stay int.
+                stack.Push(val == int.MinValue ? "(-2147483647 - 1)" : val.ToString());
                 break;
+            }
             case Code.Ldc_I8:
-                stack.Push($"{(long)instr.Operand!}LL");
+            {
+                var val = (long)instr.Operand!;
+                // INT64_MIN: 9223372036854775808LL overflows long long — ill-formed C++20.
+                stack.Push(val == long.MinValue ? "(-9223372036854775807LL - 1LL)" : $"{val}LL");
                 break;
+            }
             case Code.Ldc_R4:
             {
                 var val = (float)instr.Operand!;
@@ -912,7 +921,7 @@ public partial class IRBuilder
                 break;
             case Code.Bne_Un:
             case Code.Bne_Un_S:
-                EmitComparisonBranch(block, stack, "!=", instr, branchTargetStacks: branchTargetStacks);
+                EmitComparisonBranch(block, stack, "!=", instr, isUnsigned: true, branchTargetStacks: branchTargetStacks);
                 break;
             case Code.Bge:
             case Code.Bge_S:
@@ -1446,6 +1455,8 @@ public partial class IRBuilder
 
             case Code.Ldlen:
             {
+                // TODO: ECMA-335 III.4.18 specifies ldlen pushes native unsigned int (uintptr_t),
+                // but .NET arrays are limited to Int32.MaxValue elements. Using int32_t for compatibility.
                 var arr = stack.Count > 0 ? stack.Pop() : "nullptr";
                 var tmp = $"__t{tempCounter++}";
                 block.Instructions.Add(new IRRawCpp
@@ -1899,6 +1910,8 @@ public partial class IRBuilder
                 var tmp = $"__t{tempCounter++}";
                 block.Instructions.Add(new IRRawCpp
                 {
+                    // ECMA-335 III.4.25 says uint32, but .NET sizeof() returns int (signed),
+                    // and using uint32_t causes template deduction failures in checked arithmetic.
                     Code = $"auto {tmp} = static_cast<int32_t>(sizeof({typeCpp}));",
                     ResultVar = tmp,
                     ResultTypeCpp = "int32_t",

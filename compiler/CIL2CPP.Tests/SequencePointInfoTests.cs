@@ -5,12 +5,12 @@ using CIL2CPP.Tests.Fixtures;
 
 namespace CIL2CPP.Tests;
 
-[Collection("SampleAssembly")]
+[Collection("DllPaths")]
 public class SequencePointInfoTests
 {
-    private readonly SampleAssemblyFixture _fixture;
+    private readonly DllPathsFixture _fixture;
 
-    public SequencePointInfoTests(SampleAssemblyFixture fixture)
+    public SequencePointInfoTests(DllPathsFixture fixture)
     {
         _fixture = fixture;
     }

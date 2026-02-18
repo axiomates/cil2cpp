@@ -185,17 +185,17 @@ public class ILOpcodeCoverageTests
 /// <summary>
 /// Behavioral test: compile FeatureTest and verify no unsupported opcode warnings.
 /// </summary>
-[Collection("SampleAssembly")]
+[Collection("FeatureTest")]
 public class ILOpcodeRuntimeCoverageTests
 {
-    private readonly SampleAssemblyFixture _fixture;
+    private readonly FeatureTestFixture _fixture;
 
-    public ILOpcodeRuntimeCoverageTests(SampleAssemblyFixture fixture) => _fixture = fixture;
+    public ILOpcodeRuntimeCoverageTests(FeatureTestFixture fixture) => _fixture = fixture;
 
     [Fact]
     public void FeatureTest_NoUnexpectedUnsupportedOpcodeWarnings()
     {
-        var module = _fixture.GetFeatureTestReleaseModule();
+        var module = _fixture.GetReleaseModule();
         var warnings = module.GetAllMethods()
             .SelectMany(m => m.BasicBlocks)
             .SelectMany(b => b.Instructions)

@@ -5,12 +5,12 @@ using CIL2CPP.Tests.Fixtures;
 
 namespace CIL2CPP.Tests;
 
-[Collection("SampleAssembly")]
+[Collection("Reachability")]
 public class ReachabilityAnalyzerTests
 {
-    private readonly SampleAssemblyFixture _fixture;
+    private readonly ReachabilityFixture _fixture;
 
-    public ReachabilityAnalyzerTests(SampleAssemblyFixture fixture)
+    public ReachabilityAnalyzerTests(ReachabilityFixture fixture)
     {
         _fixture = fixture;
     }

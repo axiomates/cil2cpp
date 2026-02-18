@@ -191,6 +191,10 @@ public partial class IRBuilder
             condition = $"cil2cpp::unsigned_gt({left}, {right})";
         else if (isUnsigned && op == "<")
             condition = $"cil2cpp::unsigned_lt({left}, {right})";
+        else if (isUnsigned && op == ">=")
+            condition = $"cil2cpp::unsigned_ge({left}, {right})";
+        else if (isUnsigned && op == "<=")
+            condition = $"cil2cpp::unsigned_le({left}, {right})";
         else if (isUnsigned)
             condition = $"cil2cpp::to_unsigned({left}) {op} cil2cpp::to_unsigned({right})";
         else

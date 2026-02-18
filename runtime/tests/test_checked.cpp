@@ -202,3 +202,110 @@ TEST_F(CheckedTest, CheckedConvUn_FloatToUint32_NegativeOverflow) {
         ASSERT_NE(ctx.current_exception, nullptr);
     }
 }
+
+// Helper macro: expects an OverflowException from expression
+#define EXPECT_OVERFLOW(expr) do { \
+    cil2cpp::ExceptionContext ctx; \
+    ctx.previous = cil2cpp::g_exception_context; \
+    ctx.current_exception = nullptr; \
+    ctx.state = 0; \
+    cil2cpp::g_exception_context = &ctx; \
+    if (setjmp(ctx.jump_buffer) == 0) { \
+        (void)(expr); \
+        cil2cpp::g_exception_context = ctx.previous; \
+        FAIL() << "Expected OverflowException from: " #expr; \
+    } else { \
+        cil2cpp::g_exception_context = ctx.previous; \
+        ASSERT_NE(ctx.current_exception, nullptr); \
+    } \
+} while(0)
+
+// ===== unsigned_ge / unsigned_le — NaN semantics (ECMA-335 III.3.6-12) =====
+
+TEST_F(CheckedTest, UnsignedGe_Double_NormalValues) {
+    EXPECT_TRUE(cil2cpp::unsigned_ge(2.0, 1.0));
+    EXPECT_TRUE(cil2cpp::unsigned_ge(1.0, 1.0));
+    EXPECT_FALSE(cil2cpp::unsigned_ge(0.5, 1.0));
+}
+
+TEST_F(CheckedTest, UnsignedGe_Double_NaN_ReturnsTrue) {
+    double nan = std::numeric_limits<double>::quiet_NaN();
+    // bge.un: branch if >= OR unordered (NaN)
+    EXPECT_TRUE(cil2cpp::unsigned_ge(nan, 1.0));
+    EXPECT_TRUE(cil2cpp::unsigned_ge(1.0, nan));
+    EXPECT_TRUE(cil2cpp::unsigned_ge(nan, nan));
+}
+
+TEST_F(CheckedTest, UnsignedLe_Double_NormalValues) {
+    EXPECT_TRUE(cil2cpp::unsigned_le(1.0, 2.0));
+    EXPECT_TRUE(cil2cpp::unsigned_le(1.0, 1.0));
+    EXPECT_FALSE(cil2cpp::unsigned_le(2.0, 0.5));
+}
+
+TEST_F(CheckedTest, UnsignedLe_Double_NaN_ReturnsTrue) {
+    double nan = std::numeric_limits<double>::quiet_NaN();
+    // ble.un: branch if <= OR unordered (NaN)
+    EXPECT_TRUE(cil2cpp::unsigned_le(nan, 1.0));
+    EXPECT_TRUE(cil2cpp::unsigned_le(1.0, nan));
+    EXPECT_TRUE(cil2cpp::unsigned_le(nan, nan));
+}
+
+TEST_F(CheckedTest, UnsignedGe_Int32_SignedAsUnsigned) {
+    // -1 as uint32 = 4294967295, which is >= 0
+    EXPECT_TRUE(cil2cpp::unsigned_ge(int32_t(-1), int32_t(0)));
+    EXPECT_TRUE(cil2cpp::unsigned_ge(int32_t(0), int32_t(0)));
+}
+
+TEST_F(CheckedTest, UnsignedLe_Int32_SignedAsUnsigned) {
+    EXPECT_TRUE(cil2cpp::unsigned_le(int32_t(0), int32_t(-1)));
+    EXPECT_TRUE(cil2cpp::unsigned_le(int32_t(0), int32_t(0)));
+}
+
+// ===== checked_conv — NaN throws OverflowException =====
+
+TEST_F(CheckedTest, CheckedConv_NaN_ThrowsOverflow) {
+    EXPECT_OVERFLOW((cil2cpp::checked_conv<int32_t, double>(std::numeric_limits<double>::quiet_NaN())));
+}
+
+TEST_F(CheckedTest, CheckedConv_NaN_Float_ThrowsOverflow) {
+    EXPECT_OVERFLOW((cil2cpp::checked_conv<int32_t, float>(std::numeric_limits<float>::quiet_NaN())));
+}
+
+TEST_F(CheckedTest, CheckedConv_Infinity_ThrowsOverflow) {
+    EXPECT_OVERFLOW((cil2cpp::checked_conv<int32_t, double>(std::numeric_limits<double>::infinity())));
+}
+
+TEST_F(CheckedTest, CheckedConv_NegInfinity_ThrowsOverflow) {
+    EXPECT_OVERFLOW((cil2cpp::checked_conv<int32_t, double>(-std::numeric_limits<double>::infinity())));
+}
+
+TEST_F(CheckedTest, CheckedConvUn_NaN_ThrowsOverflow) {
+    EXPECT_OVERFLOW((cil2cpp::checked_conv_un<uint32_t, double>(std::numeric_limits<double>::quiet_NaN())));
+}
+
+// ===== checked_conv — int64 boundary precision =====
+
+TEST_F(CheckedTest, CheckedConv_DoubleToInt64_BoundaryThrows) {
+    // 2^63 (9223372036854775808.0) does NOT fit in int64_t — must throw
+    double two_63 = static_cast<double>(1ULL << 63); // = 9223372036854775808.0, exact
+    EXPECT_OVERFLOW((cil2cpp::checked_conv<int64_t, double>(two_63)));
+}
+
+TEST_F(CheckedTest, CheckedConv_DoubleToInt64_MinValueAllowed) {
+    // INT64_MIN (-9223372036854775808) = -2^63, exactly representable as double
+    double int64_min = static_cast<double>(std::numeric_limits<int64_t>::min());
+    EXPECT_EQ((cil2cpp::checked_conv<int64_t, double>(int64_min)), std::numeric_limits<int64_t>::min());
+}
+
+TEST_F(CheckedTest, CheckedConv_DoubleToInt64_LargestValidPasses) {
+    // Largest double < 2^63: 9223372036854774784.0 (= 2^63 - 1024)
+    // This is representable in int64_t.
+    double largest_valid = 9223372036854774784.0;
+    EXPECT_EQ((cil2cpp::checked_conv<int64_t, double>(largest_valid)), int64_t(9223372036854774784LL));
+}
+
+TEST_F(CheckedTest, CheckedConvUn_DoubleToUint64_BoundaryThrows) {
+    // 2^64 (18446744073709551616.0) does NOT fit in uint64_t — must throw
+    double two_64 = static_cast<double>(1ULL << 63) * 2.0;
+    EXPECT_OVERFLOW((cil2cpp::checked_conv_un<uint64_t, double>(two_64)));
+}
