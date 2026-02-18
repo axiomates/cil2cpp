@@ -3,9 +3,13 @@ using Mono.Cecil;
 namespace CIL2CPP.Core.IR;
 
 /// <summary>
-/// Registry for [InternalCall] method → C++ runtime mappings.
-/// Unity IL2CPP architecture: only methods with MethodImplAttributes.InternalCall
-/// are mapped to C++ implementations. All other BCL methods compile from IL.
+/// Registry for method → C++ runtime mappings.
+/// Primary purpose: [InternalCall] methods (no IL body, implemented in C++ runtime).
+/// Secondary purpose: BCL methods whose IL chains are impractical for AOT compilation:
+///   - JIT intrinsics (Unsafe.As, hardware intrinsics)
+///   - SIMD-dependent paths (SSE2/AVX2 in Utf8Utility)
+///   - Deep globalization data tables (CharUnicodeInfo → Char classification)
+/// All other BCL methods compile from IL (Unity IL2CPP architecture).
 /// </summary>
 public static class ICallRegistry
 {
@@ -66,7 +70,30 @@ public static class ICallRegistry
         RegisterICall("System.Enum", "InternalBoxEnum", 2, "cil2cpp::icall::Enum_InternalBoxEnum");
         RegisterICall("System.Enum", "InternalGetCorElementType", 1, "cil2cpp::icall::Enum_InternalGetCorElementType");
 
-        // Char classification methods (IsWhiteSpace, IsDigit, etc.) — compile from BCL IL.
+        // ===== System.Char (ICU-backed classification + case conversion) =====
+        // BCL Char methods have IL bodies, but their chain goes through CharUnicodeInfo →
+        // System.Globalization → large Unicode data tables that are impractical for AOT.
+        // Redirect to ICU4C-backed runtime implementations instead.
+        RegisterICall("System.Char", "IsWhiteSpace", 1, "cil2cpp::unicode::char_is_whitespace");
+        RegisterICall("System.Char", "IsDigit", 1, "cil2cpp::unicode::char_is_digit");
+        RegisterICall("System.Char", "IsLetter", 1, "cil2cpp::unicode::char_is_letter");
+        RegisterICall("System.Char", "IsLetterOrDigit", 1, "cil2cpp::unicode::char_is_letter_or_digit");
+        RegisterICall("System.Char", "IsUpper", 1, "cil2cpp::unicode::char_is_upper");
+        RegisterICall("System.Char", "IsLower", 1, "cil2cpp::unicode::char_is_lower");
+        RegisterICall("System.Char", "IsPunctuation", 1, "cil2cpp::unicode::char_is_punctuation");
+        RegisterICall("System.Char", "IsSeparator", 1, "cil2cpp::unicode::char_is_separator");
+        RegisterICall("System.Char", "IsControl", 1, "cil2cpp::unicode::char_is_control");
+        RegisterICall("System.Char", "IsSurrogate", 1, "cil2cpp::unicode::char_is_surrogate");
+        RegisterICall("System.Char", "IsHighSurrogate", 1, "cil2cpp::unicode::char_is_high_surrogate");
+        RegisterICall("System.Char", "IsLowSurrogate", 1, "cil2cpp::unicode::char_is_low_surrogate");
+        // HACK: ToUpper/ToLower use culture-independent ICU u_toupper/u_tolower (≈ InvariantCulture).
+        // .NET's ToUpper(char) is culture-sensitive (CurrentCulture), but the difference only matters
+        // for Turkish İ/I dotted/undotted. Acceptable simplification until locale support is added.
+        RegisterICall("System.Char", "ToUpper", 1, "cil2cpp::unicode::char_to_upper");
+        RegisterICall("System.Char", "ToLower", 1, "cil2cpp::unicode::char_to_lower");
+        RegisterICall("System.Char", "ToUpperInvariant", 1, "cil2cpp::unicode::char_to_upper");
+        RegisterICall("System.Char", "ToLowerInvariant", 1, "cil2cpp::unicode::char_to_lower");
+
         // Attribute..ctor — compiles from BCL IL (just calls Object..ctor).
 
         // ===== System.Threading.Monitor =====

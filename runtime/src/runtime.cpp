@@ -3,6 +3,7 @@
  */
 
 #include <cil2cpp/cil2cpp.h>
+#include <cil2cpp/unicode.h>
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -21,6 +22,7 @@ char** runtime_get_argv() { return g_argv; }
 void runtime_init() {
     gc::init();
     threadpool::init();
+    unicode::init();
 
 #ifdef _WIN32
     // Force UTF-8 console mode. The BCL Console chain selects encoding based on

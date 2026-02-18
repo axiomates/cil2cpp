@@ -48,6 +48,33 @@ add_subdirectory(${bdwgc_SOURCE_DIR} ${bdwgc_BINARY_DIR} EXCLUDE_FROM_ALL)
 # Match our DEBUG_POSTFIX so Debug installs gcd.lib, Release installs gc.lib
 set_target_properties(gc PROPERTIES DEBUG_POSTFIX d)
 
+# === ICU4C 78.2 (prebuilt binaries on Windows, system package on Linux) ===
+if(WIN32)
+    FetchContent_Declare(
+        icu4c
+        URL https://github.com/unicode-org/icu/releases/download/release-78.2/icu4c-78.2-Win64-MSVC2022.zip
+    )
+    FetchContent_GetProperties(icu4c)
+    if(NOT icu4c_POPULATED)
+        FetchContent_Populate(icu4c)
+    endif()
+
+    # Create IMPORTED targets from prebuilt binaries
+    add_library(ICU::uc SHARED IMPORTED)
+    set_target_properties(ICU::uc PROPERTIES
+        IMPORTED_IMPLIB "${icu4c_SOURCE_DIR}/lib64/icuuc.lib"
+        IMPORTED_LOCATION "${icu4c_SOURCE_DIR}/bin64/icuuc78.dll"
+        INTERFACE_INCLUDE_DIRECTORIES "${icu4c_SOURCE_DIR}/include"
+    )
+    add_library(ICU::dt SHARED IMPORTED)
+    set_target_properties(ICU::dt PROPERTIES
+        IMPORTED_IMPLIB "${icu4c_SOURCE_DIR}/lib64/icudt.lib"
+        IMPORTED_LOCATION "${icu4c_SOURCE_DIR}/bin64/icudt78.dll"
+    )
+else()
+    find_package(ICU REQUIRED COMPONENTS uc data)
+endif()
+
 # Runtime library sources
 set(RUNTIME_SOURCES
     src/runtime.cpp
@@ -74,6 +101,7 @@ set(RUNTIME_SOURCES
     src/collections/list.cpp
     src/collections/dictionary.cpp
     src/typed_reference.cpp
+    src/unicode/icu_bridge.cpp
 )
 
 # Create static library
@@ -100,6 +128,9 @@ target_link_libraries(cil2cpp_runtime PRIVATE gc)
 # GC_NOT_DLL: tell bdwgc headers we link statically (prevents __declspec(dllimport))
 # GC_THREADS: enable multi-thread support in BoehmGC (GC_register_my_thread, etc.)
 target_compile_definitions(cil2cpp_runtime PRIVATE GC_NOT_DLL GC_THREADS)
+
+# ICU4C — PRIVATE dep for Unicode support (UTF conversion, char classification)
+target_link_libraries(cil2cpp_runtime PRIVATE ICU::uc ICU::dt)
 
 # Platform-specific settings
 if(WIN32)
@@ -152,6 +183,20 @@ install(DIRECTORY include/
 
 # Install BoehmGC library (needed by consumers at link time)
 install(FILES $<TARGET_FILE:gc> DESTINATION lib)
+
+# Install ICU libraries (needed by consumers at link + run time)
+if(WIN32)
+    install(FILES
+        "${icu4c_SOURCE_DIR}/lib64/icuuc.lib"
+        "${icu4c_SOURCE_DIR}/lib64/icudt.lib"
+        DESTINATION lib
+    )
+    install(FILES
+        "${icu4c_SOURCE_DIR}/bin64/icuuc78.dll"
+        "${icu4c_SOURCE_DIR}/bin64/icudt78.dll"
+        DESTINATION bin
+    )
+endif()
 
 # CMake package config
 install(EXPORT cil2cppTargets

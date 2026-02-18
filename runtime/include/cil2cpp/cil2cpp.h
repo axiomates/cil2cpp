@@ -28,6 +28,7 @@
 #include "memberinfo.h"
 #include "collections.h"
 #include "typed_reference.h"
+#include "unicode.h"
 
 // BCL types
 #include "bcl/System.Object.h"

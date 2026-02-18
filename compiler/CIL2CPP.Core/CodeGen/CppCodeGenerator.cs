@@ -340,6 +340,24 @@ public partial class CppCodeGenerator
         sb.AppendLine("    )");
         sb.AppendLine("endif()");
 
+        // Copy ICU DLLs to output directory (Windows only)
+        // ICU::uc and ICU::dt SHARED IMPORTED targets are created by cil2cppConfig.cmake
+        if (isExe)
+        {
+            sb.AppendLine();
+            sb.AppendLine("# Copy ICU DLLs to output directory (Windows only)");
+            sb.AppendLine("if(WIN32 AND TARGET ICU::uc)");
+            sb.AppendLine($"    add_custom_command(TARGET {projectName} POST_BUILD");
+            sb.AppendLine("        COMMAND ${CMAKE_COMMAND} -E copy_if_different");
+            sb.AppendLine("            $<TARGET_PROPERTY:ICU::uc,IMPORTED_LOCATION>");
+            sb.AppendLine($"            $<TARGET_FILE_DIR:{projectName}>");
+            sb.AppendLine("        COMMAND ${CMAKE_COMMAND} -E copy_if_different");
+            sb.AppendLine("            $<TARGET_PROPERTY:ICU::dt,IMPORTED_LOCATION>");
+            sb.AppendLine($"            $<TARGET_FILE_DIR:{projectName}>");
+            sb.AppendLine("    )");
+            sb.AppendLine("endif()");
+        }
+
         return new GeneratedFile
         {
             FileName = "CMakeLists.txt",

@@ -20,5 +20,31 @@ if(NOT TARGET BDWgc::gc)
     unset(_CIL2CPP_GC_LIB_DEBUG CACHE)
 endif()
 
+# ICU4C - create imported targets for Unicode support
+if(WIN32)
+    if(NOT TARGET ICU::uc)
+        find_library(_CIL2CPP_ICUUC_LIB icuuc PATHS "${PACKAGE_PREFIX_DIR}/lib" NO_DEFAULT_PATH)
+        find_library(_CIL2CPP_ICUDT_LIB icudt PATHS "${PACKAGE_PREFIX_DIR}/lib" NO_DEFAULT_PATH)
+        if(_CIL2CPP_ICUUC_LIB)
+            add_library(ICU::uc SHARED IMPORTED)
+            set_target_properties(ICU::uc PROPERTIES
+                IMPORTED_IMPLIB "${_CIL2CPP_ICUUC_LIB}"
+                IMPORTED_LOCATION "${PACKAGE_PREFIX_DIR}/bin/icuuc78.dll"
+            )
+        endif()
+        if(_CIL2CPP_ICUDT_LIB)
+            add_library(ICU::dt SHARED IMPORTED)
+            set_target_properties(ICU::dt PROPERTIES
+                IMPORTED_IMPLIB "${_CIL2CPP_ICUDT_LIB}"
+                IMPORTED_LOCATION "${PACKAGE_PREFIX_DIR}/bin/icudt78.dll"
+            )
+        endif()
+        unset(_CIL2CPP_ICUUC_LIB CACHE)
+        unset(_CIL2CPP_ICUDT_LIB CACHE)
+    endif()
+else()
+    find_dependency(ICU COMPONENTS uc data)
+endif()
+
 include("${CMAKE_CURRENT_LIST_DIR}/cil2cppTargets.cmake")
 check_required_components(cil2cpp)

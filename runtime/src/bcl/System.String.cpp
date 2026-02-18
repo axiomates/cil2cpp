@@ -8,10 +8,12 @@
 #include <cil2cpp/array.h>
 #include <cil2cpp/exception.h>
 #include <cil2cpp/type_info.h>
+#include <cil2cpp/unicode.h>
 
 #include <unordered_map>
 #include <string>
 #include <cstring>
+#include <cstdlib>
 
 namespace cil2cpp {
 
@@ -43,76 +45,19 @@ TypeInfo String_TypeInfo = {
 
 } // namespace System
 
-// ---------- UTF-8 ↔ UTF-16 conversion (RFC 3629 / Unicode 15.0) ----------
-
-// Convert UTF-8 to UTF-16 length
-static Int32 utf8_to_utf16_length(const char* utf8) {
-    Int32 len = 0;
-    while (*utf8) {
-        unsigned char c = static_cast<unsigned char>(*utf8);
-        if (c < 0x80) {
-            utf8 += 1;
-        } else if ((c & 0xE0) == 0xC0) {
-            utf8 += 2;
-        } else if ((c & 0xF0) == 0xE0) {
-            utf8 += 3;
-        } else if ((c & 0xF8) == 0xF0) {
-            utf8 += 4;
-            len++;  // Surrogate pair
-        } else {
-            utf8 += 1;  // Invalid, skip
-        }
-        len++;
-    }
-    return len;
-}
-
-// Convert UTF-8 to UTF-16
-static void utf8_to_utf16(const char* utf8, Char* utf16) {
-    while (*utf8) {
-        unsigned char c = static_cast<unsigned char>(*utf8);
-
-        if (c < 0x80) {
-            *utf16++ = static_cast<Char>(c);
-            utf8 += 1;
-        } else if ((c & 0xE0) == 0xC0) {
-            UInt32 codepoint = (c & 0x1F) << 6;
-            codepoint |= (utf8[1] & 0x3F);
-            *utf16++ = static_cast<Char>(codepoint);
-            utf8 += 2;
-        } else if ((c & 0xF0) == 0xE0) {
-            UInt32 codepoint = (c & 0x0F) << 12;
-            codepoint |= (utf8[1] & 0x3F) << 6;
-            codepoint |= (utf8[2] & 0x3F);
-            *utf16++ = static_cast<Char>(codepoint);
-            utf8 += 3;
-        } else if ((c & 0xF8) == 0xF0) {
-            UInt32 codepoint = (c & 0x07) << 18;
-            codepoint |= (utf8[1] & 0x3F) << 12;
-            codepoint |= (utf8[2] & 0x3F) << 6;
-            codepoint |= (utf8[3] & 0x3F);
-            // Surrogate pair
-            codepoint -= 0x10000;
-            *utf16++ = static_cast<Char>(0xD800 | (codepoint >> 10));
-            *utf16++ = static_cast<Char>(0xDC00 | (codepoint & 0x3FF));
-            utf8 += 4;
-        } else {
-            utf8 += 1;  // Skip invalid
-        }
-    }
-}
+// ---------- UTF-8 ↔ UTF-16 conversion (ICU4C backed) ----------
 
 String* string_create_utf8(const char* utf8) {
     if (!utf8) {
         return nullptr;
     }
 
-    Int32 len = utf8_to_utf16_length(utf8);
+    Int32 len = unicode::utf8_to_utf16_length(utf8);
     size_t size = sizeof(String) + (len * sizeof(Char));
 
     String* str = static_cast<String*>(gc::alloc(size, &System::String_TypeInfo));
     str->length = len;
-    utf8_to_utf16(utf8, str->chars);
+    unicode::utf8_to_utf16(utf8, str->chars, len);
 
     return str;
 }
@@ -202,9 +147,7 @@ Boolean string_is_null_or_empty(String* str) {
 Boolean string_is_null_or_whitespace(String* str) {
     if (!str || str->length == 0) return true;
     for (Int32 i = 0; i < str->length; i++) {
-        Char c = str->chars[i];
-        if (c != u' ' && c != u'\t' && c != u'\n' && c != u'\r' &&
-            c != u'\v' && c != u'\f') return false;
+        if (!unicode::is_whitespace(str->chars[i])) return false;
     }
     return true;
 }
@@ -222,52 +165,10 @@ char* string_to_utf8(String* str) {
         return nullptr;
     }
 
-    // Calculate UTF-8 length (with surrogate pair detection)
-    size_t utf8_len = 0;
-    for (Int32 i = 0; i < str->length; i++) {
-        Char c = str->chars[i];
-        if (c < 0x80) {
-            utf8_len += 1;
-        } else if (c < 0x800) {
-            utf8_len += 2;
-        } else if (c >= 0xD800 && c <= 0xDBFF && i + 1 < str->length
-                   && str->chars[i + 1] >= 0xDC00 && str->chars[i + 1] <= 0xDFFF) {
-            // Surrogate pair → U+10000..U+10FFFF → 4-byte UTF-8
-            utf8_len += 4;
-            i++; // skip low surrogate
-        } else {
-            utf8_len += 3;
-        }
-    }
-
+    Int32 utf8_len = unicode::utf16_to_utf8_length(str->chars, str->length);
     char* utf8 = static_cast<char*>(std::malloc(utf8_len + 1));
-    char* p = utf8;
-
-    for (Int32 i = 0; i < str->length; i++) {
-        Char c = str->chars[i];
-        if (c < 0x80) {
-            *p++ = static_cast<char>(c);
-        } else if (c < 0x800) {
-            *p++ = static_cast<char>(0xC0 | (c >> 6));
-            *p++ = static_cast<char>(0x80 | (c & 0x3F));
-        } else if (c >= 0xD800 && c <= 0xDBFF && i + 1 < str->length
-                   && str->chars[i + 1] >= 0xDC00 && str->chars[i + 1] <= 0xDFFF) {
-            // Surrogate pair: high (D800-DBFF) + low (DC00-DFFF) → codepoint
-            uint32_t cp = 0x10000 + ((static_cast<uint32_t>(c) - 0xD800) << 10)
-                        + (static_cast<uint32_t>(str->chars[i + 1]) - 0xDC00);
-            *p++ = static_cast<char>(0xF0 | (cp >> 18));
-            *p++ = static_cast<char>(0x80 | ((cp >> 12) & 0x3F));
-            *p++ = static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
-            *p++ = static_cast<char>(0x80 | (cp & 0x3F));
-            i++; // skip low surrogate
-        } else {
-            *p++ = static_cast<char>(0xE0 | (c >> 12));
-            *p++ = static_cast<char>(0x80 | ((c >> 6) & 0x3F));
-            *p++ = static_cast<char>(0x80 | (c & 0x3F));
-        }
-    }
-
-    *p = '\0';
+    unicode::utf16_to_utf8(str->chars, str->length, utf8, utf8_len);
+    utf8[utf8_len] = '\0';
     return utf8;
 }
 
