@@ -78,7 +78,7 @@ cil2cpp/
              │       ↓         (deps.json 依赖发现 + 自动解析)       │
              │ ReachabilityAnalyzer ──→ 可达性分析（树摇）           │
              │       ↓                 (从入口点/公共类型出发)       │
-             │ IRBuilder.Build() ──→ 中间表示（7 遍，见下文）        │
+             │ IRBuilder.Build() ──→ 中间表示（8 遍，见下文）        │
              │       ↓                                             │
              │ CppCodeGenerator ──→ C++ 头文件 + 源文件 + CMake     │
              │                      (试渲染 + 错误检测 + 自动 stub) │     .h / .cpp
@@ -91,20 +91,20 @@ cil2cpp/
                                                                        原生可执行文件
 ```
 
-### IR 构建：7 遍流水线
+### IR 构建：8 遍流水线
 
-编译器的核心是 `IRBuilder.Build()`，将 Mono.Cecil 的 IL 数据转换为中间表示 (IR)，分 7 遍完成：
+编译器的核心是 `IRBuilder.Build()`，将 Mono.Cecil 的 IL 数据转换为中间表示 (IR)，分 8 遍完成：
 
 | 遍次 | 名称 | 做什么 | 为什么需要这个顺序 |
 |------|------|--------|-------------------|
-| Pass 1 | 类型外壳 | 创建所有 `IRType`（名称、标志、命名空间） | 后续遍次需要通过名称查找类型 |
-| Pass 2 | 字段与基类 | 填充字段、基类引用、接口列表、静态构造函数 | VTable 构建需要知道继承链 |
-| Pass 3 | 方法壳 | 创建 `IRMethod`（签名、参数），不含方法体 | 方法体中的 call 指令需要能找到目标方法 |
-| Pass 3.5 | 泛型单态化 | 收集所有泛型实例化 → 生成具体类型/方法 | `List<int>` → `List_1_System_Int32` 独立类型 |
-| Pass 4 | VTable | 按继承链递归构建虚方法表 | 方法体中的 callvirt 需要 VTable 槽号 |
-| Pass 5 | 接口映射 | 构建 InterfaceVTable（接口→实现方法映射） | 接口分派需要知道实现方法地址 |
-| Pass 6 | 方法体 | IL 栈模拟 → 变量赋值，生成 `IRInstruction` | 依赖 Pass 3-5：call 解析、VTable 槽号、接口映射 |
-| Pass 7 | 方法合成 | record 的 ToString/Equals/GetHashCode/Clone | 替换编译器生成的引用 EqualityComparer 的方法体 |
+| 1 | 类型外壳 | 创建所有 `IRType`（名称、标志、命名空间） | 后续遍次需要通过名称查找类型 |
+| 2 | 字段与基类 | 填充字段、基类引用、接口列表、静态构造函数 | VTable 构建需要知道继承链 |
+| 3 | 方法壳 | 创建 `IRMethod`（签名、参数），不含方法体 | 方法体中的 call 指令需要能找到目标方法 |
+| 4 | 泛型单态化 | 收集所有泛型实例化 → 生成具体类型/方法 | `List<int>` → `List_1_System_Int32` 独立类型 |
+| 5 | VTable | 按继承链递归构建虚方法表 | 方法体中的 callvirt 需要 VTable 槽号 |
+| 6 | 接口映射 | 构建 InterfaceVTable（接口→实现方法映射） | 接口分派需要知道实现方法地址 |
+| 7 | 方法体 | IL 栈模拟 → 变量赋值，生成 `IRInstruction` | 依赖前几遍：call 解析、VTable 槽号、接口映射 |
+| 8 | 方法合成 | record 的 ToString/Equals/GetHashCode/Clone | 替换编译器生成的引用 EqualityComparer 的方法体 |
 
 ### BCL 编译策略：Unity IL2CPP 模型
 
@@ -150,8 +150,6 @@ BCL 中部分方法的 IL 引用了 CLR 内部类型（RuntimeType、QCallTypeHa
 
 每次 codegen 会生成 `stubbed_methods.txt` 报告，列出所有被 stub 化的方法及原因。
 
----
-
 ## 使用方法
 
 完整流程分为 4 步。步骤 1 只需执行一次，步骤 2-4 每次生成时执行。
@@ -178,25 +176,35 @@ cmake --install build --config Debug --prefix <安装路径>
 
 ```
 <安装路径>/
-├── include/cil2cpp/            # 运行时头文件
-│   ├── cil2cpp.h               #   主入口（runtime_init / runtime_shutdown）
+├── include/cil2cpp/            # 运行时头文件（27 个）
+│   ├── cil2cpp.h               #   主入口（runtime_init / runtime_shutdown / runtime_set_args）
 │   ├── types.h                 #   基本类型别名（Int32, Boolean, ...）
 │   ├── object.h                #   Object 基类 + 分配/转型
 │   ├── string.h                #   String 类型（UTF-16，不可变，驻留池）
 │   ├── array.h                 #   Array 类型（类型化，越界检查）
 │   ├── gc.h                    #   GC 接口（BoehmGC 封装：alloc / collect）
-│   ├── exception.h             #   异常处理（setjmp/longjmp）
+│   ├── exception.h             #   异常处理（setjmp/longjmp + 栈回溯）
 │   ├── type_info.h             #   TypeInfo / VTable / MethodInfo / FieldInfo
 │   ├── boxing.h                #   装箱/拆箱模板（box<T> / unbox<T>）
-│   ├── reflection.h            #   System.Type 反射包装（typeof / GetType / 属性查询）
-│   ├── threading.h             #   多线程原语（Monitor / Interlocked icall）
-│   ├── task.h                  #   Task 运行时基础结构
+│   ├── checked.h               #   溢出检查算术（checked_add / checked_mul 等）
+│   ├── reflection.h            #   System.Type 反射包装（typeof / GetType）
+│   ├── memberinfo.h            #   MemberInfo / MethodInfo / FieldInfo 运行时
+│   ├── threading.h             #   多线程原语（Monitor / Interlocked）
+│   ├── task.h                  #   Task 运行时（状态机、continuation）
 │   ├── threadpool.h            #   线程池（queue_work / init / shutdown）
-│   ├── cancellation.h          #   CancellationToken icall 支持
-│   ├── mdarray.h               #   多维数组 T[,] 运行时实现
+│   ├── cancellation.h          #   CancellationToken / CancellationTokenSource
+│   ├── async_enumerable.h      #   IAsyncEnumerable / ValueTask 运行时
+│   ├── delegate.h              #   委托创建/调用/组合
+│   ├── collections.h           #   List<T> / Dictionary<K,V> 运行时辅助
+│   ├── mdarray.h               #   多维数组 T[,] 运行时
 │   ├── stackalloc.h            #   stackalloc 平台抽象宏（alloca）
+│   ├── typed_reference.h       #   TypedReference / ArgIterator（变长参数）
 │   ├── icall.h                 #   [InternalCall] icall 声明
-│   └── bcl/                    #   BCL icall 实现头文件
+│   └── bcl/                    #   BCL 类型头文件
+│       ├── System.Object.h
+│       ├── System.String.h
+│       ├── System.Console.h
+│       └── System.IO.h
 └── lib/
     ├── cil2cpp_runtime.lib     # Release 静态库（Windows .lib / Linux .a）
     ├── cil2cpp_runtimed.lib    # Debug 静态库（DEBUG_POSTFIX "d"）
