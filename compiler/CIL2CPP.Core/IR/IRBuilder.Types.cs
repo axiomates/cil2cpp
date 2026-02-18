@@ -163,9 +163,11 @@ public partial class IRBuilder
     /// and add it to ExternalEnumTypes so the header generator emits a using alias
     /// instead of a struct forward declaration.
     /// </summary>
-    private void ScanExternalEnumTypes()
+    /// <returns>Set of mangled enum names that were newly discovered in this scan.</returns>
+    private HashSet<string> ScanExternalEnumTypes()
     {
         var checkedTypes = new HashSet<string>();
+        var newlyDiscovered = new HashSet<string>();
 
         foreach (var irType in _module.Types)
         {
@@ -173,67 +175,71 @@ public partial class IRBuilder
             {
                 // Check return type
                 if (!string.IsNullOrEmpty(method.ReturnTypeCpp) && method.ReturnTypeCpp != "void")
-                    TryRegisterExternalEnum(method.ReturnTypeCpp, checkedTypes);
+                    TryRegisterExternalEnum(method.ReturnTypeCpp, checkedTypes, newlyDiscovered);
 
                 // Check parameter types
                 foreach (var param in method.Parameters)
-                    TryRegisterExternalEnum(param.CppTypeName, checkedTypes);
+                    TryRegisterExternalEnum(param.CppTypeName, checkedTypes, newlyDiscovered);
 
                 // Check local variable types
                 foreach (var local in method.Locals)
-                    TryRegisterExternalEnum(local.CppTypeName, checkedTypes);
+                    TryRegisterExternalEnum(local.CppTypeName, checkedTypes, newlyDiscovered);
             }
 
             // Check field types (including static fields)
             foreach (var field in irType.Fields)
-                TryRegisterExternalEnum(CppNameMapper.GetCppTypeForDecl(field.FieldTypeName), checkedTypes);
+                TryRegisterExternalEnum(CppNameMapper.GetCppTypeForDecl(field.FieldTypeName), checkedTypes, newlyDiscovered);
             foreach (var field in irType.StaticFields)
-                TryRegisterExternalEnum(CppNameMapper.GetCppTypeForDecl(field.FieldTypeName), checkedTypes);
+                TryRegisterExternalEnum(CppNameMapper.GetCppTypeForDecl(field.FieldTypeName), checkedTypes, newlyDiscovered);
         }
+
+        return newlyDiscovered;
     }
 
     /// <summary>
     /// After ScanExternalEnumTypes registers enum types as value types,
     /// fix up method signatures that were resolved before the registration.
     /// Removes the pointer suffix (*) from parameters/return types that are now known to be enums.
+    /// Only fixes types matching the given set of newly-discovered enums, to avoid
+    /// stripping legitimate ref pointers from types resolved after earlier registration.
     /// </summary>
-    private void FixupExternalEnumTypes()
+    private void FixupExternalEnumTypes(HashSet<string> newlyDiscoveredEnums)
     {
-        if (_module.ExternalEnumTypes.Count == 0) return;
+        if (newlyDiscoveredEnums.Count == 0) return;
 
         foreach (var irType in _module.Types)
         {
             foreach (var method in irType.Methods)
             {
-                // Fix return type — strip exactly one trailing * if the base is an external enum
+                // Fix return type — strip exactly one trailing * if the base is a newly-discovered enum
                 if (method.ReturnTypeCpp != null)
-                    method.ReturnTypeCpp = FixupEnumPointerSuffix(method.ReturnTypeCpp);
+                    method.ReturnTypeCpp = FixupEnumPointerSuffix(method.ReturnTypeCpp, newlyDiscoveredEnums);
 
                 // Fix parameter types — strip one * per level of enum indirection
                 // Note: ref/out enum params have ** (one for ref, one for wrong enum→pointer);
                 // we strip one to get * (correct for ref/out value type)
                 foreach (var param in method.Parameters)
-                    param.CppTypeName = FixupEnumPointerSuffix(param.CppTypeName);
+                    param.CppTypeName = FixupEnumPointerSuffix(param.CppTypeName, newlyDiscoveredEnums);
 
                 // Fix local variable types
                 foreach (var local in method.Locals)
-                    local.CppTypeName = FixupEnumPointerSuffix(local.CppTypeName);
+                    local.CppTypeName = FixupEnumPointerSuffix(local.CppTypeName, newlyDiscoveredEnums);
             }
         }
     }
 
     /// <summary>
     /// Strip exactly one trailing '*' from a type name if the base type (without all '*')
-    /// is a known external enum. This handles:
+    /// is in the given set of enum names to fix. This handles:
     ///   "EnumType*"  → "EnumType"       (enum was wrongly treated as reference type)
     ///   "EnumType**" → "EnumType*"      (ref/out enum: one * for ref, one wrongly added)
     ///   "EnumType"   → "EnumType"       (already correct)
     /// </summary>
-    private string FixupEnumPointerSuffix(string cppTypeName)
+    private static string FixupEnumPointerSuffix(string cppTypeName, HashSet<string> enumsToFix)
     {
         if (!cppTypeName.EndsWith("*")) return cppTypeName;
         var baseType = cppTypeName.TrimEnd('*').Trim();
-        if (_module.ExternalEnumTypes.ContainsKey(baseType))
+        if (enumsToFix.Contains(baseType))
         {
             // Strip exactly one '*'
             return cppTypeName[..^1];
@@ -246,7 +252,7 @@ public partial class IRBuilder
     /// If the type isn't in the IR module and resolves to a Cecil enum definition,
     /// register it as a value type and add to ExternalEnumTypes.
     /// </summary>
-    private void TryRegisterExternalEnum(string cppTypeName, HashSet<string> checkedTypes)
+    private void TryRegisterExternalEnum(string cppTypeName, HashSet<string> checkedTypes, HashSet<string> newlyDiscovered)
     {
         // Strip pointer suffix — enum types are value types, shouldn't have *
         var raw = cppTypeName.TrimEnd('*').Trim();
@@ -256,6 +262,12 @@ public partial class IRBuilder
         // Skip if already known (in type cache or already registered)
         if (_module.ExternalEnumTypes.ContainsKey(raw)) return;
 
+        // If already registered as a value type (e.g., enum is an IRType in the module),
+        // method signatures already have correct pointer levels. We still need to register
+        // in ExternalEnumTypes (for header generation), but must NOT add to newlyDiscovered
+        // (which would trigger fixup that strips legitimate ref pointers).
+        bool alreadyValueType = CppNameMapper.IsValueType(raw);
+
         // Try to find the IL type name for this mangled C++ name
         // Scan all loaded assemblies for types whose mangled name matches
         var assemblies = GetLoadedAssemblies();
@@ -264,7 +276,13 @@ public partial class IRBuilder
             foreach (var module in asm.Modules)
             {
                 if (FindAndRegisterExternalEnum(module.Types, raw))
+                {
+                    // Only track as newly discovered if it was actually an enum
+                    // AND wasn't already a known value type (no fixup needed for those)
+                    if (_module.ExternalEnumTypes.ContainsKey(raw) && !alreadyValueType)
+                        newlyDiscovered.Add(raw);
                     return;
+                }
             }
         }
     }

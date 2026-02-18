@@ -443,8 +443,8 @@ public partial class IRBuilder
 
         // Pass 3.2: Scan method signatures for external enum types (BCL enums not in the IR module)
         // Must run after Pass 3 to have method signatures, then fixup the types.
-        ScanExternalEnumTypes();
-        FixupExternalEnumTypes();
+        var newEnums1 = ScanExternalEnumTypes();
+        FixupExternalEnumTypes(newEnums1);
 
         // Pass 3.3: Disambiguate overloaded methods whose C++ names collide
         // (e.g. different C# enum types collapse to same C++ type via using aliases)
@@ -494,9 +494,11 @@ public partial class IRBuilder
         DiscoverMissingReferencedTypes();
 
         // Pass 6.6: Re-scan for external enum types in generic specialization and newly
-        // compiled method bodies (their locals weren't available during Pass 3.2)
-        ScanExternalEnumTypes();
-        FixupExternalEnumTypes();
+        // compiled method bodies (their locals weren't available during Pass 3.2).
+        // Only fixup NEWLY discovered enums — types resolved after Pass 3.2 registration
+        // already have correct pointer levels (ref enum → EnumType*).
+        var newEnums2 = ScanExternalEnumTypes();
+        FixupExternalEnumTypes(newEnums2);
 
         // Pass 7: Synthesize record method bodies (replace compiler-generated bodies
         // that reference unsupported BCL types like StringBuilder, EqualityComparer<T>)
