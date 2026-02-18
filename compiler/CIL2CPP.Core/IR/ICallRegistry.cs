@@ -108,6 +108,9 @@ public static class ICallRegistry
         RegisterICall("System.Environment", "get_TickCount64", 0, "cil2cpp::icall::Environment_get_TickCount64");
         RegisterICall("System.Environment", "get_ProcessorCount", 0, "cil2cpp::icall::Environment_get_ProcessorCount");
         RegisterICall("System.Environment", "get_CurrentManagedThreadId", 0, "cil2cpp::icall::Environment_get_CurrentManagedThreadId");
+        RegisterICall("System.Environment", "Exit", 1, "cil2cpp::icall::Environment_Exit");
+        RegisterICall("System.Environment", "GetCommandLineArgs", 0, "cil2cpp::icall::Environment_GetCommandLineArgs");
+        RegisterICall("System.Environment", "GetEnvironmentVariable", 1, "cil2cpp::icall::Environment_GetEnvironmentVariable");
 
         // ===== System.GC =====
         RegisterICall("System.GC", "Collect", 0, "cil2cpp::gc_collect");

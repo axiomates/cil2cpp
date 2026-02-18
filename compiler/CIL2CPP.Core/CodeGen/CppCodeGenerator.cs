@@ -170,6 +170,7 @@ public partial class CppCodeGenerator
         sb.AppendLine();
         sb.AppendLine("int main(int argc, char* argv[]) {");
         sb.AppendLine("    cil2cpp::runtime_init();");
+        sb.AppendLine("    cil2cpp::runtime_set_args(argc, argv);");
         sb.AppendLine();
 
         // Initialize string literals
