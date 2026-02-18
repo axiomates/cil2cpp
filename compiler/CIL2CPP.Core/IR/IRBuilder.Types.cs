@@ -148,7 +148,7 @@ public partial class IRBuilder
             "System.Int16" or "System.UInt16" or "System.Char" => 2,
             "System.Int32" or "System.UInt32" or "System.Single" => 4,
             "System.Int64" or "System.UInt64" or "System.Double" => 8,
-            _ => 8 // Pointer size (reference types)
+            _ => 8 // Pointer size on 64-bit (reference types, IntPtr/UIntPtr). FIXME: 32-bit targets need 4.
         };
     }
 

@@ -50,6 +50,27 @@ inline auto to_unsigned(T v) { return reinterpret_cast<uintptr_t>(v); }
 template<typename T, std::enable_if_t<std::is_enum_v<T>, int> = 0>
 inline auto to_unsigned(T v) { return static_cast<std::make_unsigned_t<std::underlying_type_t<T>>>(v); }
 
+// Float/double: to_unsigned is identity (needed when to_unsigned is used generically)
+inline float to_unsigned(float v) { return v; }
+inline double to_unsigned(double v) { return v; }
+
+// ===== Unsigned Comparison — ECMA-335 III.1.5 =====
+// cgt.un on integers: compare as unsigned.
+// cgt.un on floats: returns true if a > b OR either is NaN (unordered).
+// Same for clt.un: true if a < b OR unordered.
+// IEEE 754: !(a <= b) is true when a > b OR either is NaN.
+template<typename T, std::enable_if_t<std::is_floating_point_v<T>, int> = 0>
+inline bool unsigned_gt(T a, T b) { return !(a <= b); }
+
+template<typename T, std::enable_if_t<std::is_floating_point_v<T>, int> = 0>
+inline bool unsigned_lt(T a, T b) { return !(a >= b); }
+
+template<typename T1, typename T2, std::enable_if_t<!std::is_floating_point_v<T1> && !std::is_floating_point_v<T2>, int> = 0>
+inline bool unsigned_gt(T1 a, T2 b) { return to_unsigned(a) > to_unsigned(b); }
+
+template<typename T1, typename T2, std::enable_if_t<!std::is_floating_point_v<T1> && !std::is_floating_point_v<T2>, int> = 0>
+inline bool unsigned_lt(T1 a, T2 b) { return to_unsigned(a) < to_unsigned(b); }
+
 // ===== Volatile Read/Write =====
 // System.Threading.Volatile.Read/Write — JIT intrinsics for volatile memory access.
 // Volatile.Read = acquire: load THEN fence (prevents subsequent ops from reordering before the read).

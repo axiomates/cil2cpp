@@ -186,9 +186,15 @@ public partial class IRBuilder
         // Save full stack snapshot for branch target (ternary pattern support)
         if (branchTargetStacks != null && stack.Count > 0 && !branchTargetStacks.ContainsKey(target.Offset))
             branchTargetStacks[target.Offset] = stack.Reverse().ToArray();
-        var condition = isUnsigned
-            ? $"cil2cpp::to_unsigned({left}) {op} cil2cpp::to_unsigned({right})"
-            : $"{left} {op} {right}";
+        string condition;
+        if (isUnsigned && op == ">")
+            condition = $"cil2cpp::unsigned_gt({left}, {right})";
+        else if (isUnsigned && op == "<")
+            condition = $"cil2cpp::unsigned_lt({left}, {right})";
+        else if (isUnsigned)
+            condition = $"cil2cpp::to_unsigned({left}) {op} cil2cpp::to_unsigned({right})";
+        else
+            condition = $"{left} {op} {right}";
         block.Instructions.Add(new IRConditionalBranch
         {
             Condition = condition,
@@ -1182,11 +1188,19 @@ public partial class IRBuilder
                     {
                         var thisArg = irCall.Arguments[0];
                         var cppTypeName = GetMangledTypeNameForRef(constrainedType);
-                        // Strip existing C-style cast prefix
-                        if (thisArg.StartsWith("(") && thisArg.Contains(')'))
+                        // Strip outermost C-style cast prefix using balanced paren matching
+                        // (handles nested casts like ((Type*)expr) correctly)
+                        if (thisArg.StartsWith("("))
                         {
-                            var closeIdx = thisArg.IndexOf(')');
-                            thisArg = thisArg[(closeIdx + 1)..];
+                            int depth = 0;
+                            int closeIdx = -1;
+                            for (int ci = 0; ci < thisArg.Length; ci++)
+                            {
+                                if (thisArg[ci] == '(') depth++;
+                                else if (thisArg[ci] == ')') { depth--; if (depth == 0) { closeIdx = ci; break; } }
+                            }
+                            if (closeIdx > 0 && closeIdx < thisArg.Length - 1)
+                                thisArg = thisArg[(closeIdx + 1)..];
                         }
                         irCall.Arguments[0] = $"({cppTypeName}*){thisArg}";
                     }

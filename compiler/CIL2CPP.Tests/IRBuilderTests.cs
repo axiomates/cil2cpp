@@ -820,9 +820,10 @@ public class IRBuilderTests
         var module = BuildFeatureTest();
         var instrs = GetMethodInstructions(module, "Program", "TestMoreConversions");
         var convs = instrs.OfType<IRConversion>().ToList();
-        // Conv_R_Un should produce static_cast<double>(static_cast<uint64_t>(val))
+        // Conv_R_Un should produce static_cast<double>(cil2cpp::to_unsigned(val))
+        // to_unsigned preserves the original width (avoids sign-extending 32-bit to 64-bit)
         var rUnConv = convs.FirstOrDefault(c =>
-            c.TargetType == "double" && c.SourceExpr.Contains("uint64_t"));
+            c.TargetType == "double" && c.SourceExpr.Contains("to_unsigned"));
         Assert.NotNull(rUnConv);
     }
 

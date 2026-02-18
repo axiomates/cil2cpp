@@ -84,7 +84,19 @@ T checked_mul_un(T a, T b) {
  */
 template<typename TTarget, typename TSource>
 TTarget checked_conv(TSource value) {
-    if constexpr (std::is_signed_v<TSource> && std::is_signed_v<TTarget>) {
+    if constexpr (std::is_floating_point_v<TSource>) {
+        // Float/double → integer: range-check directly.
+        // is_signed_v/make_unsigned_t don't apply to floating-point types.
+        if constexpr (std::is_signed_v<TTarget>) {
+            if (value < static_cast<TSource>(std::numeric_limits<TTarget>::min()) ||
+                value > static_cast<TSource>(std::numeric_limits<TTarget>::max()))
+                throw_overflow();
+        } else {
+            if (value < static_cast<TSource>(0) ||
+                value > static_cast<TSource>(std::numeric_limits<TTarget>::max()))
+                throw_overflow();
+        }
+    } else if constexpr (std::is_signed_v<TSource> && std::is_signed_v<TTarget>) {
         // signed -> signed
         if constexpr (sizeof(TTarget) < sizeof(TSource)) {
             if (value < static_cast<TSource>(std::numeric_limits<TTarget>::min()) ||
@@ -121,21 +133,30 @@ TTarget checked_conv(TSource value) {
  */
 template<typename TTarget, typename TSource>
 TTarget checked_conv_un(TSource value) {
-    using USource = std::make_unsigned_t<TSource>;
-    auto uval = static_cast<USource>(value);
-
-    if constexpr (std::is_signed_v<TTarget>) {
-        // unsigned -> signed target: check uval <= TTarget::max
-        if (uval > static_cast<USource>(std::numeric_limits<TTarget>::max()))
+    if constexpr (std::is_floating_point_v<TSource>) {
+        // Float/double source: range-check directly (make_unsigned_t is invalid for floats).
+        // Treat the float value as a non-negative number for unsigned interpretation.
+        if (value < static_cast<TSource>(0) ||
+            value > static_cast<TSource>(std::numeric_limits<TTarget>::max()))
             throw_overflow();
+        return static_cast<TTarget>(value);
     } else {
-        // unsigned -> unsigned target
-        if constexpr (sizeof(TTarget) < sizeof(USource)) {
+        using USource = std::make_unsigned_t<TSource>;
+        auto uval = static_cast<USource>(value);
+
+        if constexpr (std::is_signed_v<TTarget>) {
+            // unsigned -> signed target: check uval <= TTarget::max
             if (uval > static_cast<USource>(std::numeric_limits<TTarget>::max()))
                 throw_overflow();
+        } else {
+            // unsigned -> unsigned target
+            if constexpr (sizeof(TTarget) < sizeof(USource)) {
+                if (uval > static_cast<USource>(std::numeric_limits<TTarget>::max()))
+                    throw_overflow();
+            }
         }
+        return static_cast<TTarget>(uval);
     }
-    return static_cast<TTarget>(uval);
 }
 
 // ===== ckfinite (ECMA-335 III.3.19) =====

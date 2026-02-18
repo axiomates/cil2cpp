@@ -1376,13 +1376,16 @@ public partial class IRBuilder
             case Code.Conv_R8:  EmitConversion(block, stack, "double", ref tempCounter); break;
             case Code.Conv_R_Un:
             {
-                // ECMA-335 III.3.19: convert unsigned integer to float
-                // Must reinterpret as unsigned before converting to double
+                // ECMA-335 III.3.19: convert unsigned integer to float.
+                // Treat the value as unsigned at its natural width, then convert to double.
+                // Using to_unsigned() preserves the width (int32→uint32, int64→uint64)
+                // instead of sign-extending to uint64_t which would give wrong results
+                // for 32-bit values (e.g., int32(-1) → uint32(4294967295), not uint64(18446...)).
                 var val = stack.Count > 0 ? stack.Pop() : "0";
                 var tmp = $"__t{tempCounter++}";
                 block.Instructions.Add(new IRConversion
                 {
-                    SourceExpr = $"static_cast<uint64_t>({val})",
+                    SourceExpr = $"static_cast<double>(cil2cpp::to_unsigned({val}))",
                     TargetType = "double",
                     ResultVar = tmp
                 });
@@ -1750,7 +1753,27 @@ public partial class IRBuilder
                 var obj = stack.Count > 0 ? stack.Pop() : "nullptr";
                 var tmp = $"__t{tempCounter++}";
 
-                if (CppNameMapper.IsValueType(resolvedName))
+                if (IsNullableType(typeRef))
+                {
+                    // ECMA-335 III.4.33: unbox.any Nullable<T>:
+                    //   null → Nullable<T>{ hasValue=false, value=default }
+                    //   boxed T → Nullable<T>{ hasValue=true, value=unbox<T>(obj) }
+                    var git = (GenericInstanceType)typeRef;
+                    var innerTypeName = ResolveTypeRefOperand(git.GenericArguments[0]);
+                    var innerTypeCpp = CppNameMapper.IsPrimitive(innerTypeName)
+                        ? CppNameMapper.GetCppTypeName(innerTypeName)
+                        : CppNameMapper.MangleTypeName(innerTypeName);
+                    var nullableCpp = CppNameMapper.GetCppTypeName(resolvedName);
+                    block.Instructions.Add(new IRRawCpp
+                    {
+                        Code = $"{nullableCpp} {tmp} = {{0}}; " +
+                               $"if ({obj}) {{ {tmp}.f_hasValue = true; " +
+                               $"{tmp}.f_value = cil2cpp::unbox<{innerTypeCpp}>({obj}); }}",
+                        ResultVar = tmp,
+                        ResultTypeCpp = nullableCpp,
+                    });
+                }
+                else if (CppNameMapper.IsValueType(resolvedName))
                 {
                     // ECMA-335 III.4.33: for value types, extract a copy
                     var typeCpp = CppNameMapper.IsPrimitive(resolvedName)
@@ -1808,7 +1831,23 @@ public partial class IRBuilder
             {
                 var targetMethod = (MethodReference)instr.Operand!;
                 var targetTypeCpp = GetMangledTypeNameForRef(targetMethod.DeclaringType);
-                var methodCppName = CppNameMapper.MangleMethodName(targetTypeCpp, targetMethod.Name);
+                string methodCppName;
+                if (targetMethod is GenericInstanceMethod ldftnGim)
+                {
+                    // Generic method: include monomorphized type args in the mangled name
+                    var elemMethod = ldftnGim.ElementMethod;
+                    var typeArgs = ldftnGim.GenericArguments.Select(a => ResolveTypeRefOperand(a)).ToList();
+                    var paramSig = string.Join(",", elemMethod.Parameters.Select(p => p.ParameterType.FullName));
+                    var key = MakeGenericMethodKey(elemMethod.DeclaringType.FullName, elemMethod.Name, typeArgs, paramSig);
+                    if (_genericMethodInstantiations.TryGetValue(key, out var gmInfo))
+                        methodCppName = gmInfo.MangledName;
+                    else
+                        methodCppName = MangleGenericMethodName(elemMethod.DeclaringType.FullName, elemMethod.Name, typeArgs);
+                }
+                else
+                {
+                    methodCppName = CppNameMapper.MangleMethodName(targetTypeCpp, targetMethod.Name);
+                }
                 var tmp = $"__t{tempCounter++}";
                 block.Instructions.Add(new IRLoadFunctionPointer
                 {
@@ -2163,22 +2202,29 @@ public partial class IRBuilder
         var a = stack.Count > 0 ? stack.Pop() : "0";
         var tmp = $"__t{tempCounter++}";
 
-        var (func, type) = code switch
+        // ECMA-335 III.3.1-6: checked arithmetic uses the type determined by the CIL stack.
+        // Let C++ template argument deduction pick int32_t vs int64_t from the actual operand types.
+        // Unsigned variants use to_unsigned() to convert operands before the check.
+        bool isUn = code is Code.Add_Ovf_Un or Code.Sub_Ovf_Un or Code.Mul_Ovf_Un;
+        var func = code switch
         {
-            Code.Add_Ovf => ("cil2cpp::checked_add", "int32_t"),
-            Code.Add_Ovf_Un => ("cil2cpp::checked_add_un", "uint32_t"),
-            Code.Sub_Ovf => ("cil2cpp::checked_sub", "int32_t"),
-            Code.Sub_Ovf_Un => ("cil2cpp::checked_sub_un", "uint32_t"),
-            Code.Mul_Ovf => ("cil2cpp::checked_mul", "int32_t"),
-            Code.Mul_Ovf_Un => ("cil2cpp::checked_mul_un", "uint32_t"),
-            _ => ("cil2cpp::checked_add", "int32_t")
+            Code.Add_Ovf or Code.Add_Ovf_Un => isUn ? "cil2cpp::checked_add_un" : "cil2cpp::checked_add",
+            Code.Sub_Ovf or Code.Sub_Ovf_Un => isUn ? "cil2cpp::checked_sub_un" : "cil2cpp::checked_sub",
+            Code.Mul_Ovf or Code.Mul_Ovf_Un => isUn ? "cil2cpp::checked_mul_un" : "cil2cpp::checked_mul",
+            _ => "cil2cpp::checked_add"
         };
+
+        string cppCode;
+        if (isUn)
+            cppCode = $"auto {tmp} = {func}(cil2cpp::to_unsigned({a}), cil2cpp::to_unsigned({b}));";
+        else
+            cppCode = $"auto {tmp} = {func}({a}, {b});";
 
         block.Instructions.Add(new IRRawCpp
         {
-            Code = $"auto {tmp} = {func}<{type}>(({type}){a}, ({type}){b});",
+            Code = cppCode,
             ResultVar = tmp,
-            ResultTypeCpp = type,
+            // ResultTypeCpp left null — auto-deduced from operands
         });
         stack.Push(tmp);
     }

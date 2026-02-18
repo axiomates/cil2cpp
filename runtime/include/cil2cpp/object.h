@@ -26,8 +26,13 @@ struct Object {
 
 /**
  * Object header size - used for memory allocation calculations.
+ * The compiler assumes this is 16 bytes (ObjectHeaderSize in IRBuilder.Types.cs).
  */
 constexpr size_t OBJECT_HEADER_SIZE = sizeof(Object);
+
+// Verify compiler assumption: ObjectHeaderSize = 16 on 64-bit targets.
+// TypeInfo* (8) + UInt32 sync_block (4) + padding (4) = 16.
+static_assert(sizeof(Object) == 16, "Object size must match compiler's ObjectHeaderSize constant (16)");
 
 /**
  * Allocate a new object of the given type.

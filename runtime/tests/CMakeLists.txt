@@ -38,6 +38,7 @@ add_executable(cil2cpp_tests
     test_async.cpp
     test_typed_reference.cpp
     test_unicode.cpp
+    test_checked.cpp
 )
 
 target_link_libraries(cil2cpp_tests

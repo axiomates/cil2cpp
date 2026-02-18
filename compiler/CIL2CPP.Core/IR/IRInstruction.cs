@@ -153,7 +153,15 @@ public class IRBinaryOp : IRInstruction
     public override string ToCpp()
     {
         if (IsUnsigned)
+        {
+            // ECMA-335 III.1.5: cgt.un/clt.un on floats use unordered comparison (NaN → true).
+            // Use unsigned_gt/unsigned_lt which handle both integer (as-unsigned) and float (NaN-aware).
+            if (Op == ">")
+                return $"{ResultVar} = cil2cpp::unsigned_gt({Left}, {Right});";
+            if (Op == "<")
+                return $"{ResultVar} = cil2cpp::unsigned_lt({Left}, {Right});";
             return $"{ResultVar} = cil2cpp::to_unsigned({Left}) {Op} cil2cpp::to_unsigned({Right});";
+        }
         return $"{ResultVar} = {Left} {Op} {Right};";
     }
 }
