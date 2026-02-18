@@ -218,6 +218,32 @@ TEST(UnicodeCaseConversion, ToLower_Unicode) {
     EXPECT_EQ(unicode::to_lower(0x0391), static_cast<Char>(0x03B1));
 }
 
+// ===== Locale-Aware Case Conversion =====
+
+TEST(UnicodeCaseConversion, ToUpperLocale_Ascii) {
+    EXPECT_EQ(unicode::to_upper_locale(u'a'), u'A');
+    EXPECT_EQ(unicode::to_upper_locale(u'z'), u'Z');
+    EXPECT_EQ(unicode::to_upper_locale(u'A'), u'A');
+    EXPECT_EQ(unicode::to_upper_locale(u'0'), u'0');
+}
+
+TEST(UnicodeCaseConversion, ToLowerLocale_Ascii) {
+    EXPECT_EQ(unicode::to_lower_locale(u'A'), u'a');
+    EXPECT_EQ(unicode::to_lower_locale(u'Z'), u'z');
+    EXPECT_EQ(unicode::to_lower_locale(u'a'), u'a');
+    EXPECT_EQ(unicode::to_lower_locale(u'0'), u'0');
+}
+
+TEST(UnicodeCaseConversion, ToUpperLocale_Unicode) {
+    // Greek small letter alpha (U+03B1) → Greek capital letter alpha (U+0391)
+    EXPECT_EQ(unicode::to_upper_locale(0x03B1), static_cast<Char>(0x0391));
+}
+
+TEST(UnicodeCaseConversion, ToLowerLocale_Unicode) {
+    // Greek capital letter alpha (U+0391) → Greek small letter alpha (U+03B1)
+    EXPECT_EQ(unicode::to_lower_locale(0x0391), static_cast<Char>(0x03B1));
+}
+
 // ===== ICalls =====
 
 TEST(UnicodeICall, CharIsWhitespace) {
@@ -231,6 +257,16 @@ TEST(UnicodeICall, CharToUpper) {
 
 TEST(UnicodeICall, CharToLower) {
     EXPECT_EQ(unicode::char_to_lower(u'A'), u'a');
+}
+
+TEST(UnicodeICall, CharToUpperInvariant) {
+    EXPECT_EQ(unicode::char_to_upper_invariant(u'a'), u'A');
+    EXPECT_EQ(unicode::char_to_upper_invariant(u'0'), u'0');
+}
+
+TEST(UnicodeICall, CharToLowerInvariant) {
+    EXPECT_EQ(unicode::char_to_lower_invariant(u'A'), u'a');
+    EXPECT_EQ(unicode::char_to_lower_invariant(u'0'), u'0');
 }
 
 // ===== Integration: String functions using ICU =====

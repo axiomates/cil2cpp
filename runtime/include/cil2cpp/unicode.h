@@ -32,8 +32,13 @@ bool is_low_surrogate(Char c);
 
 // ===== Case Conversion =====
 
+/// Culture-independent (simple Unicode mapping, ≈ InvariantCulture)
 Char to_upper(Char c);
 Char to_lower(Char c);
+
+/// Culture-sensitive (system locale via ICU uloc_getDefault)
+Char to_upper_locale(Char c);
+Char to_lower_locale(Char c);
 
 // ===== UTF-8 ↔ UTF-16 Conversion =====
 
@@ -66,6 +71,8 @@ Boolean char_is_high_surrogate(Char c);
 Boolean char_is_low_surrogate(Char c);
 Char char_to_upper(Char c);
 Char char_to_lower(Char c);
+Char char_to_upper_invariant(Char c);
+Char char_to_lower_invariant(Char c);
 
 } // namespace unicode
 } // namespace cil2cpp

@@ -8,9 +8,10 @@
 #include <cil2cpp/unicode.h>
 
 #include <unicode/uchar.h>    // u_isWhitespace, u_isdigit, u_isalpha, u_toupper, u_tolower, etc.
-#include <unicode/ustring.h>  // u_strFromUTF8, u_strToUTF8
+#include <unicode/ustring.h>  // u_strFromUTF8, u_strToUTF8, u_strToUpper, u_strToLower
 #include <unicode/utypes.h>   // UErrorCode, UChar
 #include <unicode/uversion.h> // u_getVersion
+#include <unicode/uloc.h>     // uloc_getDefault
 
 #include <cstring>
 
@@ -90,6 +91,25 @@ Char to_lower(Char c) {
     UChar32 result = u_tolower(static_cast<UChar32>(c));
     if (result > 0xFFFF) return c;
     return static_cast<Char>(result);
+}
+
+Char to_upper_locale(Char c) {
+    UChar src[2] = { static_cast<UChar>(c), 0 };
+    UChar dest[3] = {};
+    UErrorCode err = U_ZERO_ERROR;
+    int32_t len = u_strToUpper(dest, 3, src, 1, uloc_getDefault(), &err);
+    // If result is not single char (e.g. ß → SS), return original — .NET Char.ToUpper behavior
+    if (U_FAILURE(err) || len != 1) return c;
+    return static_cast<Char>(dest[0]);
+}
+
+Char to_lower_locale(Char c) {
+    UChar src[2] = { static_cast<UChar>(c), 0 };
+    UChar dest[3] = {};
+    UErrorCode err = U_ZERO_ERROR;
+    int32_t len = u_strToLower(dest, 3, src, 1, uloc_getDefault(), &err);
+    if (U_FAILURE(err) || len != 1) return c;
+    return static_cast<Char>(dest[0]);
 }
 
 // ===== UTF-8 ↔ UTF-16 Conversion =====
@@ -200,8 +220,10 @@ Boolean char_is_control(Char c) { return is_control(c) ? 1 : 0; }
 Boolean char_is_surrogate(Char c) { return is_surrogate(c) ? 1 : 0; }
 Boolean char_is_high_surrogate(Char c) { return is_high_surrogate(c) ? 1 : 0; }
 Boolean char_is_low_surrogate(Char c) { return is_low_surrogate(c) ? 1 : 0; }
-Char char_to_upper(Char c) { return to_upper(c); }
-Char char_to_lower(Char c) { return to_lower(c); }
+Char char_to_upper(Char c) { return to_upper_locale(c); }
+Char char_to_lower(Char c) { return to_lower_locale(c); }
+Char char_to_upper_invariant(Char c) { return to_upper(c); }
+Char char_to_lower_invariant(Char c) { return to_lower(c); }
 
 } // namespace unicode
 } // namespace cil2cpp

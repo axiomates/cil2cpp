@@ -86,13 +86,12 @@ public static class ICallRegistry
         RegisterICall("System.Char", "IsSurrogate", 1, "cil2cpp::unicode::char_is_surrogate");
         RegisterICall("System.Char", "IsHighSurrogate", 1, "cil2cpp::unicode::char_is_high_surrogate");
         RegisterICall("System.Char", "IsLowSurrogate", 1, "cil2cpp::unicode::char_is_low_surrogate");
-        // HACK: ToUpper/ToLower use culture-independent ICU u_toupper/u_tolower (≈ InvariantCulture).
-        // .NET's ToUpper(char) is culture-sensitive (CurrentCulture), but the difference only matters
-        // for Turkish İ/I dotted/undotted. Acceptable simplification until locale support is added.
+        // ToUpper/ToLower: locale-aware (CurrentCulture via ICU uloc_getDefault + u_strToUpper/u_strToLower)
         RegisterICall("System.Char", "ToUpper", 1, "cil2cpp::unicode::char_to_upper");
         RegisterICall("System.Char", "ToLower", 1, "cil2cpp::unicode::char_to_lower");
-        RegisterICall("System.Char", "ToUpperInvariant", 1, "cil2cpp::unicode::char_to_upper");
-        RegisterICall("System.Char", "ToLowerInvariant", 1, "cil2cpp::unicode::char_to_lower");
+        // ToUpperInvariant/ToLowerInvariant: culture-independent (ICU u_toupper/u_tolower)
+        RegisterICall("System.Char", "ToUpperInvariant", 1, "cil2cpp::unicode::char_to_upper_invariant");
+        RegisterICall("System.Char", "ToLowerInvariant", 1, "cil2cpp::unicode::char_to_lower_invariant");
 
         // Attribute..ctor — compiles from BCL IL (just calls Object..ctor).
 
