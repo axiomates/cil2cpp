@@ -1,5 +1,6 @@
 using Xunit;
 using CIL2CPP.Core.IR;
+using CIL2CPP.Tests.Fixtures;
 
 namespace CIL2CPP.Tests;
 
@@ -301,71 +302,90 @@ public class CppNameMapperTests
 
     // ===== User Value Type Registration =====
 
+    // These 5 tests mutate static CppNameMapper._userValueTypes.
+    // IRBuilder.Build() also mutates/reads it. Both are serialized via ModuleBuildLock
+    // to prevent data races when xUnit runs collections in parallel.
+
     [Fact]
     public void RegisterValueType_ThenIsValueType_ReturnsTrue()
     {
-        try
+        lock (TestProjectBuilder.ModuleBuildLock)
         {
-            CppNameMapper.RegisterValueType("MyNamespace.MyStruct");
-            Assert.True(CppNameMapper.IsValueType("MyNamespace.MyStruct"));
-        }
-        finally
-        {
-            CppNameMapper.ClearValueTypes();
+            try
+            {
+                CppNameMapper.RegisterValueType("MyNamespace.MyStruct");
+                Assert.True(CppNameMapper.IsValueType("MyNamespace.MyStruct"));
+            }
+            finally
+            {
+                CppNameMapper.ClearValueTypes();
+            }
         }
     }
 
     [Fact]
     public void ClearValueTypes_ThenIsValueType_ReturnsFalse()
     {
-        CppNameMapper.RegisterValueType("MyNamespace.MyStruct");
-        CppNameMapper.ClearValueTypes();
-        Assert.False(CppNameMapper.IsValueType("MyNamespace.MyStruct"));
+        lock (TestProjectBuilder.ModuleBuildLock)
+        {
+            CppNameMapper.RegisterValueType("MyNamespace.MyStruct");
+            CppNameMapper.ClearValueTypes();
+            Assert.False(CppNameMapper.IsValueType("MyNamespace.MyStruct"));
+        }
     }
 
     [Fact]
     public void GetDefaultValue_RegisteredValueType_ReturnsBraces()
     {
-        try
+        lock (TestProjectBuilder.ModuleBuildLock)
         {
-            CppNameMapper.RegisterValueType("MyNamespace.MyStruct");
-            Assert.Equal("{}", CppNameMapper.GetDefaultValue("MyNamespace.MyStruct"));
-        }
-        finally
-        {
-            CppNameMapper.ClearValueTypes();
+            try
+            {
+                CppNameMapper.RegisterValueType("MyNamespace.MyStruct");
+                Assert.Equal("{}", CppNameMapper.GetDefaultValue("MyNamespace.MyStruct"));
+            }
+            finally
+            {
+                CppNameMapper.ClearValueTypes();
+            }
         }
     }
 
     [Fact]
     public void GetCppTypeForDecl_RegisteredValueType_NoPointerSuffix()
     {
-        try
+        lock (TestProjectBuilder.ModuleBuildLock)
         {
-            CppNameMapper.RegisterValueType("MyNamespace.MyStruct");
-            var result = CppNameMapper.GetCppTypeForDecl("MyNamespace.MyStruct");
-            Assert.DoesNotContain("*", result);
-            Assert.Equal("MyNamespace_MyStruct", result);
-        }
-        finally
-        {
-            CppNameMapper.ClearValueTypes();
+            try
+            {
+                CppNameMapper.RegisterValueType("MyNamespace.MyStruct");
+                var result = CppNameMapper.GetCppTypeForDecl("MyNamespace.MyStruct");
+                Assert.DoesNotContain("*", result);
+                Assert.Equal("MyNamespace_MyStruct", result);
+            }
+            finally
+            {
+                CppNameMapper.ClearValueTypes();
+            }
         }
     }
 
     [Fact]
     public void RegisterMultiple_ThenClear_AllGone()
     {
-        CppNameMapper.RegisterValueType("NS.StructA");
-        CppNameMapper.RegisterValueType("NS.StructB");
-        CppNameMapper.RegisterValueType("NS.EnumC");
-        Assert.True(CppNameMapper.IsValueType("NS.StructA"));
-        Assert.True(CppNameMapper.IsValueType("NS.StructB"));
-        Assert.True(CppNameMapper.IsValueType("NS.EnumC"));
+        lock (TestProjectBuilder.ModuleBuildLock)
+        {
+            CppNameMapper.RegisterValueType("NS.StructA");
+            CppNameMapper.RegisterValueType("NS.StructB");
+            CppNameMapper.RegisterValueType("NS.EnumC");
+            Assert.True(CppNameMapper.IsValueType("NS.StructA"));
+            Assert.True(CppNameMapper.IsValueType("NS.StructB"));
+            Assert.True(CppNameMapper.IsValueType("NS.EnumC"));
 
-        CppNameMapper.ClearValueTypes();
-        Assert.False(CppNameMapper.IsValueType("NS.StructA"));
-        Assert.False(CppNameMapper.IsValueType("NS.StructB"));
-        Assert.False(CppNameMapper.IsValueType("NS.EnumC"));
+            CppNameMapper.ClearValueTypes();
+            Assert.False(CppNameMapper.IsValueType("NS.StructA"));
+            Assert.False(CppNameMapper.IsValueType("NS.StructB"));
+            Assert.False(CppNameMapper.IsValueType("NS.EnumC"));
+        }
     }
 }

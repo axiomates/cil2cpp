@@ -6,7 +6,7 @@ using CIL2CPP.Tests.Fixtures;
 
 namespace CIL2CPP.Tests;
 
-[Collection("FeatureTest")]
+[Collection("TypeSystem")]
 public class BclProxyTests
 {
     private readonly FeatureTestFixture _fixture;

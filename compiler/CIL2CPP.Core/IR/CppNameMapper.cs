@@ -5,11 +5,26 @@ namespace CIL2CPP.Core.IR;
 /// </summary>
 public static class CppNameMapper
 {
-    // User-defined value types (structs and enums) registered during IR build
+    // User-defined value types (structs and enums) registered during IR build.
+    // Guarded by _vtLock because IRBuilder.Build() writes (Add/Clear) while
+    // CppCodeGenerator.Generate() may read (Contains) from a different thread.
     private static readonly HashSet<string> _userValueTypes = new();
+    private static readonly object _vtLock = new();
 
-    public static void RegisterValueType(string ilTypeName) => _userValueTypes.Add(ilTypeName);
-    public static void ClearValueTypes() => _userValueTypes.Clear();
+    public static void RegisterValueType(string ilTypeName)
+    {
+        lock (_vtLock) _userValueTypes.Add(ilTypeName);
+    }
+
+    public static void ClearValueTypes()
+    {
+        lock (_vtLock) _userValueTypes.Clear();
+    }
+
+    private static bool IsRegisteredValueType(string typeName)
+    {
+        lock (_vtLock) return _userValueTypes.Contains(typeName);
+    }
 
     /// <summary>
     /// Maps BCL exception IL type names to runtime C++ type names.
@@ -102,13 +117,16 @@ public static class CppNameMapper
             "System.Int64" or "System.UInt64" or "System.Single" or "System.Double" or
             "System.Char" or "System.IntPtr" or "System.UIntPtr")
             return true;
-        if (_userValueTypes.Contains(ilTypeName))
-            return true;
-        // For generic instantiations (e.g. "System.Span`1<System.Byte>"),
-        // check if the open generic type is a registered value type
-        var angleBracket = ilTypeName.IndexOf('<');
-        if (angleBracket > 0 && _userValueTypes.Contains(ilTypeName[..angleBracket]))
-            return true;
+        lock (_vtLock)
+        {
+            if (_userValueTypes.Contains(ilTypeName))
+                return true;
+            // For generic instantiations (e.g. "System.Span`1<System.Byte>"),
+            // check if the open generic type is a registered value type
+            var angleBracket = ilTypeName.IndexOf('<');
+            if (angleBracket > 0 && _userValueTypes.Contains(ilTypeName[..angleBracket]))
+                return true;
+        }
         return false;
     }
 
@@ -343,7 +361,7 @@ public static class CppNameMapper
             "float" => "0.0f",
             "double" => "0.0",
             "char16_t" => "u'\\0'",
-            _ => _userValueTypes.Contains(typeName) ? "{}" : "nullptr"
+            _ => IsRegisteredValueType(typeName) ? "{}" : "nullptr"
         };
     }
 }

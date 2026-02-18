@@ -98,7 +98,8 @@ public static class TestProjectBuilder
     // IRBuilder.Build() uses static mutable state (CppNameMapper._userValueTypes)
     // that is not thread-safe. Serialize all module builds with a lock.
     // This is fine because Build() is fast (~3-5s) — the bottleneck is Analyze() which runs unlocked.
-    private static readonly object _moduleBuildLock = new();
+    // Internal: tests that mutate CppNameMapper._userValueTypes must also acquire this lock.
+    internal static readonly object ModuleBuildLock = new();
 
     /// <summary>
     /// Build an IRModule reusing a pre-computed (AssemblySet, ReachabilityResult) context.
@@ -110,7 +111,7 @@ public static class TestProjectBuilder
         string dllPath,
         BuildConfiguration? config = null)
     {
-        lock (_moduleBuildLock)
+        lock (ModuleBuildLock)
         {
             using var reader = new AssemblyReader(dllPath, config);
             var builder = new IRBuilder(reader, config);
@@ -126,24 +127,33 @@ public static class TestProjectBuilder
         var dllPath = Path.Combine(SolutionRoot,
             "tests", projectName, "bin", "Debug", "net8.0", $"{projectName}.dll");
 
-        if (!File.Exists(dllPath))
+        // Always run dotnet build to pick up source changes.
+        // dotnet build has incremental compilation — it's free (~1s) when nothing changed.
+        var dir = Path.GetDirectoryName(csprojPath)!;
+        var psi = new ProcessStartInfo("dotnet", $"build \"{csprojPath}\" -c Debug --nologo -v q")
         {
-            var dir = Path.GetDirectoryName(csprojPath)!;
-            var psi = new ProcessStartInfo("dotnet", $"build \"{csprojPath}\" -c Debug --nologo -v q")
-            {
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                WorkingDirectory = dir
-            };
-            var proc = Process.Start(psi)!;
-            proc.WaitForExit(60_000);
-            if (proc.ExitCode != 0)
-            {
-                var stderr = proc.StandardError.ReadToEnd();
-                throw new InvalidOperationException($"Failed to build {csprojPath}: {stderr}");
-            }
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            WorkingDirectory = dir
+        };
+        var proc = Process.Start(psi)!;
+
+        // Read stdout/stderr asynchronously to avoid deadlock.
+        // If the child process fills the OS pipe buffer (~4KB) before we read,
+        // it blocks waiting for the parent to drain — but WaitForExit blocks too → deadlock.
+        var stderrTask = proc.StandardError.ReadToEndAsync();
+        var stdoutTask = proc.StandardOutput.ReadToEndAsync();
+
+        if (!proc.WaitForExit(60_000))
+        {
+            proc.Kill();
+            throw new InvalidOperationException(
+                $"Timed out (60s) building {csprojPath}. stderr: {stderrTask.Result}");
         }
+
+        if (proc.ExitCode != 0)
+            throw new InvalidOperationException($"Failed to build {csprojPath}: {stderrTask.Result}");
 
         if (!File.Exists(dllPath))
             throw new InvalidOperationException($"{projectName}.dll not found at {dllPath}");

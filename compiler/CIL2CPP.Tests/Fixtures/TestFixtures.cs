@@ -84,21 +84,21 @@ public class ReachabilityFixture
 
 // ===== Collection Definitions =====
 
-[CollectionDefinition("HelloWorld")]
-public class HelloWorldCollection : ICollectionFixture<HelloWorldFixture> { }
+[CollectionDefinition("IRBuilderCore")]
+public class IRBuilderCoreCollection : ICollectionFixture<HelloWorldFixture> { }
 
-// FeatureTest: 4 parallel sub-collections sharing the same static IRModule cache
-[CollectionDefinition("FeatureTest")]
-public class FeatureTestCollection : ICollectionFixture<FeatureTestFixture> { }
+// 4 parallel sub-collections sharing the same static FeatureTest IRModule cache
+[CollectionDefinition("TypeSystem")]
+public class TypeSystemCollection : ICollectionFixture<FeatureTestFixture> { }
 
-[CollectionDefinition("FeatureTest2")]
-public class FeatureTest2Collection : ICollectionFixture<FeatureTestFixture> { }
+[CollectionDefinition("Generics")]
+public class GenericsCollection : ICollectionFixture<FeatureTestFixture> { }
 
-[CollectionDefinition("FeatureTest3")]
-public class FeatureTest3Collection : ICollectionFixture<FeatureTestFixture> { }
+[CollectionDefinition("ControlFlow")]
+public class ControlFlowCollection : ICollectionFixture<FeatureTestFixture> { }
 
-[CollectionDefinition("FeatureTest4")]
-public class FeatureTest4Collection : ICollectionFixture<FeatureTestFixture> { }
+[CollectionDefinition("Features")]
+public class FeaturesCollection : ICollectionFixture<FeatureTestFixture> { }
 
 [CollectionDefinition("ArrayTest")]
 public class ArrayTestCollection : ICollectionFixture<ArrayTestFixture> { }

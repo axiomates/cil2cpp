@@ -185,7 +185,7 @@ public class ILOpcodeCoverageTests
 /// <summary>
 /// Behavioral test: compile FeatureTest and verify no unsupported opcode warnings.
 /// </summary>
-[Collection("FeatureTest")]
+[Collection("ControlFlow")]
 public class ILOpcodeRuntimeCoverageTests
 {
     private readonly FeatureTestFixture _fixture;

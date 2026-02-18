@@ -6,12 +6,12 @@ using CIL2CPP.Tests.Fixtures;
 
 namespace CIL2CPP.Tests;
 
-[Collection("HelloWorld")]
-public class IRBuilderHelloWorldTests
+[Collection("IRBuilderCore")]
+public class IRBuilderCoreTests
 {
     private readonly HelloWorldFixture _fixture;
 
-    public IRBuilderHelloWorldTests(HelloWorldFixture fixture)
+    public IRBuilderCoreTests(HelloWorldFixture fixture)
     {
         _fixture = fixture;
     }
