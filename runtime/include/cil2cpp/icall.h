@@ -27,7 +27,15 @@ String* Environment_GetEnvironmentVariable(String* variable);
 
 // System.Buffer
 void Buffer_Memmove(void* dest, void* src, UInt64 len);
+void Buffer_ZeroMemory(void* b, UInt64 byteLength);
+void Buffer_BulkMoveWithWriteBarrier(void* dest, void* src, UInt64 len);
 void Buffer_BlockCopy(Object* src, Int32 srcOffset, Object* dst, Int32 dstOffset, Int32 count);
+
+// System.Runtime.InteropServices.Marshal
+intptr_t Marshal_AllocHGlobal(intptr_t cb);
+void Marshal_FreeHGlobal(intptr_t hglobal);
+intptr_t Marshal_AllocCoTaskMem(Int32 cb);
+void Marshal_FreeCoTaskMem(intptr_t ptr);
 
 // System.Type
 Object* Type_GetTypeFromHandle(void* handle);

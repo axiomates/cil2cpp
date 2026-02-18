@@ -146,7 +146,16 @@ public static class ICallRegistry
 
         // ===== System.Buffer =====
         RegisterICall("System.Buffer", "Memmove", 3, "cil2cpp::icall::Buffer_Memmove");
+        RegisterICall("System.Buffer", "__Memmove", 3, "cil2cpp::icall::Buffer_Memmove");
+        RegisterICall("System.Buffer", "__ZeroMemory", 2, "cil2cpp::icall::Buffer_ZeroMemory");
+        RegisterICall("System.Buffer", "__BulkMoveWithWriteBarrier", 3, "cil2cpp::icall::Buffer_BulkMoveWithWriteBarrier");
         RegisterICall("System.Buffer", "BlockCopy", 5, "cil2cpp::icall::Buffer_BlockCopy");
+
+        // ===== System.Runtime.InteropServices.Marshal =====
+        RegisterICall("System.Runtime.InteropServices.Marshal", "AllocHGlobal", 1, "cil2cpp::icall::Marshal_AllocHGlobal");
+        RegisterICall("System.Runtime.InteropServices.Marshal", "FreeHGlobal", 1, "cil2cpp::icall::Marshal_FreeHGlobal");
+        RegisterICall("System.Runtime.InteropServices.Marshal", "AllocCoTaskMem", 1, "cil2cpp::icall::Marshal_AllocCoTaskMem");
+        RegisterICall("System.Runtime.InteropServices.Marshal", "FreeCoTaskMem", 1, "cil2cpp::icall::Marshal_FreeCoTaskMem");
 
         // ===== System.Type =====
         RegisterICall("System.Type", "GetTypeFromHandle", 1, "cil2cpp::icall::Type_GetTypeFromHandle");
@@ -226,8 +235,9 @@ public static class ICallRegistry
         RegisterICall("System.MathF", "FusedMultiplyAdd", 3, "cil2cpp::icall::MathF_FusedMultiplyAdd");
 
         // ===== System.Array =====
-        // Array.Copy: C++ implementation exists (System.Array.cpp:112) but registration
-        // deferred — causes reachability cascade. TODO: investigate proper signature/approach.
+        // Array.Copy: C++ implementation exists but registration causes reachability cascade —
+        // new List<T>.ToArray() methods compile with array_set<T> type mismatches.
+        // FIXME: needs array_set template to handle pointer types for reference-type arrays.
         // RegisterICall("System.Array", "Copy", 5, "cil2cpp::array_copy");
 
         // ===== System.ArgIterator =====

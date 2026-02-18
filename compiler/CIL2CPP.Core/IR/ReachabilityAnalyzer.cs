@@ -302,7 +302,30 @@ public class ReachabilityAnalyzer
         // Note: <PrivateImplementationDetails> is NOT filtered — BCL code uses it for
         // static array initialization data, and we need its statics in generated code.
 
+        // Exclude CLR-internal / AOT-incompatible namespaces.
+        // These types require JIT or CLR-internal infrastructure that cannot work in AOT.
+        // Excluding them prevents cascading generic specializations (e.g., List<EventSource>).
+        if (IsAotExcludedNamespace(fullName))
+            return true;
+
         // Allow all other BCL types through — they compile from IL
+        return false;
+    }
+
+    /// <summary>
+    /// Types/namespaces that are CLR-internal or require JIT — useless in AOT.
+    /// Excluding these prevents cascading generic specializations (e.g., List&lt;EventSource&gt;).
+    /// </summary>
+    private static bool IsAotExcludedNamespace(string typeFullName)
+    {
+        // EventSource/EventPipe/ETW — CLR event tracing infrastructure, requires CLR runtime
+        if (typeFullName.StartsWith("System.Diagnostics.Tracing."))
+            return true;
+
+        // Reflection.Emit — fundamentally requires JIT, incompatible with AOT
+        if (typeFullName.StartsWith("System.Reflection.Emit."))
+            return true;
+
         return false;
     }
 

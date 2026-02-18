@@ -135,6 +135,27 @@ public partial class IRBuilder
             FilteredGenericNamespaces.Any(f => elemNs.StartsWith(f)))
             return;
 
+        // Skip generic specializations where any type argument is from a filtered namespace
+        // or is a CLR-internal type. Prevents creating List<RuntimePropertyInfo>,
+        // Dictionary<String, RuntimeType>, etc. that can never compile.
+        foreach (var arg in git.GenericArguments)
+        {
+            var argFullName = arg.FullName;
+            // Strip nested type references (e.g., "Foo/Bar" → "Foo")
+            var argNs = arg.Namespace;
+            if (string.IsNullOrEmpty(argNs) && arg is TypeDefinition td)
+                argNs = td.Namespace;
+            if (string.IsNullOrEmpty(argNs) && argFullName.Contains('.'))
+                argNs = argFullName[..argFullName.LastIndexOf('.')];
+
+            if (!string.IsNullOrEmpty(argNs) &&
+                FilteredGenericNamespaces.Any(f => argNs.StartsWith(f)))
+                return;
+
+            if (ClrInternalTypeNames.Contains(argFullName))
+                return;
+        }
+
         var openTypeName = git.ElementType.FullName;
         var typeArgs = git.GenericArguments.Select(a => a.FullName).ToList();
         var key = $"{openTypeName}<{string.Join(",", typeArgs)}>";

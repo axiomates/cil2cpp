@@ -102,11 +102,42 @@ void Buffer_Memmove(void* dest, void* src, UInt64 len) {
     }
 }
 
+void Buffer_ZeroMemory(void* b, UInt64 byteLength) {
+    if (b && byteLength > 0) {
+        std::memset(b, 0, static_cast<size_t>(byteLength));
+    }
+}
+
+void Buffer_BulkMoveWithWriteBarrier(void* dest, void* src, UInt64 len) {
+    // BoehmGC is conservative — no write barrier needed, same as memmove
+    if (dest && src && len > 0) {
+        std::memmove(dest, src, static_cast<size_t>(len));
+    }
+}
+
 void Buffer_BlockCopy(Object* src, Int32 srcOffset, Object* dst, Int32 dstOffset, Int32 count) {
     if (!src || !dst || count <= 0) return;
     auto srcBytes = reinterpret_cast<uint8_t*>(array_data(reinterpret_cast<Array*>(src)));
     auto dstBytes = reinterpret_cast<uint8_t*>(array_data(reinterpret_cast<Array*>(dst)));
     std::memmove(dstBytes + dstOffset, srcBytes + srcOffset, static_cast<size_t>(count));
+}
+
+// ===== System.Runtime.InteropServices.Marshal =====
+
+intptr_t Marshal_AllocHGlobal(intptr_t cb) {
+    return reinterpret_cast<intptr_t>(std::malloc(static_cast<size_t>(cb)));
+}
+
+void Marshal_FreeHGlobal(intptr_t hglobal) {
+    std::free(reinterpret_cast<void*>(hglobal));
+}
+
+intptr_t Marshal_AllocCoTaskMem(Int32 cb) {
+    return reinterpret_cast<intptr_t>(std::malloc(static_cast<size_t>(cb)));
+}
+
+void Marshal_FreeCoTaskMem(intptr_t ptr) {
+    std::free(reinterpret_cast<void*>(ptr));
 }
 
 // ===== System.Type =====
