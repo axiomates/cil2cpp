@@ -2,6 +2,21 @@
 
 将 .NET/C# 程序编译为原生 C++ 代码的 AOT 编译工具，类似于 Unity IL2CPP。
 
+## 技术栈
+
+| 组件 | 技术 | 版本 |
+|------|------|------|
+| 编译器 | C# / .NET | 8.0 |
+| IL 解析 | Mono.Cecil | NuGet 最新 |
+| 运行时 | C++ | 20 |
+| GC | BoehmGC (bdwgc) | v8.2.12 (FetchContent 自动下载) |
+| 构建系统 | dotnet + CMake | CMake 3.20+ |
+| 运行时分发 | CMake install + find_package | |
+| 编译器测试 | xUnit + coverlet | xUnit 2.9, coverlet 6.0 |
+| 运行时测试 | Google Test | v1.15.2 (FetchContent) |
+| 集成测试 | Python3 (`tools/dev.py integration`) | 跨平台 |
+| 开发者工具 | Python3 (`tools/dev.py`) | stdlib only |
+
 ## 前置要求
 
 - **.NET 8 SDK** — 用于构建编译器和编译输入的 C# 项目，`dotnet` 需在 PATH 中
@@ -895,6 +910,8 @@ python tools/dev.py test --coverage
 | Memory\<T\> / ReadOnlyMemory\<T\> 未处理 | — | 与 Span\<T\> 类似但无拦截，影响 System.IO.Pipelines 等现代 API |
 | 10+ 未引用的 icall 死代码 | icall.cpp:206-249 | Char_Is*、Int32_ToString 等已改为 BCL IL 编译，C++ 代码残留 |
 
+---
+
 ## 开发路线图
 
 > 按优先级分阶段实施，每个阶段为独立 commit。
@@ -908,23 +925,6 @@ python tools/dev.py test --coverage
 | **Phase E** | argc/argv + Environment 改进 + Memory\<T\> 拦截 | 待实施 |
 | **Phase F** | ICU 集成（FetchContent，Unicode 字符分类） | 待实施 |
 | **Phase G** | System.IO icall + 协变返回类型 + System.Net 评估 | 待实施 |
-
----
-
-## 技术栈
-
-| 组件 | 技术 | 版本 |
-|------|------|------|
-| 编译器 | C# / .NET | 8.0 |
-| IL 解析 | Mono.Cecil | NuGet 最新 |
-| 运行时 | C++ | 20 |
-| GC | BoehmGC (bdwgc) | v8.2.12 (FetchContent 自动下载) |
-| 构建系统 | dotnet + CMake | CMake 3.20+ |
-| 运行时分发 | CMake install + find_package | |
-| 编译器测试 | xUnit + coverlet | xUnit 2.9, coverlet 6.0 |
-| 运行时测试 | Google Test | v1.15.2 (FetchContent) |
-| 集成测试 | Python3 (`tools/dev.py integration`) | 跨平台 |
-| 开发者工具 | Python3 (`tools/dev.py`) | stdlib only |
 
 ## 参考
 
