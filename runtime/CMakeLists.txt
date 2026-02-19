@@ -71,8 +71,14 @@ if(WIN32)
         IMPORTED_IMPLIB "${icu4c_SOURCE_DIR}/lib64/icudt.lib"
         IMPORTED_LOCATION "${icu4c_SOURCE_DIR}/bin64/icudt78.dll"
     )
+    add_library(ICU::in SHARED IMPORTED)
+    set_target_properties(ICU::in PROPERTIES
+        IMPORTED_IMPLIB "${icu4c_SOURCE_DIR}/lib64/icuin.lib"
+        IMPORTED_LOCATION "${icu4c_SOURCE_DIR}/bin64/icuin78.dll"
+        INTERFACE_INCLUDE_DIRECTORIES "${icu4c_SOURCE_DIR}/include"
+    )
 else()
-    find_package(ICU REQUIRED COMPONENTS uc data)
+    find_package(ICU REQUIRED COMPONENTS uc data i18n)
 endif()
 
 # Runtime library sources
@@ -103,6 +109,7 @@ set(RUNTIME_SOURCES
     src/collections/dictionary.cpp
     src/typed_reference.cpp
     src/unicode/icu_bridge.cpp
+    src/globalization/globalization.cpp
 )
 
 # Create static library
@@ -130,8 +137,8 @@ target_link_libraries(cil2cpp_runtime PRIVATE gc)
 # GC_THREADS: enable multi-thread support in BoehmGC (GC_register_my_thread, etc.)
 target_compile_definitions(cil2cpp_runtime PRIVATE GC_NOT_DLL GC_THREADS)
 
-# ICU4C — PRIVATE dep for Unicode support (UTF conversion, char classification)
-target_link_libraries(cil2cpp_runtime PRIVATE ICU::uc ICU::dt)
+# ICU4C — PRIVATE dep for Unicode support (UTF conversion, char classification, globalization)
+target_link_libraries(cil2cpp_runtime PRIVATE ICU::uc ICU::dt ICU::in)
 
 # Platform-specific settings
 if(WIN32)
@@ -190,11 +197,13 @@ if(WIN32)
     install(FILES
         "${icu4c_SOURCE_DIR}/lib64/icuuc.lib"
         "${icu4c_SOURCE_DIR}/lib64/icudt.lib"
+        "${icu4c_SOURCE_DIR}/lib64/icuin.lib"
         DESTINATION lib
     )
     install(FILES
         "${icu4c_SOURCE_DIR}/bin64/icuuc78.dll"
         "${icu4c_SOURCE_DIR}/bin64/icudt78.dll"
+        "${icu4c_SOURCE_DIR}/bin64/icuin78.dll"
         DESTINATION bin
     )
 endif()

@@ -39,6 +39,7 @@ add_executable(cil2cpp_tests
     test_typed_reference.cpp
     test_unicode.cpp
     test_checked.cpp
+    test_globalization.cpp
 )
 
 target_link_libraries(cil2cpp_tests
@@ -59,6 +60,9 @@ if(WIN32 AND TARGET ICU::uc)
             $<TARGET_FILE_DIR:cil2cpp_tests>
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             $<TARGET_PROPERTY:ICU::dt,IMPORTED_LOCATION>
+            $<TARGET_FILE_DIR:cil2cpp_tests>
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            $<TARGET_PROPERTY:ICU::in,IMPORTED_LOCATION>
             $<TARGET_FILE_DIR:cil2cpp_tests>
         COMMENT "Copying ICU DLLs to test output directory"
     )

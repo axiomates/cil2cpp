@@ -74,5 +74,11 @@ Char char_to_lower(Char c);
 Char char_to_upper_invariant(Char c);
 Char char_to_lower_invariant(Char c);
 
+// ===== CharUnicodeInfo ICalls =====
+
+/// Get Unicode category for a character (maps ICU u_charType → .NET UnicodeCategory enum).
+/// Returns Int32 matching System.Globalization.UnicodeCategory enum values (0-29).
+Int32 char_get_unicode_category(Char c);
+
 } // namespace unicode
 } // namespace cil2cpp

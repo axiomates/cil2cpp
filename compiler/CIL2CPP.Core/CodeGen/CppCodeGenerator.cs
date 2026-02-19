@@ -354,6 +354,9 @@ public partial class CppCodeGenerator
             sb.AppendLine("        COMMAND ${CMAKE_COMMAND} -E copy_if_different");
             sb.AppendLine("            $<TARGET_PROPERTY:ICU::dt,IMPORTED_LOCATION>");
             sb.AppendLine($"            $<TARGET_FILE_DIR:{projectName}>");
+            sb.AppendLine("        COMMAND ${CMAKE_COMMAND} -E copy_if_different");
+            sb.AppendLine("            $<TARGET_PROPERTY:ICU::in,IMPORTED_LOCATION>");
+            sb.AppendLine($"            $<TARGET_FILE_DIR:{projectName}>");
             sb.AppendLine("    )");
             sb.AppendLine("endif()");
         }

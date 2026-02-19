@@ -75,7 +75,8 @@ public partial class IRBuilder
         "System.Object",
         "System.ValueType",
         "System.Enum",
-        "System.String",
+        // System.String: NOT CoreRuntime — BCL IL compiles (struct layout still RuntimeProvided).
+        // Only FastAllocateString/get_Length/get_Chars/GetRawStringData remain as icalls.
         "System.Array",
         "System.Exception",
         "System.Delegate",

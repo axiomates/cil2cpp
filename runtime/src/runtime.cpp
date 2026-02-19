@@ -5,6 +5,7 @@
 #include <cil2cpp/cil2cpp.h>
 #include <cil2cpp/gchandle.h>
 #include <cil2cpp/unicode.h>
+#include <cil2cpp/globalization.h>
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -25,6 +26,7 @@ void runtime_init() {
     gchandle_init();
     threadpool::init();
     unicode::init();
+    globalization::init();
 
 #ifdef _WIN32
     // Force UTF-8 console mode. The BCL Console chain selects encoding based on
@@ -41,6 +43,7 @@ void runtime_set_args(int argc, char** argv) {
 }
 
 void runtime_shutdown() {
+    globalization::shutdown();
     threadpool::shutdown();
     gc::collect();
     gc::shutdown();

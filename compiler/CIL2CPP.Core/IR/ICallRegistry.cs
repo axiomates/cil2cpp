@@ -93,6 +93,87 @@ public static class ICallRegistry
         RegisterICall("System.Char", "ToUpperInvariant", 1, "cil2cpp::unicode::char_to_upper_invariant");
         RegisterICall("System.Char", "ToLowerInvariant", 1, "cil2cpp::unicode::char_to_lower_invariant");
 
+        // ===== System.Globalization.CharUnicodeInfo (ICU-backed) =====
+        // BCL implementation reads large static Unicode category tables — impractical for AOT.
+        RegisterICall("System.Globalization.CharUnicodeInfo", "GetUnicodeCategory", 1,
+            "cil2cpp::unicode::char_get_unicode_category");
+        // Internal variant used by CompareInfo and other globalization code
+        RegisterICall("System.Globalization.CharUnicodeInfo", "GetUnicodeCategoryNoBoundsChecks", 1,
+            "cil2cpp::unicode::char_get_unicode_category");
+
+        // ===== System.Globalization.CompareInfo (ICU4C collation) =====
+        // CompareInfo methods P/Invoke to System.Globalization.Native (excluded from codegen).
+        // Intercept at managed API level → ICU4C ucol_strcoll / usearch.
+        RegisterICall("System.Globalization.CompareInfo", "Compare", 3,
+            "cil2cpp::globalization::compareinfo_compare_string_string");
+        RegisterICall("System.Globalization.CompareInfo", "Compare", 2,
+            "cil2cpp::globalization::compareinfo_compare_string_string_2");
+        RegisterICall("System.Globalization.CompareInfo", "Compare", 7,
+            "cil2cpp::globalization::compareinfo_compare_substring");
+        RegisterICall("System.Globalization.CompareInfo", "IndexOf", 5,
+            "cil2cpp::globalization::compareinfo_index_of");
+        RegisterICall("System.Globalization.CompareInfo", "IsPrefix", 3,
+            "cil2cpp::globalization::compareinfo_is_prefix");
+        RegisterICall("System.Globalization.CompareInfo", "IsSuffix", 3,
+            "cil2cpp::globalization::compareinfo_is_suffix");
+        RegisterICall("System.Globalization.CompareInfo", "CanUseAsciiOrdinalForOptions", 1,
+            "cil2cpp::globalization::compareinfo_can_use_ascii_ordinal");
+        RegisterICall("System.Globalization.CompareInfo", "CheckCompareOptionsForCompare", 1,
+            "cil2cpp::globalization::compareinfo_check_options");
+        RegisterICall("System.Globalization.CompareInfo", "GetNativeCompareFlags", 1,
+            "cil2cpp::globalization::compareinfo_get_native_flags");
+        RegisterICall("System.Globalization.CompareInfo", "ThrowCompareOptionsCheckFailed", 1,
+            "cil2cpp::globalization::compareinfo_throw_options_failed");
+        // SortHandleCache is a nested type, but Cecil resolves the declaring type
+        RegisterICall("System.Globalization.CompareInfo", "GetCachedSortHandle", 1,
+            "cil2cpp::globalization::compareinfo_get_sort_handle");
+
+        // ===== System.String comparison ICalls (bypass ReadOnlySpan<char> chains) =====
+        // String.Compare → CultureInfo → CompareInfo → P/Invoke chain is too deep for AOT.
+        // Intercept at String.Compare level to bypass the entire chain.
+        RegisterICall("System.String", "Compare", 3,
+            "cil2cpp::globalization::string_compare_3");
+        RegisterICall("System.String", "Compare", 6,
+            "cil2cpp::globalization::string_compare_6");
+        RegisterICall("System.String", "GetCaseCompareOfComparisonCulture", 1,
+            "cil2cpp::globalization::string_get_case_compare");
+        RegisterICall("System.String", "CheckStringComparison", 1,
+            "cil2cpp::globalization::string_check_comparison");
+        // NOTE: String.Equals/2 NOT registered — conflicts with static Equals(String, String)
+        // which also has paramCount=2. The instance Equals(String, StringComparison) and
+        // static Equals(String, String) can't be disambiguated by our ICall system.
+        // EndsWith/StartsWith are safe — no static overloads with same paramCount.
+        RegisterICall("System.String", "EndsWith", 2,
+            "cil2cpp::globalization::string_ends_with");
+        RegisterICall("System.String", "StartsWith", 2,
+            "cil2cpp::globalization::string_starts_with");
+
+        // ===== System.Globalization.Ordinal (ICU4C backed) =====
+        // Ordinal methods use SIMD intrinsics (Vector128) — impractical for AOT.
+        RegisterICall("System.Globalization.Ordinal", "EqualsIgnoreCase", 3,
+            "cil2cpp::globalization::ordinal_equals_ignore_case");
+        RegisterICall("System.Globalization.Ordinal", "CompareStringIgnoreCase", 4,
+            "cil2cpp::globalization::ordinal_compare_ignore_case");
+
+        // ===== System.Globalization.OrdinalCasing =====
+        RegisterICall("System.Globalization.OrdinalCasing", "ToUpper", 1,
+            "cil2cpp::globalization::ordinal_casing_to_upper");
+        RegisterICall("System.Globalization.OrdinalCasing", "InitCasingTable", 0,
+            "cil2cpp::globalization::ordinal_casing_init_table");
+        RegisterICall("System.Globalization.OrdinalCasing", "InitOrdinalCasingPage", 1,
+            "cil2cpp::globalization::ordinal_casing_init_page");
+
+        // ===== System.Globalization.TextInfo (ICU4C case conversion) =====
+        RegisterICall("System.Globalization.TextInfo", "ChangeCaseCore", 5,
+            "cil2cpp::globalization::textinfo_change_case_core");
+        RegisterICall("System.Globalization.TextInfo", "IcuChangeCase", 5,
+            "cil2cpp::globalization::textinfo_icu_change_case");
+
+        // ===== System.Globalization.GlobalizationMode =====
+        // Force ICU path — return false for UseNls.
+        RegisterICall("System.Globalization.GlobalizationMode", "get_UseNls", 0,
+            "cil2cpp::globalization::globalization_mode_get_use_nls");
+
         // Attribute..ctor — compiles from BCL IL (just calls Object..ctor).
 
         // ===== System.Threading.Monitor =====

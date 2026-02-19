@@ -834,6 +834,24 @@ public partial class CppCodeGenerator
 
                 var code = instr.ToCpp();
 
+                // Strip embedded 'auto' from IRRawCpp when the variable was already
+                // pre-declared by cross-scope analysis. Without this, the pre-declared
+                // typed variable (e.g. "cil2cpp::Array* __t0 = nullptr;") conflicts with
+                // the embedded "auto __t0 = ..." (MSVC C2040: indirection levels differ).
+                if (instr is IRRawCpp && code.StartsWith("auto __t"))
+                {
+                    var spaceIdx = code.IndexOf(' ');
+                    if (spaceIdx >= 0)
+                    {
+                        // Extract variable name: "auto __t0 = ..." → "__t0"
+                        var afterAuto = code[(spaceIdx + 1)..];
+                        var eqIdx = afterAuto.IndexOf(' ');
+                        var varName = eqIdx >= 0 ? afterAuto[..eqIdx] : afterAuto;
+                        if (declaredTemps.Contains(varName))
+                            code = afterAuto; // strip "auto " prefix
+                    }
+                }
+
                 // For instructions that assign to temp vars, add 'auto' on first use
                 code = AddAutoDeclarations(code, declaredTemps);
 

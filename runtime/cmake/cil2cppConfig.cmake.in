@@ -39,11 +39,20 @@ if(WIN32)
                 IMPORTED_LOCATION "${PACKAGE_PREFIX_DIR}/bin/icudt78.dll"
             )
         endif()
+        find_library(_CIL2CPP_ICUIN_LIB icuin PATHS "${PACKAGE_PREFIX_DIR}/lib" NO_DEFAULT_PATH)
+        if(_CIL2CPP_ICUIN_LIB)
+            add_library(ICU::in SHARED IMPORTED)
+            set_target_properties(ICU::in PROPERTIES
+                IMPORTED_IMPLIB "${_CIL2CPP_ICUIN_LIB}"
+                IMPORTED_LOCATION "${PACKAGE_PREFIX_DIR}/bin/icuin78.dll"
+            )
+        endif()
         unset(_CIL2CPP_ICUUC_LIB CACHE)
         unset(_CIL2CPP_ICUDT_LIB CACHE)
+        unset(_CIL2CPP_ICUIN_LIB CACHE)
     endif()
 else()
-    find_dependency(ICU COMPONENTS uc data)
+    find_dependency(ICU COMPONENTS uc data i18n)
 endif()
 
 include("${CMAKE_CURRENT_LIST_DIR}/cil2cppTargets.cmake")

@@ -29,6 +29,7 @@
 #include "collections.h"
 #include "typed_reference.h"
 #include "unicode.h"
+#include "globalization.h"
 
 // BCL types
 #include "bcl/System.Object.h"
