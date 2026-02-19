@@ -8,6 +8,12 @@ public partial class IRBuilder
     // Active generic type parameter map (set during ConvertMethodBodyWithGenerics)
     private Dictionary<string, string>? _activeTypeParamMap;
 
+    // Deferred generic specialization bodies — collected in Pass 1.5, converted after Pass 3.3
+    // (disambiguation). Converting bodies before disambiguation causes call sites to use
+    // pre-disambiguation names (e.g., Dictionary__ctor instead of Dictionary__ctor__System_Int32).
+    private readonly List<(MethodDefinition CecilMethod, IRMethod IrMethod, Dictionary<string, string> TypeParamMap)>
+        _deferredGenericBodies = new();
+
     /// <summary>
     /// Construct a unique key for a generic method instantiation.
     /// Includes parameter types to distinguish overloads (e.g. GetReference(Span) vs GetReference(ReadOnlySpan)).
@@ -510,8 +516,10 @@ public partial class IRBuilder
 
                     irType.Methods.Add(irMethod);
 
-                    // Convert method body with generic substitution context.
-                    // Only convert reachable methods — same check as Pass 3 (line 427).
+                    // Defer method body conversion to after DisambiguateOverloadedMethods (Pass 3.3).
+                    // Converting bodies before disambiguation causes call sites to use
+                    // pre-disambiguation names, leading to undeclared/mismatched function calls.
+                    // Only convert reachable methods — same check as Pass 3.
                     // Unreachable methods keep BasicBlocks empty → not declared in header.
                     if (methodDef.HasBody && !methodDef.IsAbstract
                         && _reachability.IsReachable(methodDef))
@@ -523,8 +531,9 @@ public partial class IRBuilder
                         }
                         else
                         {
-                            var methodInfo = new IL.MethodInfo(methodDef);
-                            ConvertMethodBodyWithGenerics(methodInfo, irMethod, typeParamMap);
+                            // Clone typeParamMap since the outer loop reuses it
+                            _deferredGenericBodies.Add((methodDef, irMethod,
+                                new Dictionary<string, string>(typeParamMap)));
                         }
                     }
                 }
@@ -560,13 +569,18 @@ public partial class IRBuilder
                     irType.Interfaces.Add(ifaceType);
             }
 
-            // Static constructor flag — only set if the cctor body was actually converted
-            // (BCL types like EqualityComparer<T> have cctors but we skip their bodies)
+            // Static constructor flag — set if cctor body was converted OR is deferred.
+            // Bodies may be deferred to after disambiguation (Pass 3.4), so check both
+            // already-converted bodies AND the deferred list.
             var hasCctorMethod = openType.Methods.Any(m => m.IsConstructor && m.IsStatic);
             if (hasCctorMethod)
             {
                 var cctorIrMethod = irType.Methods.FirstOrDefault(m => m.IsStaticConstructor);
-                irType.HasCctor = cctorIrMethod != null && cctorIrMethod.BasicBlocks.Count > 0;
+                if (cctorIrMethod != null)
+                {
+                    irType.HasCctor = cctorIrMethod.BasicBlocks.Count > 0
+                        || _deferredGenericBodies.Any(d => d.IrMethod == cctorIrMethod);
+                }
             }
 
             // Recalculate instance size (BaseType may contribute inherited fields)
@@ -648,6 +662,25 @@ public partial class IRBuilder
         if (_activeTypeParamMap != null)
             return ResolveGenericTypeName(typeRef, _activeTypeParamMap);
         return typeRef.FullName;
+    }
+
+    /// <summary>
+    /// Convert deferred generic specialization bodies. Must be called AFTER
+    /// DisambiguateOverloadedMethods so that call sites resolve to the correct
+    /// disambiguated function names.
+    /// </summary>
+    private void ConvertDeferredGenericBodies()
+    {
+        foreach (var (cecilMethod, irMethod, typeParamMap) in _deferredGenericBodies)
+        {
+            // Skip record compiler-generated methods — Pass 7 synthesizes replacements
+            if (irMethod.DeclaringType?.IsRecord == true && IsRecordSynthesizedMethod(irMethod.Name))
+                continue;
+
+            var methodInfo = new IL.MethodInfo(cecilMethod);
+            ConvertMethodBodyWithGenerics(methodInfo, irMethod, typeParamMap);
+        }
+        _deferredGenericBodies.Clear();
     }
 
     /// <summary>

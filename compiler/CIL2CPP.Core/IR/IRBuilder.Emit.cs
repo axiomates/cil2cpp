@@ -142,7 +142,7 @@ public partial class IRBuilder
     }
 
     private void EmitBinaryOp(IRBasicBlock block, Stack<string> stack, string op, ref int tempCounter,
-        bool isUnsigned = false)
+        bool isUnsigned = false, IRMethod? method = null)
     {
         var right = stack.Count > 0 ? stack.Pop() : "0";
         var left = stack.Count > 0 ? stack.Pop() : "0";
@@ -161,6 +161,16 @@ public partial class IRBuilder
             isUnsigned = false;
         }
 
+        // For pointer comparisons, cast both sides to (void*) since flat struct model
+        // doesn't have C++ inheritance between generated types (e.g., EqualityComparer* vs IEqualityComparer*).
+        if (method != null && (op == "==" || op == "!=")
+            && left != "nullptr" && right != "nullptr"
+            && IsPointerTypedOperand(left, method))
+        {
+            left = $"(void*){left}";
+            right = $"(void*){right}";
+        }
+
         var tmp = $"__t{tempCounter++}";
         block.Instructions.Add(new IRBinaryOp
         {
@@ -170,7 +180,7 @@ public partial class IRBuilder
     }
 
     private void EmitComparisonBranch(IRBasicBlock block, Stack<string> stack, string op, ILInstruction instr,
-        bool isUnsigned = false, Dictionary<int, string[]>? branchTargetStacks = null)
+        bool isUnsigned = false, Dictionary<int, string[]>? branchTargetStacks = null, IRMethod? method = null)
     {
         var right = stack.Count > 0 ? stack.Pop() : "0";
         var left = stack.Count > 0 ? stack.Pop() : "0";
@@ -180,6 +190,16 @@ public partial class IRBuilder
         {
             op = "!=";
             isUnsigned = false;
+        }
+
+        // For pointer comparisons, cast both sides to (void*) since flat struct model
+        // doesn't have C++ inheritance between generated types.
+        if (method != null && (op == "==" || op == "!=")
+            && left != "nullptr" && right != "nullptr"
+            && IsPointerTypedOperand(left, method))
+        {
+            left = $"(void*){left}";
+            right = $"(void*){right}";
         }
 
         var target = (Instruction)instr.Operand!;
@@ -204,6 +224,51 @@ public partial class IRBuilder
             Condition = condition,
             TrueLabel = $"IL_{target.Offset:X4}"
         });
+    }
+
+    /// <summary>
+    /// Checks if a comparison operand is a known pointer-typed variable (parameter or local).
+    /// Used to add (void*) casts for pointer comparisons in the flat struct model.
+    /// </summary>
+    private static bool IsPointerTypedOperand(string operand, IRMethod method)
+    {
+        if (operand == "__this") return true;
+        if (operand == "nullptr") return false;
+
+        foreach (var param in method.Parameters)
+        {
+            if (param.CppName == operand && param.CppTypeName.EndsWith("*"))
+                return true;
+        }
+
+        foreach (var local in method.Locals)
+        {
+            if (local.CppName == operand && local.CppTypeName.EndsWith("*"))
+                return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Gets the C++ pointer type of a known variable (parameter or local).
+    /// Returns the type name (e.g., "SomeType*") or "void*" if not found.
+    /// </summary>
+    private static string GetOperandPointerType(string operand, IRMethod method)
+    {
+        foreach (var param in method.Parameters)
+        {
+            if (param.CppName == operand)
+                return param.CppTypeName;
+        }
+
+        foreach (var local in method.Locals)
+        {
+            if (local.CppName == operand)
+                return local.CppTypeName;
+        }
+
+        return "void*";
     }
 
     private void EmitMethodCall(IRBasicBlock block, Stack<string> stack, MethodReference methodRef,

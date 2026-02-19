@@ -458,6 +458,11 @@ public partial class IRBuilder
         // (e.g. different C# enum types collapse to same C++ type via using aliases)
         DisambiguateOverloadedMethods();
 
+        // Pass 3.4: Convert deferred generic specialization bodies.
+        // Must happen AFTER disambiguation (Pass 3.3) so that call sites in generic method
+        // bodies resolve to the correct disambiguated function names.
+        ConvertDeferredGenericBodies();
+
         // Pass 3.5: Create specialized methods for each generic method instantiation
         CreateGenericMethodSpecializations();
 

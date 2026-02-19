@@ -108,6 +108,12 @@ void array_clear(Array* arr, Int32 index, Int32 length) {
     std::memset(data, 0, length * elem_size);
 }
 
+void array_clear_all(void* raw) {
+    auto* arr = static_cast<Array*>(raw);
+    if (!arr) { throw_null_reference(); return; }
+    array_clear(arr, 0, arr->length);
+}
+
 void array_copy(Array* src, Int32 srcIndex, Array* dst, Int32 dstIndex, Int32 length) {
     if (!src || !dst) { throw_null_reference(); return; }
     if (srcIndex < 0 || dstIndex < 0 || length < 0 ||
@@ -123,6 +129,91 @@ void array_copy(Array* src, Int32 srcIndex, Array* dst, Int32 dstIndex, Int32 le
     char* src_data = static_cast<char*>(array_data(src)) + srcIndex * elem_size;
     char* dst_data = static_cast<char*>(array_data(dst)) + dstIndex * elem_size;
     std::memmove(dst_data, src_data, length * elem_size);
+}
+
+void array_copy_simple(void* raw_src, void* raw_dst, Int32 length) {
+    auto* src = static_cast<Array*>(raw_src);
+    auto* dst = static_cast<Array*>(raw_dst);
+    array_copy(src, 0, dst, 0, length);
+}
+
+void* array_clone(void* raw) {
+    auto* arr = static_cast<Array*>(raw);
+    if (!arr) { throw_null_reference(); return nullptr; }
+
+    auto* result = array_create(arr->element_type, arr->length);
+    if (arr->length > 0) {
+        size_t elem_size = arr->element_type->element_size;
+        if (elem_size == 0) elem_size = sizeof(void*);
+        std::memcpy(array_data(result), array_data(arr), arr->length * elem_size);
+    }
+    return result;
+}
+
+void array_reverse(void* raw, Int32 index, Int32 length) {
+    auto* arr = static_cast<Array*>(raw);
+    if (!arr) { throw_null_reference(); return; }
+    if (index < 0 || length < 0 || index + length > arr->length) {
+        throw_index_out_of_range();
+        return;
+    }
+    if (length <= 1) return;
+
+    size_t elem_size = arr->element_type->element_size;
+    if (elem_size == 0) elem_size = sizeof(void*);
+
+    char* data = static_cast<char*>(array_data(arr));
+    char* lo = data + index * elem_size;
+    char* hi = data + (index + length - 1) * elem_size;
+
+    // Swap elements from both ends toward center
+    // Use a small stack buffer for element swap
+    char tmp[64]; // handles elements up to 64 bytes
+    while (lo < hi) {
+        if (elem_size <= sizeof(tmp)) {
+            std::memcpy(tmp, lo, elem_size);
+            std::memcpy(lo, hi, elem_size);
+            std::memcpy(hi, tmp, elem_size);
+        } else {
+            // Fallback for very large elements: byte-by-byte swap
+            for (size_t b = 0; b < elem_size; ++b) {
+                char t = lo[b]; lo[b] = hi[b]; hi[b] = t;
+            }
+        }
+        lo += elem_size;
+        hi -= elem_size;
+    }
+}
+
+uintptr_t array_get_native_length(void* raw) {
+    auto* arr = static_cast<Array*>(raw);
+    if (!arr) { throw_null_reference(); return 0; }
+    return static_cast<uintptr_t>(arr->length);
+}
+
+void* array_get_value(void* raw, Int32 index) {
+    auto* arr = static_cast<Array*>(raw);
+    if (!arr) { throw_null_reference(); return nullptr; }
+    array_bounds_check(arr, index);
+
+    size_t elem_size = arr->element_type->element_size;
+    if (elem_size == 0) {
+        // Reference type: return the pointer directly
+        auto** data = static_cast<void**>(array_data(arr));
+        return data[index];
+    }
+    // Value type: would need boxing — FIXME: return nullptr for now
+    return nullptr;
+}
+
+void array_copy_impl(void* raw_src, Int32 srcIndex, void* raw_dst, Int32 dstIndex, Int32 length) {
+    array_copy(static_cast<Array*>(raw_src), srcIndex,
+               static_cast<Array*>(raw_dst), dstIndex, length);
+}
+
+Int32 array_get_cor_element_type(void* /*arr*/) {
+    // FIXME: would need TypeInfo to carry CorElementType metadata
+    return 0; // ELEMENT_TYPE_END — indicates unknown
 }
 
 } // namespace cil2cpp

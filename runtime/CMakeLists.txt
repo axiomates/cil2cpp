@@ -10,6 +10,14 @@ set(FETCHCONTENT_BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/.deps"
     CACHE PATH "FetchContent cache directory")
 include(FetchContent)
 
+# HACK: FetchContent_Populate() is deprecated in CMake 3.30+ (CMP0169), but we
+# need it for bdwgc/libatomic_ops because a symlink step is required between
+# download and add_subdirectory. FetchContent_MakeAvailable cannot be used here
+# since it combines both operations into one call.
+if(POLICY CMP0169)
+    cmake_policy(SET CMP0169 OLD)
+endif()
+
 FetchContent_Declare(
     bdwgc
     GIT_REPOSITORY https://github.com/ivmai/bdwgc.git
@@ -22,6 +30,7 @@ FetchContent_Declare(
 )
 
 # Populate sources (download only, don't add_subdirectory yet)
+# bdwgc needs libatomic_ops symlinked into its source tree before add_subdirectory
 FetchContent_GetProperties(bdwgc)
 if(NOT bdwgc_POPULATED)
     FetchContent_Populate(bdwgc)
@@ -53,11 +62,10 @@ if(WIN32)
     FetchContent_Declare(
         icu4c
         URL https://github.com/unicode-org/icu/releases/download/release-78.2/icu4c-78.2-Win64-MSVC2022.zip
+        DOWNLOAD_EXTRACT_TIMESTAMP TRUE
     )
-    FetchContent_GetProperties(icu4c)
-    if(NOT icu4c_POPULATED)
-        FetchContent_Populate(icu4c)
-    endif()
+    # Prebuilt ZIP has no CMakeLists.txt, so MakeAvailable just downloads/extracts
+    FetchContent_MakeAvailable(icu4c)
 
     # Create IMPORTED targets from prebuilt binaries
     add_library(ICU::uc SHARED IMPORTED)
@@ -95,6 +103,7 @@ set(RUNTIME_SOURCES
     src/bcl/System.Delegate.cpp
     src/icall/icall.cpp
     src/icall/math.cpp
+    src/icall/throw_helper.cpp
     src/icall/unicode_utility.cpp
     src/async/task.cpp
     src/async/threadpool.cpp

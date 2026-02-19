@@ -470,6 +470,12 @@ public partial class IRBuilder
                     && stack.Count > 0 && stack.Peek() != mergeVar)
                 {
                     var currentTop = stack.Pop();
+                    // For pointer-type merge targets, add explicit cast to handle implicit upcasts
+                    // (e.g., EqualityComparer<T>* → IEqualityComparer<T>*) since generated C++
+                    // structs don't use C++ inheritance. The dup+brtrue pattern can merge values
+                    // of different pointer types from branching vs fall-through paths.
+                    if (IsPointerTypedOperand(mergeVar, irMethod))
+                        currentTop = $"({GetOperandPointerType(mergeVar, irMethod)}){currentTop}";
                     block.Instructions.Add(new IRAssign { Target = mergeVar, Value = currentTop });
                     stack.Push(mergeVar);
                 }
@@ -702,6 +708,20 @@ public partial class IRBuilder
                 int stArgIdx = stArgDef?.Index ?? 0;
                 if (!method.IsStatic) stArgIdx++;
                 var stArgVal = stack.Count > 0 ? stack.Pop() : "0";
+                // For pointer-type parameters, add explicit cast to handle implicit upcasts
+                // (e.g., EqualityComparer<T>* → IEqualityComparer<T>*) since generated C++
+                // structs don't use C++ inheritance.
+                {
+                    int paramIdx = stArgDef?.Index ?? 0;
+                    if (paramIdx >= 0 && paramIdx < method.Parameters.Count)
+                    {
+                        var param = method.Parameters[paramIdx];
+                        if (param.CppTypeName.EndsWith("*") && param.CppTypeName != "void*")
+                        {
+                            stArgVal = $"({param.CppTypeName}){stArgVal}";
+                        }
+                    }
+                }
                 block.Instructions.Add(new IRAssign
                 {
                     Target = GetArgName(method, stArgIdx),
@@ -842,7 +862,7 @@ public partial class IRBuilder
             }
 
             // ===== Comparison =====
-            case Code.Ceq: EmitBinaryOp(block, stack, "==", ref tempCounter); break;
+            case Code.Ceq: EmitBinaryOp(block, stack, "==", ref tempCounter, method: method); break;
             case Code.Cgt: EmitBinaryOp(block, stack, ">", ref tempCounter); break;
             case Code.Cgt_Un: EmitBinaryOp(block, stack, ">", ref tempCounter, isUnsigned: true); break;
             case Code.Clt: EmitBinaryOp(block, stack, "<", ref tempCounter); break;
@@ -917,11 +937,11 @@ public partial class IRBuilder
 
             case Code.Beq:
             case Code.Beq_S:
-                EmitComparisonBranch(block, stack, "==", instr, branchTargetStacks: branchTargetStacks);
+                EmitComparisonBranch(block, stack, "==", instr, branchTargetStacks: branchTargetStacks, method: method);
                 break;
             case Code.Bne_Un:
             case Code.Bne_Un_S:
-                EmitComparisonBranch(block, stack, "!=", instr, isUnsigned: true, branchTargetStacks: branchTargetStacks);
+                EmitComparisonBranch(block, stack, "!=", instr, isUnsigned: true, branchTargetStacks: branchTargetStacks, method: method);
                 break;
             case Code.Bge:
             case Code.Bge_S:

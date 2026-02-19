@@ -57,7 +57,16 @@ public static class ICallRegistry
         RegisterICall("System.Array", "get_Length", 0, "cil2cpp::array_get_length");
         RegisterICall("System.Array", "get_Rank", 0, "cil2cpp::array_get_rank");
         RegisterICall("System.Array", "Clear", 3, "cil2cpp::array_clear");
+        RegisterICall("System.Array", "Clear", 1, "cil2cpp::array_clear_all");
         RegisterICall("System.Array", "GetLength", 1, "cil2cpp::array_get_length_dim");
+        RegisterICall("System.Array", "Copy", 5, "cil2cpp::array_copy");
+        RegisterICall("System.Array", "Copy", 3, "cil2cpp::array_copy_simple");
+        RegisterICall("System.Array", "CopyImpl", 5, "cil2cpp::array_copy_impl");
+        RegisterICall("System.Array", "Clone", 0, "cil2cpp::array_clone");
+        RegisterICall("System.Array", "Reverse", 3, "cil2cpp::array_reverse");
+        RegisterICall("System.Array", "get_NativeLength", 0, "cil2cpp::array_get_native_length");
+        RegisterICall("System.Array", "GetValue", 1, "cil2cpp::array_get_value");
+        RegisterICall("System.Array", "GetCorElementTypeOfElementType", 0, "cil2cpp::array_get_cor_element_type");
 
         // ===== System.Delegate / System.MulticastDelegate =====
         RegisterICall("System.Delegate", "Combine", 2, "cil2cpp::delegate_combine");
@@ -344,11 +353,48 @@ public static class ICallRegistry
         RegisterICall("System.MathF", "Cbrt", 1, "cil2cpp::icall::MathF_Cbrt");
         RegisterICall("System.MathF", "FusedMultiplyAdd", 3, "cil2cpp::icall::MathF_FusedMultiplyAdd");
 
-        // ===== System.Array =====
-        // Array.Copy: C++ implementation exists but registration causes reachability cascade —
-        // new List<T>.ToArray() methods compile with array_set<T> type mismatches.
-        // FIXME: needs array_set template to handle pointer types for reference-type arrays.
-        // RegisterICall("System.Array", "Copy", 5, "cil2cpp::array_copy");
+        // (Array ICalls moved to main section above)
+
+        // ===== System.ThrowHelper =====
+        // BCL's centralized exception throwers — they depend on SR resource strings
+        // which need P/Invoke to native resources. Map to our runtime throw functions.
+        RegisterICall("System.ThrowHelper", "ThrowArgumentOutOfRangeException", 1,
+            "cil2cpp::icall::ThrowHelper_ThrowArgumentOutOfRangeException");
+        RegisterICall("System.ThrowHelper", "ThrowArgumentOutOfRangeException", 2,
+            "cil2cpp::icall::ThrowHelper_ThrowArgumentOutOfRangeException2");
+        RegisterICall("System.ThrowHelper", "ThrowArgumentNullException", 1,
+            "cil2cpp::icall::ThrowHelper_ThrowArgumentNullException");
+        RegisterICallTyped("System.ThrowHelper", "ThrowArgumentNullException", 1,
+            "System.String", "cil2cpp::icall::ThrowHelper_ThrowArgumentNullException2");
+        RegisterICall("System.ThrowHelper", "ThrowArgumentException", 1,
+            "cil2cpp::icall::ThrowHelper_ThrowArgumentException");
+        RegisterICall("System.ThrowHelper", "ThrowArgumentException", 2,
+            "cil2cpp::icall::ThrowHelper_ThrowArgumentException2");
+        RegisterICall("System.ThrowHelper", "ThrowInvalidOperationException", 1,
+            "cil2cpp::icall::ThrowHelper_ThrowInvalidOperationException");
+        RegisterICall("System.ThrowHelper", "ThrowInvalidOperationException", 0,
+            "cil2cpp::icall::ThrowHelper_ThrowInvalidOperationException0");
+        RegisterICall("System.ThrowHelper", "ThrowNotSupportedException", 1,
+            "cil2cpp::icall::ThrowHelper_ThrowNotSupportedException");
+        RegisterICall("System.ThrowHelper", "ThrowNotSupportedException", 0,
+            "cil2cpp::icall::ThrowHelper_ThrowNotSupportedException0");
+        RegisterICall("System.ThrowHelper", "ThrowFormatInvalidString", 2,
+            "cil2cpp::icall::ThrowHelper_ThrowFormatInvalidString");
+        RegisterICall("System.ThrowHelper", "ThrowUnexpectedStateForKnownCallback", 1,
+            "cil2cpp::icall::ThrowHelper_ThrowUnexpectedStateForKnownCallback");
+        // GetXxx factory pattern (return exception objects for caller to throw)
+        RegisterICall("System.ThrowHelper", "GetArgumentException", 1,
+            "cil2cpp::icall::ThrowHelper_GetArgumentException");
+        RegisterICall("System.ThrowHelper", "GetArgumentException", 2,
+            "cil2cpp::icall::ThrowHelper_GetArgumentException2");
+        RegisterICall("System.ThrowHelper", "GetArgumentOutOfRangeException", 1,
+            "cil2cpp::icall::ThrowHelper_GetArgumentOutOfRangeException");
+        RegisterICall("System.ThrowHelper", "GetInvalidOperationException", 1,
+            "cil2cpp::icall::ThrowHelper_GetInvalidOperationException");
+        RegisterICall("System.ThrowHelper", "GetResourceString", 1,
+            "cil2cpp::icall::ThrowHelper_GetResourceString");
+        RegisterICall("System.ThrowHelper", "GetArgumentName", 1,
+            "cil2cpp::icall::ThrowHelper_GetArgumentName");
 
         // ===== System.ArgIterator =====
         // ArgIterator is 100% [InternalCall] in BCL. Our runtime uses VarArgHandle metadata

@@ -145,6 +145,34 @@ float MathF_Min(float a, float b);
 float MathF_Cbrt(float value);
 float MathF_FusedMultiplyAdd(float x, float y, float z);
 
+// System.ThrowHelper — BCL exception throw helpers.
+// These take enum parameters (ExceptionArgument, ExceptionResource) that we ignore,
+// since our runtime throws generic exception instances.
+[[noreturn]] void ThrowHelper_ThrowArgumentOutOfRangeException(Int32 argument);
+[[noreturn]] void ThrowHelper_ThrowArgumentOutOfRangeException2(Int32 argument, Int32 resource);
+[[noreturn]] void ThrowHelper_ThrowArgumentNullException(Int32 argument);
+[[noreturn]] void ThrowHelper_ThrowArgumentNullException2(cil2cpp::String* paramName);
+[[noreturn]] void ThrowHelper_ThrowArgumentException(Int32 resource);
+[[noreturn]] void ThrowHelper_ThrowArgumentException2(Int32 resource, Int32 argument);
+[[noreturn]] void ThrowHelper_ThrowInvalidOperationException(Int32 resource);
+[[noreturn]] void ThrowHelper_ThrowInvalidOperationException0();
+[[noreturn]] void ThrowHelper_ThrowNotSupportedException(Int32 resource);
+[[noreturn]] void ThrowHelper_ThrowNotSupportedException0();
+[[noreturn]] void ThrowHelper_ThrowFormatInvalidString(Int32 offset, Int32 reason);
+[[noreturn]] void ThrowHelper_ThrowUnexpectedStateForKnownCallback(Int32 state);
+// Overload for calls where the enum parameter resolves to Object* in generated code
+[[noreturn]] inline void ThrowHelper_ThrowUnexpectedStateForKnownCallback(cil2cpp::Object*) {
+    ThrowHelper_ThrowUnexpectedStateForKnownCallback(0);
+}
+
+// System.ThrowHelper non-throwing helpers (return exception objects for GetXxx pattern)
+cil2cpp::Object* ThrowHelper_GetArgumentException(Int32 resource);
+cil2cpp::Object* ThrowHelper_GetArgumentException2(Int32 resource, Int32 argument);
+cil2cpp::Object* ThrowHelper_GetArgumentOutOfRangeException(Int32 argument);
+cil2cpp::Object* ThrowHelper_GetInvalidOperationException(Int32 resource);
+cil2cpp::String* ThrowHelper_GetResourceString(Int32 resource);
+cil2cpp::String* ThrowHelper_GetArgumentName(Int32 argument);
+
 } // namespace icall
 
 // System.Text.Unicode.Utf8Utility — scalar replacements for SIMD-based BCL methods
