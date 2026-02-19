@@ -753,6 +753,49 @@ def cmd_integration(args):
     runner.step("Generated files exist", ft_files_exist)
     runner.step("FeatureTest source files have entry point and are substantial", ft_cpp_not_empty)
 
+    # ===== Phase 8: SystemIOTest (File, Path, Directory I/O) =====
+    header("Phase 8: SystemIOTest (System.IO — File, Path, Directory)")
+
+    io_sample = TESTPROJECTS_DIR / "SystemIOTest" / "SystemIOTest.csproj"
+    io_output = temp_dir / "systemio_output"
+
+    def io_codegen():
+        run(["dotnet", "run", "--project", str(CLI_PROJECT), "--",
+             "codegen", "-i", str(io_sample), "-o", str(io_output)],
+            capture=True)
+
+    def io_files_exist():
+        for f in ["SystemIOTest.h", "SystemIOTest_data.cpp", "SystemIOTest_stubs.cpp",
+                   "main.cpp", "CMakeLists.txt"]:
+            if not (io_output / f).exists():
+                raise RuntimeError(f"Missing: {f}")
+
+    def io_cmake_and_build():
+        io_build = io_output / "build"
+        run(["cmake", "-B", str(io_build), "-S", str(io_output),
+             "-G", generator, *cmake_arch,
+             f"-DCMAKE_PREFIX_PATH={runtime_prefix}"], capture=True)
+        run(["cmake", "--build", str(io_build), "--config", config], capture=True)
+
+    def io_run_verify():
+        io_build = io_output / "build"
+        exe = _exe_path(io_build, config, "SystemIOTest")
+        r = subprocess.run([str(exe)], capture_output=True, text=True, check=False, timeout=30)
+        if r.returncode != 0:
+            raise RuntimeError(f"SystemIOTest exited with code {r.returncode}\n{r.stdout}\n{r.stderr}")
+        out = r.stdout
+        if "=== Done ===" not in out:
+            raise RuntimeError(f"SystemIOTest output missing '=== Done ==='\n{out}")
+        # Count OK results
+        ok_count = out.count(": OK")
+        if ok_count < 15:
+            raise RuntimeError(f"SystemIOTest only {ok_count} OK results (expected >=15)\n{out}")
+
+    runner.step("Codegen SystemIOTest", io_codegen)
+    runner.step("Generated files exist", io_files_exist)
+    runner.step("CMake configure + build SystemIOTest", io_cmake_and_build)
+    runner.step("Run SystemIOTest and verify output", io_run_verify)
+
     # ===== Cleanup =====
     header("Cleanup")
 

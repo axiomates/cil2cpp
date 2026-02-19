@@ -389,11 +389,54 @@ public partial class CppCodeGenerator
             return;
         }
 
-        // Own fields (value types have no inheritance)
-        foreach (var field in type.Fields)
+        if (type.ExplicitSize > 0)
         {
-            var cppType = SanitizeFieldType(field.FieldTypeName, definedTypes);
-            sb.AppendLine($"    {cppType} {field.CppName};");
+            // Types with explicit ClassSize metadata (ECMA-335 II.10.1.2).
+            // Three sub-cases:
+            //   1. FixedBuffer: single FixedElementField → emit as C array
+            //   2. StaticArrayInitTypeSize: no fields → emit raw byte array
+            //   3. Other: has fields + explicit size → emit fields + padding
+
+            if (type.Fields.Count == 1 && type.Fields[0].Name == "FixedElementField")
+            {
+                // Case 1: Fixed-size buffer (C# fixed keyword / [InlineArray])
+                var field = type.Fields[0];
+                var cppType = SanitizeFieldType(field.FieldTypeName, definedTypes);
+                int elemSize = GetPrimitiveSize(cppType);
+                if (elemSize > 0)
+                {
+                    int count = type.ExplicitSize / elemSize;
+                    sb.AppendLine($"    {cppType} {field.CppName}[{count}];");
+                }
+                else
+                {
+                    // Fallback: emit as raw byte array to guarantee correct sizeof
+                    sb.AppendLine($"    uint8_t {field.CppName}[{type.ExplicitSize}]; // FIXME: unknown element type '{cppType}'");
+                }
+            }
+            else if (type.Fields.Count == 0)
+            {
+                // Case 2: Opaque sized type (e.g., __StaticArrayInitTypeSize=N)
+                sb.AppendLine($"    uint8_t __data[{type.ExplicitSize}];");
+            }
+            else
+            {
+                // Case 3: Regular struct with explicit size — emit fields + tail padding
+                foreach (var field in type.Fields)
+                {
+                    var cppType = SanitizeFieldType(field.FieldTypeName, definedTypes);
+                    sb.AppendLine($"    {cppType} {field.CppName};");
+                }
+            }
+        }
+        else
+        {
+            // Normal value type: emit fields as-is
+            foreach (var field in type.Fields)
+            {
+                var cppType = SanitizeFieldType(field.FieldTypeName, definedTypes);
+                sb.AppendLine($"    {cppType} {field.CppName};");
+            }
         }
 
         sb.AppendLine("};");
@@ -833,6 +876,23 @@ public partial class CppCodeGenerator
         return typeName is "bool" or "int8_t" or "uint8_t" or "int16_t" or "uint16_t"
             or "int32_t" or "uint32_t" or "int64_t" or "uint64_t" or "float" or "double"
             or "char16_t" or "intptr_t" or "uintptr_t" or "void";
+    }
+
+    /// <summary>
+    /// Get the size in bytes of a C++ primitive type name.
+    /// Returns 0 for unknown / non-primitive types.
+    /// </summary>
+    private static int GetPrimitiveSize(string cppType)
+    {
+        return cppType switch
+        {
+            "bool" or "int8_t" or "uint8_t" => 1,
+            "int16_t" or "uint16_t" or "char16_t" => 2,
+            "int32_t" or "uint32_t" or "float" => 4,
+            "int64_t" or "uint64_t" or "double" => 8,
+            "intptr_t" or "uintptr_t" => 8, // 64-bit assumption
+            _ => 0,
+        };
     }
 
     /// <summary>
@@ -1276,6 +1336,18 @@ public partial class CppCodeGenerator
         {
             return true;
         }
+
+        // Body-level check: gc_allocate_uninitialized_array returns void*, CompareExchange expects Array*
+        if (rendered.Contains("gc_allocate_uninitialized_array") && rendered.Contains("CompareExchange"))
+            return true;
+
+        // Body-level check: undeclared Action<Object>.Invoke delegate specialization
+        if (rendered.Contains("Action_1_System_Object_Invoke"))
+            return true;
+
+        // Body-level check: CancellationToken cast to String* in f_message assignment (BCL IL body bug)
+        if (rendered.Contains("CancellationToken") && rendered.Contains("->f_message = (cil2cpp::String*)"))
+            return true;
 
         // Check each line for known error patterns
         foreach (var line in rendered.AsSpan().EnumerateLines())
@@ -1941,7 +2013,8 @@ public partial class CppCodeGenerator
         if (s.Contains("->f_m_value"))
             return true;
 
-        // Pattern: Interop calls with wrong types (P/Invoke wrappers)
+        // Pattern: Interop calls with wrong pointer types in BCL IL bodies
+        // BCL code passes typed pointers (uint32_t*, uint64_t*, struct*) where uint8_t* expected
         if (s.Contains("Interop_GetRandomBytes(") || s.Contains("Interop_Globalization_"))
             return true;
         // Note: RuntimeHelpers.CreateSpan<T>(RuntimeFieldHandle) is now intercepted in IRBuilder
@@ -1969,7 +2042,7 @@ public partial class CppCodeGenerator
             && !s.Contains("//"))
             return true;
 
-        // Pattern: GetLocaleInfoExInt with wrong argument types
+        // Pattern: GetLocaleInfoEx — BCL code passes int32_t* where char16_t* expected
         if (s.Contains("GetLocaleInfoEx(") || s.Contains("GetLocaleInfoExInt("))
             return true;
 
@@ -2034,11 +2107,6 @@ public partial class CppCodeGenerator
                 return true; // truncated line — flag as error
         }
 
-        // Pattern: intptr_t in Span constructor or Marshal calls
-        // e.g., Marshal_StringToCoTaskMemUni creating Span from intptr_t
-        if (s.Contains("Marshal_StringToCoTaskMem"))
-            return true;
-
         // Pattern: missing this pointer — function call where first arg is small int
         // but function expects a pointer (value type method on struct)
         // Detect: GuidResult_SetFailure(7, or GetLocaleInfoFromLCType(4099,
@@ -2048,9 +2116,6 @@ public partial class CppCodeGenerator
             return true;
         if (s.Contains("GetLocaleInfoFromLCType(") && char.IsDigit(s[s.IndexOf("GetLocaleInfoFromLCType(") + 24]))
             return true;
-        if (s.Contains("NlsGetDefaultLocaleName") || s.Contains("NlsGetAdjustedCalendarArray"))
-            return true;
-
         // Pattern: ValueListBuilder method called with wrong this (temp var instead of pointer)
         if (s.Contains("ValueListBuilder_1_"))
         {
@@ -2201,11 +2266,7 @@ public partial class CppCodeGenerator
         if (s.Contains("TypedReference") && s.Contains("GetTypeFromHandle"))
             return true;
 
-        // Pattern: GCHandle_FromIntPtr with void* arg (needs intptr_t)
-        if (s.Contains("GCHandle_FromIntPtr(") && !s.Contains("(intptr_t)"))
-            return true;
-
-        // Pattern: FreeCoTaskMem with pointer arg (needs intptr_t)
+        // Pattern: FreeCoTaskMem — BCL passes raw pointers (uint8_t*, uint16_t*) where intptr_t expected
         if (s.Contains("FreeCoTaskMem(") && !s.Contains("(intptr_t)"))
             return true;
 
@@ -2276,32 +2337,8 @@ public partial class CppCodeGenerator
         if (s.Contains("GetThreadIOPendingFlag("))
             return true;
 
-        // Pattern: String ctor called with uintptr_t arg (needs char16_t*)
-        if (s.Contains("String__ctor") && s.Contains("(uintptr_t)"))
-            return true;
-
         // Pattern: ReadUnalignedI4 with uintptr_t arg (needs int32_t*)
         if (s.Contains("ReadUnalignedI4("))
-            return true;
-
-        // Pattern: FreeHGlobal/AllocHGlobal — intptr_t ↔ void* mismatch
-        if (s.Contains("FreeHGlobal(") || s.Contains("AllocHGlobal(") || s.Contains("LocalAlloc(") || s.Contains("LocalFree("))
-            return true;
-
-        // Pattern: FindStringOrdinal — wrong arg types
-        if (s.Contains("FindStringOrdinal("))
-            return true;
-
-        // Pattern: GetCalendarInfoEx — char16_t*/intptr_t mismatch
-        if (s.Contains("GetCalendarInfoEx"))
-            return true;
-
-        // Pattern: Span ctor with intptr_t arg where void* expected
-        if (s.Contains("Span_1_") && s.Contains("__ctor") && s.Contains("(intptr_t)"))
-            return true;
-
-        // Pattern: Marshal_Copy — void*/intptr_t mismatch
-        if (s.Contains("Marshal_Copy"))
             return true;
 
         // Pattern: ValueStringBuilder — wrong this pointer (String* instead of VSB*)

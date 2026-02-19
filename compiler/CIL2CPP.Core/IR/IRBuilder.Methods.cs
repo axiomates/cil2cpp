@@ -63,12 +63,26 @@ public partial class IRBuilder
                 declaringType.ILFullName, methodDef.Name, methodDef.Parameters.Count) != null)
             irMethod.HasICallMapping = true;
 
-        // Detect P/Invoke (DllImport)
+        // Detect P/Invoke (DllImport) — ECMA-335 II.15.5
         if (methodDef.IsPInvokeImpl && methodDef.PInvokeInfo != null)
         {
+            var pinfo = methodDef.PInvokeInfo;
             irMethod.IsPInvoke = true;
-            irMethod.PInvokeModule = methodDef.PInvokeInfo.Module?.Name;
-            irMethod.PInvokeEntryPoint = methodDef.PInvokeInfo.EntryPoint ?? methodDef.Name;
+            irMethod.PInvokeModule = pinfo.Module?.Name;
+            irMethod.PInvokeEntryPoint = pinfo.EntryPoint ?? methodDef.Name;
+
+            // ECMA-335 II.15.5.2: Character set
+            irMethod.PInvokeCharSet = pinfo.IsCharSetUnicode ? PInvokeCharSet.Unicode
+                : pinfo.IsCharSetAuto ? PInvokeCharSet.Auto
+                : PInvokeCharSet.Ansi;
+
+            // ECMA-335 II.15.5.1: Calling convention
+            irMethod.PInvokeCallingConvention = pinfo.IsCallConvStdCall ? PInvokeCallingConvention.StdCall
+                : pinfo.IsCallConvThiscall ? PInvokeCallingConvention.ThisCall
+                : pinfo.IsCallConvFastcall ? PInvokeCallingConvention.FastCall
+                : PInvokeCallingConvention.Cdecl;
+
+            irMethod.PInvokeSetLastError = pinfo.SupportsLastError;
         }
 
         // Detect operator methods
@@ -1684,12 +1698,38 @@ public partial class IRBuilder
                 // e.g. System.SByte → int8_t (not System_SByte which doesn't exist as a C++ type)
                 var resolvedName = ResolveTypeRefOperand(typeRef);
                 var typeCpp = CppNameMapper.GetCppTypeName(resolvedName);
-                // Strip pointer suffix — initobj operates on value types, sizeof needs the base type
+
+                // ECMA-335 III.4.12: initobj behavior depends on type:
+                // - Value types: zero the memory at addr (sizeof the struct)
+                // - Reference types: set the location to null (it's a pointer)
+                // Use Cecil resolution + CppNameMapper as fallback (same pattern as Box handler)
+                bool isValueType;
+                try
+                {
+                    var resolved = typeRef.Resolve();
+                    if (resolved != null)
+                        isValueType = resolved.IsValueType;
+                    else if (_typeCache.TryGetValue(resolvedName, out var cachedType))
+                        isValueType = cachedType.IsValueType;
+                    else
+                        isValueType = CppNameMapper.IsValueType(resolvedName);
+                }
+                catch
+                {
+                    if (_typeCache.TryGetValue(resolvedName, out var cachedType))
+                        isValueType = cachedType.IsValueType;
+                    else
+                        isValueType = CppNameMapper.IsValueType(resolvedName);
+                }
+
+                // Strip pointer suffix — sizeof needs the base type
                 if (typeCpp.EndsWith("*")) typeCpp = typeCpp.TrimEnd('*');
+
                 block.Instructions.Add(new IRInitObj
                 {
                     AddressExpr = addr,
-                    TypeCppName = typeCpp
+                    TypeCppName = typeCpp,
+                    IsReferenceType = !isValueType
                 });
                 break;
             }
@@ -2043,11 +2083,45 @@ public partial class IRBuilder
                 {
                     var resolvedName = ResolveTypeRefOperand(typeRef);
                     var typeCpp = CppNameMapper.GetCppTypeName(resolvedName);
-                    if (typeCpp.EndsWith("*")) typeCpp = typeCpp.TrimEnd('*');
-                    block.Instructions.Add(new IRRawCpp
+
+                    // ECMA-335 III.4.4: cpobj behavior depends on type:
+                    //   - Value types: memcpy sizeof(T) bytes from src to dest
+                    //   - Reference types: copy the object reference (pointer assignment)
+                    bool isValueType;
+                    try
                     {
-                        Code = $"std::memcpy(reinterpret_cast<void*>({dest}), reinterpret_cast<const void*>({src}), sizeof({typeCpp}));",
-                    });
+                        var resolved = typeRef.Resolve();
+                        if (resolved != null)
+                            isValueType = resolved.IsValueType;
+                        else if (_typeCache.TryGetValue(resolvedName, out var cachedType))
+                            isValueType = cachedType.IsValueType;
+                        else
+                            isValueType = CppNameMapper.IsValueType(resolvedName);
+                    }
+                    catch
+                    {
+                        if (_typeCache.TryGetValue(resolvedName, out var cachedType))
+                            isValueType = cachedType.IsValueType;
+                        else
+                            isValueType = CppNameMapper.IsValueType(resolvedName);
+                    }
+
+                    if (isValueType)
+                    {
+                        if (typeCpp.EndsWith("*")) typeCpp = typeCpp.TrimEnd('*');
+                        block.Instructions.Add(new IRRawCpp
+                        {
+                            Code = $"std::memcpy(reinterpret_cast<void*>({dest}), reinterpret_cast<const void*>({src}), sizeof({typeCpp}));",
+                        });
+                    }
+                    else
+                    {
+                        // Reference type: copy the pointer at src to dest
+                        block.Instructions.Add(new IRRawCpp
+                        {
+                            Code = $"*reinterpret_cast<void**>({dest}) = *reinterpret_cast<void**>({src});",
+                        });
+                    }
                 }
                 else
                 {

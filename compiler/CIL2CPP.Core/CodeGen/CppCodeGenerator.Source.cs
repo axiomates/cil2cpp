@@ -1644,15 +1644,16 @@ public partial class CppCodeGenerator
             foreach (var method in needsExternDecl)
             {
                 var entryPoint = method.PInvokeEntryPoint ?? method.Name;
-                var retType = GetPInvokeNativeType(method.ReturnTypeCpp, null);
-                if (!IsCppPrimitiveOrPointerType(retType)) continue;
+                var charSet = method.PInvokeCharSet;
+                var retType = GetPInvokeNativeType(method.ReturnTypeCpp, null, charSet);
+                if (!IsValidExternCType(retType)) continue;
 
-                bool hasNonPointerType = false;
+                bool hasInvalidType = false;
                 int structPointerCount = 0;
                 foreach (var p in method.Parameters)
                 {
-                    var nt = GetPInvokeNativeType(p.CppTypeName, p.ParameterType);
-                    if (!IsCppPrimitiveOrPointerType(nt)) { hasNonPointerType = true; break; }
+                    var nt = GetPInvokeNativeType(p.CppTypeName, p.ParameterType, charSet);
+                    if (!IsValidExternCType(nt)) { hasInvalidType = true; break; }
                     // Count struct pointers (pointer to non-primitive type)
                     if (nt.EndsWith("*"))
                     {
@@ -1661,7 +1662,7 @@ public partial class CppCodeGenerator
                             structPointerCount++;
                     }
                 }
-                if (hasNonPointerType) continue;
+                if (hasInvalidType) continue;
 
                 // Lower score = better candidate (fewer struct pointers)
                 if (!bestExternCandidate.TryGetValue(entryPoint, out var existing) ||
@@ -1674,10 +1675,11 @@ public partial class CppCodeGenerator
             // Emit extern declarations from the best candidates
             foreach (var (entryPoint, (method, _)) in bestExternCandidate.OrderBy(kv => kv.Key))
             {
-                var retType = GetPInvokeNativeType(method.ReturnTypeCpp, null);
+                var cs = method.PInvokeCharSet;
+                var retType = GetPInvokeNativeType(method.ReturnTypeCpp, null, cs);
                 var nativeParamTypes = new List<string>();
                 foreach (var p in method.Parameters)
-                    nativeParamTypes.Add(GetPInvokeNativeType(p.CppTypeName, p.ParameterType));
+                    nativeParamTypes.Add(GetPInvokeNativeType(p.CppTypeName, p.ParameterType, cs));
 
                 var paramParts = new List<string>();
                 for (int i = 0; i < method.Parameters.Count; i++)
@@ -1706,6 +1708,7 @@ public partial class CppCodeGenerator
             if (!emittedMethodSignatures.Add(sig)) continue; // skip exact duplicates
 
             // Check parameter type compatibility with the declared extern
+            var wrapperCharSet = method.PInvokeCharSet;
             if (declaredParamTypes.TryGetValue(entryPoint, out var externParamTypes))
             {
                 if (method.Parameters.Count != externParamTypes.Count) continue;
@@ -1713,7 +1716,7 @@ public partial class CppCodeGenerator
                 for (int i = 0; i < method.Parameters.Count; i++)
                 {
                     var methodType = GetPInvokeNativeType(method.Parameters[i].CppTypeName,
-                        method.Parameters[i].ParameterType);
+                        method.Parameters[i].ParameterType, wrapperCharSet);
                     if (methodType != externParamTypes[i]) { compatible = false; break; }
                 }
                 if (!compatible) continue;
@@ -1723,20 +1726,42 @@ public partial class CppCodeGenerator
             sb.AppendLine($"// P/Invoke: {method.PInvokeModule}!{entryPoint}");
             sb.AppendLine($"{sig} {{");
 
-            // Marshal arguments
+            // Marshal arguments per ECMA-335 II.15.5.4
             var callArgs = new List<string>();
             for (int i = 0; i < method.Parameters.Count; i++)
             {
                 var param = method.Parameters[i];
                 if (IsStringType(param.CppTypeName))
                 {
-                    sb.AppendLine($"    auto __p{i} = cil2cpp::string_to_utf8({param.CppName});");
+                    if (wrapperCharSet == IR.PInvokeCharSet.Unicode
+                        || wrapperCharSet == IR.PInvokeCharSet.Auto)
+                    {
+                        // Unicode: pass UTF-16 pointer directly (zero-copy)
+                        sb.AppendLine($"    auto __p{i} = {param.CppName} ? cil2cpp::string_get_raw_data({param.CppName}) : (const char16_t*)nullptr;");
+                    }
+                    else
+                    {
+                        // Ansi: convert to UTF-8
+                        sb.AppendLine($"    auto __p{i} = cil2cpp::string_to_utf8({param.CppName});");
+                    }
                     callArgs.Add($"__p{i}");
                 }
                 else if (IsDelegateType(param.ParameterType))
                 {
                     var fnPtrType = GetDelegateFunctionPointerType(param.ParameterType);
                     sb.AppendLine($"    auto __p{i} = reinterpret_cast<{fnPtrType}>(reinterpret_cast<cil2cpp::Delegate*>({param.CppName})->method_ptr);");
+                    callArgs.Add($"__p{i}");
+                }
+                else if (param.CppTypeName is "intptr_t" or "uintptr_t")
+                {
+                    // ECMA-335: native int → void* for native calls
+                    sb.AppendLine($"    auto __p{i} = reinterpret_cast<void*>({param.CppName});");
+                    callArgs.Add($"__p{i}");
+                }
+                else if (param.CppTypeName == "bool")
+                {
+                    // ECMA-335: Boolean → Win32 BOOL (int32_t)
+                    sb.AppendLine($"    auto __p{i} = static_cast<int32_t>({param.CppName});");
                     callArgs.Add($"__p{i}");
                 }
                 else
@@ -1746,18 +1771,61 @@ public partial class CppCodeGenerator
             }
 
             var argStr = string.Join(", ", callArgs);
+
+            // SetLastError support (ECMA-335 II.15.5)
+            if (method.PInvokeSetLastError)
+                sb.AppendLine("    cil2cpp::set_last_pinvoke_error(0);");
+
             if (retType == "void")
             {
                 sb.AppendLine($"    {entryPoint}({argStr});");
+                if (method.PInvokeSetLastError)
+                    sb.AppendLine("    cil2cpp::capture_last_pinvoke_error();");
             }
             else if (IsStringType(retType))
             {
                 sb.AppendLine($"    auto __ret = {entryPoint}({argStr});");
-                sb.AppendLine($"    return cil2cpp::string_literal(__ret);");
+                if (method.PInvokeSetLastError)
+                    sb.AppendLine("    cil2cpp::capture_last_pinvoke_error();");
+                if (wrapperCharSet == IR.PInvokeCharSet.Unicode
+                    || wrapperCharSet == IR.PInvokeCharSet.Auto)
+                {
+                    // FIXME: need to determine string length for Unicode return values
+                    sb.AppendLine("    return cil2cpp::string_literal((const char*)__ret);");
+                }
+                else
+                {
+                    sb.AppendLine("    return cil2cpp::string_literal(__ret);");
+                }
+            }
+            else if (retType is "intptr_t" or "uintptr_t")
+            {
+                // void* from native → intptr_t/uintptr_t in managed
+                sb.AppendLine($"    auto __ret = {entryPoint}({argStr});");
+                if (method.PInvokeSetLastError)
+                    sb.AppendLine("    cil2cpp::capture_last_pinvoke_error();");
+                sb.AppendLine($"    return reinterpret_cast<{retType}>(__ret);");
+            }
+            else if (retType == "bool")
+            {
+                // Win32 BOOL (int32_t) → C++ bool
+                sb.AppendLine($"    auto __ret = {entryPoint}({argStr});");
+                if (method.PInvokeSetLastError)
+                    sb.AppendLine("    cil2cpp::capture_last_pinvoke_error();");
+                sb.AppendLine("    return __ret != 0;");
             }
             else
             {
-                sb.AppendLine($"    return {entryPoint}({argStr});");
+                if (method.PInvokeSetLastError)
+                {
+                    sb.AppendLine($"    auto __ret = {entryPoint}({argStr});");
+                    sb.AppendLine("    cil2cpp::capture_last_pinvoke_error();");
+                    sb.AppendLine("    return __ret;");
+                }
+                else
+                {
+                    sb.AppendLine($"    return {entryPoint}({argStr});");
+                }
             }
 
             sb.AppendLine("}");
@@ -1766,25 +1834,45 @@ public partial class CppCodeGenerator
     }
 
     /// <summary>
-    /// Convert C++ managed type to native P/Invoke type.
+    /// Convert C++ managed type to native P/Invoke type per ECMA-335 II.15.5.4.
     /// </summary>
-    private string GetPInvokeNativeType(string cppType, IRType? paramType)
+    private string GetPInvokeNativeType(string cppType, IRType? paramType,
+        IR.PInvokeCharSet charSet = IR.PInvokeCharSet.Ansi)
     {
-        if (cppType == "cil2cpp::String*") return "const char*";
+        // String marshaling depends on CharSet (ECMA-335 II.15.5.2)
+        if (IsStringType(cppType))
+        {
+            return charSet == IR.PInvokeCharSet.Unicode ? "const char16_t*"
+                : charSet == IR.PInvokeCharSet.Auto ? "const char16_t*" // Auto = Unicode on Windows
+                : "const char*"; // Ansi = UTF-8
+        }
+
         if (cppType == "void") return "void";
+
+        // Delegate → C function pointer
         if (IsDelegateType(paramType)) return GetDelegateFunctionPointerType(paramType!);
+
+        // ECMA-335: native int/uint are pointer-sized → void* in native code
+        if (cppType is "intptr_t" or "uintptr_t") return "void*";
+
+        // ECMA-335: System.Boolean marshals as Win32 BOOL (4-byte int)
+        if (cppType == "bool") return "int32_t";
+
         return cppType;
     }
 
     /// <summary>
-    /// Check if a C++ type is a primitive, pointer, or void (valid for extern "C" return types).
+    /// Check if a C++ type is valid for an extern "C" declaration.
+    /// Accepts primitives, pointers, void, and struct types defined in the compilation unit.
     /// </summary>
-    private static bool IsCppPrimitiveOrPointerType(string cppType)
+    private bool IsValidExternCType(string cppType)
     {
         if (cppType.EndsWith("*")) return true;
-        return cppType is "void" or "bool" or "int8_t" or "uint8_t" or "int16_t" or "uint16_t"
-            or "int32_t" or "uint32_t" or "int64_t" or "uint64_t" or "float" or "double"
-            or "char16_t" or "intptr_t" or "uintptr_t";
+        if (IsCppPrimitiveType(cppType)) return true;
+        if (cppType is "void" or "int32_t") return true; // int32_t from bool→BOOL marshaling
+        // Struct types defined in the compilation unit are valid extern "C" types
+        if (_knownStructTypes == null) BuildKnownStructTypes();
+        return _knownStructTypes!.Contains(cppType);
     }
 
     /// <summary>

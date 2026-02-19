@@ -153,6 +153,8 @@ extern thread_local ExceptionContext* g_exception_context;
 [[noreturn]] void throw_operation_canceled();
 [[noreturn]] void throw_platform_not_supported();
 [[noreturn]] void throw_io_exception(const char* message);
+[[noreturn]] void throw_file_not_found(const char* message);
+[[noreturn]] void throw_io_exception(const char* message);
 [[noreturn]] void throw_file_not_found(const char* path);
 [[noreturn]] void throw_directory_not_found(const char* path);
 

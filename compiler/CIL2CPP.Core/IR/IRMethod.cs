@@ -50,6 +50,15 @@ public class IRMethod
     public bool IsPInvoke { get; set; }
     public string? PInvokeModule { get; set; }
     public string? PInvokeEntryPoint { get; set; }
+
+    /// <summary>ECMA-335 II.15.5.2: Character set marshaling for P/Invoke</summary>
+    public PInvokeCharSet PInvokeCharSet { get; set; } = PInvokeCharSet.Ansi;
+
+    /// <summary>ECMA-335 II.15.5.1: Calling convention for P/Invoke</summary>
+    public PInvokeCallingConvention PInvokeCallingConvention { get; set; } = PInvokeCallingConvention.Cdecl;
+
+    /// <summary>Whether the runtime should capture the native error code after the P/Invoke call</summary>
+    public bool PInvokeSetLastError { get; set; }
     public string? OperatorName { get; set; }
     public int VTableSlot { get; set; } = -1;
 

@@ -64,19 +64,26 @@ public partial class IRBuilder
             irType.BaseType = baseType;
         }
 
-        // Interfaces
+        // Interfaces (deduplicate: same type may be populated from multiple assemblies)
         foreach (var ifaceName in typeDef.InterfaceNames)
         {
-            if (_typeCache.TryGetValue(ifaceName, out var iface))
+            if (_typeCache.TryGetValue(ifaceName, out var iface) &&
+                !irType.Interfaces.Contains(iface))
             {
                 irType.Interfaces.Add(iface);
             }
         }
 
         // Fields (skip CLR-internal value__ field for enums)
+        // Skip fields that already exist (same type may be populated from multiple assemblies)
         foreach (var fieldDef in typeDef.Fields)
         {
             if (irType.IsEnum && fieldDef.Name == "value__") continue;
+
+            // Deduplicate: skip if a field with the same name+static already exists
+            var targetList = fieldDef.IsStatic ? irType.StaticFields : irType.Fields;
+            if (targetList.Any(f => f.Name == fieldDef.Name)) continue;
+
             var irField = new IRField
             {
                 Name = fieldDef.Name,
@@ -95,10 +102,17 @@ public partial class IRBuilder
             irField.ConstantValue = fieldDef.ConstantValue;
             irField.Attributes = (uint)fieldDef.GetCecilField().Attributes;
 
-            if (fieldDef.IsStatic)
-                irType.StaticFields.Add(irField);
-            else
-                irType.Fields.Add(irField);
+            targetList.Add(irField);
+        }
+
+        // Read explicit struct size from ClassSize metadata (ECMA-335 II.10.1.2).
+        // This is critical for fixed-size buffer types (InlineArray / FixedBuffer)
+        // where ClassSize > sum of declared fields (e.g., fixed byte[12] has one
+        // FixedElementField:byte but ClassSize=12).
+        var cecilType = typeDef.GetCecilType();
+        if (irType.IsValueType && cecilType.HasLayoutInfo && cecilType.ClassSize > 0)
+        {
+            irType.ExplicitSize = cecilType.ClassSize;
         }
 
         // Calculate instance size
@@ -133,6 +147,11 @@ public partial class IRBuilder
             field.Offset = size;
             size += fieldSize;
         }
+
+        // For types with explicit size (fixed-size buffers / InlineArray),
+        // the actual size may be larger than the sum of declared fields.
+        if (irType.ExplicitSize > 0 && irType.ExplicitSize > size)
+            size = irType.ExplicitSize;
 
         // Align total size to pointer boundary
         size = Align(size, PointerAlignment);

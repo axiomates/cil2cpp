@@ -30,6 +30,9 @@
 #include "typed_reference.h"
 #include "unicode.h"
 #include "globalization.h"
+#include "interop.h"
+#include "safe_handle.h"
+#include "io.h"
 
 // BCL types
 #include "bcl/System.Object.h"

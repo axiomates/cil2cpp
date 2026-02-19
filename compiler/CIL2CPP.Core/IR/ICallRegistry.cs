@@ -269,6 +269,38 @@ public static class ICallRegistry
         RegisterICall("System.Runtime.InteropServices.Marshal", "FreeHGlobal", 1, "cil2cpp::icall::Marshal_FreeHGlobal");
         RegisterICall("System.Runtime.InteropServices.Marshal", "AllocCoTaskMem", 1, "cil2cpp::icall::Marshal_AllocCoTaskMem");
         RegisterICall("System.Runtime.InteropServices.Marshal", "FreeCoTaskMem", 1, "cil2cpp::icall::Marshal_FreeCoTaskMem");
+        RegisterICall("System.Runtime.InteropServices.Marshal", "GetLastPInvokeError", 0, "cil2cpp::get_last_pinvoke_error");
+        RegisterICall("System.Runtime.InteropServices.Marshal", "SetLastPInvokeError", 1, "cil2cpp::set_last_pinvoke_error");
+
+        // ===== SafeHandle =====
+        RegisterICall("System.Runtime.InteropServices.SafeHandle", ".ctor", 2, "cil2cpp::icall::SafeHandle__ctor");
+
+        // ===== System.IO =====
+        // File operations — intercept at public API level, bypassing BCL FileStream chain
+        RegisterICall("System.IO.File", "Exists", 1, "cil2cpp::icall::File_Exists");
+        RegisterICall("System.IO.File", "ReadAllText", 1, "cil2cpp::icall::File_ReadAllText");
+        RegisterICall("System.IO.File", "ReadAllText", 2, "cil2cpp::icall::File_ReadAllText2");
+        RegisterICall("System.IO.File", "WriteAllText", 2, "cil2cpp::icall::File_WriteAllText");
+        RegisterICall("System.IO.File", "WriteAllText", 3, "cil2cpp::icall::File_WriteAllText2");
+        RegisterICall("System.IO.File", "ReadAllBytes", 1, "cil2cpp::icall::File_ReadAllBytes");
+        RegisterICall("System.IO.File", "WriteAllBytes", 2, "cil2cpp::icall::File_WriteAllBytes");
+        RegisterICall("System.IO.File", "Delete", 1, "cil2cpp::icall::File_Delete");
+        RegisterICall("System.IO.File", "Copy", 3, "cil2cpp::icall::File_Copy");
+        RegisterICall("System.IO.File", "Move", 3, "cil2cpp::icall::File_Move");
+        RegisterICall("System.IO.File", "ReadAllLines", 1, "cil2cpp::icall::File_ReadAllLines");
+        RegisterICall("System.IO.File", "AppendAllText", 2, "cil2cpp::icall::File_AppendAllText");
+        // Path operations
+        RegisterICall("System.IO.Path", "GetFullPath", 1, "cil2cpp::icall::Path_GetFullPath");
+        RegisterICall("System.IO.Path", "GetDirectoryName", 1, "cil2cpp::icall::Path_GetDirectoryName");
+        RegisterICall("System.IO.Path", "GetFileName", 1, "cil2cpp::icall::Path_GetFileName");
+        RegisterICall("System.IO.Path", "GetFileNameWithoutExtension", 1, "cil2cpp::icall::Path_GetFileNameWithoutExtension");
+        RegisterICall("System.IO.Path", "GetExtension", 1, "cil2cpp::icall::Path_GetExtension");
+        RegisterICall("System.IO.Path", "GetTempPath", 0, "cil2cpp::icall::Path_GetTempPath");
+        RegisterICall("System.IO.Path", "Combine", 2, "cil2cpp::icall::Path_Combine2");
+        RegisterICall("System.IO.Path", "Combine", 3, "cil2cpp::icall::Path_Combine3");
+        // Directory operations
+        RegisterICall("System.IO.Directory", "Exists", 1, "cil2cpp::icall::Directory_Exists");
+        RegisterICall("System.IO.Directory", "CreateDirectory", 1, "cil2cpp::icall::Directory_CreateDirectory");
 
         // ===== System.Type =====
         RegisterICall("System.Type", "GetTypeFromHandle", 1, "cil2cpp::icall::Type_GetTypeFromHandle");

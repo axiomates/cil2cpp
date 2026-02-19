@@ -361,8 +361,15 @@ public class IRInitObj : IRInstruction
 {
     public string AddressExpr { get; set; } = "";
     public string TypeCppName { get; set; } = "";
+    /// <summary>
+    /// ECMA-335 III.4.12: For reference types, initobj sets the location to null.
+    /// For value types, it zeroes the memory.
+    /// </summary>
+    public bool IsReferenceType { get; set; }
     public override string ToCpp() =>
-        $"std::memset({AddressExpr}, 0, sizeof({TypeCppName}));";
+        IsReferenceType
+            ? $"*({TypeCppName}**)({AddressExpr}) = nullptr;"
+            : $"std::memset({AddressExpr}, 0, sizeof({TypeCppName}));";
 }
 
 public class IRBox : IRInstruction

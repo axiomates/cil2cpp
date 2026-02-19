@@ -94,6 +94,13 @@ public class IRType
     /// </summary>
     public bool IsRuntimeProvided { get; set; }
 
+    /// <summary>
+    /// Explicit struct size in bytes from [StructLayout(Size = N)] / ClassSize metadata.
+    /// Used for fixed-size buffers (InlineArray) where ClassSize > sum of fields.
+    /// Zero means no explicit size (normal layout).
+    /// </summary>
+    public int ExplicitSize { get; set; }
+
     /// <summary>Custom attributes applied to this type</summary>
     public List<IRCustomAttribute> CustomAttributes { get; } = new();
 
