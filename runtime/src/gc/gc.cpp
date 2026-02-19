@@ -41,6 +41,13 @@ void* alloc(size_t size, TypeInfo* type) {
     obj->__sync_block = 0;
 
     // Register finalizer if the type has one
+#ifdef _MSC_VER
+#pragma warning(push)
+// C4611: setjmp + C++ destructors interaction. Safe here because the TRY/CATCH
+// scope contains only raw pointers (no RAII objects), so longjmp won't skip any
+// destructors. setjmp/longjmp is our exception mechanism (like Unity IL2CPP).
+#pragma warning(disable: 4611)
+#endif
     if (type && type->finalizer) {
         GC_register_finalizer_no_order(
             memory,
@@ -60,6 +67,9 @@ void* alloc(size_t size, TypeInfo* type) {
             nullptr, nullptr, nullptr
         );
     }
+#ifdef _MSC_VER
+#pragma warning(pop)
+#endif
 
     return memory;
 }

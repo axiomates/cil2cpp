@@ -52,20 +52,14 @@ MdArray* mdarray_create(TypeInfo* element_type, Int32 rank, const Int32* lengths
 }
 
 void* mdarray_get_element_ptr(MdArray* arr, const Int32* indices) {
-    if (!arr) {
-        throw_null_reference();
-        return nullptr;
-    }
+    if (!arr) throw_null_reference();
 
     Int32* lens = mdarray_lengths(arr);
 
     // Bounds check + compute linear index (row-major)
     Int32 linear = 0;
     for (Int32 d = 0; d < arr->rank; d++) {
-        if (indices[d] < 0 || indices[d] >= lens[d]) {
-            throw_index_out_of_range();
-            return nullptr;
-        }
+        if (indices[d] < 0 || indices[d] >= lens[d]) throw_index_out_of_range();
         linear = linear * lens[d] + indices[d];
     }
 
@@ -78,14 +72,8 @@ void* mdarray_get_element_ptr(MdArray* arr, const Int32* indices) {
 }
 
 Int32 mdarray_get_length(MdArray* arr, Int32 dimension) {
-    if (!arr) {
-        throw_null_reference();
-        return 0;
-    }
-    if (dimension < 0 || dimension >= arr->rank) {
-        throw_index_out_of_range();
-        return 0;
-    }
+    if (!arr) throw_null_reference();
+    if (dimension < 0 || dimension >= arr->rank) throw_index_out_of_range();
     return mdarray_lengths(arr)[dimension];
 }
 

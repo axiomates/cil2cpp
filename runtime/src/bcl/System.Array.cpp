@@ -65,7 +65,7 @@ void array_bounds_check(Array* arr, Int32 index) {
 // ===== ICall functions for System.Array (work with both 1D and multi-dim) =====
 
 Int32 array_get_length(Object* obj) {
-    if (!obj) { throw_null_reference(); return 0; }
+    if (!obj) throw_null_reference();
     if (is_mdarray(obj)) {
         return static_cast<MdArray*>(obj)->total_length;
     }
@@ -73,7 +73,7 @@ Int32 array_get_length(Object* obj) {
 }
 
 Int32 array_get_rank(Object* obj) {
-    if (!obj) { throw_null_reference(); return 0; }
+    if (!obj) throw_null_reference();
     if (is_mdarray(obj)) {
         return static_cast<MdArray*>(obj)->rank;
     }
@@ -81,24 +81,18 @@ Int32 array_get_rank(Object* obj) {
 }
 
 Int32 array_get_length_dim(Object* obj, Int32 dimension) {
-    if (!obj) { throw_null_reference(); return 0; }
+    if (!obj) throw_null_reference();
     if (is_mdarray(obj)) {
         return mdarray_get_length(static_cast<MdArray*>(obj), dimension);
     }
     // 1D array: only dimension 0 is valid
-    if (dimension != 0) {
-        throw_index_out_of_range();
-        return 0;
-    }
+    if (dimension != 0) throw_index_out_of_range();
     return static_cast<Array*>(obj)->length;
 }
 
 void array_clear(Array* arr, Int32 index, Int32 length) {
-    if (!arr) { throw_null_reference(); return; }
-    if (index < 0 || length < 0 || index + length > arr->length) {
-        throw_index_out_of_range();
-        return;
-    }
+    if (!arr) throw_null_reference();
+    if (index < 0 || length < 0 || index + length > arr->length) throw_index_out_of_range();
     if (length == 0) return;
 
     size_t elem_size = arr->element_type->element_size;
@@ -110,17 +104,14 @@ void array_clear(Array* arr, Int32 index, Int32 length) {
 
 void array_clear_all(void* raw) {
     auto* arr = static_cast<Array*>(raw);
-    if (!arr) { throw_null_reference(); return; }
+    if (!arr) throw_null_reference();
     array_clear(arr, 0, arr->length);
 }
 
 void array_copy(Array* src, Int32 srcIndex, Array* dst, Int32 dstIndex, Int32 length) {
-    if (!src || !dst) { throw_null_reference(); return; }
+    if (!src || !dst) throw_null_reference();
     if (srcIndex < 0 || dstIndex < 0 || length < 0 ||
-        srcIndex + length > src->length || dstIndex + length > dst->length) {
-        throw_index_out_of_range();
-        return;
-    }
+        srcIndex + length > src->length || dstIndex + length > dst->length) throw_index_out_of_range();
     if (length == 0) return;
 
     size_t elem_size = src->element_type->element_size;
@@ -139,7 +130,7 @@ void array_copy_simple(void* raw_src, void* raw_dst, Int32 length) {
 
 void* array_clone(void* raw) {
     auto* arr = static_cast<Array*>(raw);
-    if (!arr) { throw_null_reference(); return nullptr; }
+    if (!arr) throw_null_reference();
 
     auto* result = array_create(arr->element_type, arr->length);
     if (arr->length > 0) {
@@ -152,11 +143,8 @@ void* array_clone(void* raw) {
 
 void array_reverse(void* raw, Int32 index, Int32 length) {
     auto* arr = static_cast<Array*>(raw);
-    if (!arr) { throw_null_reference(); return; }
-    if (index < 0 || length < 0 || index + length > arr->length) {
-        throw_index_out_of_range();
-        return;
-    }
+    if (!arr) throw_null_reference();
+    if (index < 0 || length < 0 || index + length > arr->length) throw_index_out_of_range();
     if (length <= 1) return;
 
     size_t elem_size = arr->element_type->element_size;
@@ -187,13 +175,13 @@ void array_reverse(void* raw, Int32 index, Int32 length) {
 
 uintptr_t array_get_native_length(void* raw) {
     auto* arr = static_cast<Array*>(raw);
-    if (!arr) { throw_null_reference(); return 0; }
+    if (!arr) throw_null_reference();
     return static_cast<uintptr_t>(arr->length);
 }
 
 void* array_get_value(void* raw, Int32 index) {
     auto* arr = static_cast<Array*>(raw);
-    if (!arr) { throw_null_reference(); return nullptr; }
+    if (!arr) throw_null_reference();
     array_bounds_check(arr, index);
 
     size_t elem_size = arr->element_type->element_size;

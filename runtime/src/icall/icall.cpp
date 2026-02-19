@@ -101,10 +101,21 @@ String* Environment_GetEnvironmentVariable(String* variable) {
     if (!variable) return nullptr;
     auto* name = string_to_utf8(variable);
     if (!name) return nullptr;
+#ifdef _MSC_VER
+    char* value = nullptr;
+    size_t len = 0;
+    _dupenv_s(&value, &len, name);
+    std::free(name);
+    if (!value) return nullptr;
+    auto* result = string_create_utf8(value);
+    std::free(value);
+    return result;
+#else
     const char* value = std::getenv(name);
     std::free(name);
     if (!value) return nullptr;
     return string_create_utf8(value);
+#endif
 }
 
 // ===== System.Buffer =====

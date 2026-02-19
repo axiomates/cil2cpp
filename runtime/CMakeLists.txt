@@ -164,7 +164,7 @@ target_link_libraries(cil2cpp_runtime PUBLIC Threads::Threads)
 
 # Compiler warnings
 if(MSVC)
-    target_compile_options(cil2cpp_runtime PRIVATE /W4)
+    target_compile_options(cil2cpp_runtime PRIVATE /W4 /utf-8)
 else()
     target_compile_options(cil2cpp_runtime PRIVATE -Wall -Wextra -Wpedantic)
 endif()

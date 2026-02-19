@@ -25,6 +25,13 @@ static void thread_entry(ManagedThread* t) {
 
     t->state = 1; // running
 
+#ifdef _MSC_VER
+#pragma warning(push)
+// C4611: setjmp + C++ destructors interaction. Safe here because the TRY/CATCH
+// scope contains only raw pointers (no RAII objects), so longjmp won't skip any
+// destructors. setjmp/longjmp is our exception mechanism (like Unity IL2CPP).
+#pragma warning(disable: 4611)
+#endif
     CIL2CPP_TRY
         // Invoke the ThreadStart delegate: void()
         if (t->start_delegate && t->start_delegate->method_ptr) {
@@ -35,6 +42,9 @@ static void thread_entry(ManagedThread* t) {
     CIL2CPP_CATCH_ALL
         // ECMA-335: unhandled exceptions in threads terminate the thread
     CIL2CPP_END_TRY
+#ifdef _MSC_VER
+#pragma warning(pop)
+#endif
 
     t->state = 2; // stopped
 
