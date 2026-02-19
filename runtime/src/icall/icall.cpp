@@ -24,8 +24,10 @@
 #include <intrin.h>
 #endif
 
-#ifdef _WIN32
+#ifdef CIL2CPP_WINDOWS
+#ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
+#endif
 #include <windows.h>
 #elif defined(__linux__)
 #include <sys/syscall.h>
@@ -38,7 +40,7 @@ namespace icall {
 // ===== System.Environment =====
 
 String* Environment_get_NewLine() {
-#ifdef _WIN32
+#ifdef CIL2CPP_WINDOWS
     return string_literal("\r\n");
 #else
     return string_literal("\n");
@@ -258,7 +260,7 @@ Object* Thread_get_CurrentThread() {
 }
 
 UInt64 Thread_GetCurrentOSThreadId() {
-#ifdef _WIN32
+#ifdef CIL2CPP_WINDOWS
     return static_cast<UInt64>(::GetCurrentThreadId());
 #elif defined(__linux__)
     return static_cast<UInt64>(::syscall(SYS_gettid));

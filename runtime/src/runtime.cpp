@@ -7,8 +7,10 @@
 #include <cil2cpp/unicode.h>
 #include <cil2cpp/globalization.h>
 
-#ifdef _WIN32
+#ifdef CIL2CPP_WINDOWS
+#ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
+#endif
 #include <windows.h>
 #endif
 
@@ -28,7 +30,7 @@ void runtime_init() {
     unicode::init();
     globalization::init();
 
-#ifdef _WIN32
+#ifdef CIL2CPP_WINDOWS
     // Force UTF-8 console mode. The BCL Console chain selects encoding based on
     // GetConsoleOutputCP(). With codepage 65001 (UTF-8), it uses UTF8Encoding
     // (pure managed IL) instead of OSEncoding (needs WideCharToMultiByte P/Invoke).

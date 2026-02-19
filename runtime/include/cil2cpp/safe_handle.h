@@ -14,10 +14,20 @@ namespace cil2cpp {
 
 /// SafeHandle state bits (matches .NET internal StateBits)
 enum class SafeHandleState : int32_t {
-    Closed   = 1,
-    Disposed = 2,
-    RefCountOne = 4,  // initial ref count
+    Closed      = 1 << 0,  // Handle has been closed
+    Disposed    = 1 << 1,  // Dispose() has been called
+    RefCountOne = 1 << 2,  // Initial reference count (bit 2 = first ref)
 };
+
+// FIXME: Missing SafeHandle ICalls (only .ctor is implemented):
+//   - DangerousGetHandle()
+//   - SetHandle(IntPtr)
+//   - DangerousAddRef(ref bool)
+//   - DangerousRelease()
+//   - Dispose()
+//   - get_IsInvalid()
+//   - get_IsClosed()
+//   - SetHandleAsInvalid()
 
 /// SafeHandle internal call implementations
 namespace icall {
@@ -28,8 +38,9 @@ namespace icall {
 ///   TypeInfo* __type_info; UInt32 __sync_block;
 ///   intptr_t f_handle; int32_t f_state; bool f_ownsHandle; bool f_fullyInitialized;
 inline void SafeHandle__ctor(void* self, intptr_t invalidHandleValue, bool ownsHandle) {
-    // Field offsets: after object header (TypeInfo* + UInt32 __sync_block + padding)
-    // Object header: 8 (TypeInfo*) + 4 (sync_block) = 12 bytes, aligned to 16
+    // FIXME: Layout assumes MSVC x64 padding (Object header = 12 bytes, padded to 16
+    // before intptr_t). May need adjustment for other compilers/platforms where
+    // alignment or padding rules differ.
     struct SafeHandleLayout {
         TypeInfo* __type_info;
         UInt32 __sync_block;

@@ -1685,6 +1685,10 @@ public partial class CppCodeGenerator
                 for (int i = 0; i < method.Parameters.Count; i++)
                     paramParts.Add($"{nativeParamTypes[i]} p{i}");
                 var paramDecl = string.Join(", ", paramParts);
+                // FIXME: ECMA-335 II.15.5.1 — PInvokeCallingConvention is parsed
+                // (Cdecl/StdCall/ThisCall/FastCall) but not emitted in the extern "C"
+                // declaration. On x64 this is harmless (single calling convention),
+                // but on x86 StdCall/FastCall would produce incorrect code.
                 sb.AppendLine($"    {retType} {entryPoint}({paramDecl});");
                 declaredEntryPoints.Add(entryPoint);
                 declaredParamTypes[entryPoint] = nativeParamTypes;
@@ -1790,8 +1794,11 @@ public partial class CppCodeGenerator
                 if (wrapperCharSet == IR.PInvokeCharSet.Unicode
                     || wrapperCharSet == IR.PInvokeCharSet.Auto)
                 {
-                    // FIXME: need to determine string length for Unicode return values
-                    sb.AppendLine("    return cil2cpp::string_literal((const char*)__ret);");
+                    // Unicode return: null-terminated wchar_t*/char16_t* → managed String
+                    sb.AppendLine("    if (!__ret) return nullptr;");
+                    sb.AppendLine("    int32_t __retlen = 0;");
+                    sb.AppendLine("    while (reinterpret_cast<const char16_t*>(__ret)[__retlen]) ++__retlen;");
+                    sb.AppendLine("    return cil2cpp::string_create_utf16(reinterpret_cast<const cil2cpp::Char*>(__ret), __retlen);");
                 }
                 else
                 {
@@ -1842,8 +1849,10 @@ public partial class CppCodeGenerator
         // String marshaling depends on CharSet (ECMA-335 II.15.5.2)
         if (IsStringType(cppType))
         {
+            // FIXME: ECMA-335 II.15.5.2 — CharSet.Auto should be Unicode on Windows
+            // but Ansi on Unix. Currently hardcoded to Unicode on all platforms.
             return charSet == IR.PInvokeCharSet.Unicode ? "const char16_t*"
-                : charSet == IR.PInvokeCharSet.Auto ? "const char16_t*" // Auto = Unicode on Windows
+                : charSet == IR.PInvokeCharSet.Auto ? "const char16_t*"
                 : "const char*"; // Ansi = UTF-8
         }
 

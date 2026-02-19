@@ -13,6 +13,9 @@
 // Platform-specific headers for stack trace capture
 #ifdef CIL2CPP_DEBUG
     #if defined(CIL2CPP_WINDOWS)
+        #ifndef WIN32_LEAN_AND_MEAN
+        #define WIN32_LEAN_AND_MEAN
+        #endif
         #include <windows.h>
         #include <dbghelp.h>
     #elif defined(CIL2CPP_POSIX)

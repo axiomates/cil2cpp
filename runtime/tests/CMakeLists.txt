@@ -40,6 +40,7 @@ add_executable(cil2cpp_tests
     test_unicode.cpp
     test_checked.cpp
     test_globalization.cpp
+    test_io.cpp
 )
 
 target_link_libraries(cil2cpp_tests
