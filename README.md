@@ -70,7 +70,7 @@ public class Program
 }
 ```
 
-**输出 (C++，简化)**:
+**输出 (C++，简化，Windows 版本)**:
 
 ```cpp
 // ---- HelloWorld.h ----
