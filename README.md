@@ -101,7 +101,7 @@ void Program_Main() {
 
 // Console.WriteLine 调用链（全部由 BCL IL 编译生成）：
 //   Console.WriteLine → TextWriter.WriteLine → StreamWriter.Write
-//     → Encoding.GetBytes → P/Invoke → kernel32!WriteFile
+//     → Encoding.GetBytes → P/Invoke → 平台相关（如 Windows: WriteFile，Linux/macOS: write/stdout）
 ```
 
 ## 核心指标
