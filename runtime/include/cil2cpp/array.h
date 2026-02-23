@@ -119,8 +119,8 @@ void array_copy(Array* src, Int32 srcIndex, Array* dst, Int32 dstIndex, Int32 le
 /// System.Array::Copy(Array, Array, int) — copy from start of both arrays.
 void array_copy_simple(void* src, void* dst, Int32 length);
 
-/// System.Array::Clone() — shallow-copy the array.
-void* array_clone(void* arr);
+/// System.Array::Clone() — shallow-copy the array. Returns Object* (arrays are objects).
+Object* array_clone(void* arr);
 
 /// System.Array::Reverse(Array, int, int) — reverse elements in a range.
 void array_reverse(void* arr, Int32 index, Int32 length);

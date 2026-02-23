@@ -44,7 +44,7 @@ public partial class IRBuilder
         "System.Threading.Tasks.Task",
         "System.Runtime.CompilerServices.TaskAwaiter",
         "System.Runtime.CompilerServices.AsyncTaskMethodBuilder",
-        "System.Runtime.CompilerServices.IAsyncStateMachine",
+        // Phase IV.1: IAsyncStateMachine removed — pure interface, now compiled from BCL IL
         "System.Threading.Tasks.ValueTask",
         "System.Runtime.CompilerServices.ValueTaskAwaiter",
         "System.Runtime.CompilerServices.AsyncIteratorMethodBuilder",
@@ -67,20 +67,15 @@ public partial class IRBuilder
 
         // Threading types — struct defined in threading.h / cancellation.h
         "System.Threading.Thread",
-        "System.Threading.CancellationToken",
+        // Phase IV.2: CancellationToken removed — simple value type, now compiled from BCL IL
         "System.Threading.CancellationTokenSource",
 
         // TypedReference + ArgIterator — struct defined in typed_reference.h
         "System.TypedReference",
         "System.ArgIterator",
 
-        // Phase II.5: WaitHandle hierarchy — struct defined in waithandle.h
-        "System.Threading.WaitHandle",
-        "System.Threading.EventWaitHandle",
-        "System.Threading.ManualResetEvent",
-        "System.Threading.AutoResetEvent",
-        "System.Threading.Mutex",
-        "System.Threading.Semaphore",
+        // Phase IV.3-IV.7: WaitHandle hierarchy removed — now compiled from BCL IL
+        // Only WaitOneCore remains as ICall (in ICallRegistry)
     };
 
     /// <summary>

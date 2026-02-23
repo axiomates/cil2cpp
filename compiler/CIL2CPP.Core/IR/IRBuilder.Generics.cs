@@ -874,6 +874,23 @@ public partial class IRBuilder
     /// </summary>
     private string ResolveTypeForDecl(string ilTypeName)
     {
+        // Handle array types — all .NET arrays are reference types (heap-allocated).
+        // Must be handled BEFORE generic parsing, because array-of-generic like
+        // `Dictionary`2/Entry<String,Object>[]` would corrupt the generic arg parsing
+        // (line ^1 removes `]` instead of `>`, producing garbled type names).
+        if (ilTypeName.EndsWith("[]"))
+            return "cil2cpp::Array*";
+        // Multi-dimensional arrays
+        if (ilTypeName.EndsWith("]") && ilTypeName.Contains("[") &&
+            (ilTypeName.Contains(",") || ilTypeName.Contains("...")))
+        {
+            // Check it's actually an array notation, not a generic arg
+            var lastBracket = ilTypeName.LastIndexOf('[');
+            var section = ilTypeName[lastBracket..];
+            if (section.Contains(',') || section.Contains("..."))
+                return "cil2cpp::MdArray*";
+        }
+
         // Handle ByReference types (ref/out) — strip & suffix and recurse.
         // Critical for ref T where T is a reference type: ref Encoding → Encoding** (not Encoding*)
         if (ilTypeName.EndsWith("&"))

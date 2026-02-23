@@ -23,13 +23,7 @@ namespace cil2cpp {
 // Forward declarations
 struct String;
 
-// TypeInfo for wait handle types
-extern TypeInfo System_Threading_WaitHandle_TypeInfo;
-extern TypeInfo System_Threading_EventWaitHandle_TypeInfo;
-extern TypeInfo System_Threading_ManualResetEvent_TypeInfo;
-extern TypeInfo System_Threading_AutoResetEvent_TypeInfo;
-extern TypeInfo System_Threading_Mutex_TypeInfo;
-extern TypeInfo System_Threading_Semaphore_TypeInfo;
+// Phase IV.3-IV.7: TypeInfo extern declarations removed — now generated from BCL IL
 
 /**
  * Managed System.Threading.WaitHandle — abstract base class.
@@ -119,10 +113,4 @@ void WaitHandle_CloseHandle(intptr_t handle);
 } // namespace icall
 } // namespace cil2cpp
 
-// Type aliases used by generated code
-using System_Threading_WaitHandle = cil2cpp::ManagedWaitHandle;
-using System_Threading_EventWaitHandle = cil2cpp::ManagedEventWaitHandle;
-using System_Threading_ManualResetEvent = cil2cpp::ManagedEventWaitHandle;
-using System_Threading_AutoResetEvent = cil2cpp::ManagedEventWaitHandle;
-using System_Threading_Mutex = cil2cpp::ManagedMutex;
-using System_Threading_Semaphore = cil2cpp::ManagedSemaphore;
+// Phase IV.3-IV.7: WaitHandle type aliases removed — types now compiled from BCL IL

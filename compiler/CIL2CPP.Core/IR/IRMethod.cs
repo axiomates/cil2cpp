@@ -75,6 +75,12 @@ public class IRMethod
     public List<IRCustomAttribute> CustomAttributes { get; } = new();
 
     /// <summary>
+    /// Authoritative C++ types for temporary variables (__tN), recorded during IL→IR conversion.
+    /// DetermineTempVarTypes in codegen prefers these over regex-based inference.
+    /// </summary>
+    public Dictionary<string, string> TempVarTypes { get; } = new();
+
+    /// <summary>
     /// Explicit interface overrides (from Cecil's .override directive).
     /// Each entry is (InterfaceTypeName, MethodName) — e.g. ("IFoo", "Method").
     /// </summary>

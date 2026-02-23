@@ -247,7 +247,8 @@ public static class ICallRegistry
         RegisterICall("System.GC", "_WaitForPendingFinalizers", 0, "cil2cpp::gc_noop"); // no-op with BoehmGC
         RegisterICall("System.GC", "_ReRegisterForFinalize", 1, "cil2cpp::gc_noop"); // no-op
         RegisterICall("System.GC", "GetTotalMemory", 1, "cil2cpp::gc_get_total_memory");
-        RegisterICall("System.GC", "GetGCMemoryInfo", 0, "cil2cpp::gc_noop"); // TODO: proper implementation
+        // FIXME: GetGCMemoryInfo returns GCMemoryInfo struct, not void — don't map to gc_noop
+        // Let it be stubbed until proper implementation exists
         RegisterICall("System.GC", "AllocateUninitializedArray", 2, "cil2cpp::gc_allocate_uninitialized_array");
         RegisterICall("System.GC", "GetAllocatedBytesForCurrentThread", 0, "cil2cpp::gc_get_total_memory_simple");
 

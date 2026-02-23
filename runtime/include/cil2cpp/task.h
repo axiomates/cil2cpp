@@ -142,5 +142,4 @@ using System_Threading_Tasks_Task = cil2cpp::Task;
 using System_Runtime_CompilerServices_TaskAwaiter = cil2cpp::TaskAwaiter;
 using System_Runtime_CompilerServices_AsyncTaskMethodBuilder = cil2cpp::AsyncTaskMethodBuilder;
 
-// IAsyncStateMachine interface (used as parameter type in SetStateMachine)
-using System_Runtime_CompilerServices_IAsyncStateMachine = cil2cpp::Object;
+// Phase IV.1: IAsyncStateMachine removed from runtime — now compiled from BCL IL

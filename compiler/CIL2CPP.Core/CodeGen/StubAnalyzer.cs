@@ -406,6 +406,36 @@ public class StubAnalyzer
             sb.AppendLine();
         }
 
+        // Section 4b: Self-recursive method detail
+        var selfRecursive = _stubs
+            .Where(s => s.RootCause == StubRootCause.KnownBrokenPattern && s.Detail == "self-recursive call")
+            .ToList();
+        if (selfRecursive.Count > 0)
+        {
+            sb.AppendLine("━━━ Self-Recursive Methods ━━━");
+            sb.AppendLine();
+            foreach (var stub in selfRecursive.OrderBy(s => s.TypeName).ThenBy(s => s.MethodName))
+                sb.AppendLine($"  {stub.TypeName}::{stub.MethodName}  ({stub.CppName})");
+            sb.AppendLine();
+        }
+
+        // Section 4c: Undeclared function detail
+        var undeclaredDetails = _stubs
+            .Where(s => s.RootCause == StubRootCause.UndeclaredFunction)
+            .GroupBy(s => s.Detail)
+            .OrderByDescending(g => g.Count())
+            .ToList();
+        if (undeclaredDetails.Count > 0)
+        {
+            sb.AppendLine("━━━ Undeclared Function Detail ━━━");
+            sb.AppendLine();
+            foreach (var group in undeclaredDetails)
+            {
+                sb.AppendLine($"  {group.Count(),6}  {group.Key}");
+            }
+            sb.AppendLine();
+        }
+
         // Section 5: Unlock ranking (the most actionable section)
         if (result.UnlockRanking.Count > 0)
         {

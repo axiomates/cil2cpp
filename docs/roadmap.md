@@ -1,6 +1,6 @@
 # 开发路线图
 
-> 最后更新：2026-02-23
+> 最后更新：2026-02-24
 
 ## 设计原则
 
@@ -28,7 +28,7 @@
 2. BCL IL 方法体引用了**无法 AOT 编译的 CLR 内部类型**（QCall、MetadataImport 等）
 3. struct 中嵌入了 **C++ 特有数据类型**（如 std::mutex*）
 
-### 必须 C++ runtime 的类型（26 个，当前正确）
+### 必须 C++ runtime 的类型（32 个 = 代码中 RuntimeProvidedTypes 条目数）
 
 | 类型 | 数量 | 技术原因 |
 |------|------|----------|
@@ -39,22 +39,24 @@
 | Delegate / MulticastDelegate | 2 | 函数指针 + 调度链（delegate_invoke/combine） |
 | Type / RuntimeType | 2 | 类型元数据系统，typeof() → TypeInfo* → Type* 缓存 |
 | Thread | 1 | TLS + OS 线程管理，runtime 直接访问线程状态 |
-| 反射 struct ×12 | 12 | .NET 8 BCL 反射 IL 深度依赖 QCall/MetadataImport，无法 AOT 编译 |
+| 反射 struct + alias ×12 | 12 | MemberInfo/MethodBase/MethodInfo/FieldInfo/ParameterInfo（5 real）+ RuntimeXxx alias（7） |
 | TypedReference / ArgIterator | 2 | varargs 机制，编译器特殊处理 |
-| **Task** | **1** | **4 个自定义运行时字段（f_status/f_exception/f_continuations/f_lock）+ f_lock 是 std::mutex* + MSVC padding 问题** |
+| Task + 异步非泛型 ×6 | 6 | Task（4 自定义字段 + std::mutex*）+ TaskAwaiter/Builder/ValueTask/ValueTaskAwaiter/AsyncIteratorBuilder |
+| CancellationTokenSource | 1 | 依赖 ITimer + ManualResetEvent + Registrations 链 |
 
-### 可迁移为 IL 的类型（8 个，短期目标）
+### 已迁移为 IL 的类型（8 个，Phase IV ✅）
 
-| 类型 | 数量 | 可行性 | 说明 |
-|------|------|--------|------|
-| IAsyncStateMachine | 1 | **容易** | 纯接口，当前 alias to Object，无需 struct |
-| CancellationToken | 1 | **容易** | 只有 f_source 指针，struct 可从 Cecil 生成 |
-| WaitHandle 层级 | 6 | **可行** | BCL IL 可编译，需注册 8 个 OS 原语 ICall |
+| 类型 | 数量 | 状态 | 说明 |
+|------|------|------|------|
+| IAsyncStateMachine | 1 | ✅ 完成 | 纯接口，移除 RuntimeProvided |
+| CancellationToken | 1 | ✅ 完成 | 只有 f_source 指针，struct 从 Cecil 生成 |
+| WaitHandle 层级 | 6 | ✅ 完成 | BCL IL 编译 + 8 个 OS 原语 ICall |
 
-### 依赖 Task 的类型（6 个，长期目标，需重大架构变更）
+### 长期可迁移的类型（7 个，需 Task 架构重构）
 
 | 类型 | 数量 | 问题 |
 |------|------|------|
+| Task | 1 | 4 自定义字段 + std::mutex* + MSVC padding |
 | TaskAwaiter / AsyncTaskMethodBuilder | 2 | 只有 f_task 字段，但依赖 Task struct 布局 |
 | ValueTask / ValueTaskAwaiter / AsyncIteratorMethodBuilder | 3 | 依赖 Task + BCL 依赖链（ThreadPool、ExecutionContext） |
 | CancellationTokenSource | 1 | 依赖 ITimer + ManualResetEvent + Registrations 链 |
@@ -63,8 +65,9 @@
 
 ### RuntimeProvided 目标
 
-- **短期**：35 → 27（移除 IAsyncStateMachine + CancellationToken + WaitHandle×6）
-- **长期**：27 → 21（Task 架构重构后移除 TaskAwaiter/Builder/ValueTask 等 6 个）
+- **当前**：32 条目（Phase IV 完成：移除 IAsyncStateMachine + CancellationToken + WaitHandle×6 = -8）
+- **短期目标达成**：40 → 32（-8 个 RuntimeProvided 类型）
+- **长期**：32 → 25（Task 架构重构后移除 Task+异步依赖+CTS 共 7 个）
 
 ### Unity IL2CPP 参考（仅供对比，非盲目照搬）
 
@@ -79,23 +82,24 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 
 ## 当前状态
 
-### RuntimeProvided 类型：35 个（短期目标 ~27，长期 ~21）
+### RuntimeProvided 类型：32 条目（Phase IV 完成 -8，长期目标 25）
 
 详见上方"RuntimeProvided 类型分类"章节。
 
-### Stub 分布（HelloWorld, 4,402 个）
+### Stub 分布（HelloWorld, 3,809 个）
 
 | 类别 | 数量 | 占比 | 性质 |
 |------|------|------|------|
-| MissingBody | 2,171 | 49.3% | 无 IL body（abstract/extern/JIT intrinsic）— 多数合理 |
-| RenderedBodyError | 701 | 15.9% | **编译器 bug — IL 有 body 但 C++ 编译失败** |
-| UnknownBodyReferences | 540 | 12.3% | 方法体引用未声明类型 |
-| KnownBrokenPattern | 452 | 10.3% | 已知无法编译的模式 |
-| UnknownParameterTypes | 293 | 6.7% | 参数类型未声明 |
-| UndeclaredFunction | 149 | 3.4% | 调用未声明函数 |
-| ClrInternalType | 96 | 2.2% | QCall 桥接类型 |
+| MissingBody | 2,037 | 53.5% | 无 IL body（abstract/extern/JIT intrinsic）— 多数合理 |
+| KnownBrokenPattern | 604 | 15.9% | 已知无法编译的模式（SIMD 命名空间 + Vector 类型 + undeclared TypeInfo） |
+| RenderedBodyError | 567 | 14.9% | **编译器 bug — IL 有 body 但 C++ 编译失败** |
+| UnknownBodyReferences | 310 | 8.1% | 方法体引用未声明类型 |
+| UndeclaredFunction | 153 | 4.0% | 调用未声明函数（主要：泛型特化类型不在 module 中） |
+| ClrInternalType | 96 | 2.5% | 引用 CLR 内部类型 |
+| UnknownParameterTypes | 42 | 1.1% | 参数类型未声明 |
 
-**可修复的编译器问题**：RenderedBodyError (701) + UnknownBodyReferences (540) + UndeclaredFunction (149) = **1,390 个方法**，占 31.6%。
+**可修复的编译器问题**：RenderedBodyError (567) + UnknownBodyReferences (310) + UndeclaredFunction (153) = **1,030 个方法**，占 27.0%。
+**集成测试**：35/35 通过。
 
 ---
 
@@ -112,38 +116,43 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 - 反射类型别名（RuntimeMethodInfo → ManagedMethodInfo 等）
 - WaitHandle OS 原语 / P/Invoke 调用约定 / SafeHandle ICall 补全
 
-## Phase III: 编译器管道质量（当前阶段）
+## Phase III: 编译器管道质量（进行中）
 
 **目标**：提升 IL 转译率——修复阻止 BCL IL 编译的根因
 
-| # | 任务 | 影响量 | 说明 |
-|---|------|--------|------|
-| III.1 | SIMD 标量回退 | ✅ 完成 | Vector64/128/256/512 struct 定义 |
-| III.2 | RenderedBodyErrors 修复 | ~701 方法 | 分析 C++ 编译失败的具体模式，逐个修复根因 |
-| III.3 | UnknownBodyReferences 修复 | ~540 方法 | 方法体引用类型在 knownTypeNames 中缺失 |
-| III.4 | UndeclaredFunction 修复 | ~149 方法 | 函数签名未声明 |
-| III.5 | FilteredGenericNamespaces 放开 | 级联解锁 | 逐步放开安全命名空间（System.Diagnostics 等） |
-| III.6 | KnownBrokenPattern 精简 | ~452 方法 | 审查每个模式是否还有必要 |
+**进展**：4,402 → 3,686 stubs（-716，-16.3%）
+
+| # | 任务 | 影响量 | 状态 | 说明 |
+|---|------|--------|------|------|
+| III.1 | SIMD 标量回退 | ✅ 完成 | ✅ | Vector64/128/256/512 struct 定义 |
+| III.2a | ExternalEnumTypes 修复 | -386 | ✅ | 外部程序集枚举类型注册到 knownTypeNames |
+| III.2b | Ldelem_Any/Stelem_Any 修复 | -114 | ✅ | 泛型数组元素访问指令支持 |
+| III.2c | IsResolvedValueType 修正 | 正确性 | ✅ | IsPrimitive 包含 String/Object → 改用 IsValueType |
+| III.2d | IsValidMergeVariable 修正 | -45 | ✅ | 禁止 &expr 作为分支合并赋值目标 |
+| III.2e | DetermineTempVarTypes 改进 | -17 | ✅ | IRBinaryOp 类型推断 + IRRawCpp 模式推断 |
+| III.2f | Stub 分类完善 | 诊断 | ✅ | GetBrokenPatternDetail 覆盖所有 HasKnownBrokenPatterns 模式 |
+| III.2g | 集成测试修复 | 35/35 | ✅ | 修复 7 个 C++ 编译错误模式（void ICall/TypeInfo/ctor/Span/指针类型） |
+| III.2h | StackEntry 类型化栈 + IRRawCpp 类型标注 | -98 | ✅ | Stack\<StackEntry\> 类型跟踪 + IRRawCpp ResultVar/ResultTypeCpp 补全 |
+| III.3 | UnknownBodyReferences 修复 | 506→285 | ✅ | gate 重排序 + knownTypeNames 同步 + opaque stubs + SIMD/数组类型检测 |
+| III.4 | UndeclaredFunction 修复 | 222→151 | ✅ | 拓宽 calledFunctions 扫描 + 多趟发现 + 诊断 filter 修复（剩余 151 为泛型特化缺失） |
+| III.5 | FilteredGenericNamespaces 放开 | 级联解锁 | 待定 | 逐步放开安全命名空间（System.Diagnostics 等） |
+| III.6 | KnownBrokenPattern 精简 + unbox 修复 | 637→604 | ✅ | 分类完善 + 数组类型修复 + 自递归误判移除 + unbox 泛型尾部下划线修复 |
 
 ---
 
-## Phase IV: 可行类型回归 IL（35 → 27）
+## Phase IV: 可行类型回归 IL（40 → 32）✅
 
-**目标**：移除 8 个 RuntimeProvided 类型
+**目标**：移除 8 个 RuntimeProvided 类型 — **已完成**
 
 | # | 任务 | 移除数 | 可行性 | 说明 |
 |---|------|--------|--------|------|
-| IV.1 | IAsyncStateMachine → IL | 1 | 容易 | 纯接口，移除 RuntimeProvided 即可 |
-| IV.2 | CancellationToken → IL | 1 | 容易 | 只有 f_source 指针，struct 从 Cecil 生成 |
-| IV.3 | WaitHandle → IL + ICall | 1 | 可行 | 注册 WaitOneCore 等 OS 原语 ICall |
-| IV.4 | EventWaitHandle → IL + ICall | 1 | 可行 | 注册 CreateEventCoreWin32/Set/Reset ICall |
-| IV.5 | ManualResetEvent / AutoResetEvent → IL | 2 | 可行 | 继承 EventWaitHandle，无额外字段 |
-| IV.6 | Mutex → IL + ICall | 1 | 可行 | 注册 CreateMutexCoreWin32/ReleaseMutex ICall |
-| IV.7 | Semaphore → IL + ICall | 1 | 可行 | 注册 CreateSemaphoreCoreWin32/ReleaseSemaphore ICall |
+| IV.1 | IAsyncStateMachine → IL | 1 | ✅ 完成 | 纯接口，移除 RuntimeProvided + 删除 task.h alias |
+| IV.2 | CancellationToken → IL | 1 | ✅ 完成 | 只有 f_source 指针，struct 从 Cecil 生成 |
+| IV.3-7 | WaitHandle 层级×6 → IL | 6 | ✅ 完成 | struct 从 Cecil 生成，TypeInfo 从 IL 生成，WaitOneCore ICall 保留，其余通过 P/Invoke |
 
 **前提**：Phase III 编译器质量足够让 BCL WaitHandle/CancellationToken IL 正确编译。
 
-## Phase V: 异步架构重构（长期，27 → 21）
+## Phase V: 异步架构重构（长期，32 → 25）
 
 **目标**：让 Task 及依赖它的类型从 IL 编译
 
@@ -214,14 +223,18 @@ Phase II (中间层解锁) ✅
        ↓
 Phase III (编译器管道质量) ← 当前
   III.1 SIMD 标量回退 ✅
-  III.2-III.6 修复 RenderedBodyErrors / UnknownBodyRef / UndeclaredFunction
+  III.2 RenderedBodyErrors 修复 ✅（部分：701→557）
+  III.3 UnknownBodyRef 修复 ✅（506→285）
+  III.4 UndeclaredFunction 修复 ✅（222→151）
+  III.6 BrokenPattern 审查 + unbox 修复 ✅（637→604, RenderedBodyError 584→567）
+  III.5 命名空间解锁（待定）
        ↓
-Phase IV (可行类型 → IL) 35 → 27
-  IAsyncStateMachine + CancellationToken + WaitHandle×6
+Phase IV (可行类型 → IL) 40 → 32 ✅
+  IAsyncStateMachine ✅ + CancellationToken ✅ + WaitHandle×6 ✅
        ↓                    ↓（可并行）
 Phase V (异步架构重构)    Phase VII (功能扩展)
   Task 及依赖类型 → IL      System.Native / zlib / OpenSSL
-  27 → 21（长期）              ↓
+  32 → 25（长期）              ↓
        ↓                  Phase VIII (网络 & 高级)
 Phase VI (反射评估)         Socket / HttpClient / JSON / Regex
   评估高层 API IL 编译可行性     ↓
@@ -235,10 +248,10 @@ Phase VI (反射评估)         Socket / HttpClient / JSON / Regex
 
 | 指标 | 定义 | 当前值 | 短期目标 | 长期目标 |
 |------|------|--------|----------|----------|
-| IL 转译率 | (reachable 方法 - stub 方法) / reachable 方法 | ~55% | >70% | >90% |
-| RuntimeProvided 数 | C++ runtime 定义 struct 的类型数 | 35 | ~27 | ~21 |
+| IL 转译率 | (reachable 方法 - stub 方法) / reachable 方法 | ~84.3% (3686/23453) | >70% ✅ | >90% |
+| RuntimeProvided 数 | RuntimeProvidedTypes 集合条目数 | **32** (was 40, -8) | ~32 | ~25（Task 重构后） |
 | CoreRuntime 数 | 方法完全由 C++ 提供的类型数 | 22 | ~22 | ~10（若反射可 IL） |
-| ICall 数 | C++ 实现的内部调用 | 248 | ~260 | ~300-500 |
+| ICall 数 | C++ 实现的内部调用 | ~247 | ~300 | ~500 |
 
 ---
 

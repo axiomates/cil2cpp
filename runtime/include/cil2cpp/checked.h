@@ -52,28 +52,33 @@ T checked_mul(T a, T b) {
 }
 
 // Unsigned checked arithmetic
+// Accept two different unsigned types (e.g., uintptr_t + unsigned int from IL conv.u + mul.ovf.un).
+// Promote to the larger type using std::common_type_t for correct overflow checking.
 
-template<typename T>
-T checked_add_un(T a, T b) {
+template<typename T1, typename T2>
+auto checked_add_un(T1 a, T2 b) {
+    using T = std::common_type_t<T1, T2>;
     static_assert(std::is_unsigned_v<T>, "Use checked_add for signed types");
-    T result = a + b;
-    if (result < a) throw_overflow();
+    T result = static_cast<T>(a) + static_cast<T>(b);
+    if (result < static_cast<T>(a)) throw_overflow();
     return result;
 }
 
-template<typename T>
-T checked_sub_un(T a, T b) {
+template<typename T1, typename T2>
+auto checked_sub_un(T1 a, T2 b) {
+    using T = std::common_type_t<T1, T2>;
     static_assert(std::is_unsigned_v<T>, "Use checked_sub for signed types");
-    if (a < b) throw_overflow();
-    return a - b;
+    if (static_cast<T>(a) < static_cast<T>(b)) throw_overflow();
+    return static_cast<T>(a) - static_cast<T>(b);
 }
 
-template<typename T>
-T checked_mul_un(T a, T b) {
+template<typename T1, typename T2>
+auto checked_mul_un(T1 a, T2 b) {
+    using T = std::common_type_t<T1, T2>;
     static_assert(std::is_unsigned_v<T>, "Use checked_mul for signed types");
-    if (a == 0 || b == 0) return 0;
-    if (a > std::numeric_limits<T>::max() / b) throw_overflow();
-    return a * b;
+    if (a == 0 || b == 0) return static_cast<T>(0);
+    if (static_cast<T>(a) > std::numeric_limits<T>::max() / static_cast<T>(b)) throw_overflow();
+    return static_cast<T>(a) * static_cast<T>(b);
 }
 
 // ======== Checked conversions (conv.ovf.*) ========

@@ -261,6 +261,54 @@ public static class CppNameMapper
     }
 
     /// <summary>
+    /// Mangle a type name to a valid C++ identifier, correctly handling generic instance syntax.
+    /// Unlike MangleTypeName which blindly replaces all special chars (producing trailing underscore
+    /// from closing '>'), this method detects generic instances and uses MangleGenericInstanceTypeName
+    /// to produce the correct name. Use this for template arguments (box/unbox) and TypeInfo references.
+    /// </summary>
+    public static string MangleTypeNameClean(string ilFullName)
+    {
+        // Generic instance: Foo`N<Arg1,Arg2,...> — parse and use MangleGenericInstanceTypeName
+        var backtickIdx = ilFullName.IndexOf('`');
+        if (backtickIdx > 0 && ilFullName.Contains('<') && ilFullName.EndsWith(">"))
+        {
+            var angleBracket = ilFullName.IndexOf('<');
+            var openTypeName = ilFullName[..angleBracket];
+            var argsStr = ilFullName[(angleBracket + 1)..^1];
+            var args = ParseGenericArgs(argsStr);
+            // Recursively clean each arg to handle nested generics like List<Dictionary<K,V>>
+            var cleanArgs = args.Select(MangleTypeNameClean).ToList();
+            var baseName = MangleTypeName(openTypeName);
+            return $"{baseName}_{string.Join("_", cleanArgs)}";
+        }
+        return MangleTypeName(ilFullName);
+    }
+
+    /// <summary>
+    /// Parse generic type arguments, handling nested angle brackets.
+    /// E.g., "String,List`1&lt;Int32&gt;" → ["String", "List`1&lt;Int32&gt;"]
+    /// </summary>
+    private static List<string> ParseGenericArgs(string argsStr)
+    {
+        var args = new List<string>();
+        var depth = 0;
+        var start = 0;
+        for (int i = 0; i < argsStr.Length; i++)
+        {
+            if (argsStr[i] == '<') depth++;
+            else if (argsStr[i] == '>') depth--;
+            else if (argsStr[i] == ',' && depth == 0)
+            {
+                args.Add(argsStr[start..i].Trim());
+                start = i + 1;
+            }
+        }
+        if (start < argsStr.Length)
+            args.Add(argsStr[start..].Trim());
+        return args;
+    }
+
+    /// <summary>
     /// Whether a type is a compiler-generated implementation detail (e.g. &lt;PrivateImplementationDetails&gt;).
     /// These should be filtered from C++ code generation.
     /// </summary>

@@ -129,7 +129,7 @@ void array_copy_simple(void* raw_src, void* raw_dst, Int32 length) {
     array_copy(src, 0, dst, 0, length);
 }
 
-void* array_clone(void* raw) {
+Object* array_clone(void* raw) {
     auto* arr = static_cast<Array*>(raw);
     if (!arr) throw_null_reference();
 
@@ -139,7 +139,7 @@ void* array_clone(void* raw) {
         if (elem_size == 0) elem_size = sizeof(void*);
         std::memcpy(array_data(result), array_data(arr), arr->length * elem_size);
     }
-    return result;
+    return reinterpret_cast<Object*>(result);
 }
 
 void array_reverse(void* raw, Int32 index, Int32 length) {

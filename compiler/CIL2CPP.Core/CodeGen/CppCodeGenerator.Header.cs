@@ -1804,20 +1804,8 @@ public partial class CppCodeGenerator
             }
         }
 
-        // Method-level: calls to Array_IndexOf/LastIndexOf with nested generic element types
-        // where the function declaration has wrong param type due to double-underscore mangling
-        if (rendered.Contains("System_Array_IndexOf_") || rendered.Contains("System_Array_LastIndexOf_"))
-        {
-            // Check if the call's function name contains a nested generic type marker
-            // that would result in double-underscore mangling mismatch
-            foreach (var line in rendered.AsSpan().EnumerateLines())
-            {
-                var s = line.ToString().TrimStart();
-                if ((s.Contains("System_Array_IndexOf_") || s.Contains("System_Array_LastIndexOf_")) &&
-                    s.Contains("(cil2cpp::Array*)"))
-                    return true;
-            }
-        }
+        // NOTE: Array_IndexOf/LastIndexOf check removed. The (cil2cpp::Array*)(void*)expr cast
+        // is valid C++ — all Array.IndexOf declarations take cil2cpp::Array* as first parameter.
 
         // Method-level: ActivityTracker Guid manipulation with pointer arithmetic type mismatch
         if (method.CppName.Contains("AddIdToGuid"))
@@ -2120,7 +2108,9 @@ public partial class CppCodeGenerator
             return true;
         // Note: RuntimeHelpers.CreateSpan<T>(RuntimeFieldHandle) is now intercepted in IRBuilder
         // and produces inline span init code. Only catch unintercepted CreateSpan calls.
-        if (s.Contains("RuntimeHelpers_CreateSpan") && s.Contains("(") && !s.Contains("f_reference"))
+        // Exclude function definitions (end with '{') — the function name itself contains CreateSpan.
+        if (s.Contains("RuntimeHelpers_CreateSpan") && s.Contains("(") && !s.Contains("f_reference")
+            && !s.TrimEnd().EndsWith("{"))
             return true;
 
         // Pattern: string_length called with non-String arg (Object* from array_get)
@@ -2169,9 +2159,9 @@ public partial class CppCodeGenerator
             if (castIdx >= 0)
             {
                 var val = s[(castIdx + 21)..].TrimEnd(';').Trim();
-                // __str_N and __tN are always auto-typed (pointers) → C-style cast compiles fine
-                // Everything else (loc_N value types, bare params) → could be struct-to-pointer error
-                if (!val.StartsWith("__str") && !val.StartsWith("__t") && !val.StartsWith("("))
+                // __str_N, __tN, and loc_N are typically pointers → C-style cast compiles fine
+                // Only flag bare value-type params (e.g., cancellationToken struct)
+                if (!val.StartsWith("__str") && !val.StartsWith("__t") && !val.StartsWith("(") && !val.StartsWith("loc_"))
                     return true;
             }
         }

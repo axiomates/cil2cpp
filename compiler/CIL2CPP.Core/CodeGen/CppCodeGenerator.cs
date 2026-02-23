@@ -166,6 +166,12 @@ public partial class CppCodeGenerator
     private HashSet<string> _knownTypeNames = new();
 
     /// <summary>
+    /// Types forward-declared in the header (from method signatures, fields, and locals).
+    /// Populated during header generation, used to expand _knownTypeNames.
+    /// </summary>
+    private HashSet<string> _headerForwardDeclared = new();
+
+    /// <summary>
     /// Minimum IR instructions per method partition. Each TU re-parses the full header,
     /// so partitions need enough method code to amortize that overhead.
     /// ~20000 instructions ≈ 13k-17k C++ lines per partition (ratio ~0.7 lines/instruction).
@@ -190,8 +196,10 @@ public partial class CppCodeGenerator
             .Where(t => seenTypeNames.Add(t.CppName))
             .ToList();
 
-        // Build known type set
-        _knownTypeNames = new HashSet<string>();
+        // Build known type set — union of all types that have definitions in the header.
+        // Start with _emittedStructDefs (set by GenerateHeader): includes all struct definitions,
+        // enum definitions, delegate aliases, opaque stubs, and runtime-provided type aliases.
+        _knownTypeNames = new HashSet<string>(_emittedStructDefs);
         foreach (var t in _userTypes)
             _knownTypeNames.Add(t.CppName);
         foreach (var ilName in IRBuilder.RuntimeProvidedTypes)
@@ -201,6 +209,9 @@ public partial class CppCodeGenerator
         // External BCL enum types (emitted as "using X = int32_t" aliases in header)
         foreach (var (mangled, _) in _module.ExternalEnumTypes)
             _knownTypeNames.Add(mangled);
+        // NOTE: _headerForwardDeclared types are NOT added to _knownTypeNames here.
+        // Forward-declared types only support pointer usage (Type*), not value usage (sizeof/locals).
+        // The HasUnknownBodyReferences gate checks _headerForwardDeclared separately for pointer locals.
 
         // Generate split source files
         output.DataFile = GenerateDataFile();
