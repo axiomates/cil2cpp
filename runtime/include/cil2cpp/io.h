@@ -31,7 +31,7 @@ void File_AppendAllText(String* path, String* contents);
 
 // ===== System.IO.Directory =====
 bool Directory_Exists(String* path);
-Object* Directory_CreateDirectory(String* path);  // returns DirectoryInfo (FIXME: returns nullptr)
+Object* Directory_CreateDirectory(String* path);  // TODO: return proper DirectoryInfo once BCL type compiled
 
 // ===== System.IO.Path =====
 String* Path_GetFullPath(String* path);

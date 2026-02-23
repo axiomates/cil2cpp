@@ -130,3 +130,7 @@ using System_Reflection_MethodBase = cil2cpp::ManagedMethodInfo;
 using System_Reflection_FieldInfo = cil2cpp::ManagedFieldInfo;
 using System_Reflection_ParameterInfo = cil2cpp::ManagedParameterInfo;
 using System_Reflection_MemberInfo = cil2cpp::Object;
+// Phase II.3: Runtime reflection subtypes → existing runtime structs
+using System_Reflection_RuntimeMethodInfo = cil2cpp::ManagedMethodInfo;
+using System_Reflection_RuntimeFieldInfo = cil2cpp::ManagedFieldInfo;
+using System_Reflection_RuntimeConstructorInfo = cil2cpp::ManagedMethodInfo;

@@ -32,17 +32,24 @@ class Program
             description: "Build configuration (Debug or Release)");
         configOption.AddAlias("-c");
 
+        var runtimePrefixOption = new Option<string>(
+            name: "--runtime-prefix",
+            description: "CIL2CPP runtime install prefix (where find_package(cil2cpp) looks)")
+        { IsRequired = false };
+        runtimePrefixOption.AddAlias("-p");
+
         var compileCommand = new Command("compile", "Compile C# project to native executable")
         {
             inputOption,
             outputOption,
-            configOption
+            configOption,
+            runtimePrefixOption
         };
 
-        compileCommand.SetHandler((input, output, config) =>
+        compileCommand.SetHandler((input, output, config, runtimePrefix) =>
         {
-            Compile(input, output, config);
-        }, inputOption, outputOption, configOption);
+            Compile(input, output, config, runtimePrefix);
+        }, inputOption, outputOption, configOption, runtimePrefixOption);
 
         rootCommand.AddCommand(compileCommand);
 
@@ -56,16 +63,20 @@ class Program
             getDefaultValue: () => "Release",
             description: "Build configuration (Debug or Release)");
         codegenConfigOption.AddAlias("-c");
+        var analyzeStubsOption = new Option<bool>(
+            name: "--analyze-stubs",
+            getDefaultValue: () => false,
+            description: "Run stub root-cause analysis and generate detailed report");
 
         var codegenCommand = new Command("codegen", "Generate C++ code from C# project (without compiling)")
         {
-            codegenInputOption, codegenOutputOption, codegenConfigOption
+            codegenInputOption, codegenOutputOption, codegenConfigOption, analyzeStubsOption
         };
 
-        codegenCommand.SetHandler((input, output, config) =>
+        codegenCommand.SetHandler((input, output, config, analyzeStubs) =>
         {
-            GenerateCpp(input, output, config);
-        }, codegenInputOption, codegenOutputOption, codegenConfigOption);
+            GenerateCpp(input, output, config, analyzeStubs);
+        }, codegenInputOption, codegenOutputOption, codegenConfigOption, analyzeStubsOption);
 
         rootCommand.AddCommand(codegenCommand);
 
@@ -208,14 +219,16 @@ class Program
         Console.WriteLine();
     }
 
-    static void GenerateCpp(FileInfo input, DirectoryInfo output, string configName = "Release")
+    static void GenerateCpp(FileInfo input, DirectoryInfo output, string configName = "Release",
+        bool analyzeStubs = false)
     {
         var prepared = PrepareBuild(input, output, configName);
         if (prepared is not var (assemblyFile, config)) return;
 
         try
         {
-            PrintBanner(assemblyFile, output, config);
+            var suffix = analyzeStubs ? "codegen + stub analysis" : null;
+            PrintBanner(assemblyFile, output, config, suffix);
 
             Console.WriteLine("[1/4] Loading assembly set...");
             using var assemblySet = new AssemblySet(assemblyFile.FullName, config);
@@ -239,7 +252,7 @@ class Program
                 Console.WriteLine("      No entry point - generating static library");
 
             Console.WriteLine("[4/4] Generating C++ code...");
-            var generator = new CppCodeGenerator(module, config);
+            var generator = new CppCodeGenerator(module, config, analyzeStubs: analyzeStubs);
             var generatedOutput = generator.Generate();
             generatedOutput.WriteToDirectory(output.FullName);
             PrintGeneratedFiles(generatedOutput);
@@ -247,6 +260,22 @@ class Program
             Console.WriteLine();
             var outputType = module.EntryPoint != null ? "executable" : "static library";
             Console.WriteLine($"Code generation completed! ({config.ConfigurationName}, {outputType})");
+
+            // Print stub analysis report
+            if (analyzeStubs)
+            {
+                var report = generator.GetAnalysisReport();
+                if (report != null)
+                {
+                    Console.WriteLine();
+                    Console.WriteLine(report);
+
+                    // Also write to file
+                    var reportPath = Path.Combine(output.FullName, "stub_analysis.txt");
+                    File.WriteAllText(reportPath, report);
+                    Console.WriteLine($"Analysis report written to: {reportPath}");
+                }
+            }
         }
         catch (Exception ex)
         {
@@ -255,45 +284,173 @@ class Program
         }
     }
 
-    static void Compile(FileInfo input, DirectoryInfo output, string configName = "Release")
+    static void Compile(FileInfo input, DirectoryInfo output, string configName = "Release",
+        string? runtimePrefix = null)
     {
         var prepared = PrepareBuild(input, output, configName);
         if (prepared is not var (assemblyFile, config)) return;
 
         try
         {
-            PrintBanner(assemblyFile, output, config);
+            PrintBanner(assemblyFile, output, config, "compile");
 
-            Console.WriteLine("[1/5] Loading assembly set...");
+            Console.WriteLine("[1/6] Loading assembly set...");
             using var assemblySet = new AssemblySet(assemblyFile.FullName, config);
+            Console.WriteLine($"      Root assembly: {assemblySet.RootAssemblyName}");
 
-            Console.WriteLine("[2/5] Analyzing reachability...");
+            Console.WriteLine("[2/6] Analyzing reachability...");
             var analyzer = new ReachabilityAnalyzer(assemblySet);
             var reachability = analyzer.Analyze();
+            Console.WriteLine($"      {reachability.ReachableTypes.Count} reachable types, {reachability.ReachableMethods.Count} reachable methods");
 
-            Console.WriteLine("[3/5] Building IR...");
+            Console.WriteLine("[3/6] Building IR...");
             using var reader = new AssemblyReader(assemblyFile.FullName, config);
             var builder = new IRBuilder(reader, config);
             var module = builder.Build(assemblySet, reachability);
             Console.WriteLine($"      {module.Types.Count} types, {module.GetAllMethods().Count()} methods");
 
-            Console.WriteLine("[4/5] Generating C++ code...");
+            Console.WriteLine("[4/6] Generating C++ code...");
             var generator = new CppCodeGenerator(module, config);
             var generatedOutput = generator.Generate();
-            var cppDir = Path.Combine(output.FullName, "cpp");
-            generatedOutput.WriteToDirectory(cppDir);
+            generatedOutput.WriteToDirectory(output.FullName);
+            PrintGeneratedFiles(generatedOutput);
 
-            Console.WriteLine("[5/5] Compiling to native...");
-            Console.WriteLine("      (Native compilation not yet integrated)");
+            // Resolve runtime prefix
+            var prefix = ResolveRuntimePrefix(runtimePrefix);
+            if (prefix == null)
+            {
+                Console.Error.WriteLine("Error: Cannot find cil2cpp runtime installation.");
+                Console.Error.WriteLine("       Use --runtime-prefix to specify the install path,");
+                Console.Error.WriteLine("       or set the CIL2CPP_PREFIX environment variable.");
+                return;
+            }
+            Console.WriteLine($"      Runtime prefix: {prefix}");
+
+            Console.WriteLine("[5/6] Configuring CMake...");
+            var buildDir = Path.Combine(output.FullName, "build");
+            if (!RunProcess("cmake",
+                    $"-B \"{buildDir}\" -S \"{output.FullName}\" " +
+                    $"-DCMAKE_PREFIX_PATH=\"{prefix}\"",
+                    output.FullName))
+            {
+                Console.Error.WriteLine("Error: CMake configuration failed.");
+                return;
+            }
+
+            Console.WriteLine($"[6/6] Building native ({config.ConfigurationName})...");
+            if (!RunProcess("cmake",
+                    $"--build \"{buildDir}\" --config {config.ConfigurationName}",
+                    output.FullName))
+            {
+                Console.Error.WriteLine("Error: Native build failed.");
+                return;
+            }
+
+            // Find the output executable
+            var projectName = module.Name;
+            var exeName = OperatingSystem.IsWindows() ? $"{projectName}.exe" : projectName;
+            var exePath = FindOutputExecutable(buildDir, exeName, config.ConfigurationName);
 
             Console.WriteLine();
-            Console.WriteLine($"Compilation completed ({config.ConfigurationName} configuration, native compile pending).");
+            if (exePath != null)
+            {
+                Console.WriteLine($"Compilation succeeded! ({config.ConfigurationName})");
+                Console.WriteLine($"Output: {exePath}");
+            }
+            else
+            {
+                Console.WriteLine($"Build completed but could not locate output executable.");
+                Console.WriteLine($"Check: {buildDir}");
+            }
         }
         catch (Exception ex)
         {
             Console.Error.WriteLine($"Error: {ex.Message}");
             Console.Error.WriteLine(ex.StackTrace);
         }
+    }
+
+    /// <summary>
+    /// Resolve the cil2cpp runtime install prefix.
+    /// Priority: --runtime-prefix arg > CIL2CPP_PREFIX env var > default paths.
+    /// </summary>
+    static string? ResolveRuntimePrefix(string? explicitPrefix)
+    {
+        // 1. Explicit argument
+        if (!string.IsNullOrEmpty(explicitPrefix) && Directory.Exists(explicitPrefix))
+            return Path.GetFullPath(explicitPrefix);
+
+        // 2. Environment variable
+        var envPrefix = Environment.GetEnvironmentVariable("CIL2CPP_PREFIX");
+        if (!string.IsNullOrEmpty(envPrefix) && Directory.Exists(envPrefix))
+            return Path.GetFullPath(envPrefix);
+
+        // 3. Default paths
+        string[] defaultPaths = OperatingSystem.IsWindows()
+            ? ["C:/cil2cpp", "C:/cil2cpp_test"]
+            : ["/usr/local", "/opt/cil2cpp"];
+
+        foreach (var path in defaultPaths)
+        {
+            // Check if cil2cpp cmake config exists at this prefix
+            var cmakeConfigDir = Path.Combine(path, "lib", "cmake", "cil2cpp");
+            if (Directory.Exists(cmakeConfigDir))
+                return Path.GetFullPath(path);
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Search for the output executable in the build directory.
+    /// Multi-config generators (MSVC) put outputs in build/{Config}/.
+    /// Single-config generators (Makefiles) put outputs in build/.
+    /// </summary>
+    static string? FindOutputExecutable(string buildDir, string exeName, string configName)
+    {
+        // Multi-config: build/{Config}/exe
+        var multiConfigPath = Path.Combine(buildDir, configName, exeName);
+        if (File.Exists(multiConfigPath))
+            return Path.GetFullPath(multiConfigPath);
+
+        // Single-config: build/exe
+        var singleConfigPath = Path.Combine(buildDir, exeName);
+        if (File.Exists(singleConfigPath))
+            return Path.GetFullPath(singleConfigPath);
+
+        return null;
+    }
+
+    /// <summary>
+    /// Run an external process, streaming stdout/stderr to console.
+    /// Returns true if exit code is 0.
+    /// </summary>
+    static bool RunProcess(string fileName, string arguments, string workingDirectory)
+    {
+        var process = new Process();
+        process.StartInfo.FileName = fileName;
+        process.StartInfo.Arguments = arguments;
+        process.StartInfo.WorkingDirectory = workingDirectory;
+        process.StartInfo.UseShellExecute = false;
+        process.StartInfo.RedirectStandardOutput = true;
+        process.StartInfo.RedirectStandardError = true;
+
+        // Stream output line by line with "      " prefix for consistent formatting
+        process.OutputDataReceived += (_, e) =>
+        {
+            if (e.Data != null) Console.WriteLine($"      {e.Data}");
+        };
+        process.ErrorDataReceived += (_, e) =>
+        {
+            if (e.Data != null) Console.Error.WriteLine($"      {e.Data}");
+        };
+
+        process.Start();
+        process.BeginOutputReadLine();
+        process.BeginErrorReadLine();
+        process.WaitForExit();
+
+        return process.ExitCode == 0;
     }
 
     static void DumpAssembly(FileInfo input)

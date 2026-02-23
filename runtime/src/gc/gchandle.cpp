@@ -1,16 +1,16 @@
 /**
  * CIL2CPP Runtime - GCHandle Implementation
  *
- * Simple handle table backed by a vector + free list.
- * With BoehmGC, Normal handles just keep a strong reference (preventing collection).
- * Pinned handles are the same (BoehmGC doesn't move objects).
- * Weak handles are approximated as normal handles (BoehmGC doesn't support
- * true weak references without GC_MALLOC_UNCOLLECTABLE).
- *
- * FIXME: Implement true weak references using BoehmGC's GC_register_disappearing_link
+ * Handle table backed by a vector + free list.
+ * - Normal/Pinned: strong reference via GC_MALLOC_UNCOLLECTABLE slot.
+ * - Weak/WeakTrackResurrection: uses BoehmGC's GC_register_disappearing_link
+ *   so the handle is automatically cleared when the object is collected.
+ *   BoehmGC treats both Weak and WeakTrackResurrection the same (no distinction
+ *   for resurrection tracking in conservative GC).
  */
 
 #include <cil2cpp/gchandle.h>
+#include <gc.h>
 
 #include <mutex>
 #include <vector>
@@ -38,6 +38,10 @@ int32_t decode_handle(intptr_t handle) {
     return static_cast<int32_t>(handle) - 1;
 }
 
+bool is_weak_type(GCHandleType type) {
+    return type == GCHandleType::Weak || type == GCHandleType::WeakTrackResurrection;
+}
+
 } // anonymous namespace
 
 void gchandle_init() {
@@ -61,6 +65,13 @@ intptr_t gchandle_alloc(void* obj, GCHandleType type) {
     }
 
     g_handle_table[index] = { obj, type, true };
+
+    // For weak handles, register a disappearing link with BoehmGC.
+    // When the object is collected, BoehmGC will set the link to NULL.
+    if (is_weak_type(type) && obj != nullptr) {
+        GC_register_disappearing_link(&g_handle_table[index].object);
+    }
+
     return encode_handle(index);
 }
 
@@ -73,6 +84,10 @@ void gchandle_free(intptr_t handle) {
 
     auto& entry = g_handle_table[index];
     if (entry.allocated) {
+        // Unregister disappearing link for weak handles
+        if (is_weak_type(entry.type) && entry.object != nullptr) {
+            GC_unregister_disappearing_link(&entry.object);
+        }
         entry.allocated = false;
         entry.object = nullptr;
         g_free_list.push_back(index);
@@ -99,7 +114,18 @@ void gchandle_set(intptr_t handle, void* obj) {
 
     auto& entry = g_handle_table[index];
     if (entry.allocated) {
-        entry.object = obj;
+        // Update disappearing link for weak handles
+        if (is_weak_type(entry.type)) {
+            if (entry.object != nullptr) {
+                GC_unregister_disappearing_link(&entry.object);
+            }
+            entry.object = obj;
+            if (obj != nullptr) {
+                GC_register_disappearing_link(&entry.object);
+            }
+        } else {
+            entry.object = obj;
+        }
     }
 }
 

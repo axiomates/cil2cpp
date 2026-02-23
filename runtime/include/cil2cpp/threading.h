@@ -92,6 +92,13 @@ struct ManagedThread : Object {
     bool f_mayNeedResetForThreadPool; // BCL: Thread._mayNeedResetForThreadPool
 };
 
+/// Get the current managed thread for this OS thread (TLS-backed).
+/// Returns nullptr if no managed thread has been set (e.g., native-only thread).
+ManagedThread* thread_get_current();
+
+/// Set the current managed thread for this OS thread.
+void thread_set_current(ManagedThread* t);
+
 namespace thread {
 
 /**

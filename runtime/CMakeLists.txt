@@ -112,8 +112,10 @@ set(RUNTIME_SOURCES
     src/threading/monitor.cpp
     src/threading/interlocked.cpp
     src/threading/thread.cpp
+    src/threading/waithandle.cpp
     src/reflection/type.cpp
     src/reflection/memberinfo.cpp
+    src/reflection/assembly.cpp
     src/collections/list.cpp
     src/collections/dictionary.cpp
     src/typed_reference.cpp

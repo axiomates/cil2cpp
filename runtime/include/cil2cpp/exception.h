@@ -71,7 +71,10 @@ struct TypeInitializationException : Exception {
 struct TimeoutException : Exception {};
 
 // --- Task-related exceptions ---
-struct AggregateException : Exception {};
+struct AggregateException : Exception {
+    void* f_innerExceptions;  // ReadOnlyCollection<Exception> — BCL: AggregateException._innerExceptions
+    void* f_rocView;          // ReadOnlyCollection<Exception> — BCL: AggregateException._rocView (cached view)
+};
 struct OperationCanceledException : Exception {
     void* f_cancellationToken;  // System.OperationCanceledException._cancellationToken (CancellationToken value)
 };

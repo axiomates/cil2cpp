@@ -907,6 +907,7 @@ public partial class CppCodeGenerator
         yield return ("System_Delegate", "cil2cpp::Delegate");
         yield return ("System_MulticastDelegate", "cil2cpp::Delegate");
         yield return ("System_Type", "cil2cpp::Object");  // Type represented as opaque pointer
+        yield return ("System_RuntimeType", "cil2cpp::Type");  // Phase I.2: RuntimeType = Type (Unity IL2CPP pattern)
         yield return ("System_Attribute", "cil2cpp::Object");  // Base class for all attributes
         yield return ("System_Enum", "cil2cpp::Object");  // Abstract base for enums — same layout as Object
         yield return ("System_ValueType", "cil2cpp::Object");  // Abstract base for value types — same layout as Object
@@ -936,6 +937,23 @@ public partial class CppCodeGenerator
         yield return ("System_OperationCanceledException", "cil2cpp::OperationCanceledException");
         yield return ("System_Threading_Tasks_TaskCanceledException", "cil2cpp::TaskCanceledException");
         yield return ("System_Collections_Generic_KeyNotFoundException", "cil2cpp::KeyNotFoundException");
+
+        // Phase II.3: Runtime reflection subtypes → existing runtime structs
+        yield return ("System_Reflection_RuntimeMethodInfo", "cil2cpp::ManagedMethodInfo");
+        yield return ("System_Reflection_RuntimeFieldInfo", "cil2cpp::ManagedFieldInfo");
+        yield return ("System_Reflection_RuntimeConstructorInfo", "cil2cpp::ManagedMethodInfo");
+        yield return ("System_Reflection_TypeInfo", "cil2cpp::Type");
+        // Phase II.4: New runtime structs for Assembly + PropertyInfo
+        yield return ("System_Reflection_RuntimePropertyInfo", "cil2cpp::ManagedPropertyInfo");
+        yield return ("System_Reflection_Assembly", "cil2cpp::ManagedAssembly");
+        yield return ("System_Reflection_RuntimeAssembly", "cil2cpp::ManagedAssembly");
+        // Phase II.5: WaitHandle hierarchy
+        yield return ("System_Threading_WaitHandle", "cil2cpp::ManagedWaitHandle");
+        yield return ("System_Threading_EventWaitHandle", "cil2cpp::ManagedEventWaitHandle");
+        yield return ("System_Threading_ManualResetEvent", "cil2cpp::ManagedEventWaitHandle");
+        yield return ("System_Threading_AutoResetEvent", "cil2cpp::ManagedEventWaitHandle");
+        yield return ("System_Threading_Mutex", "cil2cpp::ManagedMutex");
+        yield return ("System_Threading_Semaphore", "cil2cpp::ManagedSemaphore");
     }
 
     /// <summary>
@@ -992,6 +1010,22 @@ public partial class CppCodeGenerator
         // typed_reference.h
         "System_TypedReference",
         "System_ArgIterator",
+        // Phase II.3: Runtime reflection subtypes — aliases in memberinfo.h / reflection.h
+        "System_Reflection_RuntimeMethodInfo",
+        "System_Reflection_RuntimeFieldInfo",
+        "System_Reflection_RuntimeConstructorInfo",
+        "System_Reflection_TypeInfo",
+        // Phase II.4: Assembly + PropertyInfo — aliases in assembly.h
+        "System_Reflection_RuntimePropertyInfo",
+        "System_Reflection_Assembly",
+        "System_Reflection_RuntimeAssembly",
+        // Phase II.5: WaitHandle hierarchy — aliases in waithandle.h
+        "System_Threading_WaitHandle",
+        "System_Threading_EventWaitHandle",
+        "System_Threading_ManualResetEvent",
+        "System_Threading_AutoResetEvent",
+        "System_Threading_Mutex",
+        "System_Threading_Semaphore",
     };
 
     /// <summary>
@@ -1214,8 +1248,24 @@ public partial class CppCodeGenerator
     {
         // JIT intrinsics have self-recursive IL bodies — the JIT replaces them with
         // CPU instructions or constants at runtime. AOT: detect and stub them.
-        // Covers: System.Runtime.Intrinsics.X86.*, MemoryMarshal.GetArrayDataReference, etc.
+        // Covers ALL System.Runtime.Intrinsics types including Vector base types.
+        // Vector struct definitions are needed (for knownTypeNames) but their method bodies
+        // contain SIMD-specific patterns (void* arithmetic, pointer casts) that can't compile.
+        // Call sites are already intercepted in IRBuilder.Emit.cs (IsSupported=0, ops=default).
         if (method.DeclaringType?.ILFullName?.Contains("System.Runtime.Intrinsics") == true)
+            return true;
+        // SIMD-specific BCL method variants: hardware-accelerated implementations that contain
+        // pointer arithmetic, alignment checks, and SIMD operations that can't compile to valid C++.
+        // These methods have scalar fallback alternatives that the BCL dispatches to when IsSupported==false.
+        if (method.Name.EndsWith("_Sse2") || method.Name.EndsWith("_Sse41") ||
+            method.Name.EndsWith("_Sse3") || method.Name.EndsWith("_Avx") ||
+            method.Name.EndsWith("_Avx2") || method.Name.EndsWith("_Intrinsified"))
+            return true;
+        // SIMD-heavy BCL internal types whose methods do pointer-to-integer casts for alignment checks
+        if (method.DeclaringType?.ILFullName is "System.Text.Ascii"
+                                              or "System.Text.Latin1Utility"
+                                              or "System.Text.Utf16Utility"
+                                              or "System.Buffers.IndexOfAnyAsciiSearcher")
             return true;
         // Detect self-recursion: method calls itself (JIT intrinsics with no real IL body)
         var selfCallPattern = $"{method.CppName}(";
@@ -1610,20 +1660,31 @@ public partial class CppCodeGenerator
         // Multi-line pattern: array_get<T>/array_set<T> with reference type (value↔pointer mismatch)
         // array_get returns T by value — casting result to T* means it's a reference type array
         // array_set expects T by value — passing a T* pointer means it's a reference type array
+        // Note: array_get<Object*>/array_set<Object*> are correct (pointer-type template arg)
         if (rendered.Contains("array_get<") || rendered.Contains("array_set<"))
         {
             var arrayGetVars = new HashSet<string>();
             foreach (var line in rendered.AsSpan().EnumerateLines())
             {
                 var s = line.ToString().TrimStart();
-                // Track __tN assigned from array_get
+                // Track __tN assigned from array_get with NON-POINTER element type
+                // array_get<Object*> returns a pointer — casting is fine, don't flag
                 if (s.StartsWith("auto __t") && s.Contains("array_get<"))
                 {
-                    var spIdx = s.IndexOf(' ', 5);
-                    if (spIdx > 5) arrayGetVars.Add(s[5..spIdx]);
+                    var getIdx = s.IndexOf("array_get<");
+                    var closeAngle = s.IndexOf('>', getIdx + 10);
+                    if (closeAngle > getIdx + 10)
+                    {
+                        var elemTypeArg = s[(getIdx + 10)..closeAngle];
+                        if (!elemTypeArg.EndsWith("*"))
+                        {
+                            var spIdx = s.IndexOf(' ', 5);
+                            if (spIdx > 5) arrayGetVars.Add(s[5..spIdx]);
+                        }
+                    }
                 }
                 // array_set with pointer value in 3rd arg — reference type stored as value
-                // Only flag if the 3rd argument is clearly a pointer cast (e.g., (TypeName*)expr)
+                // Only flag if the template arg is NOT a pointer type (non-pointer = value mismatch)
                 if (s.Contains("array_set<"))
                 {
                     var setIdx = s.IndexOf("array_set<");
@@ -1847,8 +1908,11 @@ public partial class CppCodeGenerator
         if (method.CppName.Contains("System_TypedReference_"))
             return true;
 
-        // Method-level: DBNull comparison (BCL uses DBNull.Value as sentinel, compared with Object*)
-        if (rendered.Contains("System_DBNull") && (rendered.Contains("!= __t") || rendered.Contains("== __t")))
+        // Phase II.2: DBNull guard removed — DBNull compiles from BCL IL
+
+        // Phase II.5: Pre-declared Thread* temp assigned from ICall returning void*/Object*
+        // ExecutionContext methods use Thread.CurrentThread (ICall returns void* but var is Thread*)
+        if (rendered.Contains("System_Threading_Thread* __t") && rendered.Contains("Thread_get_CurrentThread"))
             return true;
 
         // Method-level: TimeZoneInfo methods with cross-scope DateTime/TimeSpan/AdjustmentRule
@@ -1920,6 +1984,43 @@ public partial class CppCodeGenerator
                         && call.FunctionName.Contains("__") // disambiguated name
                         && !_declaredFunctionNames.Contains(call.FunctionName))
                         return true;
+                }
+            }
+        }
+
+        // Multi-line: Object* pre-declared temp redeclared as struct type (value type)
+        // AddAutoDeclarations pre-declares cross-scope __tN as Object*, but the body later
+        // has "StructType __tN = {0};" — MSVC C2086 redefinition error.
+        {
+            var objectPreDeclVars = new HashSet<string>();
+            foreach (var line in rendered.AsSpan().EnumerateLines())
+            {
+                var s = line.ToString().TrimStart();
+                // Match: cil2cpp::Object* __tNN = nullptr;
+                if (s.StartsWith("cil2cpp::Object* __t") && s.EndsWith("= nullptr;"))
+                {
+                    var spaceIdx = s.IndexOf(' ', 20);
+                    if (spaceIdx > 20)
+                        objectPreDeclVars.Add(s[20..spaceIdx]);
+                }
+            }
+            if (objectPreDeclVars.Count > 0)
+            {
+                foreach (var line in rendered.AsSpan().EnumerateLines())
+                {
+                    var s = line.ToString().TrimStart();
+                    // Match: SomeStructType __tNN = {0}; or SomeStructType __tNN;
+                    foreach (var v in objectPreDeclVars)
+                    {
+                        var marker = $" __t{v} =";
+                        var idx = s.IndexOf(marker);
+                        if (idx <= 0) continue;
+                        // Ensure what precedes is a type name (not "auto" or "cil2cpp::Object*")
+                        var prefix = s[..idx].Trim();
+                        if (prefix.Length > 0 && prefix != "auto" && !prefix.Contains("Object*")
+                            && !prefix.StartsWith("//") && !prefix.StartsWith("#"))
+                            return true;
+                    }
                 }
             }
         }
@@ -2075,16 +2176,27 @@ public partial class CppCodeGenerator
             }
         }
 
+        // Phase II.3/II.4: Reflection type BCL internal fields that don't exist on our aliased types
+        // RuntimeFieldInfo.m_reflectedTypeCache, RuntimeMethodInfo.m_declaringType, etc.
+        if (s.Contains("f_m_reflectedTypeCache") || s.Contains("f_m_fieldAttributes") ||
+            s.Contains("f_m_fieldType") || s.Contains("f_m_returnType") || s.Contains("f_m_parameters"))
+            return true;
+        // RuntimeFieldInfo/RuntimeMethodInfo.m_declaringType accessed via arrow
+        if (s.Contains("->f_m_declaringType") && (s.Contains("RuntimeFieldInfo") || s.Contains("RuntimeMethodInfo") ||
+            s.Contains("ManagedFieldInfo") || s.Contains("ManagedMethodInfo")))
+            return true;
+
+        // Phase II.1: GetCalendarInfoEx passes char16_t* where intptr_t expected
+        if (s.Contains("GetCalendarInfoEx") || s.Contains("GetCalendarInfoW"))
+            return true;
+
         // Pattern: enum type pointer cast where value expected
         // e.g., (System_Resources_UltimateResourceFallbackLocation*)__t5 in function args
         // These appear when ldflda/ldloca produces an address but callee expects value
         if (s.Contains("UltimateResourceFallbackLocation*)"))
             return true;
 
-        // Pattern: CalendarId pointer/return type issues (enum-as-pointer)
-        // CalendarId* cast in function arguments, or CalendarId from pointer return
-        if (s.Contains("(System_Globalization_CalendarId*)"))
-            return true;
+        // Phase II.1: CalendarId guard removed — CalendarId compiles as enum from IL
 
         // Pattern: ReadOnlySpan/Span struct cast to void*
         // BCL code casts Span structs but C++ can't implicit-cast struct to void*
@@ -2258,8 +2370,9 @@ public partial class CppCodeGenerator
         if (s.Contains("DBNull*") && (s.Contains("!=") || s.Contains("==")))
             return true;
 
-        // Pattern: Vector128/VectorMath hardware intrinsic types (JIT intrinsic, no IL body)
-        if (s.Contains("Vector128_1_") || s.Contains("VectorMath_"))
+        // Pattern: VectorMath hardware intrinsic types (JIT intrinsic, no IL body)
+        // Note: Vector128_1_ removed — Vector types now have scalar fallback struct definitions
+        if (s.Contains("VectorMath_"))
             return true;
 
         // Pattern: TypedReference passed as void* — it's a struct, not a pointer

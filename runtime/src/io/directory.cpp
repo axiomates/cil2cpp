@@ -4,6 +4,7 @@
 
 #include <cil2cpp/io.h>
 #include <cil2cpp/exception.h>
+#include <cil2cpp/gc.h>
 
 #include "io_utils.h"
 
@@ -27,8 +28,9 @@ Object* Directory_CreateDirectory(String* path) {
     if (ec) {
         throw_io_exception(("Could not create directory: " + ec.message()).c_str());
     }
-    // FIXME: should return a DirectoryInfo object; currently returns nullptr
-    return nullptr;
+    // TODO: return a proper DirectoryInfo object once the BCL type is compiled from IL.
+    // For now, return a minimal opaque object to satisfy non-null checks.
+    return static_cast<Object*>(gc::alloc(sizeof(Object), nullptr));
 }
 
 } // namespace icall

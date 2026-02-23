@@ -26,12 +26,14 @@
 #include "threading.h"
 #include "reflection.h"
 #include "memberinfo.h"
+#include "assembly.h"
 #include "collections.h"
 #include "typed_reference.h"
 #include "unicode.h"
 #include "globalization.h"
 #include "interop.h"
 #include "safe_handle.h"
+#include "waithandle.h"
 #include "io.h"
 
 // BCL types

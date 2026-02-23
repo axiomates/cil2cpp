@@ -15,6 +15,18 @@
 #include <thread>
 
 namespace cil2cpp {
+
+// TLS: current managed thread for each OS thread
+static thread_local ManagedThread* g_current_thread = nullptr;
+
+ManagedThread* thread_get_current() {
+    return g_current_thread;
+}
+
+void thread_set_current(ManagedThread* t) {
+    g_current_thread = t;
+}
+
 namespace thread {
 
 static std::atomic<Int32> g_next_managed_id{1};
@@ -22,6 +34,7 @@ static std::atomic<Int32> g_next_managed_id{1};
 // Thread entry point — runs on the new thread
 static void thread_entry(ManagedThread* t) {
     gc::register_thread();
+    thread_set_current(t);
 
     t->state = 1; // running
 
@@ -47,6 +60,7 @@ static void thread_entry(ManagedThread* t) {
 #endif
 
     t->state = 2; // stopped
+    thread_set_current(nullptr);
 
     gc::unregister_thread();
 }

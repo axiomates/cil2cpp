@@ -21,6 +21,9 @@ struct String;
  */
 struct Type : Object {
     TypeInfo* type_info;
+    // BCL RuntimeType fields — needed because RuntimeType is aliased to cil2cpp::Type
+    intptr_t f_m_handle = 0;    // RuntimeType.m_handle (RuntimeTypeHandle → IntPtr → MethodTable*)
+    intptr_t f_m_cache = 0;     // RuntimeType.m_cache (GCHandle to RuntimeTypeCache)
 };
 
 // TypeInfo for runtime-provided BCL types (used by typeof() and GetType())
@@ -72,3 +75,6 @@ Boolean type_equals(Type* self, Object* other);
 String* type_to_string(Type* t);
 
 } // namespace cil2cpp
+
+// Phase II.3: TypeInfo → cil2cpp::Type alias
+using System_Reflection_TypeInfo = cil2cpp::Type;

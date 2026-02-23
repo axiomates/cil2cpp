@@ -1,137 +1,244 @@
-# 未来开发计划
+# 开发路线图
 
 > 最后更新：2026-02-23
 
-## 概述
+## 设计原则
 
-CIL2CPP 定位为**通用 AOT 编译器**（对标 NativeAOT 覆盖范围）。当前最大瓶颈是 **BCL 方法被 stub 化**——HelloWorld 生成 ~6,639 个 stub 方法，主要因为 CLR 内部类型依赖和 P/Invoke 原生模块过滤。
+### 核心目标
 
-后续开发分为 5 个阶段，目标：**打通 BCL 依赖链，减少 stub 数量，扩展功能覆盖，最终编译任意 .NET AOT 兼容项目**。
+**只有真正无法从 IL 编译的内容使用 C++ runtime 映射，其他一切从 BCL IL 转译为 C++。**
+
+以 Unity IL2CPP 为参考架构，但不盲目照搬——IL2CPP 使用 Mono BCL（依赖链远比 .NET 8 简单），且其源码来自社区反编译（可能不完整）。我们基于 .NET 8 BCL 的实际依赖链做第一性原理分析。
+
+### 四条准则
+
+1. **IL 优先**：一切可以从 BCL IL 编译的内容都应该编译
+2. **ICall 是桥梁**：C++ runtime 仅通过 ICall 暴露底层原语（Monitor、Thread、Interlocked、GC、IO），BCL IL 调用这些原语
+3. **编译器质量驱动**：提升 IL 转译率的方式是修复编译器 bug，而不是添加 RuntimeProvided 类型
+4. **第一性原理判断**：每个 RuntimeProvided 类型必须有明确技术理由（runtime 直接访问字段 / BCL IL 引用 CLR 内部类型 / 嵌入 C++ 类型）
 
 ---
 
-## 三大阻断源
+## RuntimeProvided 类型分类（第一性原理）
 
-1. **27 个 CLR 内部类型**（`ClrInternalTypeNames`）→ 引用它们的方法自动 stub 化 → 级联
-2. **11 个被过滤的 P/Invoke 模块**（`InternalPInvokeModules`）→ 底层调用断裂 → 级联
-3. **代码生成安全网**（HasKnownBrokenPatterns + RenderedBodyHasErrors）→ 保守 stub 化
+### 判断标准
+
+一个类型需要 RuntimeProvided 当且仅当满足以下任一条件：
+1. C++ runtime 需要**直接访问该类型的字段**（GC、异常、委托调度等）
+2. BCL IL 方法体引用了**无法 AOT 编译的 CLR 内部类型**（QCall、MetadataImport 等）
+3. struct 中嵌入了 **C++ 特有数据类型**（如 std::mutex*）
+
+### 必须 C++ runtime 的类型（26 个，当前正确）
+
+| 类型 | 数量 | 技术原因 |
+|------|------|----------|
+| Object / ValueType / Enum | 3 | GC 头 + 类型系统基础，每个托管对象的根 |
+| String | 1 | 内联 UTF-16 buffer + GC 特殊处理（string_create/concat/intern） |
+| Array | 1 | 变长布局 + bounds + GC（array_create/get/set） |
+| Exception | 1 | setjmp/longjmp 异常机制，runtime 直接访问 message/inner/trace |
+| Delegate / MulticastDelegate | 2 | 函数指针 + 调度链（delegate_invoke/combine） |
+| Type / RuntimeType | 2 | 类型元数据系统，typeof() → TypeInfo* → Type* 缓存 |
+| Thread | 1 | TLS + OS 线程管理，runtime 直接访问线程状态 |
+| 反射 struct ×12 | 12 | .NET 8 BCL 反射 IL 深度依赖 QCall/MetadataImport，无法 AOT 编译 |
+| TypedReference / ArgIterator | 2 | varargs 机制，编译器特殊处理 |
+| **Task** | **1** | **4 个自定义运行时字段（f_status/f_exception/f_continuations/f_lock）+ f_lock 是 std::mutex* + MSVC padding 问题** |
+
+### 可迁移为 IL 的类型（8 个，短期目标）
+
+| 类型 | 数量 | 可行性 | 说明 |
+|------|------|--------|------|
+| IAsyncStateMachine | 1 | **容易** | 纯接口，当前 alias to Object，无需 struct |
+| CancellationToken | 1 | **容易** | 只有 f_source 指针，struct 可从 Cecil 生成 |
+| WaitHandle 层级 | 6 | **可行** | BCL IL 可编译，需注册 8 个 OS 原语 ICall |
+
+### 依赖 Task 的类型（6 个，长期目标，需重大架构变更）
+
+| 类型 | 数量 | 问题 |
+|------|------|------|
+| TaskAwaiter / AsyncTaskMethodBuilder | 2 | 只有 f_task 字段，但依赖 Task struct 布局 |
+| ValueTask / ValueTaskAwaiter / AsyncIteratorMethodBuilder | 3 | 依赖 Task + BCL 依赖链（ThreadPool、ExecutionContext） |
+| CancellationTokenSource | 1 | 依赖 ITimer + ManualResetEvent + Registrations 链 |
+
+**长期愿景**：重写异步运行时架构，让 Task 从自定义 C++ 实现迁移到 BCL IL 实现。这需要整个 TPL 依赖链（ThreadPool、TaskScheduler、ExecutionContext、SynchronizationContext）都能从 IL 编译。
+
+### RuntimeProvided 目标
+
+- **短期**：35 → 27（移除 IAsyncStateMachine + CancellationToken + WaitHandle×6）
+- **长期**：27 → 21（Task 架构重构后移除 TaskAwaiter/Builder/ValueTask 等 6 个）
+
+### Unity IL2CPP 参考（仅供对比，非盲目照搬）
+
+> **注意**：IL2CPP 使用 Mono BCL，.NET 8 BCL 的依赖链远比 Mono 复杂。以下对比仅供参考。
+> IL2CPP 源码来自社区反编译的 libil2cpp headers，可能不完整。
+
+IL2CPP Runtime struct: `Il2CppObject` / `Il2CppString` / `Il2CppArray` / `Il2CppException` / `Il2CppDelegate` / `Il2CppMulticastDelegate` / `Il2CppThread` / `Il2CppReflectionType` / `Il2CppReflectionMethod` / `Il2CppReflectionField` / `Il2CppReflectionProperty` (~12 个)
+
+IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHandle 层级——但这基于 Mono 的较简单 BCL，不能直接类比 .NET 8。
 
 ---
 
-## Phase I: 基础打通（目标：stub < 3,000）
+## 当前状态
+
+### RuntimeProvided 类型：35 个（短期目标 ~27，长期 ~21）
+
+详见上方"RuntimeProvided 类型分类"章节。
+
+### Stub 分布（HelloWorld, 4,402 个）
+
+| 类别 | 数量 | 占比 | 性质 |
+|------|------|------|------|
+| MissingBody | 2,171 | 49.3% | 无 IL body（abstract/extern/JIT intrinsic）— 多数合理 |
+| RenderedBodyError | 701 | 15.9% | **编译器 bug — IL 有 body 但 C++ 编译失败** |
+| UnknownBodyReferences | 540 | 12.3% | 方法体引用未声明类型 |
+| KnownBrokenPattern | 452 | 10.3% | 已知无法编译的模式 |
+| UnknownParameterTypes | 293 | 6.7% | 参数类型未声明 |
+| UndeclaredFunction | 149 | 3.4% | 调用未声明函数 |
+| ClrInternalType | 96 | 2.2% | QCall 桥接类型 |
+
+**可修复的编译器问题**：RenderedBodyError (701) + UnknownBodyReferences (540) + UndeclaredFunction (149) = **1,390 个方法**，占 31.6%。
+
+---
+
+## Phase I: 基础打通 ✅
+
+- Stub 依赖分析工具 (`--analyze-stubs`)
+- RuntimeType = Type 别名（对标 `Il2CppReflectionType`）
+- Handle 类型移除（RuntimeTypeHandle/MethodHandle/FieldHandle → intptr_t）
+- AggregateException / SafeHandle / Thread.CurrentThread TLS / GCHandle 弱引用
+
+## Phase II: 中间层解锁 ✅
+
+- CalendarId/EraInfo/DefaultBinder/DBNull 等 CLR 内部类型移除（从 27 个降到 6 个）
+- 反射类型别名（RuntimeMethodInfo → ManagedMethodInfo 等）
+- WaitHandle OS 原语 / P/Invoke 调用约定 / SafeHandle ICall 补全
+
+## Phase III: 编译器管道质量（当前阶段）
+
+**目标**：提升 IL 转译率——修复阻止 BCL IL 编译的根因
+
+| # | 任务 | 影响量 | 说明 |
+|---|------|--------|------|
+| III.1 | SIMD 标量回退 | ✅ 完成 | Vector64/128/256/512 struct 定义 |
+| III.2 | RenderedBodyErrors 修复 | ~701 方法 | 分析 C++ 编译失败的具体模式，逐个修复根因 |
+| III.3 | UnknownBodyReferences 修复 | ~540 方法 | 方法体引用类型在 knownTypeNames 中缺失 |
+| III.4 | UndeclaredFunction 修复 | ~149 方法 | 函数签名未声明 |
+| III.5 | FilteredGenericNamespaces 放开 | 级联解锁 | 逐步放开安全命名空间（System.Diagnostics 等） |
+| III.6 | KnownBrokenPattern 精简 | ~452 方法 | 审查每个模式是否还有必要 |
+
+---
+
+## Phase IV: 可行类型回归 IL（35 → 27）
+
+**目标**：移除 8 个 RuntimeProvided 类型
+
+| # | 任务 | 移除数 | 可行性 | 说明 |
+|---|------|--------|--------|------|
+| IV.1 | IAsyncStateMachine → IL | 1 | 容易 | 纯接口，移除 RuntimeProvided 即可 |
+| IV.2 | CancellationToken → IL | 1 | 容易 | 只有 f_source 指针，struct 从 Cecil 生成 |
+| IV.3 | WaitHandle → IL + ICall | 1 | 可行 | 注册 WaitOneCore 等 OS 原语 ICall |
+| IV.4 | EventWaitHandle → IL + ICall | 1 | 可行 | 注册 CreateEventCoreWin32/Set/Reset ICall |
+| IV.5 | ManualResetEvent / AutoResetEvent → IL | 2 | 可行 | 继承 EventWaitHandle，无额外字段 |
+| IV.6 | Mutex → IL + ICall | 1 | 可行 | 注册 CreateMutexCoreWin32/ReleaseMutex ICall |
+| IV.7 | Semaphore → IL + ICall | 1 | 可行 | 注册 CreateSemaphoreCoreWin32/ReleaseSemaphore ICall |
+
+**前提**：Phase III 编译器质量足够让 BCL WaitHandle/CancellationToken IL 正确编译。
+
+## Phase V: 异步架构重构（长期，27 → 21）
+
+**目标**：让 Task 及依赖它的类型从 IL 编译
+
+**挑战**：
+- Task 有 4 个自定义运行时字段（f_status/f_exception/f_continuations/f_lock），其中 f_lock 是 std::mutex*
+- MSVC tail-padding 问题要求 Task 不继承 Object
+- 需要 BCL Task 的完整依赖链工作：ThreadPool、TaskScheduler、ExecutionContext
 
 | # | 任务 | 说明 |
 |---|------|------|
-| I.1 | Stub 依赖分析工具 | `--analyze-stubs` 选项：根因分类 + 级联影响量 + 解锁排名 |
-| I.2 | RuntimeType AOT | RuntimeType = Type 别名（复用现有 `reflection.h`），从 ClrInternal 移除 |
-| I.3 | Handle 类型移除 | RuntimeTypeHandle/MethodHandle/FieldHandle 从 ClrInternal 移除，BCL IL 自然编译 |
-| I.4 | AggregateException | 添加 `f_innerExceptions` 字段，从 ClrInternal 移除 |
-| I.5 | SafeHandle 补全 | 等 I.2-I.3 完成后检查是否自然解锁，剩余方法加 ICall |
-| I.6 | Thread.CurrentThread | TLS 存储当前 Thread 对象，修复 nullptr FIXME |
-| I.7 | GCHandle 弱引用 | BoehmGC `GC_register_disappearing_link` |
-| I.8 | FIXME 修复 | IO Encoding/BOM、ThrowHelper 字符串、Array boxing |
-| I.9 | 验证 | 重新 codegen + stub 统计 |
+| V.1 | 评估 BCL Task IL 依赖链 | 分析 .NET 8 Task 方法体引用的所有类型，确认可编译范围 |
+| V.2 | Task runtime 改造 | 从自定义字段改为 BCL 字段布局（m_stateFlags 等），运行时操作改为 ICall |
+| V.3 | TaskAwaiter / AsyncTaskMethodBuilder → IL | 依赖 Task struct 布局 |
+| V.4 | ValueTask / ValueTaskAwaiter / AsyncIteratorMethodBuilder → IL | 依赖 Task 链 |
+| V.5 | CancellationTokenSource → IL | 依赖 ITimer + ManualResetEvent + Registrations 链 |
 
-**关键决策**：RuntimeType = Type 别名，与 Unity IL2CPP `Il2CppReflectionType` 架构一致。
+**注意**：此 Phase 需要大量架构重构，可能与功能扩展 Phase 并行推进。
 
----
+## Phase VI: 反射模型优化（评估）
 
-## Phase II: 中间层解锁（目标：stub < 1,500）
+**目标**：评估反射高层 API 是否可从 IL 编译
 
 | # | 任务 | 说明 |
 |---|------|------|
-| II.1 | CLR 反射类型映射 | RuntimeMethodInfo→ManagedMethodInfo、RuntimeFieldInfo→FieldInfo、TypeInfo/Assembly 最小 AOT 实现 |
-| II.2 | WaitHandle 混合方案 | BCL IL 编译上层 + ICall 封装 OS 原语（WaitOneCore, WaitMultipleIgnoringSyncContext） |
-| II.3 | P/Invoke 调用约定 | `__stdcall`/`__cdecl` 修饰符发射（x86 需要） |
-| II.4 | CharSet.Auto 分支 | Windows=Unicode, Linux=Ansi |
-| II.5 | System.Native 集成 | FetchContent ~30 个 .c 文件，Linux 用（Windows 不需要） |
-| II.6 | zlib 集成 | FetchContent，解锁 GZipStream/DeflateStream |
-| II.7 | 验证 | stub 统计 + FileStream 链路检查 |
+| VI.1 | 分析 BCL 反射 IL 依赖 | .NET 8 的 RuntimeType.GetMethodCandidates() 等方法的 QCall 依赖深度 |
+| VI.2 | 评估 ICall 拦截可行性 | 是否可以在 ICall 层拦截 QCall 调用，让高层 IL 编译 |
+| VI.3 | 如可行：添加反射 ICall + 移出 CoreRuntime | Type.GetType_internal、MethodBase.Invoke_internal 等 |
+| VI.4 | 如不可行：保持现状 | .NET 8 反射 IL 与 Mono 差异太大，保持 CoreRuntime 是务实选择 |
 
-**关键决策**：WaitHandle 混合方案——上层 BCL IL + 底层 OS ICall，与 Unity IL2CPP / NativeAOT 一致。
+**风险**：.NET 8 BCL 反射 IL 比 Mono 深度依赖 QCall/MetadataImport。IL2CPP 的三层反射模型基于 Mono，不能直接套用。
 
 ---
 
-## Phase III: 功能扩展（目标：覆盖复杂控制台应用）
+## Phase VII: 功能扩展
 
 | # | 任务 | 说明 |
 |---|------|------|
-| III.1 | FileStream/StreamReader/Writer | Phase II 完成后 BCL IL 自然解锁，用 Stub 工具检查残余 |
-| III.2 | Memory\<T\>/ReadOnlyMemory\<T\> | 拦截核心方法（Span\<T\> 模式） |
-| III.3 | OpenSSL 集成 | ICU 同模式：Win 预编译二进制 + Linux find_package |
-| III.4 | Net.Security.Native | GSSAPI/TLS 包装，解锁 HTTPS/SslStream |
-| III.5 | SIMD 精细化 | 不再整体 stub Intrinsics，只 stub 自递归方法 + `IsSupported=false` 常量折叠 |
-| III.6 | BrokenPatterns 精细化 | 量化 9 个 pattern 影响，逐个修复根因 |
+| VII.1 | System.Native 集成 | FetchContent ~30 个 .c 文件（Linux POSIX 层） |
+| VII.2 | Memory\<T\>/ReadOnlyMemory\<T\> | BCL IL 自然编译 |
+| VII.3 | zlib 集成 | FetchContent，解锁 GZipStream/DeflateStream |
+| VII.4 | OpenSSL 集成 | ICU 同模式（Win 预编译 + Linux find_package） |
 
-**关键决策**：
-- SIMD 精细化 stub + 渐进式标量回退（BCL 有非 SIMD 回退路径）
-- OpenSSL 与 ICU 相同的预编译模式
-
----
-
-## Phase IV: 网络 & 高级功能（目标：Web 应用基础）
+## Phase VIII: 网络 & 高级功能
 
 | # | 任务 | 说明 |
 |---|------|------|
-| IV.1 | Socket 基础 | 路线 A: BCL IL 自然编译（Winsock + System.Native 跨平台，不引入 C++ 网络库） |
-| IV.2 | HttpClient | BCL SocketsHttpHandler 纯 C# 编译 |
-| IV.3 | System.Text.Json | Utf8JsonReader/Writer + JsonSerializer |
-| IV.4 | Regex 完善 | 解释器模式 + source generator 支持（Compiled 模式 AOT 不兼容） |
-| IV.5 | 32-bit 支持 | 指针大小通过 BuildConfiguration 传入 |
+| VIII.1 | Socket 基础 | BCL IL + Winsock/System.Native |
+| VIII.2 | HttpClient | BCL SocketsHttpHandler |
+| VIII.3 | System.Text.Json | Utf8JsonReader/Writer + JsonSerializer |
+| VIII.4 | Regex | 解释器模式 + source generator 支持 |
 
-**关键决策**：
-- 网络层路线 A——BCL 内置跨平台分支，不需要 C++ 网络库
-- Regex 走解释器模式（Compiled 用 Reflection.Emit → AOT 不支持）
-
----
-
-## Phase V: 产品化（目标：对标 NativeAOT 覆盖）
+## Phase IX: 产品化
 
 | # | 任务 | 说明 |
 |---|------|------|
-| V.1 | CI/CD | GitHub Actions: Windows (MSVC) + Linux (GCC/Clang) + stub 回归检测 |
-| V.2 | 性能基准 | 编译时间 + 运行时性能 + 代码大小 |
-| V.3 | 真实项目测试 | 5-10 个 NuGet 包编译验证 |
-| V.4 | 文档完善 | 英文文档 + API 参考 + 迁移指南 |
-| V.5 | Stub 优化 | 目标 < 500（当前 ~6,639） |
+| IX.1 | CI/CD | GitHub Actions: Windows (MSVC) + Linux (GCC/Clang) |
+| IX.2 | 性能基准 | 编译时间 + 运行时性能 + 代码大小 |
+| IX.3 | 真实项目测试 | 5-10 个 NuGet 包编译验证 |
+| IX.4 | 文档完善 | 英文文档 + API 参考 + 迁移指南 |
 
 ---
 
 ## 依赖关系图
 
 ```
-Phase I (基础打通, stub < 3000)
-  I.1 Stub 分析工具
-  I.2 RuntimeType = Type alias
-  I.3 Handle types 移除
-  I.4 AggregateException 修复
-  I.5 SafeHandle (依赖 I.2-I.3)
-  I.6-I.8 Thread/GCHandle/FIXME (独立)
+Phase I  (基础打通) ✅
+Phase II (中间层解锁) ✅
        ↓
-Phase II (中间层解锁, stub < 1500)
-  II.1 反射类型映射
-  II.2 WaitHandle (BCL IL + OS ICall)
-  II.3-II.4 P/Invoke 修复 (独立)
-  II.5 System.Native (Linux)
-  II.6 zlib
+Phase III (编译器管道质量) ← 当前
+  III.1 SIMD 标量回退 ✅
+  III.2-III.6 修复 RenderedBodyErrors / UnknownBodyRef / UndeclaredFunction
        ↓
-Phase III (功能扩展)
-  III.1 FileStream (依赖 II: SafeHandle+WaitHandle+System.Native)
-  III.2 Memory<T> (独立)
-  III.3 OpenSSL (ICU 同模式)
-  III.4 Net.Security.Native (依赖 III.3)
-  III.5-III.6 SIMD+Patterns 精细化 (独立)
-       ↓
-Phase IV (网络 & 高级)
-  IV.1 Socket (路线A: BCL IL, 依赖 II+III)
-  IV.2 HttpClient (依赖 IV.1+III.3)
-  IV.3 JSON (依赖 Reflection)
-  IV.4 Regex (解释器模式)
-  IV.5 32-bit (独立)
-       ↓
-Phase V (产品化)
-  CI/CD, 性能, 测试, 文档, 持续优化
+Phase IV (可行类型 → IL) 35 → 27
+  IAsyncStateMachine + CancellationToken + WaitHandle×6
+       ↓                    ↓（可并行）
+Phase V (异步架构重构)    Phase VII (功能扩展)
+  Task 及依赖类型 → IL      System.Native / zlib / OpenSSL
+  27 → 21（长期）              ↓
+       ↓                  Phase VIII (网络 & 高级)
+Phase VI (反射评估)         Socket / HttpClient / JSON / Regex
+  评估高层 API IL 编译可行性     ↓
+                          Phase IX (产品化)
+                            CI/CD / 性能 / 测试 / 文档
 ```
+
+---
+
+## 指标定义
+
+| 指标 | 定义 | 当前值 | 短期目标 | 长期目标 |
+|------|------|--------|----------|----------|
+| IL 转译率 | (reachable 方法 - stub 方法) / reachable 方法 | ~55% | >70% | >90% |
+| RuntimeProvided 数 | C++ runtime 定义 struct 的类型数 | 35 | ~27 | ~21 |
+| CoreRuntime 数 | 方法完全由 C++ 提供的类型数 | 22 | ~22 | ~10（若反射可 IL） |
+| ICall 数 | C++ 实现的内部调用 | 248 | ~260 | ~300-500 |
 
 ---
 
@@ -139,31 +246,30 @@ Phase V (产品化)
 
 | 决策 | 结果 | 理由 |
 |------|------|------|
-| RuntimeType | Type 别名 | 与 Unity IL2CPP `Il2CppReflectionType` 一致 |
-| WaitHandle | 混合方案（BCL IL + OS ICall） | Unity IL2CPP / NativeAOT 共同采用 |
-| SIMD | 精细化 stub + 渐进式标量回退 | BCL 有非 SIMD 回退路径 |
-| 网络层 | 路线 A: BCL IL 自然编译 | BCL 内置跨平台分支，不需要 C++ 网络库 |
-| OpenSSL | ICU 同模式（Win 预编译 + Linux 系统包） | 已验证可行 |
-| Regex | 解释器模式 + source generator 支持 | Compiled 模式用 Reflection.Emit → AOT 不兼容 |
+| RuntimeType | Type 别名 | 对标 IL2CPP `Il2CppReflectionType` |
+| 反射类型 | 保持 CoreRuntime | .NET 8 BCL 反射 IL 深度依赖 QCall/MetadataImport，短期无法 IL 编译 |
+| Task | 保持 RuntimeProvided（短期） | 4 个自定义运行时字段 + std::mutex* + MSVC padding，长期需架构重构 |
+| WaitHandle | 目标 IL + ICall（Phase IV） | struct 简单，BCL IL 可编译，需注册 8 个 OS 原语 ICall |
+| SIMD | 标量回退 struct + IsSupported=false | BCL 有非 SIMD 回退路径 |
+| 网络层 | BCL IL 自然编译 | BCL 内置跨平台分支 |
+| Regex | 解释器模式 + source generator | Compiled 模式用 Reflection.Emit → AOT 不兼容 |
+| IL2CPP 对标 | 参考但不盲目照搬 | IL2CPP 基于 Mono BCL，.NET 8 依赖链差异大 |
 
----
+## CLR 内部类型（永久保留为 stub）
 
-## 被过滤的 P/Invoke 模块（11 个）
+| 类型 | 说明 |
+|------|------|
+| QCallTypeHandle / QCallAssembly / ObjectHandleOnStack / MethodTable | CLR JIT 专用桥接 |
+| MetadataImport / RuntimeCustomAttributeData | CLR 内部元数据访问 |
+
+## 被过滤的 P/Invoke 模块
 
 | 模块 | 功能 | 解锁阶段 |
 |------|------|---------|
-| `System.Native` / `libSystem.Native` | POSIX 文件/进程/网络 | Phase II |
-| `System.IO.Compression.Native` | zlib | Phase II |
-| `System.Globalization.Native` / `libSystem.Globalization.Native` | ICU 封装 | 已有 ICU 集成 |
-| `System.Security.Cryptography.Native.OpenSsl` | OpenSSL | Phase III |
-| `System.Net.Security.Native` | GSSAPI/TLS | Phase III |
-| `QCall` / `QCall.dll` | CLR 内部桥接 | 保留（CLR JIT 专用） |
-| `ucrtbase` / `ucrtbase.dll` | CRT | 已链接 |
-
-## CLR 内部类型消解计划（27 个）
-
-| 批次 | 类型 | 解锁阶段 |
-|------|------|---------|
-| 第一批（高影响） | RuntimeType, RuntimeTypeHandle, RuntimeMethodHandle, RuntimeFieldHandle, AggregateException | Phase I |
-| 第二批（中影响） | RuntimeMethodInfo, RuntimeFieldInfo, RuntimePropertyInfo, RuntimeConstructorInfo, TypeInfo, Assembly, RuntimeAssembly, WaitHandle | Phase II |
-| 第三批（低影响/保留） | QCall 桥接(4), DefaultBinder, DBNull, Signature, MetadataImport, RuntimeCustomAttributeData, ThreadInt64PersistentCounter, IAsyncLocal, CalendarId, EraInfo, PosixSignalRegistration | 保留 stub 或按需处理 |
+| `System.Native` | POSIX 文件/进程/网络 | Phase VII |
+| `System.IO.Compression.Native` | zlib | Phase VII |
+| `System.Globalization.Native` | ICU 封装 | ✅ 已有 ICU 集成 |
+| `System.Security.Cryptography.Native.OpenSsl` | OpenSSL | Phase VII |
+| `System.Net.Security.Native` | GSSAPI/TLS | Phase VIII |
+| `QCall` / `QCall.dll` | CLR 内部桥接 | 永久保留 |
+| `ucrtbase` / `ucrtbase.dll` | CRT | ✅ 已链接 |

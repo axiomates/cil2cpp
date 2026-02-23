@@ -129,6 +129,42 @@ public partial class IRBuilder
     ];
 
     /// <summary>
+    /// Vector types in System.Runtime.Intrinsics that should be allowed through
+    /// generic specialization despite the namespace filter. These are value types
+    /// used as fields/locals in BCL code (String, Span, Number operations).
+    /// Their IsSupported returns 0, forcing BCL to use scalar fallback paths.
+    /// Only the struct definition is needed — method bodies are already SIMD-stubbed.
+    /// </summary>
+    private static readonly HashSet<string> VectorScalarFallbackTypes =
+    [
+        "System.Runtime.Intrinsics.Vector64`1",
+        "System.Runtime.Intrinsics.Vector128`1",
+        "System.Runtime.Intrinsics.Vector256`1",
+        "System.Runtime.Intrinsics.Vector512`1",
+        "System.Runtime.Intrinsics.Vector64",
+        "System.Runtime.Intrinsics.Vector128",
+        "System.Runtime.Intrinsics.Vector256",
+        "System.Runtime.Intrinsics.Vector512",
+    ];
+
+    /// <summary>
+    /// Check if an IL type full name is a Vector scalar fallback type (open or closed generic).
+    /// Matches Vector64/128/256/512 base types but NOT X86/Arm/Wasm platform intrinsics.
+    /// </summary>
+    internal static bool IsVectorScalarFallbackILType(string ilFullName)
+    {
+        if (ilFullName.StartsWith("System.Runtime.Intrinsics.X86.") ||
+            ilFullName.StartsWith("System.Runtime.Intrinsics.Arm.") ||
+            ilFullName.StartsWith("System.Runtime.Intrinsics.Wasm."))
+            return false;
+
+        return ilFullName.StartsWith("System.Runtime.Intrinsics.Vector64") ||
+               ilFullName.StartsWith("System.Runtime.Intrinsics.Vector128") ||
+               ilFullName.StartsWith("System.Runtime.Intrinsics.Vector256") ||
+               ilFullName.StartsWith("System.Runtime.Intrinsics.Vector512");
+    }
+
+    /// <summary>
     /// Types that should be filtered from generic specialization arguments only.
     /// More aggressive than ClrInternalTypeNames — these types may still compile as types,
     /// but creating generic specializations like List&lt;TimeZoneInfo&gt; produces stubs.
@@ -152,10 +188,15 @@ public partial class IRBuilder
             return;
 
         // Skip generic types from BCL internal namespaces
+        // Exception: Vector64/128/256/512<T> types are allowed through —
+        // they need struct definitions for BCL scalar fallback paths.
         var elemNs = git.ElementType.Namespace;
         if (!string.IsNullOrEmpty(elemNs) &&
             FilteredGenericNamespaces.Any(f => elemNs.StartsWith(f)))
-            return;
+        {
+            if (!VectorScalarFallbackTypes.Contains(git.ElementType.FullName))
+                return;
+        }
 
         // Skip generic specializations where any type argument is from a filtered namespace
         // or is a CLR-internal type. Prevents creating List<RuntimePropertyInfo>,
@@ -172,7 +213,10 @@ public partial class IRBuilder
 
             if (!string.IsNullOrEmpty(argNs) &&
                 FilteredGenericNamespaces.Any(f => argNs.StartsWith(f)))
-                return;
+            {
+                if (!IsVectorScalarFallbackILType(argFullName))
+                    return;
+            }
 
             if (ClrInternalTypeNames.Contains(argFullName) ||
                 FilteredGenericArgTypes.Contains(argFullName))
@@ -450,12 +494,23 @@ public partial class IRBuilder
                     irType.Fields.Add(irField);
             }
 
+            // Propagate ExplicitSize from Cecil metadata (ECMA-335 II.10.1.2).
+            // Critical for Vector128<T> (ClassSize=16), Vector256<T> (ClassSize=32), etc.
+            if (irType.IsValueType && openType.HasLayoutInfo && openType.ClassSize > 0)
+                irType.ExplicitSize = openType.ClassSize;
+
             // Calculate instance size
             CalculateInstanceSize(irType);
 
             // Register type early so self-referencing static field accesses work
             _module.Types.Add(irType);
             _typeCache[key] = irType;
+
+            // Skip method specialization for Vector scalar fallback types.
+            // We only need their struct definitions (for sizeof/locals in BCL methods).
+            // Vector method call sites are already intercepted in IRBuilder.Emit.cs.
+            if (IsVectorScalarFallbackILType(info.OpenTypeName))
+                continue;
 
             // Create method specializations from Cecil definition
             if (openType != null)
@@ -662,6 +717,42 @@ public partial class IRBuilder
         if (_activeTypeParamMap != null)
             return ResolveGenericTypeName(typeRef, _activeTypeParamMap);
         return typeRef.FullName;
+    }
+
+    /// <summary>
+    /// Check if a type reference (potentially a generic parameter) resolves to a value type.
+    /// Used by Ldelem_Any/Stelem_Any to distinguish reference types (stored as pointers)
+    /// from value types (stored inline) in arrays.
+    /// </summary>
+    private bool IsResolvedValueType(TypeReference typeRef)
+    {
+        // Resolve generic parameters through the active map
+        if (typeRef is GenericParameter gp && _activeTypeParamMap != null)
+        {
+            if (_activeTypeParamMap.TryGetValue(gp.Name, out var resolvedILName))
+            {
+                // Check primitive value types (int, bool, float, etc.)
+                // Note: IsPrimitive includes String/Object which are reference types.
+                // Use IsValueType which correctly excludes them.
+                if (CppNameMapper.IsValueType(resolvedILName))
+                    return true;
+
+                // Check module types (both user and BCL types in the IR)
+                var irType = _module.Types.FirstOrDefault(t => t.ILFullName == resolvedILName);
+                if (irType != null)
+                    return irType.IsValueType;
+
+                // Fallback: assume reference type for unknown types
+                return false;
+            }
+            // Unresolved generic param — check constraints
+            return gp.HasConstraints &&
+                   gp.Constraints.Any(c => c.ConstraintType?.FullName == "System.ValueType");
+        }
+
+        // Non-generic: use Cecil metadata directly
+        var resolved = typeRef.Resolve();
+        return resolved?.IsValueType ?? typeRef.IsValueType;
     }
 
     /// <summary>

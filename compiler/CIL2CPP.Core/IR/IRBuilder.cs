@@ -36,6 +36,7 @@ public partial class IRBuilder
         "System.Delegate",
         "System.MulticastDelegate",
         "System.Type",
+        "System.RuntimeType",           // Phase I.2: alias to cil2cpp::Type (same as Unity IL2CPP)
 
         // Async non-generic types — struct defined in task.h / async_enumerable.h
         // NOTE: generic open types (Task`1, TaskAwaiter`1, etc.) are NOT here —
@@ -54,6 +55,15 @@ public partial class IRBuilder
         "System.Reflection.MethodInfo",
         "System.Reflection.FieldInfo",
         "System.Reflection.ParameterInfo",
+        // Phase II.3: Runtime reflection subtypes — aliased to existing runtime structs
+        "System.Reflection.RuntimeMethodInfo",      // alias to ManagedMethodInfo
+        "System.Reflection.RuntimeFieldInfo",       // alias to ManagedFieldInfo
+        "System.Reflection.RuntimeConstructorInfo", // alias to ManagedMethodInfo
+        "System.Reflection.TypeInfo",               // alias to cil2cpp::Type
+        // Phase II.4: New runtime structs for Assembly + PropertyInfo
+        "System.Reflection.RuntimePropertyInfo",    // alias to ManagedPropertyInfo
+        "System.Reflection.Assembly",               // alias to ManagedAssembly
+        "System.Reflection.RuntimeAssembly",        // alias to ManagedAssembly
 
         // Threading types — struct defined in threading.h / cancellation.h
         "System.Threading.Thread",
@@ -63,6 +73,14 @@ public partial class IRBuilder
         // TypedReference + ArgIterator — struct defined in typed_reference.h
         "System.TypedReference",
         "System.ArgIterator",
+
+        // Phase II.5: WaitHandle hierarchy — struct defined in waithandle.h
+        "System.Threading.WaitHandle",
+        "System.Threading.EventWaitHandle",
+        "System.Threading.ManualResetEvent",
+        "System.Threading.AutoResetEvent",
+        "System.Threading.Mutex",
+        "System.Threading.Semaphore",
     };
 
     /// <summary>
@@ -88,6 +106,15 @@ public partial class IRBuilder
         "System.Reflection.MethodInfo",
         "System.Reflection.FieldInfo",
         "System.Reflection.ParameterInfo",
+        // Phase II.3: Runtime reflection subtypes
+        "System.Reflection.RuntimeMethodInfo",
+        "System.Reflection.RuntimeFieldInfo",
+        "System.Reflection.RuntimeConstructorInfo",
+        "System.Reflection.TypeInfo",
+        // Phase II.4: Assembly + PropertyInfo
+        "System.Reflection.RuntimePropertyInfo",
+        "System.Reflection.Assembly",
+        "System.Reflection.RuntimeAssembly",
         // TypedReference + ArgIterator: all methods handled by runtime / icall
         "System.TypedReference",
         "System.ArgIterator",
@@ -105,35 +132,16 @@ public partial class IRBuilder
         "System.Runtime.CompilerServices.QCallAssembly",
         "System.Runtime.CompilerServices.ObjectHandleOnStack",
         "System.Runtime.CompilerServices.MethodTable",
-        // CLR-internal runtime type system
-        "System.RuntimeType",
-        "System.RuntimeTypeHandle",
-        "System.RuntimeMethodHandle",
-        "System.RuntimeFieldHandle",
-        // CLR-internal reflection types
-        "System.Reflection.RuntimeMethodInfo",
-        "System.Reflection.RuntimeFieldInfo",
-        "System.Reflection.RuntimePropertyInfo",
-        "System.Reflection.RuntimeConstructorInfo",
+        // Phase I.2: RuntimeType removed — aliased to cil2cpp::Type (same as Unity IL2CPP Il2CppReflectionType)
+        // Phase I.3: RuntimeTypeHandle/RuntimeMethodHandle/RuntimeFieldHandle removed — value type thin wrappers (intptr_t)
+        // Phase II.3: RuntimeMethodInfo/RuntimeFieldInfo/RuntimeConstructorInfo/TypeInfo removed — aliased to runtime types
+        // Phase II.4: RuntimePropertyInfo/Assembly/RuntimeAssembly removed — aliased to new runtime structs
+        // CLR-internal reflection types (still blocked)
         "System.Reflection.MetadataImport",
         "System.Reflection.RuntimeCustomAttributeData",
-        // CLR-internal binder/dispatch
-        "System.DefaultBinder",
-        "System.DBNull",
-        "System.Signature",
-        // Deep BCL types with runtime struct layout mismatches
-        "System.AggregateException",        // Runtime struct lacks BCL internal fields
-        "System.Reflection.TypeInfo",       // Abstract base for RuntimeType — compiled methods can't cast properly
-        "System.Reflection.Assembly",       // GetExecutingAssembly uses CLR-internal StackCrawlMark
-        "System.Reflection.RuntimeAssembly", // CLR internal assembly type
-        "System.Threading.WaitHandle",      // Uses CLR-internal SafeWaitHandle patterns
-        "System.Runtime.InteropServices.PosixSignalRegistration", // Uses CLR-internal interop
-        // CLR-internal threading types
-        "System.Threading.ThreadInt64PersistentCounter",
-        "System.Threading.IAsyncLocal",
-        // Globalization internal types
-        "System.Globalization.CalendarId",
-        "System.Globalization.EraInfo",
+        // Phase II.2: DefaultBinder/DBNull/Signature/ThreadInt64PersistentCounter/IAsyncLocal/PosixSignalRegistration removed — BCL IL compiles
+        // Phase II.1: CalendarId/EraInfo removed — BCL enums/structs compile from IL
+        // Phase II.5: WaitHandle removed — RuntimeProvided with OS primitive ICalls
     };
 
     /// <summary>
@@ -142,14 +150,29 @@ public partial class IRBuilder
     /// Detects: CLR-internal locals/params, BCL compiler-generated generic display classes.
     /// </summary>
     internal static bool HasClrInternalDependencies(Mono.Cecil.MethodDefinition cecilMethod)
+        => HasClrInternalDependencies(cecilMethod, out _);
+
+    /// <summary>
+    /// Check if a Cecil method's body references CLR-internal types that cannot be compiled.
+    /// Returns the specific reason via <paramref name="reason"/> for diagnostics.
+    /// </summary>
+    internal static bool HasClrInternalDependencies(Mono.Cecil.MethodDefinition cecilMethod, out string? reason)
     {
+        reason = null;
+
         // Check if declaring type is CLR-internal (all methods on these types are unstubable)
         var declType = cecilMethod.DeclaringType;
         if (ClrInternalTypeNames.Contains(declType.FullName))
+        {
+            reason = $"declaring type '{declType.FullName}'";
             return true;
+        }
         // Nested types within CLR-internal types
         if (declType.DeclaringType != null && ClrInternalTypeNames.Contains(declType.DeclaringType.FullName))
+        {
+            reason = $"nested in CLR-internal type '{declType.DeclaringType.FullName}'";
             return true;
+        }
 
         if (!cecilMethod.HasBody) return false;
 
@@ -158,17 +181,26 @@ public partial class IRBuilder
         {
             var typeName = local.VariableType.FullName;
             if (ClrInternalTypeNames.Contains(typeName))
+            {
+                reason = $"local type '{typeName}'";
                 return true;
+            }
             if (local.VariableType is GenericInstanceType git
                 && ClrInternalTypeNames.Contains(git.ElementType.FullName))
+            {
+                reason = $"local generic type '{git.ElementType.FullName}'";
                 return true;
+            }
         }
 
         // Check parameter types
         foreach (var param in cecilMethod.Parameters)
         {
             if (ClrInternalTypeNames.Contains(param.ParameterType.FullName))
+            {
+                reason = $"parameter type '{param.ParameterType.FullName}'";
                 return true;
+            }
         }
 
         // Check for field/method references to BCL compiler-generated generic types
@@ -189,7 +221,10 @@ public partial class IRBuilder
                     var ns = elemType.DeclaringType.Namespace;
                     if (!string.IsNullOrEmpty(ns) &&
                         (ns.StartsWith("System") || ns.StartsWith("Internal") || ns.StartsWith("Microsoft")))
+                    {
+                        reason = $"BCL compiler-generated generic '{elemType.FullName}'";
                         return true;
+                    }
                 }
             }
         }
@@ -493,8 +528,9 @@ public partial class IRBuilder
 
             // Skip methods with CLR-internal dependencies (QCallTypeHandle, RuntimeType, etc.)
             // These cannot be compiled to C++ — generate a minimal stub body instead
-            if (HasClrInternalDependencies(methodDef.GetCecilMethod()))
+            if (HasClrInternalDependencies(methodDef.GetCecilMethod(), out var clrReason))
             {
+                irMethod.IrStubReason = clrReason;
                 GenerateStubBody(irMethod);
                 continue;
             }

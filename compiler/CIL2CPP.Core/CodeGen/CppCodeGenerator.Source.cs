@@ -319,22 +319,18 @@ public partial class CppCodeGenerator
             foreach (var method in type.Methods)
             {
                 if (method.IsAbstract || method.BasicBlocks.Count == 0) continue;
-                if (HasUnknownParameterTypes(method, _knownTypeNames))
-                    { TrackStub(method, "unknown parameter types"); continue; }
-                if (HasUnknownBodyReferences(method, _knownTypeNames))
-                    { TrackStub(method, "unknown body references"); continue; }
-                if (CallsUndeclaredOrMismatchedFunctions(method))
-                    { TrackStub(method, "undeclared/mismatched function calls"); continue; }
-                if (HasKnownBrokenPatterns(method, _knownTypeNames))
-                    { TrackStub(method, "known broken patterns"); continue; }
-                if (!_emittedMethodSignatures.Add(method.GetCppSignature())) continue;
-                // Trial render for DIM methods too
+                if (!TryEmitMethodThroughGates(sb, method)) continue;
+                // Trial render for DIM methods
                 var dimTrialSb = new StringBuilder();
                 GenerateMethodImpl(dimTrialSb, method);
                 var dimRendered = dimTrialSb.ToString();
                 if (RenderedBodyHasErrors(dimRendered, method, _knownTypeNames))
                 {
-                    TrackStub(method, "rendered body has errors");
+                    var renderDetail = _stubAnalyzer != null
+                        ? GetRenderedErrorDetail(dimRendered, method)
+                        : "trial render error";
+                    TrackStubWithAnalysis(method, "rendered body has errors",
+                        StubRootCause.RenderedBodyError, renderDetail);
                     GenerateStubForMethod(sb, method);
                     continue;
                 }
@@ -353,15 +349,7 @@ public partial class CppCodeGenerator
             // Non-core RuntimeProvided types (Task, Thread, CancellationToken) emit all methods.
             if (type.IsRuntimeProvided && !method.IsStatic
                 && IRBuilder.CoreRuntimeTypes.Contains(type.ILFullName)) continue;
-            if (HasUnknownParameterTypes(method, _knownTypeNames))
-                { TrackStub(method, "unknown parameter types"); continue; }
-            if (HasUnknownBodyReferences(method, _knownTypeNames))
-                { TrackStub(method, "unknown body references"); continue; }
-            if (CallsUndeclaredOrMismatchedFunctions(method))
-                { TrackStub(method, "undeclared/mismatched function calls"); continue; }
-            if (HasKnownBrokenPatterns(method, _knownTypeNames))
-                { TrackStub(method, "known broken patterns"); continue; }
-            if (!_emittedMethodSignatures.Add(method.GetCppSignature())) continue;
+            if (!TryEmitMethodThroughGates(sb, method)) continue;
 
             // Check known stub implementations before trial render
             var knownBody = GetKnownStubBody(method.CppName);
@@ -380,12 +368,257 @@ public partial class CppCodeGenerator
             var rendered = trialSb.ToString();
             if (RenderedBodyHasErrors(rendered, method, _knownTypeNames))
             {
-                TrackStub(method, "rendered body has errors");
+                var renderDetail = _stubAnalyzer != null
+                    ? GetRenderedErrorDetail(rendered, method)
+                    : "trial render error";
+                TrackStubWithAnalysis(method, "rendered body has errors",
+                    StubRootCause.RenderedBodyError, renderDetail);
                 GenerateStubForMethod(sb, method);
                 continue;
             }
             sb.Append(rendered);
         }
+    }
+
+    /// <summary>
+    /// Run the 4 pre-render gates on a method. Returns true if the method passes all gates
+    /// and should proceed to trial render. Returns false if the method was stubbed.
+    /// </summary>
+    private bool TryEmitMethodThroughGates(StringBuilder sb, IRMethod method)
+    {
+        if (HasUnknownParameterTypes(method, _knownTypeNames))
+        {
+            var detail = _stubAnalyzer != null
+                ? GetUnknownTypeDetail(method) : "unknown parameter types";
+            TrackStubWithAnalysis(method, "unknown parameter types",
+                StubRootCause.UnknownParameterTypes, detail);
+            return false;
+        }
+        if (HasUnknownBodyReferences(method, _knownTypeNames))
+        {
+            var detail = _stubAnalyzer != null
+                ? GetUnknownBodyDetail(method) : "unknown body references";
+            TrackStubWithAnalysis(method, "unknown body references",
+                StubRootCause.UnknownBodyReferences, detail);
+            return false;
+        }
+        if (CallsUndeclaredOrMismatchedFunctions(method))
+        {
+            var detail = _stubAnalyzer != null
+                ? GetUndeclaredFunctionDetail(method) : "undeclared function";
+            TrackStubWithAnalysis(method, "undeclared/mismatched function calls",
+                StubRootCause.UndeclaredFunction, detail);
+            return false;
+        }
+        if (HasKnownBrokenPatterns(method, _knownTypeNames))
+        {
+            var detail = _stubAnalyzer != null
+                ? GetBrokenPatternDetail(method) : "known broken patterns";
+            TrackStubWithAnalysis(method, "known broken patterns",
+                StubRootCause.KnownBrokenPattern, detail);
+            return false;
+        }
+        if (!_emittedMethodSignatures.Add(method.GetCppSignature()))
+            return false;
+        return true;
+    }
+
+    /// <summary>
+    /// Track stub with optional detailed analysis.
+    /// When analyzer is active, records both simple and detailed info.
+    /// </summary>
+    private void TrackStubWithAnalysis(IRMethod method, string reason,
+        StubRootCause rootCause, string detail)
+    {
+        if (_stubAnalyzer != null)
+            TrackStubDetailed(method, reason, rootCause, detail);
+        else
+            TrackStub(method, reason);
+    }
+
+    /// <summary>
+    /// Extract the specific unknown type that caused HasUnknownParameterTypes to return true.
+    /// </summary>
+    private string GetUnknownTypeDetail(IRMethod method)
+    {
+        foreach (var param in method.Parameters)
+        {
+            var typeName = param.CppTypeName.TrimEnd('*').Trim();
+            if (string.IsNullOrEmpty(typeName) || typeName.StartsWith("cil2cpp::") ||
+                IsCppPrimitiveType(typeName)) continue;
+            if (IsUnresolvedGenericParam(typeName))
+                return $"unresolved generic param '{typeName}'";
+            if (!_knownTypeNames.Contains(typeName))
+                return $"unknown type '{typeName}'";
+        }
+        var retType = method.ReturnTypeCpp.TrimEnd('*').Trim();
+        if (!string.IsNullOrEmpty(retType) && !retType.StartsWith("cil2cpp::") &&
+            !IsCppPrimitiveType(retType) && !_knownTypeNames.Contains(retType))
+            return $"unknown return type '{retType}'";
+        return "unknown parameter/return type";
+    }
+
+    /// <summary>
+    /// Extract the specific unknown type from method body that caused HasUnknownBodyReferences.
+    /// </summary>
+    private string GetUnknownBodyDetail(IRMethod method)
+    {
+        foreach (var local in method.Locals)
+        {
+            var baseType = local.CppTypeName.TrimEnd('*').Trim();
+            if (string.IsNullOrEmpty(baseType) || baseType.StartsWith("cil2cpp::") ||
+                IsCppPrimitiveType(baseType)) continue;
+            if (!_knownTypeNames.Contains(baseType))
+                return $"unknown local type '{baseType}'";
+        }
+        return "unknown body reference";
+    }
+
+    /// <summary>
+    /// Extract the specific undeclared function name.
+    /// </summary>
+    private string GetUndeclaredFunctionDetail(IRMethod method)
+    {
+        foreach (var block in method.BasicBlocks)
+        {
+            foreach (var instr in block.Instructions)
+            {
+                if (instr is IR.IRCall call && !string.IsNullOrEmpty(call.FunctionName))
+                {
+                    var funcName = call.FunctionName;
+                    if (funcName.Contains('('))
+                        funcName = funcName[..funcName.IndexOf('(')];
+                    if (!_declaredFunctionNames.Contains(funcName))
+                        return funcName;
+                    if (_declaredFunctionParamCounts.TryGetValue(funcName, out var counts)
+                        && !counts.Contains(call.Arguments.Count))
+                        return $"{funcName} (param count mismatch: {call.Arguments.Count})";
+                }
+            }
+        }
+        return "undeclared function";
+    }
+
+    /// <summary>
+    /// Extract the specific broken pattern that matched.
+    /// </summary>
+    private string GetBrokenPatternDetail(IRMethod method)
+    {
+        // Match the same order as HasKnownBrokenPatterns in Header.cs
+        if (method.DeclaringType?.ILFullName?.Contains("System.Runtime.Intrinsics") == true)
+            return "System.Runtime.Intrinsics namespace";
+
+        // SIMD-specific BCL method variants
+        if (method.Name.EndsWith("_Sse2") || method.Name.EndsWith("_Sse41") ||
+            method.Name.EndsWith("_Sse3") || method.Name.EndsWith("_Avx") ||
+            method.Name.EndsWith("_Avx2") || method.Name.EndsWith("_Intrinsified"))
+            return "SIMD-specific method variant";
+
+        // SIMD-heavy BCL internal types
+        if (method.DeclaringType?.ILFullName is "System.Text.Ascii"
+                                              or "System.Text.Latin1Utility"
+                                              or "System.Text.Utf16Utility"
+                                              or "System.Buffers.IndexOfAnyAsciiSearcher")
+            return "SIMD-heavy BCL type";
+
+        // Check self-recursion
+        var selfCallPattern = $"{method.CppName}(";
+        foreach (var block in method.BasicBlocks)
+        {
+            foreach (var instr in block.Instructions)
+            {
+                if (instr is IR.IRCall call && call.FunctionName == method.CppName)
+                    return "self-recursive call";
+                if (instr.ToCpp().Contains(selfCallPattern))
+                    return "self-recursive call";
+            }
+        }
+
+        // Check specific instruction patterns + undeclared TypeInfo
+        foreach (var block in method.BasicBlocks)
+        {
+            foreach (var instr in block.Instructions)
+            {
+                var code = instr.ToCpp();
+                if (HasUndeclaredTypeInfoRef(code, _knownTypeNames))
+                {
+                    var tiIdx = code.IndexOf("_TypeInfo");
+                    if (tiIdx >= 0)
+                    {
+                        int start = tiIdx - 1;
+                        while (start >= 0 && (char.IsLetterOrDigit(code[start]) || code[start] == '_'))
+                            start--;
+                        var typeName = code[(start + 1)..tiIdx];
+                        return $"undeclared TypeInfo: {typeName}";
+                    }
+                    return "undeclared TypeInfo reference";
+                }
+                if (code.Contains("(uintptr_t)(") && code.Contains(".f_"))
+                    return "uintptr_t cast + struct field access";
+                if (code.Contains("volatile_write((bool*)"))
+                    return "volatile_write bool* (no template specialization)";
+                if (code.Contains("array_length(0)"))
+                    return "array op with null literal";
+                if (code.StartsWith("&") && code.Contains(" = &"))
+                    return "invalid stind (&param = &local)";
+                if (code.Contains("GCFrameRegistration__ctor"))
+                    return "GCFrameRegistration void**/intptr_t* mismatch";
+                if (code.Contains("(uintptr_t)(") && (code.Contains("->f_") || code.Contains("sizeof(")))
+                    return "uintptr_t cast + member/sizeof access";
+                if (code.Contains("_1_T*") || code.Contains("_1_T,") || code.Contains("_2_T*")
+                    || code.Contains("_1_TKey*") || code.Contains("_1_TValue*")
+                    || code.Contains("_1_TResult*")
+                    || code.Contains("_1_TFrom") || code.Contains("_1_TTo"))
+                    return "unresolved generic type param in instruction";
+            }
+        }
+
+        return "unknown broken pattern";
+    }
+
+    /// <summary>
+    /// Identify which rendered error pattern matched.
+    /// Only called when analyzer is active (more expensive, does double-check).
+    /// </summary>
+    private string GetRenderedErrorDetail(string rendered, IRMethod method)
+    {
+        if (method.IsStatic && rendered.Contains("__this"))
+            return "__this in static method";
+        if (method.ReturnTypeCpp is "intptr_t" or "uintptr_t" && rendered.Contains("= (void*)"))
+            return "void* → intptr_t implicit conversion";
+        if (rendered.Contains("gc_allocate_uninitialized_array") && rendered.Contains("CompareExchange"))
+            return "gc_allocate_uninitialized_array + CompareExchange type mismatch";
+        if (rendered.Contains("Action_1_System_Object_Invoke"))
+            return "undeclared Action<Object> delegate specialization";
+        if (rendered.Contains("CancellationToken") && rendered.Contains("->f_message = (cil2cpp::String*)"))
+            return "CancellationToken → String* cast (BCL IL body bug)";
+
+        // Check for undeclared _statics references
+        foreach (var line in rendered.AsSpan().EnumerateLines())
+        {
+            var s = line.ToString().TrimStart();
+            if (s.Length == 0 || s.StartsWith("//") || s.StartsWith("#")) continue;
+            var staticsIdx = s.IndexOf("_statics.", StringComparison.Ordinal);
+            if (staticsIdx > 0)
+            {
+                var start = staticsIdx - 1;
+                while (start > 0 && (char.IsLetterOrDigit(s[start - 1]) || s[start - 1] == '_'))
+                    start--;
+                var typeName = s[start..staticsIdx];
+                if (typeName.Length > 0 && !_knownTypeNames.Contains(typeName))
+                    return $"undeclared statics: {typeName}_statics";
+            }
+        }
+
+        // Multi-line patterns — just identify the category
+        if (rendered.Contains("= *(cil2cpp::Object**)"))
+            return "Object* from byref dereference used as typed pointer";
+        if (method.Parameters.Any(p => p.CppTypeName == "cil2cpp::Object*"))
+            return "unrelated pointer type comparison";
+        if (rendered.Contains("cil2cpp::Object* __t") && rendered.Contains("= nullptr;"))
+            return "Object* variable assigned non-pointer value";
+
+        return "trial render error (unclassified)";
     }
 
     /// <summary>
@@ -594,7 +827,9 @@ public partial class CppCodeGenerator
             }
             else
             {
-                TrackStub(method, "missing method body (runtime-provided/unreachable)");
+                TrackStubWithAnalysis(method, "missing method body (runtime-provided/unreachable)",
+                    StubRootCause.MissingBody,
+                    method.IrStubReason ?? "runtime-provided or unreachable");
                 sb.AppendLine($"{sig} {{");
                 if (method.ReturnTypeCpp == "void" || string.IsNullOrEmpty(method.ReturnTypeCpp))
                     sb.AppendLine("    // TODO: compile from IL");
@@ -996,9 +1231,87 @@ public partial class CppCodeGenerator
                 case IRRawCpp raw when raw.ResultVar != null && raw.ResultTypeCpp != null:
                     types.TryAdd(raw.ResultVar, raw.ResultTypeCpp);
                     break;
+                // IRBinaryOp: comparisons produce bool, arithmetic produces intptr_t
+                case IRBinaryOp binOp when binOp.ResultVar.StartsWith("__t"):
+                {
+                    var resultType = binOp.Op is "==" or "!=" or "<" or ">" or "<=" or ">="
+                        ? "bool" : "intptr_t";
+                    types.TryAdd(binOp.ResultVar, resultType);
+                    break;
+                }
+                // Fallback: infer type from IRRawCpp code patterns
+                case IRRawCpp raw2 when raw2.ResultVar == null || raw2.ResultTypeCpp == null:
+                    InferTypeFromRawCpp(raw2.Code, types);
+                    break;
             }
         }
         return types;
+    }
+
+    /// <summary>
+    /// Infer temp variable types from IRRawCpp code patterns.
+    /// Handles cases where ResultVar/ResultTypeCpp aren't set on the instruction.
+    /// </summary>
+    private static void InferTypeFromRawCpp(string code, Dictionary<string, string> types)
+    {
+        // Match: __tN = (type)expr; or __tN = (type*)expr;
+        if (!code.StartsWith("__t") || code.StartsWith("__this")) return;
+        var eqIdx = code.IndexOf(" = ");
+        if (eqIdx <= 0) return;
+        var varName = code[..eqIdx].Trim();
+        if (!varName.StartsWith("__t") || !varName.Skip(3).All(char.IsDigit)) return;
+        if (types.ContainsKey(varName)) return;
+
+        var rhs = code[(eqIdx + 3)..].TrimEnd(';').Trim();
+
+        // (type)expr or (type*)expr — extract the cast type
+        if (rhs.StartsWith("(") && !rhs.StartsWith("(&"))
+        {
+            var closeIdx = rhs.IndexOf(')');
+            if (closeIdx > 1)
+            {
+                var castType = rhs[1..closeIdx];
+                // Only accept simple type names (no nested parens, no operators)
+                if (!castType.Contains("(") && !castType.Contains(" ") || castType.EndsWith("*"))
+                {
+                    types.TryAdd(varName, castType);
+                    return;
+                }
+            }
+        }
+
+        // Comparison operators → bool
+        if (rhs.Contains(" == ") || rhs.Contains(" != ") ||
+            rhs.Contains(" < ") || rhs.Contains(" > ") ||
+            rhs.Contains(" <= ") || rhs.Contains(" >= "))
+        {
+            types.TryAdd(varName, "bool");
+            return;
+        }
+
+        // Arithmetic/bitwise operators on non-pointer values → int32_t (safe default)
+        if ((rhs.Contains(" + ") || rhs.Contains(" - ") || rhs.Contains(" * ") ||
+             rhs.Contains(" / ") || rhs.Contains(" % ") || rhs.Contains(" | ") ||
+             rhs.Contains(" & ") || rhs.Contains(" ^ ") || rhs.Contains(" << ") ||
+             rhs.Contains(" >> ")) && !rhs.Contains("->") && !rhs.Contains("*)"))
+        {
+            types.TryAdd(varName, "intptr_t"); // intptr_t is safe for both 32/64-bit arithmetic
+            return;
+        }
+
+        // Negation: -expr → numeric
+        if (rhs.StartsWith("-") && !rhs.Contains("->"))
+        {
+            types.TryAdd(varName, "intptr_t");
+            return;
+        }
+
+        // ~expr (bitwise NOT) → numeric
+        if (rhs.StartsWith("~"))
+        {
+            types.TryAdd(varName, "intptr_t");
+            return;
+        }
     }
 
     /// <summary>
@@ -1685,11 +1998,16 @@ public partial class CppCodeGenerator
                 for (int i = 0; i < method.Parameters.Count; i++)
                     paramParts.Add($"{nativeParamTypes[i]} p{i}");
                 var paramDecl = string.Join(", ", paramParts);
-                // FIXME: ECMA-335 II.15.5.1 — PInvokeCallingConvention is parsed
-                // (Cdecl/StdCall/ThisCall/FastCall) but not emitted in the extern "C"
-                // declaration. On x64 this is harmless (single calling convention),
-                // but on x86 StdCall/FastCall would produce incorrect code.
-                sb.AppendLine($"    {retType} {entryPoint}({paramDecl});");
+                // ECMA-335 II.15.5.1 — Emit calling convention for x86 correctness.
+                // On x64, MSVC silently ignores __stdcall/__cdecl/__fastcall.
+                var callingConv = method.PInvokeCallingConvention switch
+                {
+                    PInvokeCallingConvention.StdCall  => "__stdcall ",
+                    PInvokeCallingConvention.FastCall => "__fastcall ",
+                    PInvokeCallingConvention.ThisCall => "__thiscall ",
+                    _ => "" // Cdecl is the default for extern "C", no annotation needed
+                };
+                sb.AppendLine($"    {retType} {callingConv}{entryPoint}({paramDecl});");
                 declaredEntryPoints.Add(entryPoint);
                 declaredParamTypes[entryPoint] = nativeParamTypes;
             }
@@ -1849,8 +2167,9 @@ public partial class CppCodeGenerator
         // String marshaling depends on CharSet (ECMA-335 II.15.5.2)
         if (IsStringType(cppType))
         {
-            // FIXME: ECMA-335 II.15.5.2 — CharSet.Auto should be Unicode on Windows
-            // but Ansi on Unix. Currently hardcoded to Unicode on all platforms.
+            // TODO: ECMA-335 II.15.5.2 — CharSet.Auto maps to Unicode on Windows, Ansi on Unix.
+            // Current: Unicode on all platforms (correct for Windows-only builds).
+            // Full fix requires cross-platform build target detection.
             return charSet == IR.PInvokeCharSet.Unicode ? "const char16_t*"
                 : charSet == IR.PInvokeCharSet.Auto ? "const char16_t*"
                 : "const char*"; // Ansi = UTF-8

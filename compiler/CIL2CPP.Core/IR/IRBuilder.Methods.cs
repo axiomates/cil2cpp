@@ -575,6 +575,8 @@ public partial class IRBuilder
         if (stackValue.StartsWith("\"") || stackValue.StartsWith("u\"") || stackValue.StartsWith("u'")) return false;
         // Cast expressions like "(int32_t)(0)" are not lvalues
         if (stackValue.StartsWith("(") && !stackValue.StartsWith("(&")) return false;
+        // Address-of expressions like "&value" or "&loc_N" are rvalues, not valid lvalues
+        if (stackValue.StartsWith("&")) return false;
         return true;
     }
 
@@ -1524,6 +1526,10 @@ public partial class IRBuilder
             {
                 var typeRef = (TypeReference)instr.Operand!;
                 var elemType = CppNameMapper.GetCppTypeName(ResolveTypeRefOperand(typeRef));
+                // Reference types are stored as Object* pointers in arrays.
+                // Use Object* as template arg so array_get returns a pointer, not a struct value.
+                if (!IsResolvedValueType(typeRef))
+                    elemType = "cil2cpp::Object*";
                 var index = stack.Count > 0 ? stack.Pop() : "0";
                 var arr = stack.Count > 0 ? stack.Pop() : "nullptr";
                 var tmp = $"__t{tempCounter++}";
@@ -1576,6 +1582,14 @@ public partial class IRBuilder
                 var val = stack.Count > 0 ? stack.Pop() : "0";
                 var index = stack.Count > 0 ? stack.Pop() : "0";
                 var arr = stack.Count > 0 ? stack.Pop() : "nullptr";
+                // Reference types are stored as Object* pointers in arrays.
+                // Cast value to Object* since flat C++ structs don't inherit from Object.
+                if (!IsResolvedValueType(typeRef))
+                {
+                    elemType = "cil2cpp::Object*";
+                    if (val != "nullptr" && val != "0")
+                        val = $"(cil2cpp::Object*)(void*){val}";
+                }
                 block.Instructions.Add(new IRArrayAccess
                 {
                     ArrayExpr = arr, IndexExpr = index,

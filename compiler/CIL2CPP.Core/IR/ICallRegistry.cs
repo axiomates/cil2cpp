@@ -274,6 +274,16 @@ public static class ICallRegistry
 
         // ===== SafeHandle =====
         RegisterICall("System.Runtime.InteropServices.SafeHandle", ".ctor", 2, "cil2cpp::icall::SafeHandle__ctor");
+        RegisterICall("System.Runtime.InteropServices.SafeHandle", "DangerousGetHandle", 0, "cil2cpp::icall::SafeHandle_DangerousGetHandle");
+        RegisterICall("System.Runtime.InteropServices.SafeHandle", "SetHandle", 1, "cil2cpp::icall::SafeHandle_SetHandle");
+        RegisterICall("System.Runtime.InteropServices.SafeHandle", "DangerousAddRef", 1, "cil2cpp::icall::SafeHandle_DangerousAddRef");
+        RegisterICall("System.Runtime.InteropServices.SafeHandle", "DangerousRelease", 0, "cil2cpp::icall::SafeHandle_DangerousRelease");
+        RegisterICall("System.Runtime.InteropServices.SafeHandle", "get_IsClosed", 0, "cil2cpp::icall::SafeHandle_get_IsClosed");
+        RegisterICall("System.Runtime.InteropServices.SafeHandle", "SetHandleAsInvalid", 0, "cil2cpp::icall::SafeHandle_SetHandleAsInvalid");
+        RegisterICall("System.Runtime.InteropServices.SafeHandle", "Dispose", 1, "cil2cpp::icall::SafeHandle_Dispose");
+
+        // ===== WaitHandle =====
+        RegisterICall("System.Threading.WaitHandle", "WaitOneCore", 2, "cil2cpp::icall::WaitHandle_WaitOneCore");
 
         // ===== System.IO =====
         // File operations — intercept at public API level, bypassing BCL FileStream chain

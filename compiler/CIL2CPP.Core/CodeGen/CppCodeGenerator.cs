@@ -121,10 +121,32 @@ public partial class CppCodeGenerator
     /// </summary>
     private readonly List<StubbedMethodInfo> _stubbedMethods = new();
 
-    public CppCodeGenerator(IRModule module, BuildConfiguration? config = null)
+    /// <summary>
+    /// Optional stub analyzer for detailed root-cause analysis (--analyze-stubs).
+    /// When non-null, stubs are tracked with detailed causes and call graph edges.
+    /// </summary>
+    private StubAnalyzer? _stubAnalyzer;
+
+    /// <summary>
+    /// The analysis result after Generate() completes. Non-null only if analysis was enabled.
+    /// </summary>
+    public StubAnalysisResult? AnalysisResult { get; private set; }
+
+    public CppCodeGenerator(IRModule module, BuildConfiguration? config = null, bool analyzeStubs = false)
     {
         _module = module;
         _config = config ?? BuildConfiguration.Release;
+        if (analyzeStubs)
+            _stubAnalyzer = new StubAnalyzer();
+    }
+
+    /// <summary>
+    /// Generate analysis report text. Only valid after Generate() with analyzeStubs=true.
+    /// </summary>
+    public string? GetAnalysisReport()
+    {
+        if (_stubAnalyzer == null || AnalysisResult == null) return null;
+        return _stubAnalyzer.GenerateReport(AnalysisResult, _module.Name);
     }
 
     /// <summary>
@@ -176,6 +198,9 @@ public partial class CppCodeGenerator
             _knownTypeNames.Add(CppNameMapper.MangleTypeName(ilName));
         foreach (var (mangled, _) in GetRuntimeProvidedTypeAliases())
             _knownTypeNames.Add(mangled);
+        // External BCL enum types (emitted as "using X = int32_t" aliases in header)
+        foreach (var (mangled, _) in _module.ExternalEnumTypes)
+            _knownTypeNames.Add(mangled);
 
         // Generate split source files
         output.DataFile = GenerateDataFile();
@@ -190,6 +215,14 @@ public partial class CppCodeGenerator
 
         // Generate CMakeLists.txt
         output.CMakeFile = GenerateCMakeLists(output);
+
+        // Feed IR-level stubs (CLR-internal dependencies) into the analyzer
+        if (_stubAnalyzer != null)
+        {
+            FeedIrStubsToAnalyzer();
+            CollectCallGraphEdges();
+            AnalysisResult = _stubAnalyzer.Analyze();
+        }
 
         // Generate stub diagnostics report
         if (_stubbedMethods.Count > 0)
@@ -448,6 +481,75 @@ public partial class CppCodeGenerator
             method.CppName,
             reason
         ));
+    }
+
+    /// <summary>
+    /// Track a stub with detailed root-cause information for the analyzer.
+    /// Falls back to simple TrackStub when analyzer is not active.
+    /// </summary>
+    private void TrackStubDetailed(IRMethod method, string reason,
+        StubRootCause rootCause, string detail)
+    {
+        TrackStub(method, reason);
+        _stubAnalyzer?.AddStub(
+            method.DeclaringType?.ILFullName ?? "?",
+            method.Name,
+            method.CppName,
+            rootCause,
+            detail
+        );
+    }
+
+    /// <summary>
+    /// Feed IR-level stubs (CLR-internal dependencies detected at IRBuilder Pass 6)
+    /// into the StubAnalyzer. These stubs have IrStubReason set on the IRMethod.
+    /// </summary>
+    private void FeedIrStubsToAnalyzer()
+    {
+        if (_stubAnalyzer == null) return;
+
+        foreach (var type in _module.Types)
+        {
+            foreach (var method in type.Methods)
+            {
+                if (method.IrStubReason != null)
+                {
+                    _stubAnalyzer.AddStub(
+                        type.ILFullName,
+                        method.Name,
+                        method.CppName,
+                        StubRootCause.ClrInternalType,
+                        method.IrStubReason
+                    );
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Collect call graph edges from all method bodies for cascade analysis.
+    /// Each IRCall instruction creates an edge: caller → callee.
+    /// </summary>
+    private void CollectCallGraphEdges()
+    {
+        if (_stubAnalyzer == null) return;
+
+        foreach (var type in _module.Types)
+        {
+            foreach (var method in type.Methods)
+            {
+                foreach (var block in method.BasicBlocks)
+                {
+                    foreach (var instr in block.Instructions)
+                    {
+                        if (instr is IR.IRCall call && !string.IsNullOrEmpty(call.FunctionName))
+                        {
+                            _stubAnalyzer.AddCallEdge(method.CppName, call.FunctionName);
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 

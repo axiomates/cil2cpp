@@ -135,13 +135,29 @@ ICallRegistry 查找 (~243 个映射)
 
 ### RuntimeProvidedTypes（运行时提供的类型）
 
-以下类型的**结构体定义**由 C++ 运行时提供（不从 BCL IL 编译结构体），但方法体仍从 IL 编译：
+以下类型的**结构体定义**由 C++ 运行时提供（不从 BCL IL 编译结构体）。基于第一性原理分析：C++ runtime 直接访问字段 / BCL IL 引用 CLR 内部类型 / 嵌入 C++ 类型。
 
-- **核心类型**: Object, String, Array, Exception, Delegate, MulticastDelegate, Type, Enum
-- **异常类型（24 种）**: Exception, InvalidOperationException, ArgumentException 等
-- **异步类型**: Task, TaskAwaiter, AsyncTaskMethodBuilder（非泛型基类）
-- **反射类型**: MemberInfo, MethodInfo, FieldInfo, ParameterInfo
-- **线程类型**: Thread, CancellationToken, CancellationTokenSource
+**必须 RuntimeProvided（26 个）**：
+- **对象模型**: Object, ValueType, Enum — GC 头 + 类型系统基础
+- **字符串/数组**: String, Array — 变长布局 + GC 互操作
+- **异常**: Exception — setjmp/longjmp 机制
+- **委托**: Delegate, MulticastDelegate — 函数指针调度
+- **类型系统**: Type, RuntimeType — 类型元数据
+- **线程**: Thread — TLS + OS 线程管理
+- **反射 struct ×12**: MemberInfo, MethodInfo, FieldInfo, ParameterInfo + Runtime* 子类 + Assembly — .NET 8 BCL 反射 IL 深度依赖 QCall/MetadataImport，无法 AOT 编译
+- **Task**: 4 个自定义运行时字段 + f_lock (std::mutex*) + MSVC padding 问题
+- **Varargs**: TypedReference, ArgIterator
+
+**短期可迁移为 IL（8 个，Phase IV）**：
+- **IAsyncStateMachine** — 纯接口，无需 struct
+- **CancellationToken** — 只有 f_source 指针
+- **WaitHandle 层级 ×6** — BCL IL 可编译，需注册 OS 原语 ICall
+
+**长期需架构重构（6 个，Phase V）**：
+- **TaskAwaiter / AsyncTaskMethodBuilder / ValueTask / ValueTaskAwaiter / AsyncIteratorMethodBuilder** — 依赖 Task struct 布局
+- **CancellationTokenSource** — 依赖 ITimer + ManualResetEvent 链
+
+详见 [roadmap.md](roadmap.md) Phase IV-V。
 
 ### 编译器内置 intrinsics
 

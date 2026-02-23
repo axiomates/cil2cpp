@@ -60,6 +60,12 @@ public class IRMethod
     /// <summary>Whether the runtime should capture the native error code after the P/Invoke call</summary>
     public bool PInvokeSetLastError { get; set; }
     public string? OperatorName { get; set; }
+
+    /// <summary>
+    /// If this method was stubbed at IR level (e.g., CLR-internal type dependency),
+    /// this contains the detailed reason. Null if not stubbed at IR level.
+    /// </summary>
+    public string? IrStubReason { get; set; }
     public int VTableSlot { get; set; } = -1;
 
     /// <summary>Raw ECMA-335 MethodAttributes value (II.23.1.10)</summary>

@@ -7,6 +7,7 @@
 #include <cil2cpp/gc.h>
 #include <cil2cpp/exception.h>
 #include <cil2cpp/type_info.h>
+#include <cil2cpp/boxing.h>
 #include <cstring>
 
 namespace cil2cpp {
@@ -190,8 +191,9 @@ void* array_get_value(void* raw, Int32 index) {
         auto** data = static_cast<void**>(array_data(arr));
         return data[index];
     }
-    // Value type: would need boxing — FIXME: return nullptr for now
-    return nullptr;
+    // Value type: box the element
+    char* data = static_cast<char*>(array_data(arr));
+    return box_raw(data + index * elem_size, elem_size, arr->element_type);
 }
 
 void array_copy_impl(void* raw_src, Int32 srcIndex, void* raw_dst, Int32 dstIndex, Int32 length) {

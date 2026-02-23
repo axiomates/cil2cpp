@@ -253,10 +253,16 @@ Int32 Thread_get_OptimalMaxSpinWaitsPerSpinIteration() {
     return 70; // Same default as .NET runtime
 }
 
-Object* Thread_get_CurrentThread() {
-    // FIXME: Return a proper Thread object. For now, return nullptr.
-    // BCL code often null-checks this, so returning nullptr is safe enough for basic scenarios.
-    return nullptr;
+void* Thread_get_CurrentThread() {
+    auto* t = thread_get_current();
+    if (!t) {
+        // Lazy-create main thread object on first access
+        t = static_cast<ManagedThread*>(gc::alloc(sizeof(ManagedThread), nullptr));
+        t->managed_id = 1;  // Main thread is always ID 1
+        t->state = 1;       // Running
+        thread_set_current(t);
+    }
+    return reinterpret_cast<Object*>(t);
 }
 
 UInt64 Thread_GetCurrentOSThreadId() {

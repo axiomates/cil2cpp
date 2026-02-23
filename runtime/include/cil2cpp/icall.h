@@ -70,7 +70,7 @@ void Thread_Sleep(Int32 milliseconds);
 void Thread_SpinWait(Int32 iterations);
 Boolean Thread_Yield();
 Int32 Thread_get_OptimalMaxSpinWaitsPerSpinIteration();
-Object* Thread_get_CurrentThread();
+void* Thread_get_CurrentThread();
 UInt64 Thread_GetCurrentOSThreadId();
 
 // System.Runtime.CompilerServices.RuntimeHelpers
