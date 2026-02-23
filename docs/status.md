@@ -250,7 +250,7 @@ System.IO 采用 ICall 拦截模式，在公共 API 层拦截 File/Path/Director
 
 根因：
 1. 11 个 P/Invoke 原生模块被过滤 → 底层调用断裂
-2. 37 个 CLR 内部类型触发 HasClrInternalDependencies → 中间层 stub 化
+2. 27 个 CLR 内部类型触发 HasClrInternalDependencies → 中间层 stub 化
 3. 级联效应：底层 stub → 调用者也 stub
 
 ### 距离最终目标的评估
@@ -262,6 +262,15 @@ System.IO 采用 ICall 拦截模式，在公共 API 层拦截 File/Path/Director
 | 复杂控制台应用 | ~50% | 深度 BCL 依赖链可能被 stub 化 |
 | ASP.NET / Web 项目 | ~5% | 需要 System.Net、HTTP 栈 |
 | 任意 .NET 项目 | ~35-40% | CLR 内部类型依赖是最大瓶颈 |
+
+### 后续计划
+
+详见 [roadmap.md](roadmap.md)，分 5 个 Phase 逐步推进：
+- **Phase I**: 基础打通（CLR 类型消解 + FIXME 修复，stub < 3,000）
+- **Phase II**: 中间层解锁（反射映射 + WaitHandle + System.Native，stub < 1,500）
+- **Phase III**: 功能扩展（FileStream + OpenSSL + SIMD 精细化）
+- **Phase IV**: 网络 & 高级（Socket + HttpClient + JSON + Regex）
+- **Phase V**: 产品化（CI/CD + 性能基准 + 真实项目测试，stub < 500）
 
 ---
 
