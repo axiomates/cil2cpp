@@ -270,6 +270,19 @@ public partial class CppCodeGenerator
         // P/Invoke extern declarations and wrappers
         EmitPInvokeDeclarations(sb, _userTypes, _emittedMethodSignatures);
 
+        // Opaque Span/ReadOnlySpan stub method implementations
+        // These types don't have IRType objects but need trivial get_Length/get_IsEmpty methods.
+        if (_opaqueSpanStubs.Count > 0)
+        {
+            sb.AppendLine("// ===== Opaque Span Stub Method Implementations =====");
+            foreach (var spanType in _opaqueSpanStubs)
+            {
+                sb.AppendLine($"int32_t {spanType}_get_Length({spanType}* __this) {{ return __this->f_length; }}");
+                sb.AppendLine($"bool {spanType}_get_IsEmpty({spanType}* __this) {{ return __this->f_length == 0; }}");
+            }
+            sb.AppendLine();
+        }
+
         return new GeneratedFile
         {
             FileName = $"{_module.Name}_data.cpp",

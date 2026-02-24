@@ -198,13 +198,17 @@ public partial class CppCodeGenerator
         }
         // Phase 3: Emit stub structs for unknown value types referenced as fields or locals
         var unknownValueTypeStubs = new HashSet<string>();
+        var opaqueSpanStubs = new List<string>();
         CollectUnknownValueTypeFields(userTypes, definedTypeNames, unknownValueTypeStubs);
         CollectUnknownValueTypeLocals(userTypes, definedTypeNames, unknownValueTypeStubs);
         foreach (var stubName in unknownValueTypeStubs)
         {
             // Span/ReadOnlySpan opaque stubs need f_reference + f_length for field access
             if (stubName.StartsWith("System_Span_1_") || stubName.StartsWith("System_ReadOnlySpan_1_"))
+            {
                 sb.AppendLine($"struct {stubName} {{ void* f_reference; int32_t f_length; }}; // opaque Span stub");
+                opaqueSpanStubs.Add(stubName);
+            }
             else
                 sb.AppendLine($"struct {stubName} {{ }}; // opaque BCL internal type");
             emittedStructs.Add(stubName);
@@ -305,6 +309,25 @@ public partial class CppCodeGenerator
         // Generate stub declarations for methods called but not declared.
         // This handles methods on RuntimeProvided types and types not in the module.
         GenerateMissingMethodStubs(sb, emittedMethodDecls, userTypes, knownTypeNames);
+
+        // Generate trivial method declarations for opaque Span/ReadOnlySpan stubs.
+        // These types were discovered from BCL code locals/params but aren't full IRType objects.
+        // The methods are trivial (get_Length returns f_length, get_IsEmpty returns f_length==0).
+        _opaqueSpanStubs = opaqueSpanStubs;
+        if (opaqueSpanStubs.Count > 0)
+        {
+            sb.AppendLine("// ===== Opaque Span Stub Methods =====");
+            foreach (var spanType in opaqueSpanStubs)
+            {
+                var getLenSig = $"int32_t {spanType}_get_Length({spanType}* __this)";
+                var isEmptySig = $"bool {spanType}_get_IsEmpty({spanType}* __this)";
+                if (emittedMethodDecls.Add(getLenSig))
+                    sb.AppendLine($"{getLenSig};");
+                if (emittedMethodDecls.Add(isEmptySig))
+                    sb.AppendLine($"{isEmptySig};");
+            }
+            sb.AppendLine();
+        }
 
         // Populate the declared function names and param counts for use by source generation.
         // This allows the source generator to filter out methods that call undeclared functions

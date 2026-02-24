@@ -1,6 +1,6 @@
 # 开发路线图
 
-> 最后更新：2026-02-24
+> 最后更新：2026-02-25
 
 ## 设计原则
 
@@ -86,20 +86,20 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 
 详见上方"RuntimeProvided 类型分类"章节。
 
-### Stub 分布（HelloWorld, 3,809 个）
+### Stub 分布（HelloWorld, 3,385 个 / 24,000+ 可达方法）
 
 | 类别 | 数量 | 占比 | 性质 |
 |------|------|------|------|
-| MissingBody | 2,037 | 53.5% | 无 IL body（abstract/extern/JIT intrinsic）— 多数合理 |
-| KnownBrokenPattern | 604 | 15.9% | 已知无法编译的模式（SIMD 命名空间 + Vector 类型 + undeclared TypeInfo） |
-| RenderedBodyError | 567 | 14.9% | **编译器 bug — IL 有 body 但 C++ 编译失败** |
-| UnknownBodyReferences | 310 | 8.1% | 方法体引用未声明类型 |
-| UndeclaredFunction | 153 | 4.0% | 调用未声明函数（主要：泛型特化类型不在 module 中） |
-| ClrInternalType | 96 | 2.5% | 引用 CLR 内部类型 |
-| UnknownParameterTypes | 42 | 1.1% | 参数类型未声明 |
+| MissingBody | 1,880 | 55.5% | 无 IL body（abstract/extern/JIT intrinsic）— 多数合理 |
+| KnownBrokenPattern | 592 | 17.5% | 已知无法编译的模式（SIMD 305 + 泛型参数 29 + undeclared TypeInfo 等） |
+| RenderedBodyError | 362 | 10.7% | **编译器 bug — IL 有 body 但 C++ 渲染失败**（void* 转换、dot-access 等） |
+| UnknownBodyReferences | 304 | 9.0% | 方法体引用未声明类型（TChar 67 + EventSource 36 + 其他） |
+| UndeclaredFunction | 225 | 6.6% | 调用未声明函数（级联依赖 + 泛型特化缺失） |
+| UnknownParameterTypes | 22 | 0.6% | 参数类型未声明（INumberBase DIM + 少量 Span 特化） |
 
-**可修复的编译器问题**：RenderedBodyError (567) + UnknownBodyReferences (310) + UndeclaredFunction (153) = **1,030 个方法**，占 27.0%。
-**集成测试**：35/35 通过。
+**可修复的编译器问题**：RenderedBodyError (362) + UnknownBodyReferences (304) + UndeclaredFunction (225) = **891 个方法**，占 26.3%。
+**IL 转译率**：~85.9%（3,385 stubs / 24,000+ reachable）。
+**测试**：1,240 C# + 591 C++ + 35 集成 — 全部通过。
 
 ---
 
@@ -120,7 +120,7 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 
 **目标**：提升 IL 转译率——修复阻止 BCL IL 编译的根因
 
-**进展**：4,402 → 3,686 stubs（-716，-16.3%）
+**进展**：4,402 → 3,385 stubs（-1,017，-23.1%）
 
 | # | 任务 | 影响量 | 状态 | 说明 |
 |---|------|--------|------|------|
@@ -137,6 +137,9 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 | III.4 | UndeclaredFunction 修复 | 222→151 | ✅ | 拓宽 calledFunctions 扫描 + 多趟发现 + 诊断 filter 修复（剩余 151 为泛型特化缺失） |
 | III.5 | FilteredGenericNamespaces 放开 | 级联解锁 | 待定 | 逐步放开安全命名空间（System.Diagnostics 等） |
 | III.6 | KnownBrokenPattern 精简 + unbox 修复 | 637→604 | ✅ | 分类完善 + 数组类型修复 + 自递归误判移除 + unbox 泛型尾部下划线修复 |
+| III.7 | 嵌套泛型类型特化 | -26 | ✅ | CreateNestedGenericSpecializations: Dictionary.Entry, List.Enumerator 等 |
+| III.8 | 指针 local 修复 + opaque stubs | -46 | ✅ | HasUnknownBodyReferences 死代码修复 + 值类型 local 的 opaque struct 生成 + 指针 local 前向声明 |
+| III.9 | 嵌套嵌套类型定点迭代 + 参数/返回类型 stubs | -46 | ✅ | CreateNestedGenericSpecializations fixpoint loop + 方法参数和返回类型的 opaque struct 扫描 |
 
 ---
 
@@ -221,12 +224,13 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 Phase I  (基础打通) ✅
 Phase II (中间层解锁) ✅
        ↓
-Phase III (编译器管道质量) ← 当前
+Phase III (编译器管道质量) ← 当前（4,402→3,385, -23.1%）
   III.1 SIMD 标量回退 ✅
   III.2 RenderedBodyErrors 修复 ✅（部分：701→557）
-  III.3 UnknownBodyRef 修复 ✅（506→285）
-  III.4 UndeclaredFunction 修复 ✅（222→151）
-  III.6 BrokenPattern 审查 + unbox 修复 ✅（637→604, RenderedBodyError 584→567）
+  III.3 UnknownBodyRef 修复 ✅（506→304）
+  III.4 UndeclaredFunction 修复 ✅（222→225 — 级联依赖增加）
+  III.6 BrokenPattern 审查 + unbox 修复 ✅（637→592）
+  III.7-9 嵌套泛型 + opaque stubs + fixpoint ✅（-118）
   III.5 命名空间解锁（待定）
        ↓
 Phase IV (可行类型 → IL) 40 → 32 ✅
@@ -248,10 +252,10 @@ Phase VI (反射评估)         Socket / HttpClient / JSON / Regex
 
 | 指标 | 定义 | 当前值 | 短期目标 | 长期目标 |
 |------|------|--------|----------|----------|
-| IL 转译率 | (reachable 方法 - stub 方法) / reachable 方法 | ~84.3% (3686/23453) | >70% ✅ | >90% |
+| IL 转译率 | (reachable 方法 - stub 方法) / reachable 方法 | ~85.9% (3385/24000+) | >70% ✅ | >90% |
 | RuntimeProvided 数 | RuntimeProvidedTypes 集合条目数 | **32** (was 40, -8) | ~32 | ~25（Task 重构后） |
 | CoreRuntime 数 | 方法完全由 C++ 提供的类型数 | 22 | ~22 | ~10（若反射可 IL） |
-| ICall 数 | C++ 实现的内部调用 | ~247 | ~300 | ~500 |
+| ICall 数 | C++ 实现的内部调用 | ~243 | ~300 | ~500 |
 
 ---
 

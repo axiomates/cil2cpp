@@ -166,6 +166,7 @@ def cmd_test(args):
             config=getattr(args, "config", "Release"),
             generator=DEFAULT_GENERATOR,
             keep_temp=False,
+            quick=getattr(args, "quick", False),
         )
         failures += cmd_integration(ns)
 
@@ -431,6 +432,7 @@ def cmd_integration(args):
     config = args.config
     generator = args.generator
     keep_temp = args.keep_temp
+    quick_mode = getattr(args, "quick", False)
 
     cmake_arch = ["-A", "x64"] if "Visual Studio" in generator else []
 
@@ -515,6 +517,10 @@ def cmd_integration(args):
     runner.step("CMake configure", hw_cmake_configure)
     runner.step(f"CMake build ({config})", hw_cmake_build)
     runner.step("Run HelloWorld and verify output", hw_run_verify)
+
+    if quick_mode:
+        header("Results (quick mode — Phase 0+1 only)")
+        return runner.summary()
 
     # ===== Phase 2: Library project =====
     header("Phase 2: Library project (no entry point)")
@@ -1015,6 +1021,7 @@ def main():
                         help="Build config for runtime/integration tests (default: Release)")
     p_test.add_argument("--coverage", action="store_true", help="Generate coverage report")
     p_test.add_argument("--filter", help="dotnet test --filter expression (compiler tests only)")
+    p_test.add_argument("--quick", action="store_true", help="Quick integration: only Phase 0+1 (HelloWorld)")
 
     # install
     p_install = subparsers.add_parser("install", help="Install runtime to prefix")
@@ -1034,6 +1041,7 @@ def main():
     p_integ.add_argument("--config", default="Release", choices=["Debug", "Release"])
     p_integ.add_argument("--generator", default=DEFAULT_GENERATOR, help=f"CMake generator (default: {DEFAULT_GENERATOR})")
     p_integ.add_argument("--keep-temp", action="store_true", help="Keep temp directory")
+    p_integ.add_argument("--quick", action="store_true", help="Quick mode: only run Phase 0+1 (HelloWorld end-to-end, ~30s)")
 
     # setup
     subparsers.add_parser("setup", help="Check prerequisites and install optional dev dependencies")

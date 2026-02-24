@@ -108,6 +108,12 @@ public partial class CppCodeGenerator
     private Dictionary<string, HashSet<int>> _declaredFunctionParamCounts = new();
 
     /// <summary>
+    /// Opaque Span/ReadOnlySpan stub type names that need trivial method implementations
+    /// generated in the source file (get_Length, get_IsEmpty).
+    /// </summary>
+    private List<string> _opaqueSpanStubs = new();
+
+    /// <summary>
     /// Set of type names that have full struct definitions emitted in the header.
     /// Types only forward-declared (no body) are NOT in this set.
     /// Populated during header generation, used by source generation to skip stubs
