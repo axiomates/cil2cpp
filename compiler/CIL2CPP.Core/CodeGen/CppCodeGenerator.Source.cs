@@ -371,6 +371,7 @@ public partial class CppCodeGenerator
                 var renderDetail = _stubAnalyzer != null
                     ? GetRenderedErrorDetail(rendered, method)
                     : "trial render error";
+
                 TrackStubWithAnalysis(method, "rendered body has errors",
                     StubRootCause.RenderedBodyError, renderDetail);
                 GenerateStubForMethod(sb, method);

@@ -2315,7 +2315,8 @@ public partial class CppCodeGenerator
 
         // Pattern: null-pointer dereference for Unsafe.NullRef
         // (((Type*)0))->field = value; — dereferencing null pointer
-        if (s.Contains("((") && s.Contains("*)0))"))
+        // Only flag when followed by member access (-> or .), not just passing null as arg
+        if (s.Contains("*)0))->") || s.Contains("*)0))."))
             return true;
 
         // Pattern: void* dot access — lParam.f_X when lParam is void*
@@ -2490,9 +2491,32 @@ public partial class CppCodeGenerator
         if (s.Contains("ReadUnalignedI4("))
             return true;
 
+        // FIXME: codegen bug — conv.i before Marshal_FreeHGlobal not emitting (intptr_t) cast
+        // Pointer arg passed where intptr_t expected → C2664
+        if (s.Contains("Marshal_FreeHGlobal(") && !s.Contains("Marshal_FreeHGlobal((intptr_t)"))
+        {
+            // Check if arg is a typed pointer temp (not already intptr_t)
+            var idx = s.IndexOf("Marshal_FreeHGlobal(") + "Marshal_FreeHGlobal(".Length;
+            var arg = s[idx..].TrimStart();
+            if (arg.StartsWith("__t") || arg.StartsWith("loc_") || arg.StartsWith("__this"))
+                return true;
+        }
+
         // Pattern: ValueStringBuilder — wrong this pointer (String* instead of VSB*)
+        // Only flag when first arg is NOT a pointer (&loc_, __this, __tN that's VSB*)
         if (s.Contains("ValueStringBuilder_Append") || s.Contains("ValueStringBuilder_Insert"))
-            return true;
+        {
+            var fnEnd = s.LastIndexOf('(');
+            if (fnEnd > 0)
+            {
+                var afterParen = s[(fnEnd + 1)..].TrimStart();
+                // First arg should be &loc_ (stack-allocated VSB) or __this or a pointer temp
+                // If it starts with a string literal, integer, or non-pointer temp, it's wrong
+                if (!afterParen.StartsWith("&") && !afterParen.StartsWith("__this") &&
+                    !afterParen.StartsWith("(") && !afterParen.StartsWith("loc_"))
+                    return true;
+            }
+        }
 
         // Pattern: static_cast<uint64_t>(pointer*) — pointer→int needs reinterpret_cast
         // EventProvider_EncodeObject has many of these (int32_t*, uint64_t*, Guid*, Decimal*, etc.)
