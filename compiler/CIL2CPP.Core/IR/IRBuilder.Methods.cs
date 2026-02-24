@@ -1018,7 +1018,8 @@ public partial class IRBuilder
             case Code.Ldfld:
             {
                 var fieldRef = (FieldReference)instr.Operand!;
-                var obj = stack.PopExprOr("__this");
+                var objEntry = stack.PopEntry();
+                var obj = objEntry.Expr.Length > 0 ? objEntry.Expr : "__this";
                 // volatile. prefix: fence before load
                 if (_pendingVolatile)
                 {
@@ -1028,7 +1029,8 @@ public partial class IRBuilder
                 // Determine if the object is a value (struct) or pointer:
                 // - starts with '&' → pointer to value type → use ->
                 // - declaring type is value type and obj is a local/temp → use .
-                var isValueAccess = IsValueTypeAccess(fieldRef.DeclaringType, obj, method);
+                // Pass stack CppType to detect pointer values not tracked in TempVarTypes
+                var isValueAccess = IsValueTypeAccess(fieldRef.DeclaringType, obj, method, objEntry.CppType);
                 // Cast to declaring type when the stack value might be a base type (Object*)
                 // CIL ldfld specifies the declaring type; C++ needs the correct type for field access
                 string? castToType = null;
@@ -1058,7 +1060,8 @@ public partial class IRBuilder
             {
                 var fieldRef = (FieldReference)instr.Operand!;
                 var val = stack.PopExpr();
-                var obj = stack.PopExprOr("__this");
+                var objEntry = stack.PopEntry();
+                var obj = objEntry.Expr.Length > 0 ? objEntry.Expr : "__this";
                 bool isVolatileStore = _pendingVolatile;
                 _pendingVolatile = false;
                 // Cast value for reference type fields to handle derived→base type mismatch
@@ -1071,7 +1074,8 @@ public partial class IRBuilder
                     // Use (void*) intermediate to handle flat struct model (no C++ inheritance)
                     val = $"({fieldTypeCpp})(void*){val}";
                 }
-                var isValueAccess = IsValueTypeAccess(fieldRef.DeclaringType, obj, method);
+                // Pass stack CppType to detect pointer values not tracked in TempVarTypes
+                var isValueAccess = IsValueTypeAccess(fieldRef.DeclaringType, obj, method, objEntry.CppType);
                 string? stCastToType = null;
                 if (!isValueAccess && !fieldRef.DeclaringType.IsValueType && obj != "__this")
                 {
@@ -1198,7 +1202,7 @@ public partial class IRBuilder
                     ResultVar = tmp,
                     ResultTypeCpp = fldaPtrType,
                 });
-                stack.Push(tmp);
+                stack.Push(new StackEntry(tmp, fldaPtrType));
                 break;
             }
 

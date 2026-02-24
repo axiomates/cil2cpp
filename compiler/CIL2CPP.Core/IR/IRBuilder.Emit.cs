@@ -2376,13 +2376,18 @@ public partial class IRBuilder
     /// Determines whether a field access should use '.' (value) vs '->' (pointer).
     /// Value type locals accessed directly (ldloc) use '.'; addresses (&amp;loc) use '->'.
     /// </summary>
-    private static bool IsValueTypeAccess(TypeReference declaringType, string objExpr, IRMethod method)
+    private static bool IsValueTypeAccess(TypeReference declaringType, string objExpr, IRMethod method, string? stackCppType = null)
     {
         // Address-of expressions are always pointers
         if (objExpr.StartsWith("&")) return false;
 
         // __this is always a pointer
         if (objExpr == "__this") return false;
+
+        // If the stack tracked this value as a pointer type, always use -> accessor.
+        // This catches cases where TempVarTypes is empty (during IR building)
+        // or where the pointer type was set by IRRawCpp/cast/unbox instructions.
+        if (stackCppType != null && stackCppType.EndsWith("*")) return false;
 
         // Check if the declaring type is a value type
         var resolved = declaringType.Resolve();
