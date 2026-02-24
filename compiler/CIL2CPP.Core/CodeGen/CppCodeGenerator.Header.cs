@@ -1888,13 +1888,37 @@ public partial class CppCodeGenerator
 
         // Method-level: DIM implementations in System.Numerics interfaces
         // These use raw CIL arithmetic/comparison opcodes (add, sub, cgt, clt, etc.)
-        // which translate to C++ operators (+, -, >, <) that struct types don't support
+        // which translate to C++ operators (+, -, >, <) that struct types don't support.
+        // Only flag methods ON interface types (not concrete types like Byte/Int32 that
+        // implement the interfaces — those have scalar aliases with valid C++ operators).
         if (method.DeclaringType?.ILFullName != null)
         {
             var declType = method.DeclaringType.ILFullName;
-            // All System.Numerics.I* interfaces have potential operator issues
             if (declType.StartsWith("System.Numerics.I") && method.DeclaringType.IsInterface)
-                return true;
+            {
+                // Allow concrete specializations where all type params are scalar-aliased primitives
+                // (e.g., IAdditionOperators<Byte,Byte,Byte>.op_Addition — uint8_t + uint8_t is valid C++)
+                bool allPrimitive = method.Parameters.All(p =>
+                    CppNameMapper.IsPrimitive(p.ILTypeName ?? "") ||
+                    p.CppTypeName is "bool" or "void" ||
+                    p.CppTypeName.EndsWith("*"));
+                if (!allPrimitive)
+                    return true;
+                // Also check return type — non-scalar returns indicate complex DIM logic
+                if (!string.IsNullOrEmpty(method.ReturnTypeCpp) &&
+                    method.ReturnTypeCpp != "void" && method.ReturnTypeCpp != "bool" &&
+                    !method.ReturnTypeCpp.EndsWith("*") &&
+                    method.ReturnTypeCpp != "int32_t" && method.ReturnTypeCpp != "uint8_t" &&
+                    method.ReturnTypeCpp != "int8_t" && method.ReturnTypeCpp != "int16_t" &&
+                    method.ReturnTypeCpp != "uint16_t" && method.ReturnTypeCpp != "uint32_t" &&
+                    method.ReturnTypeCpp != "int64_t" && method.ReturnTypeCpp != "uint64_t" &&
+                    method.ReturnTypeCpp != "float" && method.ReturnTypeCpp != "double" &&
+                    method.ReturnTypeCpp != "char16_t" && method.ReturnTypeCpp != "intptr_t" &&
+                    method.ReturnTypeCpp != "uintptr_t")
+                {
+                    return true;
+                }
+            }
         }
 
         // Method-level: System.Reflection.Pointer methods use void* as intptr_t/uintptr_t
