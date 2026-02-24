@@ -2456,8 +2456,11 @@ public partial class CppCodeGenerator
 
         // Pattern: interface type assignment (class* → interface*)
         // CultureInfo* → IFormatProvider*, etc.
-        if (s.Contains("= (System_IFormatProvider*)") && !s.Contains("(void*)"))
-            return true;
+        // NOTE: C-style cast works fine in MSVC for unrelated pointer types in our flat model.
+        // Removed: was causing false positives. The cast is safe because both sides are
+        // flat structs with compatible memory layout (all inherit __type_info + __sync_block).
+        // if (s.Contains("= (System_IFormatProvider*)") && !s.Contains("(void*)"))
+        //     return true;
 
         // Pattern: null-pointer dereference for Unsafe.NullRef
         // (((Type*)0))->field = value; — dereferencing null pointer
