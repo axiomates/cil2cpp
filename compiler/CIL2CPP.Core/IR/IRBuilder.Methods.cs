@@ -1026,6 +1026,32 @@ public partial class IRBuilder
                     block.Instructions.Add(new IRRawCpp { Code = "std::atomic_thread_fence(std::memory_order_seq_cst);" });
                     _pendingVolatile = false;
                 }
+
+                // Scalar alias interception: types like IntPtr/UIntPtr/Boolean/Char are aliased
+                // to C++ scalars (intptr_t, bool, char16_t). IL accesses m_value field but C++
+                // scalars have no fields — emit direct value read instead.
+                if (fieldRef.Name == "m_value" && CppNameMapper.IsPrimitive(fieldRef.DeclaringType.FullName))
+                {
+                    var tmp = $"__t{tempCounter++}";
+                    var lfFieldTypeName = ResolveTypeRefOperand(fieldRef.FieldType);
+                    var lfFieldTypeCpp = CppNameMapper.GetCppTypeForDecl(lfFieldTypeName);
+                    string readExpr;
+                    if (obj.StartsWith("&"))
+                        readExpr = obj[1..]; // &loc_N → loc_N (value of the local)
+                    else if (obj == "__this" || (objEntry.CppType?.EndsWith("*") == true))
+                        readExpr = $"*{obj}"; // pointer → dereference
+                    else
+                        readExpr = obj; // value → use directly
+                    block.Instructions.Add(new IRRawCpp
+                    {
+                        Code = $"{tmp} = {readExpr};",
+                        ResultVar = tmp,
+                        ResultTypeCpp = lfFieldTypeCpp,
+                    });
+                    stack.Push(new StackEntry(tmp, lfFieldTypeCpp));
+                    break;
+                }
+
                 // Determine if the object is a value (struct) or pointer:
                 // - starts with '&' → pointer to value type → use ->
                 // - declaring type is value type and obj is a local/temp → use .
@@ -1040,19 +1066,19 @@ public partial class IRBuilder
                     if (declTypeName != "cil2cpp::Object" && declTypeName != "cil2cpp::String")
                         castToType = declTypeName;
                 }
-                var tmp = $"__t{tempCounter++}";
-                var lfFieldTypeName = ResolveTypeRefOperand(fieldRef.FieldType);
-                var lfFieldTypeCpp = CppNameMapper.GetCppTypeForDecl(lfFieldTypeName);
+                var tmp2 = $"__t{tempCounter++}";
+                var lfFieldTypeName2 = ResolveTypeRefOperand(fieldRef.FieldType);
+                var lfFieldTypeCpp2 = CppNameMapper.GetCppTypeForDecl(lfFieldTypeName2);
                 block.Instructions.Add(new IRFieldAccess
                 {
                     ObjectExpr = obj,
                     FieldCppName = CppNameMapper.MangleFieldName(fieldRef.Name),
-                    ResultVar = tmp,
+                    ResultVar = tmp2,
                     IsValueAccess = isValueAccess,
                     CastToType = castToType,
-                    ResultTypeCpp = lfFieldTypeCpp,
+                    ResultTypeCpp = lfFieldTypeCpp2,
                 });
-                stack.Push(new StackEntry(tmp, lfFieldTypeCpp));
+                stack.Push(new StackEntry(tmp2, lfFieldTypeCpp2));
                 break;
             }
 
@@ -1064,6 +1090,23 @@ public partial class IRBuilder
                 var obj = objEntry.Expr.Length > 0 ? objEntry.Expr : "__this";
                 bool isVolatileStore = _pendingVolatile;
                 _pendingVolatile = false;
+
+                // Scalar alias interception: stfld m_value on primitive alias → direct write
+                if (fieldRef.Name == "m_value" && CppNameMapper.IsPrimitive(fieldRef.DeclaringType.FullName))
+                {
+                    string writeExpr;
+                    if (obj.StartsWith("&"))
+                        writeExpr = $"{obj[1..]} = {val};"; // &loc_N → loc_N = val
+                    else if (obj == "__this" || (objEntry.CppType?.EndsWith("*") == true))
+                        writeExpr = $"*{obj} = {val};"; // pointer → *ptr = val
+                    else
+                        writeExpr = $"{obj} = {val};"; // value → direct assign
+                    block.Instructions.Add(new IRRawCpp { Code = writeExpr });
+                    if (isVolatileStore)
+                        block.Instructions.Add(new IRRawCpp { Code = "std::atomic_thread_fence(std::memory_order_seq_cst);" });
+                    break;
+                }
+
                 // Cast value for reference type fields to handle derived→base type mismatch
                 // (flat struct model: no C++ inheritance, so all pointer casts must be explicit)
                 var fieldTypeName = ResolveTypeRefOperand(fieldRef.FieldType);
@@ -1183,7 +1226,32 @@ public partial class IRBuilder
             {
                 var fieldRef = (FieldReference)instr.Operand!;
                 var obj = stack.PopExprOr("__this");
-                var tmp = $"__t{tempCounter++}";
+
+                // Scalar alias interception: ldflda m_value on primitive alias → address of the value itself
+                if (fieldRef.Name == "m_value" && CppNameMapper.IsPrimitive(fieldRef.DeclaringType.FullName))
+                {
+                    var tmp = $"__t{tempCounter++}";
+                    var fldaTypeName = ResolveTypeRefOperand(fieldRef.FieldType);
+                    var fldaTypeCpp = CppNameMapper.GetCppTypeForDecl(fldaTypeName);
+                    var fldaPtrType = fldaTypeCpp.EndsWith("*") ? fldaTypeCpp : fldaTypeCpp + "*";
+                    string addrExpr;
+                    if (obj.StartsWith("&"))
+                        addrExpr = obj; // already an address
+                    else if (obj == "__this")
+                        addrExpr = "__this"; // already a pointer to the scalar
+                    else
+                        addrExpr = $"&{obj}"; // take address of value
+                    block.Instructions.Add(new IRRawCpp
+                    {
+                        Code = $"{tmp} = ({fldaPtrType}){addrExpr};",
+                        ResultVar = tmp,
+                        ResultTypeCpp = fldaPtrType,
+                    });
+                    stack.Push(new StackEntry(tmp, fldaPtrType));
+                    break;
+                }
+
+                var tmp3 = $"__t{tempCounter++}";
                 var fieldName = CppNameMapper.MangleFieldName(fieldRef.Name);
                 // When obj is an address (e.g. &loc_0 from ldloca), use . accessor
                 // to avoid &&loc_0->field which MSVC tokenizes as rvalue-ref &&
@@ -1192,17 +1260,17 @@ public partial class IRBuilder
                     expr = $"&({obj[1..]}.{fieldName})";
                 else
                     expr = $"&{obj}->{fieldName}";
-                var fldaTypeName = ResolveTypeRefOperand(fieldRef.FieldType);
-                var fldaTypeCpp = CppNameMapper.GetCppTypeForDecl(fldaTypeName);
+                var fldaTypeName2 = ResolveTypeRefOperand(fieldRef.FieldType);
+                var fldaTypeCpp2 = CppNameMapper.GetCppTypeForDecl(fldaTypeName2);
                 // ldflda pushes a pointer to the field
-                var fldaPtrType = fldaTypeCpp.EndsWith("*") ? fldaTypeCpp : fldaTypeCpp + "*";
+                var fldaPtrType2 = fldaTypeCpp2.EndsWith("*") ? fldaTypeCpp2 : fldaTypeCpp2 + "*";
                 block.Instructions.Add(new IRRawCpp
                 {
-                    Code = $"{tmp} = {expr};",
-                    ResultVar = tmp,
-                    ResultTypeCpp = fldaPtrType,
+                    Code = $"{tmp3} = {expr};",
+                    ResultVar = tmp3,
+                    ResultTypeCpp = fldaPtrType2,
                 });
-                stack.Push(new StackEntry(tmp, fldaPtrType));
+                stack.Push(new StackEntry(tmp3, fldaPtrType2));
                 break;
             }
 

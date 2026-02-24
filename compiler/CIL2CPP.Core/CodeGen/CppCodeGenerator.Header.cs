@@ -2251,9 +2251,27 @@ public partial class CppCodeGenerator
             return true;
 
         // Pattern: ->f_m_value on primitive types (System_Single = float, System_Double = double)
-        // These are aliased to C++ primitives and don't have the f_m_value field
-        if (s.Contains("->f_m_value"))
-            return true;
+        // These are aliased to C++ primitives and don't have the f_m_value field.
+        // Note: Non-primitive types (RuntimeMethodHandle, RuntimeFieldHandle) legitimately have
+        // f_m_value as a struct field — only flag when the type name is a known scalar alias.
+        // With the IR-level scalar alias interception (ldfld/stfld m_value → direct value access),
+        // this check is now a safety net for any missed cases.
+        if (s.Contains("->f_m_value") && !s.Contains("System_I") && !s.Contains("IRuntimeMethodInfo"))
+        {
+            // Check if the expression before ->f_m_value is a known scalar alias type
+            var fmIdx = s.IndexOf("->f_m_value");
+            if (fmIdx > 0)
+            {
+                // Only flag for __this->f_m_value in methods on primitive types
+                // (non-primitives have valid f_m_value struct fields)
+                var prefix = s[..fmIdx].TrimStart();
+                if (prefix.EndsWith("__this") || prefix.Contains("intptr_t") || prefix.Contains("uintptr_t")
+                    || prefix.Contains("int32_t") || prefix.Contains("int64_t") || prefix.Contains("float")
+                    || prefix.Contains("double") || prefix.Contains("bool") || prefix.Contains("char16_t")
+                    || prefix.Contains("uint8_t") || prefix.Contains("int8_t"))
+                    return true;
+            }
+        }
 
         // Pattern: Interop calls with wrong pointer types in BCL IL bodies
         // BCL code passes typed pointers (uint32_t*, uint64_t*, struct*) where uint8_t* expected
