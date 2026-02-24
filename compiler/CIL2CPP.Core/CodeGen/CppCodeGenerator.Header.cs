@@ -1496,6 +1496,56 @@ public partial class CppCodeGenerator
         if (rendered.Contains("gc_allocate_uninitialized_array") && rendered.Contains("CompareExchange"))
             return true;
 
+        // Body-level check: field access via parameter or ldelema on forward-declared-only types.
+        // The ldelema fix (StackEntry type) correctly uses -> for pointer access, but if the
+        // element type is only forward-declared, MSVC gives C2027 "undefined type".
+        if (knownTypes != null)
+        {
+            // Check method parameters: if param type is not fully defined but body accesses fields
+            foreach (var param in method.Parameters)
+            {
+                if (param.Name == "__this") continue;
+                var paramType = param.CppTypeName.TrimEnd('*').Trim();
+                if (paramType.Length == 0 || paramType.StartsWith("cil2cpp::") || knownTypes.Contains(paramType))
+                    continue;
+                // Only flag if body accesses fields on this specific parameter
+                if (rendered.Contains($"{param.Name})->f_") || rendered.Contains($"{param.Name}->f_"))
+                    return true;
+            }
+            // Check ldelema result: auto __tN = (Type*)array_get_element_ptr(...); __tN->f_
+            if (rendered.Contains("array_get_element_ptr"))
+            {
+                var undefinedTemps = new HashSet<string>();
+                foreach (var line in rendered.AsSpan().EnumerateLines())
+                {
+                    var s = line.ToString().TrimStart();
+                    if (!s.StartsWith("auto __t") || !s.Contains("*)cil2cpp::array_get_element_ptr("))
+                        continue;
+                    var castStart = s.IndexOf("= (") + 3;
+                    var castEnd = s.IndexOf("*)cil2cpp::array_get_element_ptr(");
+                    if (castStart <= 3 || castEnd <= castStart) continue;
+                    var castType = s[castStart..castEnd].Trim();
+                    if (castType.Length > 0 && !castType.StartsWith("cil2cpp::") && !knownTypes.Contains(castType))
+                    {
+                        var varEnd = s.IndexOf(' ', 5);
+                        if (varEnd > 5) undefinedTemps.Add(s[5..varEnd]);
+                    }
+                }
+                if (undefinedTemps.Count > 0)
+                {
+                    foreach (var line in rendered.AsSpan().EnumerateLines())
+                    {
+                        var s = line.ToString().TrimStart();
+                        foreach (var t in undefinedTemps)
+                        {
+                            if (s.Contains($"{t}->f_") || s.Contains($"{t}.f_"))
+                                return true;
+                        }
+                    }
+                }
+            }
+        }
+
         // Body-level check: undeclared Action<Object>.Invoke delegate specialization
         if (rendered.Contains("Action_1_System_Object_Invoke"))
             return true;

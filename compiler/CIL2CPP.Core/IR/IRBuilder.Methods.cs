@@ -1699,13 +1699,14 @@ public partial class IRBuilder
                 var index = stack.PopExpr();
                 var arr = stack.PopExprOr("nullptr");
                 var tmp = $"__t{tempCounter++}";
+                var ptrType = elemType + "*";
                 block.Instructions.Add(new IRRawCpp
                 {
-                    Code = $"auto {tmp} = ({elemType}*)cil2cpp::array_get_element_ptr({arr}, {index});",
+                    Code = $"auto {tmp} = ({ptrType})cil2cpp::array_get_element_ptr({arr}, {index});",
                     ResultVar = tmp,
-                    ResultTypeCpp = elemType + "*",
+                    ResultTypeCpp = ptrType,
                 });
-                stack.Push(tmp);
+                stack.Push(new StackEntry(tmp, ptrType));
                 break;
             }
 

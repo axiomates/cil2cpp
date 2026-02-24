@@ -108,6 +108,13 @@ inline void volatile_write(T* location, std::type_identity_t<T> value) {
     std::atomic_thread_fence(std::memory_order_release);
     *location = value;
 }
+// MSVC workaround: volatile_write(T**, nullptr) fails to convert nullptr_t to T*
+// through std::type_identity_t when T is a pointer type. Provide explicit overload.
+template<typename T>
+inline void volatile_write(T** location, std::nullptr_t) {
+    std::atomic_thread_fence(std::memory_order_release);
+    *location = nullptr;
+}
 
 /**
  * Initialize the CIL2CPP runtime.
