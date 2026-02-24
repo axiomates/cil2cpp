@@ -501,19 +501,36 @@ public class IRDelegateInvoke : IRInstruction
     {
         var del = $"((cil2cpp::Delegate*){DelegateExpr})";
 
+        // Cast arguments to expected parameter types.
+        // In our flat struct model (no C++ inheritance), pointer casts between
+        // generated types require explicit (void*) intermediate casts.
+        var castedArgs = new List<string>();
+        for (int i = 0; i < Arguments.Count; i++)
+        {
+            if (i < ParamTypes.Count && ParamTypes[i].EndsWith("*")
+                && !ParamTypes[i].StartsWith("cil2cpp::"))
+            {
+                castedArgs.Add($"({ParamTypes[i]})(void*){Arguments[i]}");
+            }
+            else
+            {
+                castedArgs.Add(Arguments[i]);
+            }
+        }
+
         // Instance call: target is first arg, then user args
         var instanceParamTypes = new List<string> { "cil2cpp::Object*" };
         instanceParamTypes.AddRange(ParamTypes);
         var instanceFnPtr = $"{ReturnTypeCpp}(*)({string.Join(", ", instanceParamTypes)})";
         var instanceArgs = new List<string> { $"{del}->target" };
-        instanceArgs.AddRange(Arguments);
+        instanceArgs.AddRange(castedArgs);
         var instanceCall = $"(({instanceFnPtr})({del}->method_ptr))({string.Join(", ", instanceArgs)})";
 
         // Static call: no target arg
         var staticFnPtr = ParamTypes.Count > 0
             ? $"{ReturnTypeCpp}(*)({string.Join(", ", ParamTypes)})"
             : $"{ReturnTypeCpp}(*)()";
-        var staticCall = $"(({staticFnPtr})({del}->method_ptr))({string.Join(", ", Arguments)})";
+        var staticCall = $"(({staticFnPtr})({del}->method_ptr))({string.Join(", ", castedArgs)})";
 
         if (ResultVar != null)
         {

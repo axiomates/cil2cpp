@@ -837,10 +837,25 @@ public partial class CppCodeGenerator
         if (HasUnresolvedGenericParamInCode(renderedCpp, knownTypeNames))
             return true;
 
-        // Check for unresolved function pointer types: method<Type>_ptr patterns
+        // Check for unresolved function pointer types: methodXxx_ptr(...) patterns
         // These are IL delegate/function-pointer types that weren't resolved to proper C++ syntax.
-        if (renderedCpp.Contains("method") && renderedCpp.Contains("_ptr"))
-            return true;
+        // The pattern is "method" followed immediately by an uppercase letter (a type name),
+        // e.g. "methodSystem_Object_ptr(System_Void_ptr)*".
+        // Must NOT match delegate field access like "->method_ptr" where "method" is a field name.
+        {
+            int mIdx = 0;
+            while ((mIdx = renderedCpp.IndexOf("method", mIdx)) >= 0)
+            {
+                var afterMethod = mIdx + 6;
+                if (afterMethod < renderedCpp.Length && char.IsUpper(renderedCpp[afterMethod]))
+                {
+                    // Check that this isn't preceded by '>' or '.' (field access)
+                    if (mIdx == 0 || (renderedCpp[mIdx - 1] != '>' && renderedCpp[mIdx - 1] != '.'))
+                        return true;
+                }
+                mIdx = afterMethod;
+            }
+        }
 
         return false;
     }
