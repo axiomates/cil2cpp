@@ -2062,11 +2062,21 @@ public partial class CppCodeGenerator
             {
                 var s = line.ToString().TrimStart();
                 // Track auto __tN = (uintptr_t/intptr_t)(expr)
+                // Only flag when expr looks like a pointer expression (contains * for pointer cast/deref).
+                // Skip when expr is a plain integer temp (__tN) — just an int→uintptr widening cast.
                 if (s.StartsWith("auto ") && (s.Contains("= (uintptr_t)(") || s.Contains("= (intptr_t)(")))
                 {
-                    var spIdx = s.IndexOf(' ', 5);
-                    if (spIdx > 5)
-                        uintptrTemps.Add(s[5..spIdx]);
+                    var castType = s.Contains("= (uintptr_t)(") ? "= (uintptr_t)(" : "= (intptr_t)(";
+                    var exprStart = s.IndexOf(castType) + castType.Length;
+                    var exprEnd = s.LastIndexOf(')');
+                    var expr = exprEnd > exprStart ? s[exprStart..exprEnd] : "";
+                    // Only add if expr looks like a pointer (cast, deref, or address-of)
+                    if (expr.Contains('*') || expr.Contains("->") || expr.StartsWith("&"))
+                    {
+                        var spIdx = s.IndexOf(' ', 5);
+                        if (spIdx > 5)
+                            uintptrTemps.Add(s[5..spIdx]);
+                    }
                 }
                 // Track void* loc_N declarations
                 if (s.StartsWith("void* ") && s.Contains(" = "))
