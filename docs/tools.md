@@ -53,6 +53,8 @@ cmake --install build --config Debug --prefix C:/cil2cpp
 
 > BoehmGC 通过 FetchContent 自动下载，缓存在 `runtime/.deps/`，删 `build/` 不重新下载。
 
+> **捷径**：步骤 2-4 可用 `python tools/dev.py compile HelloWorld` 一步完成。
+
 ### 步骤 2：生成 C++ 代码
 
 ```bash
@@ -141,6 +143,9 @@ python tools/dev.py test --coverage        # 测试 + 覆盖率 HTML 报告
 python tools/dev.py test --compiler --filter ILOpcode  # 筛选测试
 python tools/dev.py install                # 安装 runtime (Debug + Release)
 python tools/dev.py codegen HelloWorld     # 快速代码生成测试
+python tools/dev.py compile HelloWorld     # 一步编译：codegen → cmake → build
+python tools/dev.py compile HelloWorld --run  # 编译并运行
+python tools/dev.py compile -i myapp.csproj   # 编译任意项目
 python tools/dev.py integration            # 集成测试
 python tools/dev.py setup                  # 检查前置 + 安装可选依赖
 ```

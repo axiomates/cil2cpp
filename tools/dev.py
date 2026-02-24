@@ -374,6 +374,83 @@ def cmd_codegen(args):
     return 0
 
 
+# ===== cmd_compile =====
+
+def cmd_compile(args):
+    """One-step compile: .csproj → C++ code → native executable."""
+    # 1. Resolve input .csproj (same logic as cmd_codegen)
+    if args.sample:
+        name = args.sample
+        if not name.endswith(".csproj") and "/" not in name and "\\" not in name:
+            csproj = TESTPROJECTS_DIR / name / f"{name}.csproj"
+        else:
+            csproj = Path(name)
+    elif args.input:
+        csproj = Path(args.input)
+    else:
+        error("Specify a sample name or -i <path.csproj>")
+        return 1
+
+    if not csproj.exists():
+        error(f"Not found: {csproj}")
+        return 1
+
+    output = Path(args.output)
+    config = args.config
+    prefix = args.prefix
+    project_name = csproj.stem
+
+    # 2. Codegen
+    header(f"Step 1/3: Codegen ({project_name}, {config})")
+    try:
+        run(["dotnet", "run", "--project", str(CLI_PROJECT), "--",
+             "codegen", "-i", str(csproj), "-o", str(output), "-c", config])
+    except subprocess.CalledProcessError:
+        error("Codegen failed")
+        return 1
+
+    # 3. CMake configure
+    build_dir = output / "build"
+    header("Step 2/3: CMake configure")
+    try:
+        cmake_cmd = ["cmake", "-B", str(build_dir), "-S", str(output),
+                     "-G", DEFAULT_GENERATOR,
+                     f"-DCMAKE_PREFIX_PATH={prefix}"]
+        if IS_WINDOWS and "Visual Studio" in DEFAULT_GENERATOR:
+            cmake_cmd += ["-A", "x64"]
+        run(cmake_cmd)
+    except subprocess.CalledProcessError:
+        error("CMake configure failed")
+        return 1
+
+    # 4. CMake build
+    header(f"Step 3/3: CMake build ({config})")
+    try:
+        run(["cmake", "--build", str(build_dir), "--config", config])
+    except subprocess.CalledProcessError:
+        error("CMake build failed")
+        return 1
+
+    # 5. Find executable
+    exe = _exe_path(build_dir, config, project_name)
+    if exe.exists():
+        success(f"\nExecutable: {exe}")
+    else:
+        # Library project — look for .lib/.a
+        warn(f"\nNo executable found (library project?)")
+        success(f"Build output: {build_dir / config}")
+
+    # 6. Optional: run
+    if getattr(args, "run_exe", False) and exe.exists():
+        header(f"Running {project_name}")
+        result = subprocess.run([str(exe)], check=False)
+        if result.returncode != 0:
+            error(f"Process exited with code {result.returncode}")
+            return result.returncode
+
+    return 0
+
+
 # ===== cmd_integration =====
 
 class TestRunner:
@@ -961,6 +1038,7 @@ def interactive_menu():
         ("Integration tests",     "full pipeline test",      lambda: cmd_integration(argparse.Namespace(prefix=DEFAULT_PREFIX, config="Release", generator=DEFAULT_GENERATOR, keep_temp=False))),
         ("Install runtime",       f"cmake --install → {DEFAULT_PREFIX}", lambda: cmd_install(argparse.Namespace(prefix=DEFAULT_PREFIX, config="both"))),
         ("Codegen HelloWorld",     "quick codegen test",      lambda: cmd_codegen(argparse.Namespace(sample="HelloWorld", input=None, output="output", config="Release"))),
+        ("Compile HelloWorld",     "codegen → cmake → build", lambda: cmd_compile(argparse.Namespace(sample="HelloWorld", input=None, output="output", config="Release", prefix=DEFAULT_PREFIX, run_exe=False))),
         ("Setup dev environment",  "check & install tools",   lambda: cmd_setup(argparse.Namespace())),
     ]
 
@@ -1035,6 +1113,15 @@ def main():
     p_codegen.add_argument("-o", "--output", default="output", help="Output directory")
     p_codegen.add_argument("-c", "--config", default="Release", choices=["Debug", "Release"])
 
+    # compile
+    p_compile = subparsers.add_parser("compile", help="One-step compile: .csproj → native executable")
+    p_compile.add_argument("sample", nargs="?", help="Sample name or .csproj path")
+    p_compile.add_argument("-i", "--input", help="Input .csproj path")
+    p_compile.add_argument("-o", "--output", default="output", help="Output directory (default: output)")
+    p_compile.add_argument("-c", "--config", default="Release", choices=["Debug", "Release"])
+    p_compile.add_argument("--prefix", default=DEFAULT_PREFIX, help=f"Runtime prefix (default: {DEFAULT_PREFIX})")
+    p_compile.add_argument("--run", dest="run_exe", action="store_true", help="Run the executable after building")
+
     # integration
     p_integ = subparsers.add_parser("integration", help="Run integration tests")
     p_integ.add_argument("--prefix", default=DEFAULT_PREFIX, help=f"Runtime prefix (default: {DEFAULT_PREFIX})")
@@ -1058,6 +1145,8 @@ def main():
         return cmd_install(args)
     elif args.command == "codegen":
         return cmd_codegen(args)
+    elif args.command == "compile":
+        return cmd_compile(args)
     elif args.command == "integration":
         return cmd_integration(args)
     elif args.command == "setup":

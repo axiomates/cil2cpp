@@ -1,6 +1,6 @@
 # 开发路线图
 
-> 最后更新：2026-02-24
+> 最后更新：2026-02-25
 
 ## 设计原则
 
@@ -86,21 +86,35 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 
 详见上方"RuntimeProvided 类型分类"章节。
 
-### Stub 分布（HelloWorld, 3,067 个 / 24,051 可达方法）
+### Stub 分布（HelloWorld, 2,925 个 / 25,444 总方法，88.5% 翻译率）
+
+> codegen stub 数。`--analyze-stubs` 额外报告 96 个 ClrInternalType（QCall/MetadataImport），总计 3,021。
 
 | 类别 | 数量 | 占比 | 性质 |
 |------|------|------|------|
-| MissingBody | 1,762 | 57.5% | 无 IL body（abstract/extern/JIT intrinsic）— 多数合理 |
-| KnownBrokenPattern | 563 | 18.4% | 已知无法编译的模式（SIMD 305+83 + undeclared TypeInfo 等） |
-| RenderedBodyError | 292 | 9.5% | **编译器 bug — IL 有 body 但 C++ 渲染失败**（void* 转换、dot-access 等） |
-| UndeclaredFunction | 224 | 7.3% | 调用未声明函数（级联依赖 + 泛型特化缺失） |
-| UnknownBodyReferences | 204 | 6.7% | 方法体引用未声明类型 |
-| ClrInternalType | 96 | 3.1% | CLR 内部类型依赖（QCallTypeHandle/MetadataImport 等） |
-| UnknownParameterTypes | 22 | 0.7% | 参数类型未声明（INumberBase DIM + 少量 Span 特化） |
+| MissingBody | 1,748 | 59.7% | 无 IL body（abstract/extern/JIT intrinsic）— 多数合理 |
+| KnownBrokenPattern | 521 | 17.8% | SIMD 345 + SIMD-heavy BCL 83 + undeclared TypeInfo 86 + 其他 7 |
+| UndeclaredFunction | 349 | 11.9% | 泛型特化缺失（IRBuilder 未创建特化类型）+ 级联 |
+| RenderedBodyError | 249 | 8.5% | **编译器 bug — IL 有 body 但 C++ 渲染失败** |
+| UnknownBodyReferences | 36 | 1.2% | 方法体引用未声明类型（多为嵌套泛型） |
+| UnknownParameterTypes | 22 | 0.8% | 参数类型未声明（INumberBase DIM + 少量 Span 特化） |
 
-**可修复的编译器问题**：RenderedBodyError (292) + UnknownBodyReferences (204) + UndeclaredFunction (224) = **720 个方法**，占 23.5%。
-**IL 转译率**：~87.3%（3,067 stubs / 24,051 reachable）。
+**可修复的编译器问题**：RenderedBodyError (249) + UndeclaredFunction (349) + KnownBrokenPattern.undeclaredTypeInfo (86) + UnknownBodyRefs (36) = **~720 个方法**，占总 stub 的 24.6%。修复后预计 stub < 2,200，翻译率 > 91%。
+
+**不可修复或暂缓**：MissingBody (1,748) 中大部分是 abstract/extern/CLR intrinsic；SIMD (428) 需要 intrinsics 支持或运行时回退。
+
+**IL 转译率**：88.5%（22,519 compiled / 25,444 total）。
 **测试**：1,240 C# + 591 C++ + 35 集成 — 全部通过。
+
+### 距离最终目标
+
+| 项目类型 | 预估完成度 | 说明 |
+|---------|-----------|------|
+| 简单控制台应用 | ~90% | Phase III 大幅提升，基本 BCL 链通畅 |
+| 类库项目 | ~80% | 集合、泛型、异步、反射都可用 |
+| 复杂控制台应用 | ~60% | 深层 BCL 依赖（ConcurrentQueue、Regex 等）仍有 stub |
+| ASP.NET / Web 项目 | ~5% | 需要 System.Net、HTTP 栈 |
+| 任意 .NET 项目 | ~45% | CLR 内部类型依赖 + 深层 BCL 链是最大瓶颈 |
 
 ---
 
@@ -121,7 +135,7 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 
 **目标**：提升 IL 转译率——修复阻止 BCL IL 编译的根因
 
-**进展**：4,402 → 3,067 stubs（-1,335，-30.3%）
+**进展**：4,402 → 2,925 stubs（-1,477，-33.5%），IL 转译率 88.5%
 
 | # | 任务 | 影响量 | 状态 | 说明 |
 |---|------|--------|------|------|
@@ -144,6 +158,7 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 | III.10 | 泛型特化泛型参数解析 + stub gate 修正 | -84 | ✅ | ResolveRemainingGenericParams 扩展到全指令类型 + func ptr 误判修正 + delegate arg 类型转换 |
 | III.11 | Scalar alias + Numerics DIM + TimeZoneInfo | -80 | ✅ | m_value 标量拦截 + 原始 Numerics DIM 放行 + TimeZoneInfo 误判移除 |
 | III.12 | 泛型特化 mangled 名解析 | -49 | ✅ | arity-prefixed mangled name resolution（_N_TKey → _N_System_String），29 unresolved generic → 0 |
+| III.13 | transitive generic discovery | +1319 compiled | ✅ | fixpoint loop 发现 207 新类型 1393 方法，gate hardening 5 pattern（Object*→f_、MdArray**、MdArray*→typed、FINALLY without END_TRY、delegate invoke Object*→typed） |
 
 ---
 
@@ -176,7 +191,13 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 | V.4 | ValueTask / ValueTaskAwaiter / AsyncIteratorMethodBuilder → IL | 依赖 Task 链 |
 | V.5 | CancellationTokenSource → IL | 依赖 ITimer + ManualResetEvent + Registrations 链 |
 
-**注意**：此 Phase 需要大量架构重构，可能与功能扩展 Phase 并行推进。
+**Phase V.1 前置条件**：无——纯分析工作，可立即开始。
+
+**Phase V.2-V.5 前置条件**：
+- RenderedBodyError < 150（当前 249，可通过 3 轮修复达成：delegate invoke -29 + pointer param -37 + void* cast -52 = -118 → 131）
+- delegate invoke 修复（Task continuation 使用 delegate）
+- ConcurrentQueue try-finally 修复（Task 依赖 ConcurrentQueue）
+- 这些全部是编译器代码生成质量问题，不涉及 System.Native 或网络栈
 
 ## Phase VI: 反射模型优化（评估）
 
@@ -228,20 +249,17 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 Phase I  (基础打通) ✅
 Phase II (中间层解锁) ✅
        ↓
-Phase III (编译器管道质量) ← 当前（4,402→3,385, -23.1%）
-  III.1 SIMD 标量回退 ✅
-  III.2 RenderedBodyErrors 修复 ✅（部分：701→557）
-  III.3 UnknownBodyRef 修复 ✅（506→304）
-  III.4 UndeclaredFunction 修复 ✅（222→225 — 级联依赖增加）
-  III.6 BrokenPattern 审查 + unbox 修复 ✅（637→592）
-  III.7-9 嵌套泛型 + opaque stubs + fixpoint ✅（-118）
-  III.5 命名空间解锁（待定）
+Phase III (编译器管道质量) ← 当前（4,402→2,925, -33.5%, 88.5%）
+  III.1-12 ✅
+  III.13 transitive generic discovery ✅
+  下一步: RenderedBodyError 修复 + 嵌套泛型特化补全
        ↓
 Phase IV (可行类型 → IL) 40 → 32 ✅
   IAsyncStateMachine ✅ + CancellationToken ✅ + WaitHandle×6 ✅
        ↓                    ↓（可并行）
 Phase V (异步架构重构)    Phase VII (功能扩展)
-  Task 及依赖类型 → IL      System.Native / zlib / OpenSSL
+  V.1 评估 ← 可立即开始     System.Native / zlib / OpenSSL
+  V.2-V.5 ← 需 RenderedBodyError < 150
   32 → 25（长期）              ↓
        ↓                  Phase VIII (网络 & 高级)
 Phase VI (反射评估)         Socket / HttpClient / JSON / Regex
@@ -256,7 +274,7 @@ Phase VI (反射评估)         Socket / HttpClient / JSON / Regex
 
 | 指标 | 定义 | 当前值 | 短期目标 | 长期目标 |
 |------|------|--------|----------|----------|
-| IL 转译率 | (reachable 方法 - stub 方法) / reachable 方法 | ~85.9% (3385/24000+) | >70% ✅ | >90% |
+| IL 转译率 | (reachable 方法 - stub 方法) / reachable 方法 | **88.5%** (2925/25444) | >70% ✅ | >90% |
 | RuntimeProvided 数 | RuntimeProvidedTypes 集合条目数 | **32** (was 40, -8) | ~32 | ~25（Task 重构后） |
 | CoreRuntime 数 | 方法完全由 C++ 提供的类型数 | 22 | ~22 | ~10（若反射可 IL） |
 | ICall 数 | C++ 实现的内部调用 | ~243 | ~300 | ~500 |

@@ -1,21 +1,12 @@
-# 项目现状与限制
+# CIL2CPP 能力清单
 
-> 最后更新：2026-02-19
+> 最后更新：2026-02-25
+>
+> 本文档描述 CIL2CPP 当前**能做什么**。开发计划与进度见 [roadmap.md](roadmap.md)。
 
-## 阶段完成状态
+## 概览
 
-| 阶段 | 内容 | 状态 |
-|------|------|------|
-| Phase 1-3 | 数组、异常、装箱、枚举、VTable、接口、泛型、委托、事件、Lambda/闭包 | ✅ |
-| Phase 4 | 跨程序集引用、树摇、程序集解析、deps.json 解析 | ✅ |
-| Phase 4.5-4.6 | ldind/stind、checked 算术、struct 拷贝、Nullable\<T\>、ValueTuple、record 合成 | ✅ |
-| Phase 5a | async/await 真正并发（线程池、continuation、Task 组合器） | ✅ |
-| Phase 6 | 增量 GC、BCL 接口代理、异常过滤器、特性、多维数组、stackalloc、unsafe/fixed、P/Invoke、DIM、Span\<T\>、泛型协变/逆变、LINQ/yield、集合、CancellationToken | ✅ |
-| Phase 7 | 反射 (GetMethods/GetFields/Invoke)、IAsyncEnumerable、System.IO | ✅ |
-| Phase 8 | 100% IL 操作码覆盖、自定义异常类型、特性复杂参数、P/Invoke 结构体编组+回调委托、泛型约束验证、嵌套 try/catch/finally 修复 | ✅ |
-| Phase A-E | 关键正确性修复、Math icall、死代码清理、Stub 诊断、argc/argv + Environment | ✅ |
-| Phase F | ICU 集成（Unicode 字符分类、大小写转换、区域感知排序） | ✅ |
-| Phase G | System.IO（File 12 + Path 8 + Directory 2 个 ICall）、P/Invoke SetLastError + Marshal | ✅ |
+CIL2CPP 是 C# → C++ AOT 编译器（类似 Unity IL2CPP）。当前支持完整 C# 语法（100% IL 操作码覆盖），BCL 从 IL 编译（Unity IL2CPP 架构），~243 个 ICall 条目。1,240 C# + 591 C++ + 35 集成测试全部通过。
 
 ## 核心指标
 
@@ -23,7 +14,7 @@
 |------|------|
 | IL 操作码覆盖率 | **100%**（全部 ~230 种 ECMA-335 操作码） |
 | ICallRegistry 条目 | **~243 个**（涵盖 30+ 类别） |
-| C# 编译器测试 | **~1240 个**（xUnit） |
+| C# 编译器测试 | **~1,240 个**（xUnit） |
 | C++ 运行时测试 | **591 个**（Google Test，18 个测试文件） |
 | 端到端集成测试 | **35 个**（9 个阶段） |
 | 运行时头文件 | **29 个** |
@@ -225,52 +216,13 @@ System.IO 采用 ICall 拦截模式，在公共 API 层拦截 File/Path/Director
 
 ## 已知限制
 
-### BCL 依赖链限制
-
 | 限制 | 说明 |
 |------|------|
-| CLR 内部类型依赖 | BCL IL 引用 RuntimeType / QCallTypeHandle 等 CLR 内部类型 → 方法体自动 stub 化 |
+| CLR 内部类型依赖 | BCL IL 引用 QCallTypeHandle / MetadataImport 等 CLR 内部类型 → 方法体自动 stub 化 |
 | BCL 深层依赖链 | 中间层被 stub 化 → 上层方法不可用 |
 | System.Net | 网络层底层 icall 未实现 |
 | Regex 内部 | 依赖 CLR 内部 RegexCache 等 |
-| SIMD | 需要平台特定 intrinsics |
-
-### Stub 分析（HelloWorld 基准）
-
-当前 HelloWorld 编译生成 **~6,639 个 stub 方法**，按原因分类：
-
-| 原因 | 数量 | 说明 |
-|------|------|------|
-| missing method body | 3,272 | 声明但无实现（级联效应） |
-| rendered body has errors | 894 | 试渲染 C++ 发现错误 |
-| unknown parameter types | 834 | 参数类型未知 |
-| unknown body references | 809 | 方法体引用未知类型 |
-| undeclared function calls | 576 | 调用未声明函数 |
-| known broken patterns | 254 | JIT intrinsics 等 |
-
-根因：
-1. 11 个 P/Invoke 原生模块被过滤 → 底层调用断裂
-2. 27 个 CLR 内部类型触发 HasClrInternalDependencies → 中间层 stub 化
-3. 级联效应：底层 stub → 调用者也 stub
-
-### 距离最终目标的评估
-
-| 项目类型 | 预估完成度 | 说明 |
-|---------|-----------|------|
-| 简单控制台应用 | ~80% | 基本 I/O、集合、LINQ、async/await、反射 |
-| 类库项目 | ~70% | 纯算法/数据处理类库 |
-| 复杂控制台应用 | ~50% | 深度 BCL 依赖链可能被 stub 化 |
-| ASP.NET / Web 项目 | ~5% | 需要 System.Net、HTTP 栈 |
-| 任意 .NET 项目 | ~35-40% | CLR 内部类型依赖是最大瓶颈 |
-
-### 后续计划
-
-详见 [roadmap.md](roadmap.md)，分 5 个 Phase 逐步推进：
-- **Phase I**: 基础打通（CLR 类型消解 + FIXME 修复，stub < 3,000）
-- **Phase II**: 中间层解锁（反射映射 + WaitHandle + System.Native，stub < 1,500）
-- **Phase III**: 功能扩展（FileStream + OpenSSL + SIMD 精细化）
-- **Phase IV**: 网络 & 高级（Socket + HttpClient + JSON + Regex）
-- **Phase V**: 产品化（CI/CD + 性能基准 + 真实项目测试，stub < 500）
+| SIMD | 需要平台特定 intrinsics，当前使用标量回退 struct |
 
 ---
 
