@@ -558,20 +558,15 @@ public partial class CppCodeGenerator
             }
         }
 
-        // Check locals for pointer-to-unknown type (not caught by simple baseType check above)
+        // Check locals for unresolved generic params in pointer form (TChar*, T1*)
         foreach (var local in method.Locals)
         {
             if (!local.CppTypeName.EndsWith("*")) continue;
             var baseType = local.CppTypeName.TrimEnd('*').Trim();
             if (string.IsNullOrEmpty(baseType) || baseType.StartsWith("cil2cpp::") ||
                 IsCppPrimitiveType(baseType)) continue;
-            if (!_knownTypeNames.Contains(baseType))
-            {
-                if (!baseType.Contains('_'))
-                    return $"unresolved generic param pointer local '{baseType}'";
-                if (!(_headerForwardDeclared?.Contains(baseType) == true))
-                    return $"unknown pointer local type '{baseType}'";
-            }
+            if (!_knownTypeNames.Contains(baseType) && !baseType.Contains('_'))
+                return $"unresolved generic param pointer local '{baseType}'";
         }
 
         return "unknown body reference";

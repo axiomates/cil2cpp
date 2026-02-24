@@ -81,6 +81,15 @@ public partial class CppCodeGenerator
                 foreach (var typeName in sigTypes)
                     TryForwardDeclare(sb, typeName, forwardDeclared, aliasedTypes, enumTypes);
             }
+            // Collect type names from local variables (pointer locals need forward decl)
+            foreach (var method in type.Methods)
+            {
+                foreach (var local in method.Locals)
+                {
+                    if (local.CppTypeName.EndsWith("*"))
+                        TryForwardDeclare(sb, local.CppTypeName, forwardDeclared, aliasedTypes, enumTypes);
+                }
+            }
             // Collect type names from field types (for pointer fields that aren't sanitized to void*)
             foreach (var field in type.Fields)
                 TryForwardDeclare(sb, CppNameMapper.GetCppTypeForDecl(field.FieldTypeName), forwardDeclared, aliasedTypes, enumTypes);
@@ -187,9 +196,10 @@ public partial class CppCodeGenerator
             sb.AppendLine();
             emittedStructs.Add(type.CppName);
         }
-        // Phase 3: Emit stub structs for unknown value types referenced as fields
+        // Phase 3: Emit stub structs for unknown value types referenced as fields or locals
         var unknownValueTypeStubs = new HashSet<string>();
         CollectUnknownValueTypeFields(userTypes, definedTypeNames, unknownValueTypeStubs);
+        CollectUnknownValueTypeLocals(userTypes, definedTypeNames, unknownValueTypeStubs);
         foreach (var stubName in unknownValueTypeStubs)
         {
             // Span/ReadOnlySpan opaque stubs need f_reference + f_length for field access
@@ -515,6 +525,37 @@ public partial class CppCodeGenerator
         }
     }
 
+    /// <summary>
+    /// Scan method locals for unknown non-pointer value types and add opaque stubs.
+    /// This catches value type locals like Span&lt;T&gt;, EventData, ListBuilder&lt;T&gt;, etc.
+    /// that don't have struct definitions in the IR module.
+    /// </summary>
+    private static void CollectUnknownValueTypeLocals(
+        List<IRType> types, HashSet<string> definedTypes, HashSet<string> stubs)
+    {
+        foreach (var type in types)
+        {
+            if (type.IsEnum || type.IsDelegate) continue;
+            foreach (var method in type.Methods)
+            {
+                foreach (var local in method.Locals)
+                {
+                    var cppType = local.CppTypeName;
+                    if (string.IsNullOrEmpty(cppType)) continue;
+                    if (cppType.EndsWith("*")) continue; // pointer types only need forward decl
+                    var rawType = cppType.Trim();
+                    if (rawType.Length == 0 || rawType.StartsWith("cil2cpp::") ||
+                        IsCppPrimitiveType(rawType)) continue;
+                    if (definedTypes.Contains(rawType)) continue;
+                    if (!IsValidCppIdentifier(rawType)) continue;
+                    // Skip unresolved generic params (TChar, T1, etc.) — no underscore
+                    if (!rawType.Contains('_')) continue;
+                    stubs.Add(rawType);
+                }
+            }
+        }
+    }
+
     private static void CheckFieldForStub(string fieldTypeName, HashSet<string> definedTypes, HashSet<string> stubs)
     {
         var cppType = CppNameMapper.GetCppTypeForDecl(fieldTypeName);
@@ -678,21 +719,15 @@ public partial class CppCodeGenerator
             if (baseType.StartsWith("cil2cpp::") || IsCppPrimitiveType(baseType)) continue;
             if (!knownTypeNames.Contains(baseType))
             {
-                // For pointer types, the base type must still be either known or a valid forward-declared type.
-                // Unresolved generic params (TChar, T1, TKey, etc.) are NOT known types.
+                // For pointer types, only reject unresolved generic params (TChar, T1, TKey, etc.)
+                // which are single-word identifiers without namespace underscores.
+                // Other pointer locals reference real BCL/user types that may not have struct
+                // definitions but only need forward declarations (which are auto-emitted).
                 if (local.CppTypeName.EndsWith("*"))
                 {
-                    // Pointer to unknown type is only OK if the base type looks like a
-                    // regular user/BCL type (contains underscore from namespace mangling)
-                    // AND the type is actually known (has a forward declaration).
-                    // Raw single-word types like TChar, T1, TKey are unresolved generic params.
                     if (!baseType.Contains('_'))
-                        return true;
-                    // Also reject if the type is not in knownTypeNames
-                    // (no forward declaration → C2065 undeclared identifier)
-                    if (!knownTypeNames.Contains(baseType))
-                        return true;
-                    continue; // pointer to known type — forward decl suffices
+                        return true; // unresolved generic param — reject
+                    continue; // pointer to real type — forward decl or void* suffices
                 }
                 return true; // non-pointer value type must be fully defined
             }
