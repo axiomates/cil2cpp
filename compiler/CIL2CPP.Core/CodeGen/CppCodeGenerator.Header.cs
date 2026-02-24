@@ -760,7 +760,9 @@ public partial class CppCodeGenerator
                 if (local.CppTypeName.EndsWith("*"))
                 {
                     if (!baseType.Contains('_'))
+                    {
                         return true; // unresolved generic param — reject
+                    }
                     continue; // pointer to real type — forward decl or void* suffices
                 }
                 return true; // non-pointer value type must be fully defined

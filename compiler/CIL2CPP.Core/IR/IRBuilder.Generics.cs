@@ -374,11 +374,12 @@ public partial class IRBuilder
                 foreach (var localDef in cecilMethod.Body.Variables)
                 {
                     var localTypeName = ResolveGenericTypeName(localDef.VariableType, typeParamMap);
+                    var resolvedCpp = ResolveTypeForDecl(localTypeName);
                     irMethod.Locals.Add(new IRLocal
                     {
                         Index = localDef.Index,
                         CppName = $"loc_{localDef.Index}",
-                        CppTypeName = ResolveTypeForDecl(localTypeName),
+                        CppTypeName = resolvedCpp,
                     });
                 }
             }
@@ -856,6 +857,13 @@ public partial class IRBuilder
             return ResolveGenericTypeName(ptr.ElementType, typeParamMap) + "*";
         }
 
+        // Handle PinnedType — locals with 'pinned' modifier (from fixed/stackalloc)
+        // PinnedType is a GC annotation only; it doesn't change the C++ type representation.
+        if (typeRef is PinnedType pnt)
+        {
+            return ResolveGenericTypeName(pnt.ElementType, typeParamMap);
+        }
+
         // Handle RequiredModifierType (modreq) — common with Unsafe methods
         if (typeRef is RequiredModifierType rmt)
         {
@@ -867,6 +875,14 @@ public partial class IRBuilder
         {
             return ResolveGenericTypeName(omt.ElementType, typeParamMap);
         }
+
+        // Fallback: Cecil sometimes represents method-level generic parameters as plain
+        // TypeReference (not GenericParameter) in local variable signatures.
+        // Check if the type's Name or FullName matches a key in the map.
+        if (typeParamMap.TryGetValue(typeRef.Name, out var fallbackResolved))
+            return fallbackResolved;
+        if (typeParamMap.TryGetValue(typeRef.FullName, out var fallbackResolved2))
+            return fallbackResolved2;
 
         return typeRef.FullName;
     }
