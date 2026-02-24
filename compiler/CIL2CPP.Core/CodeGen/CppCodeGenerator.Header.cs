@@ -1399,6 +1399,42 @@ public partial class CppCodeGenerator
         if (rendered.Contains("CancellationToken") && rendered.Contains("->f_message = (cil2cpp::String*)"))
             return true;
 
+        // Body-level check: method takes ReadOnlySpan parameters but body calls compareinfo ICalls
+        // that expect String* — the ReadOnlySpan struct can't convert to String*
+        if (rendered.Contains("compareinfo_") && method.Parameters.Any(p =>
+                p.CppTypeName.Contains("ReadOnlySpan_1_")))
+            return true;
+
+        // Body-level check: char16_t* pointer division — IL subtracts char16_t* pointers then
+        // divides by 2, but in C++ pointer subtraction already gives element count.
+        // Only flag when a temp assigned (char16_t*) is directly divided — NOT when
+        // the division is on an intptr_t/ptrdiff_t from byte-level subtraction.
+        {
+            var char16Temps = new HashSet<string>();
+            foreach (var ln in rendered.AsSpan().EnumerateLines())
+            {
+                var s = ln.ToString().TrimStart();
+                // auto __tN = (char16_t*)expr;
+                if (s.StartsWith("auto ") && s.Contains("= (char16_t*)"))
+                {
+                    var varEnd = s.IndexOf(' ', 5);
+                    if (varEnd > 5) char16Temps.Add(s[5..varEnd]);
+                }
+            }
+            if (char16Temps.Count > 0)
+            {
+                foreach (var ln in rendered.AsSpan().EnumerateLines())
+                {
+                    var s = ln.ToString().TrimStart();
+                    foreach (var t in char16Temps)
+                    {
+                        if (s.Contains($"{t} / 2"))
+                            return true;
+                    }
+                }
+            }
+        }
+
         // Check each line for known error patterns
         foreach (var line in rendered.AsSpan().EnumerateLines())
         {
@@ -2510,6 +2546,41 @@ public partial class CppCodeGenerator
             return true;
 
         // Dictionary generic type mismatch handled at method level (RuntimeResourceSet_GetObject)
+
+        // Pattern: (void*) applied to negated primitive — boxing a negated double/float
+        // e.g., (cil2cpp::Object*)(void*)-value where value is double/float → C2440
+        if (s.Contains("(void*)-") && !s.Contains("(void*)->"))
+            return true;
+
+        // Pattern: void* parameter arrow-access — lParam->f_X when lParam is void*
+        // void* cannot be dereferenced (existing check only covers dot-access lParam.f_)
+        if (s.Contains("lParam->f_"))
+            return true;
+
+        // Pattern: ReadOnlySpan passed to compareinfo ICall expecting String*
+        // BCL calls compareinfo with ReadOnlySpan<char> but our ICall takes cil2cpp::String*
+        if (s.Contains("ReadOnlySpan_1_System_Char") && s.Contains("compareinfo_"))
+            return true;
+
+        // Pattern: char16_t pointer division — pointer arithmetic error
+        // e.g., (char16_t*) ... / 2 → C2296 pointer division is invalid
+        if (s.Contains("char16_t*") && s.Contains("/ 2"))
+            return true;
+
+        // Pattern: ExceptionHandlingClauseOptions_TypeInfo — undeclared reflection enum TypeInfo
+        if (s.Contains("ExceptionHandlingClauseOptions_TypeInfo"))
+            return true;
+
+        // Pattern: RuntimeMethodInfo/RuntimeConstructorInfo __ctor — undeclared constructor calls
+        // These runtime-provided types don't have generated constructors
+        if (s.Contains("RuntimeMethodInfo__ctor(") || s.Contains("RuntimeConstructorInfo__ctor("))
+            return true;
+
+        // Pattern: Interlocked.CompareExchange<IntPtr> called with pointer argument
+        // BCL IL passes conv.i (ptr→intptr_t) but codegen may pass raw pointer
+        if (s.Contains("Interlocked_CompareExchange__System_IntPtr") &&
+            s.Contains("overlapped", StringComparison.OrdinalIgnoreCase))
+            return true;
 
         return false;
     }

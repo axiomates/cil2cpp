@@ -113,4 +113,4 @@ Boolean tcs_try_set_canceled(Task* task);
 
 // Mangled-name aliases for generated code
 using System_Threading_CancellationTokenSource = cil2cpp::CancellationTokenSource;
-// Phase IV.2: CancellationToken removed from runtime — now compiled from BCL IL
+using System_Threading_CancellationToken = cil2cpp::CancellationToken;
