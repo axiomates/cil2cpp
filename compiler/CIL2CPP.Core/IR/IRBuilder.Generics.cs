@@ -969,6 +969,140 @@ public partial class IRBuilder
         {
             _activeTypeParamMap = null;
         }
+
+        // Post-process: resolve any remaining unresolved generic parameter names
+        // in ResultTypeCpp fields of emitted instructions. Some code paths in the
+        // stack simulation don't go through _activeTypeParamMap resolution.
+        ResolveRemainingGenericParams(irMethod, typeParamMap);
+    }
+
+    /// <summary>
+    /// Post-process method instructions to resolve unresolved generic parameter names
+    /// (e.g., TChar, TKey) in ResultTypeCpp fields and IRRawCpp code strings.
+    /// </summary>
+    private static void ResolveRemainingGenericParams(IRMethod irMethod, Dictionary<string, string> typeParamMap)
+    {
+        // Build C++ name resolution map: "TChar" → "char16_t", etc.
+        Dictionary<string, string>? cppResolvedMap = null;
+        foreach (var (paramName, ilName) in typeParamMap)
+        {
+            var cppName = CppNameMapper.GetCppTypeName(ilName);
+            if (cppName != paramName)
+            {
+                cppResolvedMap ??= new Dictionary<string, string>();
+                cppResolvedMap[paramName] = cppName;
+            }
+        }
+        if (cppResolvedMap == null) return; // nothing to resolve
+
+        // Resolve generic params in TempVarTypes (cross-scope variable pre-declarations)
+        var tempKeys = irMethod.TempVarTypes.Keys.ToList();
+        foreach (var key in tempKeys)
+        {
+            var resolved = ResolveGenericParamInCppType(irMethod.TempVarTypes[key], typeParamMap);
+            if (resolved != irMethod.TempVarTypes[key])
+                irMethod.TempVarTypes[key] = resolved;
+        }
+
+        foreach (var block in irMethod.BasicBlocks)
+        {
+            foreach (var instr in block.Instructions)
+            {
+                // Resolve ResultTypeCpp on all instruction types that have it
+                string? resultType = instr switch
+                {
+                    IRRawCpp raw => raw.ResultTypeCpp,
+                    IRCall call => call.ResultTypeCpp,
+                    IRFieldAccess fa => fa.ResultTypeCpp,
+                    IRStaticFieldAccess sfa => sfa.ResultTypeCpp,
+                    _ => null,
+                };
+
+                if (resultType != null)
+                {
+                    var resolved = ResolveGenericParamInCppType(resultType, typeParamMap);
+                    if (resolved != resultType)
+                    {
+                        switch (instr)
+                        {
+                            case IRRawCpp raw: raw.ResultTypeCpp = resolved; break;
+                            case IRCall call: call.ResultTypeCpp = resolved; break;
+                            case IRFieldAccess fa: fa.ResultTypeCpp = resolved; break;
+                            case IRStaticFieldAccess sfa: sfa.ResultTypeCpp = resolved; break;
+                        }
+                    }
+                }
+
+                // Also resolve generic params in IRRawCpp.Code strings
+                // (e.g., "TChar __t7 = static_cast<TChar>(45);" → "char16_t __t7 = ...")
+                if (instr is IRRawCpp rawInstr)
+                {
+                    var code = rawInstr.Code;
+                    foreach (var (paramName, cppName) in cppResolvedMap)
+                    {
+                        if (code.Contains(paramName))
+                            code = ReplaceWholeWord(code, paramName, cppName);
+                    }
+                    if (code != rawInstr.Code)
+                        rawInstr.Code = code;
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Replace whole-word occurrences of a name in a string.
+    /// Avoids replacing "TChar" inside "TCharSet" by checking word boundaries.
+    /// </summary>
+    private static string ReplaceWholeWord(string text, string oldWord, string newWord)
+    {
+        var result = new System.Text.StringBuilder(text.Length);
+        int i = 0;
+        while (i < text.Length)
+        {
+            int idx = text.IndexOf(oldWord, i, StringComparison.Ordinal);
+            if (idx < 0)
+            {
+                result.Append(text, i, text.Length - i);
+                break;
+            }
+            // Check word boundary before
+            if (idx > 0 && (char.IsLetterOrDigit(text[idx - 1]) || text[idx - 1] == '_'))
+            {
+                result.Append(text, i, idx + 1 - i);
+                i = idx + 1;
+                continue;
+            }
+            // Check word boundary after
+            var afterIdx = idx + oldWord.Length;
+            if (afterIdx < text.Length && (char.IsLetterOrDigit(text[afterIdx]) || text[afterIdx] == '_'))
+            {
+                result.Append(text, i, afterIdx - i);
+                i = afterIdx;
+                continue;
+            }
+            // Whole word match — replace
+            result.Append(text, i, idx - i);
+            result.Append(newWord);
+            i = afterIdx;
+        }
+        return result.ToString();
+    }
+
+    /// <summary>
+    /// Resolve generic parameter names in a C++ type string.
+    /// Handles patterns like "TChar", "TChar*", "TKey**".
+    /// </summary>
+    private static string ResolveGenericParamInCppType(string cppType, Dictionary<string, string> typeParamMap)
+    {
+        var baseType = cppType.TrimEnd('*');
+        if (typeParamMap.TryGetValue(baseType, out var resolved))
+        {
+            var resolvedCpp = CppNameMapper.GetCppTypeName(resolved);
+            var suffix = cppType[baseType.Length..]; // preserve pointer suffix
+            return resolvedCpp + suffix;
+        }
+        return cppType;
     }
 
     /// <summary>

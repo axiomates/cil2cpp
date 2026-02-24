@@ -262,12 +262,16 @@ public partial class CppCodeGenerator
             }
         }
 
-        // Build set of all known C++ type names (defined + forward-declared + stubs)
+        // Build set of all known C++ type names (defined + forward-declared + stubs + all module types).
+        // Function calls only need declarations (not struct definitions), so include all types
+        // from the IR module — their methods will be declared via GenerateMissingMethodStubs.
         var knownTypeNames = new HashSet<string>(definedTypeNames);
         foreach (var name in forwardDeclared)
             knownTypeNames.Add(name);
         foreach (var name in unknownValueTypeStubs)
             knownTypeNames.Add(name);
+        foreach (var type in _module.Types)
+            knownTypeNames.Add(type.CppName);
 
         // Method declarations (skip delegates and InternalCall methods)
         // RuntimeProvided types: only emit methods that have compiled IL bodies
@@ -841,9 +845,9 @@ public partial class CppCodeGenerator
 
         // Check for unresolved function pointer types: methodXxx_ptr(...) patterns
         // These are IL delegate/function-pointer types that weren't resolved to proper C++ syntax.
-        // The pattern is "method" followed immediately by an uppercase letter (a type name),
-        // e.g. "methodSystem_Object_ptr(System_Void_ptr)*".
-        // Must NOT match delegate field access like "->method_ptr" where "method" is a field name.
+        // Real IL func ptr types look like "methodSystem_Object_ptr(System_Void_ptr)*" —
+        // they always have underscores in the type name part after "method".
+        // Must NOT match variable names like "methodFlags", "methodHandleValue" (camelCase, no underscore).
         {
             int mIdx = 0;
             while ((mIdx = renderedCpp.IndexOf("method", mIdx)) >= 0)
@@ -851,8 +855,20 @@ public partial class CppCodeGenerator
                 var afterMethod = mIdx + 6;
                 if (afterMethod < renderedCpp.Length && char.IsUpper(renderedCpp[afterMethod]))
                 {
-                    // Check that this isn't preceded by '>' or '.' (field access)
-                    if (mIdx == 0 || (renderedCpp[mIdx - 1] != '>' && renderedCpp[mIdx - 1] != '.'))
+                    // Check that this isn't preceded by alphanumeric/underscore (word boundary)
+                    if (mIdx > 0 && (char.IsLetterOrDigit(renderedCpp[mIdx - 1]) || renderedCpp[mIdx - 1] == '_'))
+                    {
+                        mIdx = afterMethod;
+                        continue;
+                    }
+                    // Extract the token after "method" until non-alphanumeric/underscore
+                    var tokenEnd = afterMethod;
+                    while (tokenEnd < renderedCpp.Length && (char.IsLetterOrDigit(renderedCpp[tokenEnd]) || renderedCpp[tokenEnd] == '_'))
+                        tokenEnd++;
+                    var token = renderedCpp[afterMethod..tokenEnd];
+                    // Real IL func ptr types always contain underscores (mangled type names)
+                    // Variable names like "Flags", "HandleValue", "Context" don't
+                    if (token.Contains('_'))
                         return true;
                 }
                 mIdx = afterMethod;
@@ -947,10 +963,15 @@ public partial class CppCodeGenerator
             if (functionName[i] != '_') continue;
             var prefix = functionName[..i];
             if (string.IsNullOrEmpty(prefix)) continue;
-            // Check if this prefix is a known type (with or without trailing underscore)
+            // Check if this prefix is a known type (with or without trailing underscore).
+            // Generic type CppNames end with '_' from '>' mangling (e.g., EqualityComparer_1_System_Int32_),
+            // but function name prefixes don't include that trailing '_'.
             if (knownTypeNames.Contains(prefix))
                 return false; // found known type — call is valid
             if (prefix.EndsWith("_") && knownTypeNames.Contains(prefix.TrimEnd('_')))
+                return false;
+            // Also check with trailing underscore added (generic type name mangling)
+            if (knownTypeNames.Contains(prefix + "_"))
                 return false;
         }
         // No known type prefix found — this targets an unknown type

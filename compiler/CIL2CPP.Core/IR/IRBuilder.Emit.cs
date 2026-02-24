@@ -145,9 +145,9 @@ public partial class IRBuilder
     private static string? ClassifyPointerType(string cppTypeName)
     {
         if (!cppTypeName.EndsWith("*")) return null;
-        var baseType = cppTypeName[..^1].TrimEnd();
-        // Skip byte-sized element types — their arithmetic is already correct
-        if (baseType is "uint8_t" or "int8_t") return null;
+        // All pointer types need special arithmetic handling to ensure:
+        // 1. Correct byte-level offset (via uint8_t* cast for multi-byte elements)
+        // 2. Proper result type tracking (even for byte-sized elements like uint8_t*)
         return cppTypeName;
     }
 
