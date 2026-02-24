@@ -2412,18 +2412,16 @@ public partial class CppCodeGenerator
             return true;
         if (s.Contains("GetLocaleInfoFromLCType(") && char.IsDigit(s[s.IndexOf("GetLocaleInfoFromLCType(") + 24]))
             return true;
-        // Pattern: ValueListBuilder method called with wrong this (temp var instead of pointer)
-        if (s.Contains("ValueListBuilder_1_"))
+        // Pattern: ValueListBuilder method called with wrong this (literal instead of pointer)
+        // Skip function definition lines (ending with '{').
+        if (s.Contains("ValueListBuilder_1_") && !s.TrimEnd().EndsWith("{"))
         {
             var fnEnd = s.LastIndexOf('(');
             if (fnEnd > 0)
             {
                 var afterParen = s[(fnEnd + 1)..].TrimStart();
-                // First arg should be a pointer (&loc_, __this, etc.)
-                // If it starts with __t (temp, likely ReadOnlySpan), it's wrong
-                if (afterParen.StartsWith("__t") && !afterParen.StartsWith("__this"))
-                    return true;
-                if (afterParen.Length > 0 && char.IsDigit(afterParen[0]))
+                // Only flag if first arg is a literal (digit or string), not a variable/param
+                if (afterParen.Length > 0 && (char.IsDigit(afterParen[0]) || afterParen[0] == '"'))
                     return true;
             }
         }
@@ -2649,17 +2647,18 @@ public partial class CppCodeGenerator
         }
 
         // Pattern: ValueStringBuilder — wrong this pointer (String* instead of VSB*)
-        // Only flag when first arg is NOT a pointer (&loc_, __this, __tN that's VSB*)
-        if (s.Contains("ValueStringBuilder_Append") || s.Contains("ValueStringBuilder_Insert"))
+        // Only flag when first arg is clearly wrong (numeric literal, string literal).
+        // Skip function definition lines (ending with '{').
+        if ((s.Contains("ValueStringBuilder_Append") || s.Contains("ValueStringBuilder_Insert"))
+            && !s.TrimEnd().EndsWith("{"))
         {
             var fnEnd = s.LastIndexOf('(');
             if (fnEnd > 0)
             {
                 var afterParen = s[(fnEnd + 1)..].TrimStart();
-                // First arg should be &loc_ (stack-allocated VSB) or __this or a pointer temp
-                // If it starts with a string literal, integer, or non-pointer temp, it's wrong
-                if (!afterParen.StartsWith("&") && !afterParen.StartsWith("__this") &&
-                    !afterParen.StartsWith("(") && !afterParen.StartsWith("loc_"))
+                // First arg should be a pointer expression: &loc_, __this, __tN, param name, cast
+                // Only flag if it starts with a digit (integer literal) or quote (string literal)
+                if (afterParen.Length > 0 && (char.IsDigit(afterParen[0]) || afterParen[0] == '"'))
                     return true;
             }
         }
