@@ -2424,9 +2424,12 @@ public partial class CppCodeGenerator
             if (castIdx >= 0)
             {
                 var val = s[(castIdx + 21)..].TrimEnd(';').Trim();
-                // __str_N, __tN, and loc_N are typically pointers → C-style cast compiles fine
-                // Only flag bare value-type params (e.g., cancellationToken struct)
-                if (!val.StartsWith("__str") && !val.StartsWith("__t") && !val.StartsWith("(") && !val.StartsWith("loc_"))
+                // Simple identifiers (variables/parameters) compile fine with C-style cast
+                // between pointer types. Only flag struct field access patterns.
+                bool isSimpleIdentifier = val.Length > 0 &&
+                    val.All(c => char.IsLetterOrDigit(c) || c == '_') &&
+                    !val.Contains(".f_");
+                if (!isSimpleIdentifier && !val.StartsWith("("))
                     return true;
             }
         }

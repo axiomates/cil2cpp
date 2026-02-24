@@ -645,6 +645,7 @@ public partial class CppCodeGenerator
             || method.DeclaringType?.CppName?.Contains("Vector64") == true)
             return "SIMD type argument in declaring type";
 
+
         // Array types as non-pointer parameters/locals/return (T__ without * suffix)
         foreach (var param in method.Parameters)
         {
@@ -1380,18 +1381,43 @@ public partial class CppCodeGenerator
                 // pre-declared by cross-scope analysis. Without this, the pre-declared
                 // typed variable (e.g. "cil2cpp::Array* __t0 = nullptr;") conflicts with
                 // the embedded "auto __t0 = ..." (MSVC C2040: indirection levels differ).
-                if (instr is IRRawCpp && code.StartsWith("auto __t"))
+                if (instr is IRRawCpp rawInstr)
                 {
-                    var spaceIdx = code.IndexOf(' ');
-                    if (spaceIdx >= 0)
+                    if (code.StartsWith("auto __t"))
                     {
-                        // Extract variable name: "auto __t0 = ..." → "__t0"
-                        var afterAuto = code[(spaceIdx + 1)..];
-                        var eqIdx = afterAuto.IndexOf(' ');
-                        var varName = eqIdx >= 0 ? afterAuto[..eqIdx] : afterAuto;
-                        if (declaredTemps.Contains(varName))
-                            code = afterAuto; // strip "auto " prefix
+                        var spaceIdx = code.IndexOf(' ');
+                        if (spaceIdx >= 0)
+                        {
+                            var afterAuto = code[(spaceIdx + 1)..];
+                            var eqIdx = afterAuto.IndexOf(' ');
+                            var varName = eqIdx >= 0 ? afterAuto[..eqIdx] : afterAuto;
+                            if (declaredTemps.Contains(varName))
+                                code = afterAuto; // strip "auto " prefix
+                        }
                     }
+                    // Also handle struct type declarations: "TypeName __tN = {0}; ..."
+                    // Strip type prefix when variable is already pre-declared (avoids C2086).
+                    else if (rawInstr.ResultVar != null && declaredTemps.Contains(rawInstr.ResultVar)
+                             && rawInstr.ResultTypeCpp != null && !rawInstr.ResultTypeCpp.EndsWith("*"))
+                    {
+                        // Replace "TypeName __tN = {0}; rest" with "std::memset(&__tN, 0, sizeof(TypeName)); rest"
+                        var declPattern = $"{rawInstr.ResultTypeCpp} {rawInstr.ResultVar} = {{0}};";
+                        if (code.Contains(declPattern))
+                        {
+                            code = code.Replace(declPattern,
+                                $"std::memset(&{rawInstr.ResultVar}, 0, sizeof({rawInstr.ResultTypeCpp}));");
+                        }
+                    }
+                }
+
+                // IRDeclareLocal for value type newobj: "TypeName __tN = {0};"
+                // When __tN is already pre-declared (cross-scope), skip the declaration
+                // to avoid MSVC C2086 redefinition error. The pre-declaration already
+                // initializes the variable with the correct type and default value.
+                if (instr is IRDeclareLocal decl && decl.VarName.StartsWith("__t")
+                    && declaredTemps.Contains(decl.VarName))
+                {
+                    code = $"std::memset(&{decl.VarName}, 0, sizeof({decl.TypeName}));";
                 }
 
                 // For instructions that assign to temp vars, add 'auto' on first use
@@ -1553,6 +1579,12 @@ public partial class CppCodeGenerator
                     break;
                 case IRUnaryOp unOp when unOp.ResultVar.StartsWith("__t") && unOp.ResultTypeCpp != null:
                     types.TryAdd(unOp.ResultVar, unOp.ResultTypeCpp);
+                    break;
+                // IRDeclareLocal for value type newobj: "StructType __tN = {0};"
+                // Must record the type so cross-scope pre-declaration uses the correct type
+                // instead of defaulting to Object*.
+                case IRDeclareLocal decl when decl.VarName.StartsWith("__t"):
+                    types.TryAdd(decl.VarName, decl.TypeName);
                     break;
                 // IRBinaryOp: comparisons produce bool, arithmetic produces intptr_t
                 case IRBinaryOp binOp when binOp.ResultVar.StartsWith("__t"):
