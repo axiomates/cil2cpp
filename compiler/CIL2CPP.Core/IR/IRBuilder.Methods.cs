@@ -880,19 +880,19 @@ public partial class IRBuilder
 
             case Code.Neg:
             {
-                var val = stack.PopExpr();
+                var entry = stack.PopEntry();
                 var tmp = $"__t{tempCounter++}";
-                block.Instructions.Add(new IRUnaryOp { Op = "-", Operand = val, ResultVar = tmp });
-                stack.Push(tmp);
+                block.Instructions.Add(new IRUnaryOp { Op = "-", Operand = entry.Expr, ResultVar = tmp, ResultTypeCpp = entry.CppType });
+                stack.Push(new StackEntry(tmp, entry.CppType));
                 break;
             }
 
             case Code.Not:
             {
-                var val = stack.PopExpr();
+                var entry = stack.PopEntry();
                 var tmp = $"__t{tempCounter++}";
-                block.Instructions.Add(new IRUnaryOp { Op = "~", Operand = val, ResultVar = tmp });
-                stack.Push(tmp);
+                block.Instructions.Add(new IRUnaryOp { Op = "~", Operand = entry.Expr, ResultVar = tmp, ResultTypeCpp = entry.CppType });
+                stack.Push(new StackEntry(tmp, entry.CppType));
                 break;
             }
 

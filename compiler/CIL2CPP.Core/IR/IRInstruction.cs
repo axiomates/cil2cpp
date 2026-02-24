@@ -175,6 +175,8 @@ public class IRUnaryOp : IRInstruction
     public string Operand { get; set; } = "";
     public string Op { get; set; } = "";
     public string ResultVar { get; set; } = "";
+    /// <summary>C++ result type for cross-scope variable pre-declarations.</summary>
+    public string? ResultTypeCpp { get; set; }
     public override string ToCpp() => $"{ResultVar} = {Op}{Operand};";
 }
 

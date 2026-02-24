@@ -1590,13 +1590,36 @@ public partial class CppCodeGenerator
             }
         }
 
+        // Pre-pass: collect temp vars known to be String* (from explicit casts)
+        // Used to avoid false positives in string_length(__tN) check
+        var knownStringTemps = new HashSet<string>();
+        foreach (var preLine in rendered.AsSpan().EnumerateLines())
+        {
+            var ps = preLine.ToString().TrimStart();
+            // auto __tN = (cil2cpp::String*)(void*)... or __tN = (cil2cpp::String*)(void*)...
+            if (ps.Contains("(cil2cpp::String*)") && ps.Contains("__t"))
+            {
+                // Extract variable name: "auto __tN = ..." or "__tN = ..."
+                var varStart = ps.IndexOf("__t");
+                if (varStart >= 0)
+                {
+                    var varEnd = varStart;
+                    while (varEnd < ps.Length && (char.IsLetterOrDigit(ps[varEnd]) || ps[varEnd] == '_'))
+                        varEnd++;
+                    var varName = ps[varStart..varEnd];
+                    if (varName.Length > 2 && varName.Skip(3).All(char.IsDigit))
+                        knownStringTemps.Add(varName);
+                }
+            }
+        }
+
         // Check each line for known error patterns
         foreach (var line in rendered.AsSpan().EnumerateLines())
         {
             var s = line.ToString().TrimStart();
             if (s.Length == 0 || s.StartsWith("//") || s.StartsWith("#")) continue;
 
-            if (RenderedLineHasError(s))
+            if (RenderedLineHasError(s, knownStringTemps))
                 return true;
 
             // Check for references to undeclared _statics globals
@@ -2315,7 +2338,7 @@ public partial class CppCodeGenerator
     /// <summary>
     /// Check a single rendered C++ line for patterns that would cause MSVC errors.
     /// </summary>
-    private static bool RenderedLineHasError(string s)
+    private static bool RenderedLineHasError(string s, HashSet<string>? knownStringTemps = null)
     {
         // Pattern: &variable = (assigning to address-of, invalid l-value)
         if (s.StartsWith("&") && s.Contains(" = "))
@@ -2651,15 +2674,24 @@ public partial class CppCodeGenerator
         if (s.Contains("string_length(") && !s.Contains("string_length((cil2cpp::String*)"))
         {
             // Allow: string_length(__this), string_length(someStringVar)
-            // Reject: string_length(__tN) where __tN came from array_get
+            // Reject: string_length(__tN) where __tN came from array_get — unless __tN
+            // was previously assigned from a (cil2cpp::String*) cast (known to be safe)
             var idx = s.IndexOf("string_length(");
             if (idx >= 0)
             {
                 var argStart = idx + 14;
                 var afterParen = s[argStart..];
-                // If the argument is __tN (not cast to String*), it could be wrong type
                 if (afterParen.StartsWith("__t") && !afterParen.StartsWith("__this"))
-                    return true;
+                {
+                    // Extract the variable name (__tN)
+                    var endIdx = 0;
+                    while (endIdx < afterParen.Length && (char.IsLetterOrDigit(afterParen[endIdx]) || afterParen[endIdx] == '_'))
+                        endIdx++;
+                    var tempName = afterParen[..endIdx];
+                    // Only flag if the temp is NOT known to be String*
+                    if (knownStringTemps == null || !knownStringTemps.Contains(tempName))
+                        return true;
+                }
             }
         }
 

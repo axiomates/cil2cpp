@@ -387,6 +387,7 @@ public partial class CppCodeGenerator
                     ? GetRenderedErrorDetail(rendered, method)
                     : "trial render error";
 
+
                 TrackStubWithAnalysis(method, "rendered body has errors",
                     StubRootCause.RenderedBodyError, renderDetail);
                 GenerateStubForMethod(sb, method);
@@ -1549,6 +1550,9 @@ public partial class CppCodeGenerator
                     break;
                 case IRRawCpp raw when raw.ResultVar != null && raw.ResultTypeCpp != null:
                     types.TryAdd(raw.ResultVar, raw.ResultTypeCpp);
+                    break;
+                case IRUnaryOp unOp when unOp.ResultVar.StartsWith("__t") && unOp.ResultTypeCpp != null:
+                    types.TryAdd(unOp.ResultVar, unOp.ResultTypeCpp);
                     break;
                 // IRBinaryOp: comparisons produce bool, arithmetic produces intptr_t
                 case IRBinaryOp binOp when binOp.ResultVar.StartsWith("__t"):
