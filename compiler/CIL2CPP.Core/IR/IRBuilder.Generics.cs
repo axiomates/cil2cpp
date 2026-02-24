@@ -598,7 +598,13 @@ public partial class IRBuilder
         // Pass 1.5: Auto-create nested type specializations (Entry, Enumerator, etc.)
         // When Dictionary<String,Object> is created, also create Dictionary<String,Object>.Entry,
         // Dictionary<String,Object>.Enumerator, etc. with the same type arguments.
-        CreateNestedGenericSpecializations();
+        // Iterate until fixpoint to handle nested-nested types (e.g., KeyCollection.Enumerator).
+        int prevCount;
+        do
+        {
+            prevCount = _genericInstantiations.Count;
+            CreateNestedGenericSpecializations();
+        } while (_genericInstantiations.Count > prevCount);
 
         // Second pass: resolve base types, interfaces, HasCctor for generic specializations.
         // Done after all specializations are in the cache so cross-references work
