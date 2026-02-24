@@ -178,26 +178,35 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 
 **目标**：让 Task 及依赖它的类型从 IL 编译
 
-**挑战**：
-- Task 有 4 个自定义运行时字段（f_status/f_exception/f_continuations/f_lock），其中 f_lock 是 std::mutex*
-- MSVC tail-padding 问题要求 Task 不继承 Object
-- 需要 BCL Task 的完整依赖链工作：ThreadPool、TaskScheduler、ExecutionContext
+**V.1 分析结论** ✅（详见 [phase_v1_analysis.md](phase_v1_analysis.md)）：
+- **66 个 Task 方法已从 BCL IL 成功编译**（状态查询、原子操作、生命周期、异常处理等）
+- **65 个 Task 方法 stubbed**，三条主要依赖链：
+  - **TplEventSource/EventSource**（22 个）：纯诊断，no-op ICall 零风险解锁
+  - **ThreadPool/PortableThreadPool**（15 个）：泛型特化缺失 + RenderedBodyError
+  - **RenderedBodyError**（18 个）：编译器 bug，可修复
+- **字段布局不兼容**：运行时 Task 有 4 个自定义字段（offset 12-39），Generated Task\<T\> 在 offset 12 直接放 BCL 字段
+- **推荐路径**：渐进式迁移（C 方案），先 TplEventSource no-op → ThreadPool ICall → 视结果决定 Task struct 重构
 
-| # | 任务 | 说明 |
-|---|------|------|
-| V.1 | 评估 BCL Task IL 依赖链 | 分析 .NET 8 Task 方法体引用的所有类型，确认可编译范围 |
-| V.2 | Task runtime 改造 | 从自定义字段改为 BCL 字段布局（m_stateFlags 等），运行时操作改为 ICall |
-| V.3 | TaskAwaiter / AsyncTaskMethodBuilder → IL | 依赖 Task struct 布局 |
-| V.4 | ValueTask / ValueTaskAwaiter / AsyncIteratorMethodBuilder → IL | 依赖 Task 链 |
-| V.5 | CancellationTokenSource → IL | 依赖 ITimer + ManualResetEvent + Registrations 链 |
+| # | 任务 | 复杂度 | 状态 | 说明 |
+|---|------|--------|------|------|
+| V.1 | 评估 BCL Task IL 依赖链 | — | ✅ | 详见 phase_v1_analysis.md |
+| V.1.1 | TplEventSource → no-op ICall | 低 | 待定 | ~18 个空 ICall，解锁 ~22 个 stub，零风险 |
+| V.1.2 | ExecutionContext fix + ThreadPool ICall | 中 | 待定 | 2 个 RenderedBodyError + ~10 个线程池 ICall |
+| V.2 | Task struct 重构 | **高** | 待定 | 删除 4 自定义字段→BCL 原生布局，重写 continuation 系统 |
+| V.3 | TaskAwaiter / AsyncTaskMethodBuilder → IL | 中 | 待定 | 依赖 V.2 Task struct 布局 |
+| V.4 | ValueTask / ValueTaskAwaiter / AsyncIteratorBuilder → IL | 中 | 待定 | 依赖 Task 链 |
+| V.5 | CancellationTokenSource → IL | 中 | 待定 | 依赖 ITimer + ManualResetEvent + Registrations 链 |
 
-**Phase V.1 前置条件**：无——纯分析工作，可立即开始。
+**V.1.1 前置条件**：无——纯 ICall 注册，可立即开始。
 
-**Phase V.2-V.5 前置条件**：
-- RenderedBodyError < 150（当前 249，可通过 3 轮修复达成：delegate invoke -29 + pointer param -37 + void* cast -52 = -118 → 131）
+**V.1.2 前置条件**：
+- RenderedBodyError < 150（当前 249）
+- IRBuilder 泛型特化修复（PortableThreadPool 方法）
+
+**V.2-V.5 前置条件**：
+- V.1.1 + V.1.2 完成并验证
 - delegate invoke 修复（Task continuation 使用 delegate）
 - ConcurrentQueue try-finally 修复（Task 依赖 ConcurrentQueue）
-- 这些全部是编译器代码生成质量问题，不涉及 System.Native 或网络栈
 
 ## Phase VI: 反射模型优化（评估）
 
@@ -250,21 +259,20 @@ Phase I  (基础打通) ✅
 Phase II (中间层解锁) ✅
        ↓
 Phase III (编译器管道质量) ← 当前（4,402→2,925, -33.5%, 88.5%）
-  III.1-12 ✅
-  III.13 transitive generic discovery ✅
+  III.1-13 ✅
   下一步: RenderedBodyError 修复 + 嵌套泛型特化补全
        ↓
 Phase IV (可行类型 → IL) 40 → 32 ✅
-  IAsyncStateMachine ✅ + CancellationToken ✅ + WaitHandle×6 ✅
        ↓                    ↓（可并行）
 Phase V (异步架构重构)    Phase VII (功能扩展)
-  V.1 评估 ← 可立即开始     System.Native / zlib / OpenSSL
-  V.2-V.5 ← 需 RenderedBodyError < 150
-  32 → 25（长期）              ↓
-       ↓                  Phase VIII (网络 & 高级)
-Phase VI (反射评估)         Socket / HttpClient / JSON / Regex
-  评估高层 API IL 编译可行性     ↓
-                          Phase IX (产品化)
+  V.1 分析 ✅                System.Native / zlib / OpenSSL
+  V.1.1 TplEventSource ← 可立即开始
+  V.1.2 ThreadPool ICall ← 需 III + IRBuilder fix
+  V.2-V.5 ← 需 V.1.x 验证     ↓
+  32 → 25（长期）          Phase VIII (网络 & 高级)
+       ↓                    Socket / HttpClient / JSON / Regex
+Phase VI (反射评估)            ↓
+  评估高层 API IL 编译     Phase IX (产品化)
                             CI/CD / 性能 / 测试 / 文档
 ```
 
