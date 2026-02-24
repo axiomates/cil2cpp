@@ -995,6 +995,22 @@ public partial class IRBuilder
         }
         if (cppResolvedMap == null) return; // nothing to resolve
 
+        // Build mangled name resolution map for generic params embedded in C++ identifiers.
+        // In mangled names like "IEqualityComparer_1_TKey", "TKey" is preceded by "_"
+        // which ReplaceWholeWord treats as a word char. We use targeted replacement:
+        // only replace "_N_ParamName" patterns (generic arity prefix + param name).
+        var mangledResolvedMap = new Dictionary<string, string>();
+        foreach (var (paramName, ilName) in typeParamMap)
+        {
+            var mangledResolved = CppNameMapper.MangleTypeName(ilName);
+            if (mangledResolved != paramName)
+            {
+                // Add arity-prefixed patterns: _1_TKey → _1_System_String, _2_TKey → _2_System_String
+                for (int arity = 1; arity <= 8; arity++)
+                    mangledResolvedMap[$"_{arity}_{paramName}"] = $"_{arity}_{mangledResolved}";
+            }
+        }
+
         // Resolve generic params in TempVarTypes (cross-scope variable pre-declarations)
         var tempKeys = irMethod.TempVarTypes.Keys.ToList();
         foreach (var key in tempKeys)
@@ -1002,6 +1018,12 @@ public partial class IRBuilder
             var resolved = ResolveGenericParamInCppType(irMethod.TempVarTypes[key], typeParamMap);
             if (resolved != irMethod.TempVarTypes[key])
                 irMethod.TempVarTypes[key] = resolved;
+            // Also resolve mangled names in TempVarTypes
+            foreach (var (from, to) in mangledResolvedMap)
+            {
+                if (irMethod.TempVarTypes[key].Contains(from))
+                    irMethod.TempVarTypes[key] = irMethod.TempVarTypes[key].Replace(from, to);
+            }
         }
 
         foreach (var block in irMethod.BasicBlocks)
@@ -1046,7 +1068,177 @@ public partial class IRBuilder
                     if (code != rawInstr.Code)
                         rawInstr.Code = code;
                 }
+
+                // Resolve generic params in all IRCall string fields
+                // (FunctionName, Arguments, VTableReturnType, VTableParamTypes, InterfaceTypeCppName)
+                if (instr is IRCall callInstr)
+                {
+                    foreach (var (paramName, cppName) in cppResolvedMap)
+                    {
+                        if (callInstr.FunctionName.Contains(paramName))
+                            callInstr.FunctionName = ReplaceWholeWord(callInstr.FunctionName, paramName, cppName);
+                        for (int argIdx = 0; argIdx < callInstr.Arguments.Count; argIdx++)
+                        {
+                            if (callInstr.Arguments[argIdx].Contains(paramName))
+                                callInstr.Arguments[argIdx] = ReplaceWholeWord(callInstr.Arguments[argIdx], paramName, cppName);
+                        }
+                        if (callInstr.VTableReturnType?.Contains(paramName) == true)
+                            callInstr.VTableReturnType = ReplaceWholeWord(callInstr.VTableReturnType, paramName, cppName);
+                        if (callInstr.VTableParamTypes != null)
+                        {
+                            for (int vtIdx = 0; vtIdx < callInstr.VTableParamTypes.Count; vtIdx++)
+                            {
+                                if (callInstr.VTableParamTypes[vtIdx].Contains(paramName))
+                                    callInstr.VTableParamTypes[vtIdx] = ReplaceWholeWord(callInstr.VTableParamTypes[vtIdx], paramName, cppName);
+                            }
+                        }
+                        if (callInstr.InterfaceTypeCppName?.Contains(paramName) == true)
+                            callInstr.InterfaceTypeCppName = ReplaceWholeWord(callInstr.InterfaceTypeCppName, paramName, cppName);
+                    }
+                }
+
+                // Resolve generic params in all other instruction type fields
+                ResolveInstructionGenericParams(instr, cppResolvedMap);
+
+                // Second pass: resolve mangled generic params embedded in C++ identifiers
+                // (e.g., "_TKey_" → "_System_String_" in "Dictionary_2_Entry_1_TKey_TValue")
+                if (mangledResolvedMap.Count > 0)
+                    ResolveMangledGenericParams(instr, mangledResolvedMap);
             }
+        }
+    }
+
+    /// <summary>
+    /// Resolve mangled generic param names embedded in C++ identifiers using String.Replace.
+    /// Handles patterns like "_TKey_" → "_System_String_" that ReplaceWholeWord misses
+    /// because underscore is treated as a word character.
+    /// </summary>
+    private static void ResolveMangledGenericParams(IRInstruction instr, Dictionary<string, string> mangledMap)
+    {
+        static string Resolve(string text, Dictionary<string, string> map)
+        {
+            foreach (var (from, to) in map)
+            {
+                if (text.Contains(from))
+                    text = text.Replace(from, to);
+            }
+            return text;
+        }
+
+        switch (instr)
+        {
+            case IRRawCpp raw:
+                raw.Code = Resolve(raw.Code, mangledMap);
+                if (raw.ResultTypeCpp != null) raw.ResultTypeCpp = Resolve(raw.ResultTypeCpp, mangledMap);
+                break;
+            case IRCall call:
+                call.FunctionName = Resolve(call.FunctionName, mangledMap);
+                for (int i = 0; i < call.Arguments.Count; i++)
+                    call.Arguments[i] = Resolve(call.Arguments[i], mangledMap);
+                if (call.ResultTypeCpp != null) call.ResultTypeCpp = Resolve(call.ResultTypeCpp, mangledMap);
+                if (call.VTableReturnType != null) call.VTableReturnType = Resolve(call.VTableReturnType, mangledMap);
+                if (call.VTableParamTypes != null)
+                    for (int i = 0; i < call.VTableParamTypes.Count; i++)
+                        call.VTableParamTypes[i] = Resolve(call.VTableParamTypes[i], mangledMap);
+                if (call.InterfaceTypeCppName != null) call.InterfaceTypeCppName = Resolve(call.InterfaceTypeCppName, mangledMap);
+                break;
+            case IRFieldAccess fa:
+                fa.FieldCppName = Resolve(fa.FieldCppName, mangledMap);
+                fa.ObjectExpr = Resolve(fa.ObjectExpr, mangledMap);
+                if (fa.CastToType != null) fa.CastToType = Resolve(fa.CastToType, mangledMap);
+                if (fa.StoreValue != null) fa.StoreValue = Resolve(fa.StoreValue, mangledMap);
+                if (fa.ResultTypeCpp != null) fa.ResultTypeCpp = Resolve(fa.ResultTypeCpp, mangledMap);
+                break;
+            case IRStaticFieldAccess sfa:
+                sfa.TypeCppName = Resolve(sfa.TypeCppName, mangledMap);
+                if (sfa.StoreValue != null) sfa.StoreValue = Resolve(sfa.StoreValue, mangledMap);
+                if (sfa.ResultTypeCpp != null) sfa.ResultTypeCpp = Resolve(sfa.ResultTypeCpp, mangledMap);
+                break;
+            case IRCast cast:
+                cast.TargetTypeCpp = Resolve(cast.TargetTypeCpp, mangledMap);
+                cast.SourceExpr = Resolve(cast.SourceExpr, mangledMap);
+                if (cast.TypeInfoCppName != null) cast.TypeInfoCppName = Resolve(cast.TypeInfoCppName, mangledMap);
+                break;
+            case IRBox box:
+                box.ValueTypeCppName = Resolve(box.ValueTypeCppName, mangledMap);
+                box.ValueExpr = Resolve(box.ValueExpr, mangledMap);
+                if (box.TypeInfoCppName != null) box.TypeInfoCppName = Resolve(box.TypeInfoCppName, mangledMap);
+                break;
+            case IRUnbox unbox:
+                unbox.ValueTypeCppName = Resolve(unbox.ValueTypeCppName, mangledMap);
+                unbox.ObjectExpr = Resolve(unbox.ObjectExpr, mangledMap);
+                break;
+            case IRNewObj newObj:
+                newObj.TypeCppName = Resolve(newObj.TypeCppName, mangledMap);
+                newObj.CtorName = Resolve(newObj.CtorName, mangledMap);
+                for (int i = 0; i < newObj.CtorArgs.Count; i++)
+                    newObj.CtorArgs[i] = Resolve(newObj.CtorArgs[i], mangledMap);
+                break;
+            case IRInitObj initObj:
+                initObj.TypeCppName = Resolve(initObj.TypeCppName, mangledMap);
+                initObj.AddressExpr = Resolve(initObj.AddressExpr, mangledMap);
+                break;
+            case IRStaticCtorGuard guard:
+                guard.TypeCppName = Resolve(guard.TypeCppName, mangledMap);
+                break;
+        }
+    }
+
+    /// <summary>
+    /// Resolve generic params in all string fields of non-IRRawCpp/IRCall instructions.
+    /// Covers IRFieldAccess, IRStaticFieldAccess, IRCast, IRBox, IRUnbox, IRNewObj, IRInitObj, IRStaticCtorGuard.
+    /// </summary>
+    private static void ResolveInstructionGenericParams(IRInstruction instr, Dictionary<string, string> cppResolvedMap)
+    {
+        static string Resolve(string text, Dictionary<string, string> map)
+        {
+            foreach (var (paramName, cppName) in map)
+            {
+                if (text.Contains(paramName))
+                    text = ReplaceWholeWord(text, paramName, cppName);
+            }
+            return text;
+        }
+
+        switch (instr)
+        {
+            case IRFieldAccess fa:
+                fa.CastToType = fa.CastToType != null ? Resolve(fa.CastToType, cppResolvedMap) : null;
+                fa.FieldCppName = Resolve(fa.FieldCppName, cppResolvedMap);
+                fa.ObjectExpr = Resolve(fa.ObjectExpr, cppResolvedMap);
+                fa.StoreValue = fa.StoreValue != null ? Resolve(fa.StoreValue, cppResolvedMap) : null;
+                break;
+            case IRStaticFieldAccess sfa:
+                sfa.TypeCppName = Resolve(sfa.TypeCppName, cppResolvedMap);
+                sfa.StoreValue = sfa.StoreValue != null ? Resolve(sfa.StoreValue, cppResolvedMap) : null;
+                break;
+            case IRCast cast:
+                cast.TargetTypeCpp = Resolve(cast.TargetTypeCpp, cppResolvedMap);
+                cast.TypeInfoCppName = cast.TypeInfoCppName != null ? Resolve(cast.TypeInfoCppName, cppResolvedMap) : null;
+                cast.SourceExpr = Resolve(cast.SourceExpr, cppResolvedMap);
+                break;
+            case IRBox box:
+                box.ValueTypeCppName = Resolve(box.ValueTypeCppName, cppResolvedMap);
+                box.TypeInfoCppName = box.TypeInfoCppName != null ? Resolve(box.TypeInfoCppName, cppResolvedMap) : null;
+                box.ValueExpr = Resolve(box.ValueExpr, cppResolvedMap);
+                break;
+            case IRUnbox unbox:
+                unbox.ValueTypeCppName = Resolve(unbox.ValueTypeCppName, cppResolvedMap);
+                unbox.ObjectExpr = Resolve(unbox.ObjectExpr, cppResolvedMap);
+                break;
+            case IRNewObj newObj:
+                newObj.TypeCppName = Resolve(newObj.TypeCppName, cppResolvedMap);
+                newObj.CtorName = Resolve(newObj.CtorName, cppResolvedMap);
+                for (int i = 0; i < newObj.CtorArgs.Count; i++)
+                    newObj.CtorArgs[i] = Resolve(newObj.CtorArgs[i], cppResolvedMap);
+                break;
+            case IRInitObj initObj:
+                initObj.TypeCppName = Resolve(initObj.TypeCppName, cppResolvedMap);
+                initObj.AddressExpr = Resolve(initObj.AddressExpr, cppResolvedMap);
+                break;
+            case IRStaticCtorGuard guard:
+                guard.TypeCppName = Resolve(guard.TypeCppName, cppResolvedMap);
+                break;
         }
     }
 

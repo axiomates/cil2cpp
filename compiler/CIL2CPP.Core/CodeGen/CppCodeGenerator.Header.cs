@@ -2070,10 +2070,9 @@ public partial class CppCodeGenerator
         if (rendered.Contains("System_Threading_Thread* __t") && rendered.Contains("Thread_get_CurrentThread"))
             return true;
 
-        // Method-level: TimeZoneInfo methods with cross-scope DateTime/TimeSpan/AdjustmentRule
-        if (method.DeclaringType?.ILFullName?.Contains("TimeZoneInfo") == true &&
-            (rendered.Contains("System_DateTime __t") || rendered.Contains("AdjustmentRule")))
-            return true;
+        // Phase III.7: TimeZoneInfo cross-scope check REMOVED — all 52 methods compile fine in MSVC
+        // Previously flagged DateTime temps and AdjustmentRule references, but with improved
+        // DetermineTempVarTypes and TempVarTypes, cross-scope issues are resolved.
 
         // Method-level: switch-between-switch goto-skips-init (C2362)
         // Two consecutive switch blocks with auto __tN between them
@@ -2574,9 +2573,7 @@ public partial class CppCodeGenerator
         if (s.Contains("ToPointer("))
             return true;
 
-        // Pattern: Span of undefined nested types
-        if (s.Contains("Span_1_System_TimeZoneInfo_AdjustmentRule"))
-            return true;
+        // Phase III.7: Span_1_System_TimeZoneInfo_AdjustmentRule check REMOVED — compiles fine in MSVC
 
         // Pattern: enum pointer passed where enum value expected (ResourceTypeCode, etc.)
         // The enum pointer cast like (ResourceTypeCode*)typeCode or (ResourceTypeCode*)&loc_
