@@ -1,6 +1,6 @@
 # 开发路线图
 
-> 最后更新：2026-02-25
+> 最后更新：2026-02-24
 
 ## 设计原则
 
@@ -86,19 +86,20 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 
 详见上方"RuntimeProvided 类型分类"章节。
 
-### Stub 分布（HelloWorld, 3,385 个 / 24,000+ 可达方法）
+### Stub 分布（HelloWorld, 3,067 个 / 24,051 可达方法）
 
 | 类别 | 数量 | 占比 | 性质 |
 |------|------|------|------|
-| MissingBody | 1,880 | 55.5% | 无 IL body（abstract/extern/JIT intrinsic）— 多数合理 |
-| KnownBrokenPattern | 592 | 17.5% | 已知无法编译的模式（SIMD 305 + 泛型参数 29 + undeclared TypeInfo 等） |
-| RenderedBodyError | 362 | 10.7% | **编译器 bug — IL 有 body 但 C++ 渲染失败**（void* 转换、dot-access 等） |
-| UnknownBodyReferences | 304 | 9.0% | 方法体引用未声明类型（TChar 67 + EventSource 36 + 其他） |
-| UndeclaredFunction | 225 | 6.6% | 调用未声明函数（级联依赖 + 泛型特化缺失） |
-| UnknownParameterTypes | 22 | 0.6% | 参数类型未声明（INumberBase DIM + 少量 Span 特化） |
+| MissingBody | 1,762 | 57.5% | 无 IL body（abstract/extern/JIT intrinsic）— 多数合理 |
+| KnownBrokenPattern | 563 | 18.4% | 已知无法编译的模式（SIMD 305+83 + undeclared TypeInfo 等） |
+| RenderedBodyError | 292 | 9.5% | **编译器 bug — IL 有 body 但 C++ 渲染失败**（void* 转换、dot-access 等） |
+| UndeclaredFunction | 224 | 7.3% | 调用未声明函数（级联依赖 + 泛型特化缺失） |
+| UnknownBodyReferences | 204 | 6.7% | 方法体引用未声明类型 |
+| ClrInternalType | 96 | 3.1% | CLR 内部类型依赖（QCallTypeHandle/MetadataImport 等） |
+| UnknownParameterTypes | 22 | 0.7% | 参数类型未声明（INumberBase DIM + 少量 Span 特化） |
 
-**可修复的编译器问题**：RenderedBodyError (362) + UnknownBodyReferences (304) + UndeclaredFunction (225) = **891 个方法**，占 26.3%。
-**IL 转译率**：~85.9%（3,385 stubs / 24,000+ reachable）。
+**可修复的编译器问题**：RenderedBodyError (292) + UnknownBodyReferences (204) + UndeclaredFunction (224) = **720 个方法**，占 23.5%。
+**IL 转译率**：~87.3%（3,067 stubs / 24,051 reachable）。
 **测试**：1,240 C# + 591 C++ + 35 集成 — 全部通过。
 
 ---
@@ -120,7 +121,7 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 
 **目标**：提升 IL 转译率——修复阻止 BCL IL 编译的根因
 
-**进展**：4,402 → 3,385 stubs（-1,017，-23.1%）
+**进展**：4,402 → 3,067 stubs（-1,335，-30.3%）
 
 | # | 任务 | 影响量 | 状态 | 说明 |
 |---|------|--------|------|------|
@@ -140,6 +141,9 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 | III.7 | 嵌套泛型类型特化 | -26 | ✅ | CreateNestedGenericSpecializations: Dictionary.Entry, List.Enumerator 等 |
 | III.8 | 指针 local 修复 + opaque stubs | -46 | ✅ | HasUnknownBodyReferences 死代码修复 + 值类型 local 的 opaque struct 生成 + 指针 local 前向声明 |
 | III.9 | 嵌套嵌套类型定点迭代 + 参数/返回类型 stubs | -46 | ✅ | CreateNestedGenericSpecializations fixpoint loop + 方法参数和返回类型的 opaque struct 扫描 |
+| III.10 | 泛型特化泛型参数解析 + stub gate 修正 | -84 | ✅ | ResolveRemainingGenericParams 扩展到全指令类型 + func ptr 误判修正 + delegate arg 类型转换 |
+| III.11 | Scalar alias + Numerics DIM + TimeZoneInfo | -80 | ✅ | m_value 标量拦截 + 原始 Numerics DIM 放行 + TimeZoneInfo 误判移除 |
+| III.12 | 泛型特化 mangled 名解析 | -49 | ✅ | arity-prefixed mangled name resolution（_N_TKey → _N_System_String），29 unresolved generic → 0 |
 
 ---
 
