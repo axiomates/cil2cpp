@@ -821,14 +821,10 @@ public partial class CppCodeGenerator
                 return true;
         }
 
-        // IRCall: check if function targets a type not in knownTypeNames
-        if (instr is IRCall call && !call.IsVirtual
-                 && !string.IsNullOrEmpty(call.FunctionName)
-                 && !call.FunctionName.StartsWith("cil2cpp::"))
-        {
-            if (IsCallToUnknownType(call.FunctionName, knownTypeNames))
-                return true;
-        }
+        // NOTE: IRCall to unknown types is now handled by CallsUndeclaredOrMismatchedFunctions gate
+        // (runs after HasUnknownBodyReferences). Checking here was redundant — if the function IS
+        // declared in the header, the call compiles fine regardless of whether the declaring type's
+        // struct definition exists in knownTypeNames. Free function calls only need the prototype.
 
         // IRCast: check TargetTypeCpp for unknown types (catches unresolved generic params T1/T2/TKey etc.)
         if (instr is IRCast cast)
@@ -1374,16 +1370,9 @@ public partial class CppCodeGenerator
                                               or "System.Text.Utf16Utility"
                                               or "System.Buffers.IndexOfAnyAsciiSearcher")
             return true;
-        // Detect self-recursion: method calls itself (JIT intrinsics with no real IL body)
-        var selfCallPattern = $"{method.CppName}(";
-        foreach (var block in method.BasicBlocks)
-        {
-            foreach (var instr in block.Instructions)
-            {
-                if (instr.ToCpp().Contains(selfCallPattern))
-                    return true;
-            }
-        }
+        // NOTE: Self-recursion check removed — it was catching legitimate recursive
+        // algorithms (IntroSort, FormatCustomized, String.Concat, etc.), not JIT intrinsics.
+        // JIT intrinsics are already caught by System.Runtime.Intrinsics namespace check above.
 
         foreach (var block in method.BasicBlocks)
         {
@@ -1408,9 +1397,8 @@ public partial class CppCodeGenerator
         if (code.Contains("(uintptr_t)(") && code.Contains(".f_"))
             return true;
 
-        // Pattern 3: volatile_write with bool* (no matching template specialization)
-        if (code.Contains("volatile_write((bool*)"))
-            return true;
+        // NOTE: volatile_write((bool*)) check removed — the runtime template volatile_write<T>
+        // correctly deduces T=bool from (bool*) parameter. MSVC compiles this fine.
 
         // Pattern 4: removed — Unsafe specializations now compile as valid C++ functions.
         // Callers of broken Unsafe stubs are caught by stage 3 (CallsUndeclaredOrMismatchedFunctions).
@@ -1425,9 +1413,8 @@ public partial class CppCodeGenerator
         if (code.StartsWith("&") && code.Contains(" = &"))
             return true;
 
-        // Pattern 7b: GCFrameRegistration uses void** but locals may be intptr_t*
-        if (code.Contains("GCFrameRegistration__ctor"))
-            return true;
+        // NOTE: GCFrameRegistration__ctor check removed — let trial render catch actual errors.
+        // GCFrameRegistration is a no-op in BoehmGC AOT, and the struct is opaque.
 
         // Pattern 8: (uintptr_t) cast ONLY when combined with struct member access
         // Standalone (uintptr_t)(ptr) is valid C++ for pointer→int conversion (e.g., fixed/Span)
@@ -1467,7 +1454,18 @@ public partial class CppCodeGenerator
                 }
                 if (!string.IsNullOrEmpty(typeName) && !typeName.StartsWith("cil2cpp")
                     && !knownTypeNames.Contains(typeName))
+                {
+                    // Handle types whose name ENDS with "TypeInfo" (e.g., System.Reflection.TypeInfo).
+                    // The TypeInfo variable would be System_Reflection_TypeInfo_TypeInfo, and we found
+                    // the first _TypeInfo (which is part of the type name, not the suffix).
+                    // Check if typeName + "_TypeInfo" is a known type — if so, skip this occurrence.
+                    if (knownTypeNames.Contains(typeName + "_TypeInfo"))
+                    {
+                        tiIdx += 9;
+                        continue;
+                    }
                     return true;
+                }
             }
             tiIdx += 9;
         }
@@ -2472,12 +2470,9 @@ public partial class CppCodeGenerator
         if (s.Contains("lParam.f_"))
             return true;
 
-        // Pattern: volatile_write type mismatch (uint64_t* with int64_t value, or nullptr ambiguity)
-        if (s.Contains("volatile_write((uint64_t*)") && !s.Contains("(uint64_t)"))
-            return true;
-        // volatile_write(ptr, nullptr) — template T is ambiguous between nullptr_t and pointer
-        if (s.Contains("volatile_write(") && s.Contains("nullptr"))
-            return true;
+        // NOTE: volatile_write type mismatch and nullptr ambiguity checks removed —
+        // runtime template uses std::type_identity_t<T> for second param, so T is deduced
+        // only from first arg. Both int64_t/uint64_t mismatch and nullptr_t are now handled.
 
         // Pattern: unbox_ptr/array_get_element_ptr result accessed with dot instead of arrow
         if ((s.Contains("unbox_ptr<") || s.Contains("array_get_element_ptr(")) && s.Contains(").f_"))

@@ -175,9 +175,12 @@ public partial class IRBuilder
 
         // For pointer comparisons, cast both sides to (void*) since flat struct model
         // doesn't have C++ inheritance between generated types (e.g., EqualityComparer* vs IEqualityComparer*).
+        // Check BOTH left and right operands — either side being a pointer triggers the cast.
         if ((op == "==" || op == "!=")
             && left != "nullptr" && right != "nullptr"
-            && (leftEntry.IsPointer || (method != null && IsPointerTypedOperand(left, method))))
+            && (leftEntry.IsPointer || rightEntry.IsPointer
+                || (method != null && (IsPointerTypedOperand(left, method)
+                                       || IsPointerTypedOperand(right, method)))))
         {
             left = $"(void*){left}";
             right = $"(void*){right}";
@@ -208,9 +211,12 @@ public partial class IRBuilder
 
         // For pointer comparisons, cast both sides to (void*) since flat struct model
         // doesn't have C++ inheritance between generated types.
+        // Check BOTH left and right operands — either side being a pointer triggers the cast.
         if ((op == "==" || op == "!=")
             && left != "nullptr" && right != "nullptr"
-            && (leftEntry.IsPointer || (method != null && IsPointerTypedOperand(left, method))))
+            && (leftEntry.IsPointer || rightEntry.IsPointer
+                || (method != null && (IsPointerTypedOperand(left, method)
+                                       || IsPointerTypedOperand(right, method)))))
         {
             left = $"(void*){left}";
             right = $"(void*){right}";
@@ -241,7 +247,7 @@ public partial class IRBuilder
     }
 
     /// <summary>
-    /// Checks if a comparison operand is a known pointer-typed variable (parameter or local).
+    /// Checks if a comparison operand is a known pointer-typed variable (parameter, local, or temp).
     /// Used to add (void*) casts for pointer comparisons in the flat struct model.
     /// </summary>
     private static bool IsPointerTypedOperand(string operand, IRMethod method)
@@ -260,6 +266,11 @@ public partial class IRBuilder
             if (local.CppName == operand && local.CppTypeName.EndsWith("*"))
                 return true;
         }
+
+        // Check temp variable types from IR method type inference
+        if (operand.StartsWith("__t") && method.TempVarTypes.TryGetValue(operand, out var tempType)
+            && tempType.EndsWith("*"))
+            return true;
 
         return false;
     }
@@ -709,7 +720,7 @@ public partial class IRBuilder
             var elemTypeArg = gimEmpty.GenericArguments[0];
             var resolvedElem = elemTypeArg is GenericParameter gpE && _activeTypeParamMap != null
                 && _activeTypeParamMap.TryGetValue(gpE.Name, out var rE) ? rE : elemTypeArg.FullName;
-            var elemCppType = CppNameMapper.MangleTypeName(resolvedElem);
+            var elemCppType = CppNameMapper.MangleTypeNameClean(resolvedElem);
             if (CppNameMapper.IsPrimitive(resolvedElem))
                 _module.RegisterPrimitiveTypeInfo(resolvedElem);
             var tmp = $"__t{tempCounter++}";
@@ -785,10 +796,13 @@ public partial class IRBuilder
                 if (methodRef.DeclaringType is GenericInstanceType spanGit && spanGit.GenericArguments.Count > 0)
                 {
                     var elemArgName = ResolveGenericTypeRef(spanGit.GenericArguments[0], methodRef.DeclaringType);
-                    var elemCpp = CppNameMapper.GetCppTypeForDecl(elemArgName);
-                    // array_data returns void*; cast to element pointer type
-                    // For reference types (String*), need String** since array stores pointers
-                    elemPtrType = elemCpp + "*";
+                    if (!IsUnresolvedElementType(elemArgName))
+                    {
+                        var elemCpp = CppNameMapper.GetCppTypeForDecl(elemArgName);
+                        // array_data returns void*; cast to element pointer type
+                        // For reference types (String*), need String** since array stores pointers
+                        elemPtrType = elemCpp + "*";
+                    }
                 }
                 // Array → Span/ReadOnlySpan: construct from array data + length
                 block.Instructions.Add(new IRRawCpp
@@ -830,9 +844,11 @@ public partial class IRBuilder
             {
                 var elemArgName = ResolveGenericTypeRef(spanCtorGit.GenericArguments[0],
                     methodRef.DeclaringType);
-                var elemCpp = CppNameMapper.GetCppTypeForDecl(elemArgName);
-                // GetCppTypeForDecl already returns T* for reference types, add another *
-                elemPtrType = elemCpp.EndsWith("*") ? elemCpp + "*" : elemCpp + "*";
+                if (!IsUnresolvedElementType(elemArgName))
+                {
+                    var elemCpp = CppNameMapper.GetCppTypeForDecl(elemArgName);
+                    elemPtrType = elemCpp + "*";
+                }
             }
 
             // Helper to emit field access — thisPtr can be &loc (ldloca) or a pointer
@@ -1157,7 +1173,7 @@ public partial class IRBuilder
                     var paramType = methodRef.Parameters[fixedCount + i].ParameterType;
                     var resolvedTypeName = ResolveGenericTypeRef(paramType, methodRef.DeclaringType);
                     var cppDeclType = CppNameMapper.GetCppTypeForDecl(resolvedTypeName);
-                    var typeInfoName = CppNameMapper.MangleTypeName(resolvedTypeName);
+                    var typeInfoName = CppNameMapper.MangleTypeNameClean(resolvedTypeName);
 
                     // Ensure TypeInfo exists for primitive vararg types
                     _module.RegisterPrimitiveTypeInfo(resolvedTypeName);
@@ -1663,8 +1679,11 @@ public partial class IRBuilder
             {
                 var elemArgName = ResolveGenericTypeRef(spanGit2.GenericArguments[0],
                     ctorRef.DeclaringType);
-                var elemCpp = CppNameMapper.GetCppTypeForDecl(elemArgName);
-                elemPtrType = elemCpp + "*";
+                if (!IsUnresolvedElementType(elemArgName))
+                {
+                    var elemCpp = CppNameMapper.GetCppTypeForDecl(elemArgName);
+                    elemPtrType = elemCpp + "*";
+                }
             }
 
             if (ctorRef.Parameters.Count == 3)
@@ -2254,6 +2273,23 @@ public partial class IRBuilder
     }
 
     /// <summary>
+    /// Check if a resolved element type name is still an unresolved generic parameter.
+    /// Names like "T", "TKey", "!0" indicate resolution failed — callers should use void* fallback.
+    /// </summary>
+    private static bool IsUnresolvedElementType(string resolvedName)
+    {
+        if (string.IsNullOrEmpty(resolvedName)) return true;
+        // IL generic param notation: !0, !1, !!0, etc.
+        if (resolvedName.StartsWith("!")) return true;
+        // Single-word uppercase name without dots/namespace — likely generic param (T, TKey, TValue, etc.)
+        if (!resolvedName.Contains('.') && !resolvedName.Contains('/') && resolvedName.Length <= 10
+            && resolvedName.Length >= 1 && char.IsUpper(resolvedName[0])
+            && resolvedName.All(c => char.IsLetterOrDigit(c)))
+            return true;
+        return false;
+    }
+
+    /// <summary>
     /// Substitute method-level generic parameters in a TypeReference using a GenericInstanceMethod.
     /// Handles both direct GenericParameter and GenericInstanceType containing method generic params.
     /// E.g., EnumInfo`1&lt;TStorage&gt; with gim=GetNameInlined&lt;byte&gt; → resolves TStorage to System.Byte.
@@ -2607,6 +2643,9 @@ public partial class IRBuilder
         if (typeArgs.Count == 0) return false;
 
         var elemIlName = ResolveTypeRefOperand(typeArgs[0]);
+        // If resolution failed (unresolved generic param like "T"), fall back to void*
+        if (IsUnresolvedElementType(elemIlName))
+            return false; // Can't emit typed Span helpers — let normal codegen handle it
         var elemCpp = CppNameMapper.GetCppTypeForDecl(elemIlName);
         // For reference types (String*), element pointer is String**
         var elemPtrCpp = elemCpp + "*";

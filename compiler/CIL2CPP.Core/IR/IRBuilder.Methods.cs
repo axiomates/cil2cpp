@@ -1163,7 +1163,7 @@ public partial class IRBuilder
                 {
                     var elemTypeArg = emptyGit.GenericArguments[0];
                     var resolvedElem = ResolveGenericTypeRef(elemTypeArg, emptyGit);
-                    var elemCppType = CppNameMapper.MangleTypeName(resolvedElem);
+                    var elemCppType = CppNameMapper.MangleTypeNameClean(resolvedElem);
                     if (CppNameMapper.IsPrimitive(resolvedElem))
                         _module.RegisterPrimitiveTypeInfo(resolvedElem);
                     var tmp2 = $"__t{tempCounter++}";
@@ -1566,7 +1566,9 @@ public partial class IRBuilder
                 var resolvedName = ResolveTypeRefOperand(elemType);
                 var length = stack.PopExpr();
                 var tmp = $"__t{tempCounter++}";
-                var elemCppType = CppNameMapper.MangleTypeName(resolvedName);
+                // Use MangleTypeNameClean for TypeInfo references — MangleTypeName adds trailing '_'
+                // from '>' for generic instances, but TypeInfo declarations use MangleGenericInstanceTypeName.
+                var elemCppType = CppNameMapper.MangleTypeNameClean(resolvedName);
                 // Ensure TypeInfo exists for primitive element types
                 if (CppNameMapper.IsPrimitive(resolvedName))
                     _module.RegisterPrimitiveTypeInfo(resolvedName);
@@ -1857,7 +1859,7 @@ public partial class IRBuilder
                     var innerTypeCppBox = CppNameMapper.IsPrimitive(innerTypeName)
                         ? CppNameMapper.GetCppTypeName(innerTypeName)
                         : CppNameMapper.MangleTypeName(innerTypeName);
-                    var innerTypeCppInfo = CppNameMapper.MangleTypeName(innerTypeName);
+                    var innerTypeCppInfo = CppNameMapper.MangleTypeNameClean(innerTypeName);
                     block.Instructions.Add(new IRRawCpp
                     {
                         Code = $"{tmp} = {val}.f_hasValue"

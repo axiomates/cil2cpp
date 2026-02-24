@@ -6,6 +6,7 @@
 #pragma once
 
 #include <atomic>
+#include <type_traits>
 #include "types.h"
 #include "object.h"
 #include "string.h"
@@ -103,7 +104,7 @@ inline T volatile_read(T* location) {
 }
 
 template<typename T>
-inline void volatile_write(T* location, T value) {
+inline void volatile_write(T* location, std::type_identity_t<T> value) {
     std::atomic_thread_fence(std::memory_order_release);
     *location = value;
 }
