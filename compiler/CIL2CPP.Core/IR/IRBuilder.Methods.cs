@@ -1631,7 +1631,7 @@ public partial class IRBuilder
                     ArrayExpr = arr, IndexExpr = index,
                     ElementType = elemType, ResultVar = tmp
                 });
-                stack.Push(tmp);
+                stack.Push(new StackEntry(tmp, elemType));
                 break;
             }
 
@@ -1998,14 +1998,16 @@ public partial class IRBuilder
                     ? CppNameMapper.GetCppTypeName(resolvedName)
                     : CppNameMapper.MangleTypeNameClean(resolvedName);
                 var tmp = $"__t{tempCounter++}";
+                var unboxPtrType = typeCpp + "*";
                 block.Instructions.Add(new IRUnbox
                 {
                     ObjectExpr = obj,
                     ValueTypeCppName = typeCpp,
                     ResultVar = tmp,
-                    IsUnboxAny = false
+                    IsUnboxAny = false,
+                    ResultTypeCpp = unboxPtrType,
                 });
-                stack.Push(tmp);
+                stack.Push(new StackEntry(tmp, unboxPtrType));
                 break;
             }
 

@@ -392,6 +392,8 @@ public class IRUnbox : IRInstruction
     public string ValueTypeCppName { get; set; } = "";
     public string ResultVar { get; set; } = "";
     public bool IsUnboxAny { get; set; }
+    /// <summary>C++ result type for cross-scope variable pre-declarations.</summary>
+    public string? ResultTypeCpp { get; set; }
     public override string ToCpp() => IsUnboxAny
         ? $"{ResultVar} = cil2cpp::unbox<{ValueTypeCppName}>({ObjectExpr});"
         : $"{ResultVar} = cil2cpp::unbox_ptr<{ValueTypeCppName}>({ObjectExpr});";

@@ -395,16 +395,17 @@ public partial class IRBuilder
             && methodRef.Name == "Add" && methodRef.Parameters.Count == 2)
         {
             var offset = stack.PopExpr();
-            var ptr = stack.PopExprOr("nullptr");
+            var ptrEntry = stack.PopEntry();
+            var ptr = ptrEntry.Expr.Length > 0 ? ptrEntry.Expr : "nullptr";
             var tmp = $"__t{tempCounter++}";
             // HACK: pointer type unknown at this point — decltype preserves it
             block.Instructions.Add(new IRRawCpp
             {
                 Code = $"auto {tmp} = {ptr} + {offset};",
                 ResultVar = tmp,
-                // ResultTypeCpp left null — auto-deduced from pointer operand
+                ResultTypeCpp = ptrEntry.CppType,
             });
-            stack.Push(tmp);
+            stack.Push(new StackEntry(tmp, ptrEntry.CppType));
             return;
         }
 
@@ -638,7 +639,7 @@ public partial class IRBuilder
                 ResultVar = tmp,
                 ResultTypeCpp = "void*",
             });
-            stack.Push(tmp);
+            stack.Push(new StackEntry(tmp, "void*"));
             return;
         }
         // Debug: catch AsPointer with different declaring type
