@@ -809,6 +809,172 @@ public partial class IRBuilder
     }
 
     /// <summary>
+    /// Discover generic types transitively referenced from existing generic specialization bodies.
+    /// When Array.Sort&lt;Object&gt; is created, its Cecil body references ArraySortHelper&lt;T&gt;
+    /// with T as a GenericParameter. We resolve T→Object using the parent type's param map
+    /// and collect ArraySortHelper&lt;Object&gt; as a new generic instantiation.
+    /// Only scans reachable, non-abstract, non-CLR-internal methods to avoid pulling in
+    /// too many uncompilable types.
+    /// </summary>
+    private void DiscoverTransitiveGenericTypes()
+    {
+        var snapshot = _genericInstantiations.ToList();
+
+        foreach (var (key, info) in snapshot)
+        {
+            if (info.CecilOpenType == null) continue;
+            var openType = info.CecilOpenType;
+            if (!openType.HasGenericParameters) continue;
+
+            // Build type parameter name → resolved type name map
+            var nameMap = new Dictionary<string, string>();
+            for (int i = 0; i < openType.GenericParameters.Count && i < info.TypeArguments.Count; i++)
+                nameMap[openType.GenericParameters[i].Name] = info.TypeArguments[i];
+
+            // Scan method bodies for generic type references with unresolved params.
+            // Only scan methods that are likely to compile: reachable, non-abstract, has body.
+            foreach (var method in openType.Methods)
+            {
+                if (!method.HasBody || method.IsAbstract) continue;
+                if (!_reachability.IsReachable(method)) continue;
+                if (HasClrInternalDependencies(method)) continue;
+
+                // Scan local variables
+                foreach (var local in method.Body.Variables)
+                    TryCollectResolvedGenericType(local.VariableType, nameMap);
+
+                // Scan instructions
+                foreach (var instr in method.Body.Instructions)
+                {
+                    switch (instr.Operand)
+                    {
+                        case MethodReference methodRef:
+                            TryCollectResolvedGenericType(methodRef.DeclaringType, nameMap);
+                            TryCollectResolvedGenericType(methodRef.ReturnType, nameMap);
+                            foreach (var p in methodRef.Parameters)
+                                TryCollectResolvedGenericType(p.ParameterType, nameMap);
+                            break;
+                        case FieldReference fieldRef:
+                            TryCollectResolvedGenericType(fieldRef.DeclaringType, nameMap);
+                            TryCollectResolvedGenericType(fieldRef.FieldType, nameMap);
+                            break;
+                        case TypeReference typeRef:
+                            TryCollectResolvedGenericType(typeRef, nameMap);
+                            break;
+                    }
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Attempt to resolve a GenericInstanceType's generic parameters using a name map
+    /// and register the fully resolved type as a generic instantiation.
+    /// </summary>
+    private void TryCollectResolvedGenericType(TypeReference typeRef, Dictionary<string, string> nameMap)
+    {
+        if (typeRef is not GenericInstanceType git) return;
+
+        // If already fully resolved (no generic params), delegate to normal collection
+        if (!git.GenericArguments.Any(ContainsGenericParameter))
+        {
+            CollectGenericType(typeRef);
+            return;
+        }
+
+        // Resolve each generic argument
+        var resolvedArgs = new List<string>();
+        foreach (var arg in git.GenericArguments)
+        {
+            var resolved = ResolveTypeArgument(arg, nameMap);
+            if (resolved == null) return; // Can't fully resolve — skip
+            resolvedArgs.Add(resolved);
+        }
+
+        var openTypeName = git.ElementType.FullName;
+        var instKey = $"{openTypeName}<{string.Join(",", resolvedArgs)}>";
+
+        if (_genericInstantiations.ContainsKey(instKey)) return;
+        if (_typeCache.ContainsKey(instKey)) return;
+
+        // Apply the same filters as CollectGenericType
+        var elemNs = git.ElementType.Namespace;
+        if (!string.IsNullOrEmpty(elemNs) &&
+            FilteredGenericNamespaces.Any(f => elemNs.StartsWith(f)))
+        {
+            if (!VectorScalarFallbackTypes.Contains(openTypeName))
+                return;
+        }
+
+        foreach (var argName in resolvedArgs)
+        {
+            var argNs = argName.Contains('.') ? argName[..argName.LastIndexOf('.')] : "";
+            if (!string.IsNullOrEmpty(argNs) &&
+                FilteredGenericNamespaces.Any(f => argNs.StartsWith(f)))
+            {
+                if (!IsVectorScalarFallbackILType(argName))
+                    return;
+            }
+            if (ClrInternalTypeNames.Contains(argName) || FilteredGenericArgTypes.Contains(argName))
+                return;
+            if (argName.Contains('/'))
+            {
+                var outerTypeName = argName[..argName.IndexOf('/')];
+                if (ClrInternalTypeNames.Contains(outerTypeName) || FilteredGenericArgTypes.Contains(outerTypeName))
+                    return;
+            }
+        }
+
+        var mangledName = CppNameMapper.MangleGenericInstanceTypeName(openTypeName, resolvedArgs);
+        var cecilOpenType = git.ElementType.Resolve();
+
+        _genericInstantiations[instKey] = new GenericInstantiationInfo(
+            openTypeName, resolvedArgs, mangledName, cecilOpenType);
+    }
+
+    /// <summary>
+    /// Resolve a type argument reference using a name map. Returns null if unresolvable.
+    /// </summary>
+    private static string? ResolveTypeArgument(TypeReference typeRef, Dictionary<string, string> nameMap)
+    {
+        if (typeRef is GenericParameter gp)
+            return nameMap.TryGetValue(gp.Name, out var resolved) ? resolved : null;
+
+        if (typeRef is ArrayType at)
+        {
+            var elem = ResolveTypeArgument(at.ElementType, nameMap);
+            return elem != null ? elem + "[]" : null;
+        }
+
+        if (typeRef is ByReferenceType brt)
+        {
+            var elem = ResolveTypeArgument(brt.ElementType, nameMap);
+            return elem != null ? elem + "&" : null;
+        }
+
+        if (typeRef is PointerType pt)
+        {
+            var elem = ResolveTypeArgument(pt.ElementType, nameMap);
+            return elem != null ? elem + "*" : null;
+        }
+
+        if (typeRef is GenericInstanceType git)
+        {
+            var args = new List<string>();
+            foreach (var arg in git.GenericArguments)
+            {
+                var resolved = ResolveTypeArgument(arg, nameMap);
+                if (resolved == null) return null;
+                args.Add(resolved);
+            }
+            return $"{git.ElementType.FullName}<{string.Join(",", args)}>";
+        }
+
+        // Non-generic type — return as-is
+        return typeRef.FullName;
+    }
+
+    /// <summary>
     /// Check if a TypeReference contains unresolved generic parameters (recursively).
     /// Handles GenericParameter, ArrayType (TResult[]), ByReferenceType, PointerType,
     /// and nested GenericInstanceType (Task&lt;TResult&gt;).

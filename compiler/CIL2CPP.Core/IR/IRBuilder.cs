@@ -388,6 +388,13 @@ public partial class IRBuilder
         // Pass 1.5: Create specialized types for each generic instantiation
         CreateGenericSpecializations();
 
+        // FIXME: Transitive generic discovery (DiscoverTransitiveGenericTypes) is implemented
+        // but disabled. It discovers ~200 additional types (e.g., ArraySortHelper<Object> from
+        // Array.Sort<Object>'s body) and reduces UndeclaredFunction stubs by ~50. However,
+        // the newly-created types expose ~154 compilation errors that need RenderedBodyHasErrors
+        // gate hardening before this can be enabled. Key patterns: delegate invoke type mismatch,
+        // Object* vs concrete type casts in generic method bodies.
+
         // Pass 2: Fill in fields, base types, interfaces
         foreach (var typeDef in _allTypes)
         {
