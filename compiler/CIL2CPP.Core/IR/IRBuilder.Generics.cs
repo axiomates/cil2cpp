@@ -595,6 +595,11 @@ public partial class IRBuilder
             }
         }
 
+        // Pass 1.5: Auto-create nested type specializations (Entry, Enumerator, etc.)
+        // When Dictionary<String,Object> is created, also create Dictionary<String,Object>.Entry,
+        // Dictionary<String,Object>.Enumerator, etc. with the same type arguments.
+        CreateNestedGenericSpecializations();
+
         // Second pass: resolve base types, interfaces, HasCctor for generic specializations.
         // Done after all specializations are in the cache so cross-references work
         // (e.g., SpecialWrapper<int> : Wrapper<int> needs Wrapper<int> already cached).
@@ -640,6 +645,159 @@ public partial class IRBuilder
 
             // Recalculate instance size (BaseType may contribute inherited fields)
             CalculateInstanceSize(irType);
+        }
+    }
+
+    /// <summary>
+    /// Auto-create specializations for nested types of generic types.
+    /// When Dictionary&lt;String,Object&gt; is specialized, also create:
+    ///   - Dictionary&lt;String,Object&gt;.Entry (used by Dictionary method bodies)
+    ///   - Dictionary&lt;String,Object&gt;.Enumerator (returned by GetEnumerator)
+    ///   - List&lt;T&gt;.Enumerator, etc.
+    /// </summary>
+    private void CreateNestedGenericSpecializations()
+    {
+        // Collect nested types to add (can't modify _genericInstantiations while iterating)
+        var nestedToAdd = new List<(string key, GenericInstantiationInfo info)>();
+
+        foreach (var (key, info) in _genericInstantiations)
+        {
+            if (info.CecilOpenType == null) continue;
+            if (!info.CecilOpenType.HasNestedTypes) continue;
+
+            foreach (var nestedTypeDef in info.CecilOpenType.NestedTypes)
+            {
+                // Skip non-generic nested types or those with their own additional generic params
+                // We only handle nested types that inherit the parent's generic params exactly
+                if (nestedTypeDef.HasGenericParameters &&
+                    nestedTypeDef.GenericParameters.Count != info.CecilOpenType.GenericParameters.Count)
+                    continue;
+
+                var nestedOpenName = nestedTypeDef.FullName; // e.g. "System.Collections.Generic.Dictionary`2/Entry"
+                var nestedKey = $"{nestedOpenName}<{string.Join(",", info.TypeArguments)}>";
+
+                // Skip if already created
+                if (_genericInstantiations.ContainsKey(nestedKey)) continue;
+                if (_typeCache.ContainsKey(nestedKey)) continue;
+
+                var nestedMangledName = CppNameMapper.MangleGenericInstanceTypeName(nestedOpenName, info.TypeArguments);
+                var nestedInfo = new GenericInstantiationInfo(
+                    nestedOpenName, info.TypeArguments, nestedMangledName, nestedTypeDef);
+
+                nestedToAdd.Add((nestedKey, nestedInfo));
+            }
+        }
+
+        if (nestedToAdd.Count == 0) return;
+
+        // Register nested types and create IRType objects for them
+        foreach (var (nestedKey, info) in nestedToAdd)
+        {
+            if (_genericInstantiations.ContainsKey(nestedKey)) continue;
+            _genericInstantiations[nestedKey] = info;
+
+            var openType = info.CecilOpenType;
+            if (openType == null) continue;
+
+            var typeParamMap = new Dictionary<string, string>();
+            for (int i = 0; i < openType.GenericParameters.Count && i < info.TypeArguments.Count; i++)
+                typeParamMap[openType.GenericParameters[i].Name] = info.TypeArguments[i];
+
+            var irType = new IRType
+            {
+                ILFullName = nestedKey,
+                CppName = info.MangledName,
+                Name = info.MangledName,
+                Namespace = openType.Namespace,
+                IsValueType = openType.IsValueType,
+                IsInterface = openType.IsInterface,
+                IsAbstract = openType.IsAbstract,
+                IsSealed = openType.IsSealed,
+                IsGenericInstance = true,
+                IsDelegate = openType.BaseType?.FullName is "System.MulticastDelegate" or "System.Delegate",
+                GenericArguments = info.TypeArguments,
+                IsRuntimeProvided = false,
+                SourceKind = _assemblySet.ClassifyAssembly(openType.Module.Assembly.Name.Name),
+            };
+
+            if (openType.IsValueType)
+            {
+                CppNameMapper.RegisterValueType(nestedKey);
+                CppNameMapper.RegisterValueType(info.MangledName);
+            }
+
+            // Fields
+            foreach (var fieldDef in openType.Fields)
+            {
+                var fieldTypeName = ResolveGenericTypeName(fieldDef.FieldType, typeParamMap);
+                var irField = new IRField
+                {
+                    Name = fieldDef.Name,
+                    CppName = CppNameMapper.MangleFieldName(fieldDef.Name),
+                    FieldTypeName = fieldTypeName,
+                    IsStatic = fieldDef.IsStatic,
+                    IsPublic = fieldDef.IsPublic,
+                    DeclaringType = irType,
+                };
+                if (fieldDef.IsStatic)
+                    irType.StaticFields.Add(irField);
+                else
+                    irType.Fields.Add(irField);
+            }
+
+            if (irType.IsValueType && openType.HasLayoutInfo && openType.ClassSize > 0)
+                irType.ExplicitSize = openType.ClassSize;
+
+            CalculateInstanceSize(irType);
+
+            _module.Types.Add(irType);
+            _typeCache[nestedKey] = irType;
+
+            // Create method stubs for nested type (declarations only, no body conversion)
+            // The bodies are mostly inaccessible from user code anyway — we only need
+            // the struct definition for sizeof/locals in parent type methods.
+            foreach (var methodDef in openType.Methods)
+            {
+                var returnTypeName = ResolveGenericTypeName(methodDef.ReturnType, typeParamMap);
+                var cppName = CppNameMapper.MangleMethodName(info.MangledName, methodDef.Name);
+
+                var irMethod = new IRMethod
+                {
+                    Name = methodDef.Name,
+                    CppName = cppName,
+                    DeclaringType = irType,
+                    ReturnTypeCpp = ResolveTypeForDecl(returnTypeName),
+                    IsStatic = methodDef.IsStatic,
+                    IsVirtual = methodDef.IsVirtual,
+                    IsAbstract = methodDef.IsAbstract,
+                    IsConstructor = methodDef.IsConstructor,
+                    IsStaticConstructor = methodDef.IsConstructor && methodDef.IsStatic,
+                };
+
+                foreach (var paramDef in methodDef.Parameters)
+                {
+                    var paramTypeName = ResolveGenericTypeName(paramDef.ParameterType, typeParamMap);
+                    irMethod.Parameters.Add(new IRParameter
+                    {
+                        Name = paramDef.Name.Length > 0 ? paramDef.Name : $"p{paramDef.Index}",
+                        CppName = SanitizeParamName(paramDef.Name, paramDef.Index),
+                        CppTypeName = ResolveTypeForDecl(paramTypeName),
+                        ILTypeName = paramTypeName,
+                        Index = paramDef.Index,
+                    });
+                }
+
+                irType.Methods.Add(irMethod);
+
+                // TODO: Nested type method bodies are stubbed for now.
+                // The struct definitions are sufficient for resolving HasUnknownBodyReferences
+                // in parent type methods (e.g., Dictionary uses Entry as local variable type).
+                // Future: compile bodies for methods like Enumerator.MoveNext when needed.
+                if (methodDef.HasBody && !methodDef.IsAbstract)
+                {
+                    GenerateStubBody(irMethod);
+                }
+            }
         }
     }
 
@@ -867,6 +1025,18 @@ public partial class IRBuilder
             return CppNameMapper.MangleGenericInstanceTypeName(openTypeName, args);
         }
         return CppNameMapper.MangleTypeName(key);
+    }
+
+    /// <summary>
+    /// Sanitize a parameter name for C++ — C# compiler-generated names like &lt;&gt;1__state
+    /// contain angle brackets which are invalid in C++ identifiers.
+    /// </summary>
+    private static string SanitizeParamName(string name, int index)
+    {
+        if (name.Length == 0) return $"p{index}";
+        if (name.Contains('<') || name.Contains('>'))
+            return $"p_{name.Replace("<", "").Replace(">", "")}";
+        return name;
     }
 
     /// <summary>
