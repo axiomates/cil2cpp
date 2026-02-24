@@ -215,6 +215,9 @@ public partial class CppCodeGenerator
         // External BCL enum types (emitted as "using X = int32_t" aliases in header)
         foreach (var (mangled, _) in _module.ExternalEnumTypes)
             _knownTypeNames.Add(mangled);
+        // Primitive types with TypeInfo definitions (emitted in data file)
+        foreach (var entry in _module.PrimitiveTypeInfos.Values)
+            _knownTypeNames.Add(entry.CppMangledName);
         // NOTE: _headerForwardDeclared types are NOT added to _knownTypeNames here.
         // Forward-declared types only support pointer usage (Type*), not value usage (sizeof/locals).
         // The HasUnknownBodyReferences gate checks _headerForwardDeclared separately for pointer locals.

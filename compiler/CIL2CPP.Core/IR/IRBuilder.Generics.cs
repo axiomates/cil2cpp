@@ -1008,6 +1008,9 @@ public partial class IRBuilder
                 // Add arity-prefixed patterns: _1_TKey → _1_System_String, _2_TKey → _2_System_String
                 for (int arity = 1; arity <= 8; arity++)
                     mangledResolvedMap[$"_{arity}_{paramName}"] = $"_{arity}_{mangledResolved}";
+
+                // Note: array type pattern (T[]) is handled at the ldtoken level in IRBuilder.Methods.cs
+                // (all arrays use System_Array_TypeInfo), so no mangled T__ pattern needed here.
             }
         }
 

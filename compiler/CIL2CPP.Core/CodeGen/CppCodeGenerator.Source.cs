@@ -98,6 +98,8 @@ public partial class CppCodeGenerator
                     continue;
                 }
 
+                // System.Void has no sizeof — use 0 for instance/element sizes
+                var sizeExpr = entry.ILFullName == "System.Void" ? "0" : $"sizeof({entry.CppTypeName})";
                 sb.AppendLine($"cil2cpp::TypeInfo {entry.CppMangledName}_TypeInfo = {{");
                 sb.AppendLine($"    .name = \"{entry.ILFullName.Split('.').Last()}\",");
                 sb.AppendLine($"    .namespace_name = \"{entry.ILFullName[..entry.ILFullName.LastIndexOf('.')]}\",");
@@ -105,8 +107,8 @@ public partial class CppCodeGenerator
                 sb.AppendLine($"    .base_type = nullptr,");
                 sb.AppendLine($"    .interfaces = nullptr,");
                 sb.AppendLine($"    .interface_count = 0,");
-                sb.AppendLine($"    .instance_size = sizeof({entry.CppTypeName}),");
-                sb.AppendLine($"    .element_size = sizeof({entry.CppTypeName}),");
+                sb.AppendLine($"    .instance_size = {sizeExpr},");
+                sb.AppendLine($"    .element_size = {sizeExpr},");
                 // Primitive types get both ValueType and Primitive flags (ECMA-335)
                 sb.AppendLine($"    .flags = cil2cpp::TypeFlags::ValueType | cil2cpp::TypeFlags::Primitive,");
                 sb.AppendLine($"    .vtable = nullptr,");

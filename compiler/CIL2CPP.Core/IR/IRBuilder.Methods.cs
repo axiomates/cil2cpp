@@ -676,14 +676,24 @@ public partial class IRBuilder
                 else if (instr.Operand is TypeReference typeRef)
                 {
                     // ldtoken <type> → push pointer to TypeInfo (RuntimeTypeHandle)
-                    var typeCpp = GetMangledTypeNameForRef(typeRef);
-                    // Ensure TypeInfo exists for primitive types used in typeof()
-                    if (CppNameMapper.IsPrimitive(typeRef.FullName)
-                        && typeRef.FullName != "System.Void")
+                    // Array types (T[]) all share System.Array's TypeInfo in the runtime.
+                    // This also handles generic array types (T[] where T is a type param)
+                    // which would otherwise produce unresolvable T___TypeInfo references.
+                    string typeInfoName;
+                    if (typeRef is Mono.Cecil.ArrayType)
                     {
-                        _module.RegisterPrimitiveTypeInfo(typeRef.FullName);
+                        typeInfoName = "System_Array";
                     }
-                    stack.Push(new StackEntry($"&{typeCpp}_TypeInfo", "cil2cpp::TypeInfo*"));
+                    else
+                    {
+                        typeInfoName = GetMangledTypeNameForRef(typeRef);
+                        // Ensure TypeInfo exists for primitive types used in typeof()
+                        if (CppNameMapper.IsPrimitive(typeRef.FullName))
+                        {
+                            _module.RegisterPrimitiveTypeInfo(typeRef.FullName);
+                        }
+                    }
+                    stack.Push(new StackEntry($"&{typeInfoName}_TypeInfo", "cil2cpp::TypeInfo*"));
                 }
                 else if (instr.Operand is MethodReference)
                 {
