@@ -1496,6 +1496,11 @@ public partial class CppCodeGenerator
         if (rendered.Contains("gc_allocate_uninitialized_array") && rendered.Contains("CompareExchange"))
             return true;
 
+        // Body-level check: CIL2CPP_FINALLY without CIL2CPP_END_TRY — missing end-of-try-finally
+        // causes unclosed braces (C2601 "local function definition is illegal" / C1075 "unmatched {")
+        if (rendered.Contains("CIL2CPP_FINALLY") && !rendered.Contains("CIL2CPP_END_TRY"))
+            return true;
+
         // Body-level check: field access via parameter or ldelema on forward-declared-only types.
         // The ldelema fix (StackEntry type) correctly uses -> for pointer access, but if the
         // element type is only forward-declared, MSVC gives C2027 "undefined type".
@@ -1673,8 +1678,54 @@ public partial class CppCodeGenerator
                         if (s.Contains($"== {temp}") || s.Contains($"!= {temp}") ||
                             s.Contains($"{temp} ==") || s.Contains($"{temp} !="))
                             return true;
+                        // Field access on Object* (C2039 — Object has no user fields)
+                        if (s.Contains($"{temp}->f_"))
+                            return true;
                     }
                 }
+            }
+        }
+
+        // Multi-line pattern: MdArray** from array_get_element_ptr used with field access (C2039)
+        // Generic specialization maps array elements to MdArray* but actual struct fields don't exist on MdArray.
+        {
+            var mdArrayTemps = new HashSet<string>();
+            foreach (var line in rendered.AsSpan().EnumerateLines())
+            {
+                var s = line.ToString().TrimStart();
+                if (s.StartsWith("auto ") && s.Contains("(cil2cpp::MdArray**)cil2cpp::array_get_element_ptr("))
+                {
+                    var varEnd = s.IndexOf(' ', 5);
+                    if (varEnd > 5)
+                        mdArrayTemps.Add(s[5..varEnd]);
+                }
+            }
+            if (mdArrayTemps.Count > 0)
+            {
+                foreach (var line in rendered.AsSpan().EnumerateLines())
+                {
+                    var s = line.ToString().TrimStart();
+                    foreach (var temp in mdArrayTemps)
+                    {
+                        if (s.Contains($"{temp}->f_") || s.Contains($"{temp}.f_"))
+                            return true;
+                    }
+                }
+            }
+        }
+
+        // Multi-line pattern: MdArray* passed as typed pointer argument in function calls (C2664)
+        // Generic specialization sometimes maps ConditionalWeakTable<T[],V> parent ref to MdArray*
+        // instead of the actual ConditionalWeakTable type.
+        if (rendered.Contains("(cil2cpp::MdArray*)(void*)"))
+        {
+            foreach (var line in rendered.AsSpan().EnumerateLines())
+            {
+                var s = line.ToString().TrimStart();
+                // Pattern: FuncName(..., (cil2cpp::MdArray*)(void*)expr) — passing MdArray* to non-array function
+                if (s.Contains("(cil2cpp::MdArray*)(void*)") && !s.StartsWith("auto ") &&
+                    !s.Contains("array_") && !s.Contains("= (cil2cpp::MdArray*)"))
+                    return true;
             }
         }
 
@@ -2843,6 +2894,35 @@ public partial class CppCodeGenerator
         if (s.Contains("Interlocked_CompareExchange__System_IntPtr") &&
             s.Contains("overlapped", StringComparison.OrdinalIgnoreCase))
             return true;
+
+        // Pattern: delegate invoke with Object* arg where typed pointer expected (C2664).
+        // Generic collection methods (List<T>.FindIndex, Array.Sort<T>) use ldelem.ref
+        // which produces Object*, but the delegate function pointer expects T*.
+        // Detect: inline delegate dispatch (->method_ptr) where a non-Object* parameter
+        // type appears in the function pointer cast but the actual arg is Object*.
+        if (s.Contains("->method_ptr)") && s.Contains("cil2cpp::Object*"))
+        {
+            // Check if the function pointer type expects a non-Object typed pointer
+            // Pattern: (bool(*)(Object*, SomeType*))(delegate->method_ptr)
+            var fptIdx = s.IndexOf("(*)(");
+            if (fptIdx >= 0)
+            {
+                var fptEnd = s.IndexOf("))", fptIdx);
+                if (fptEnd > fptIdx)
+                {
+                    var fptParams = s[(fptIdx + 4)..fptEnd];
+                    // Count non-Object pointer params in the function pointer signature
+                    var parts = fptParams.Split(',');
+                    foreach (var part in parts)
+                    {
+                        var p = part.Trim();
+                        if (p.EndsWith("*") && !p.Contains("cil2cpp::Object*")
+                            && !p.Contains("void*"))
+                            return true;
+                    }
+                }
+            }
+        }
 
         return false;
     }

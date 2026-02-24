@@ -358,10 +358,11 @@ public partial class IRBuilder
             foreach (var paramDef in cecilMethod.Parameters)
             {
                 var paramTypeName = ResolveGenericTypeName(paramDef.ParameterType, typeParamMap);
+                var rawParamName = paramDef.Name.Length > 0 ? paramDef.Name : $"p{paramDef.Index}";
                 irMethod.Parameters.Add(new IRParameter
                 {
-                    Name = paramDef.Name.Length > 0 ? paramDef.Name : $"p{paramDef.Index}",
-                    CppName = paramDef.Name.Length > 0 ? paramDef.Name : $"p{paramDef.Index}",
+                    Name = rawParamName,
+                    CppName = CppNameMapper.MangleIdentifier(rawParamName),
                     CppTypeName = ResolveTypeForDecl(paramTypeName),
                     ILTypeName = paramTypeName,
                     Index = paramDef.Index,
@@ -545,10 +546,11 @@ public partial class IRBuilder
                     foreach (var paramDef in methodDef.Parameters)
                     {
                         var paramTypeName = ResolveGenericTypeName(paramDef.ParameterType, typeParamMap);
+                        var rawParamName = paramDef.Name.Length > 0 ? paramDef.Name : $"p{paramDef.Index}";
                         irMethod.Parameters.Add(new IRParameter
                         {
-                            Name = paramDef.Name.Length > 0 ? paramDef.Name : $"p{paramDef.Index}",
-                            CppName = paramDef.Name.Length > 0 ? paramDef.Name : $"p{paramDef.Index}",
+                            Name = rawParamName,
+                            CppName = CppNameMapper.MangleIdentifier(rawParamName),
                             CppTypeName = ResolveTypeForDecl(paramTypeName),
                             ILTypeName = paramTypeName,
                             Index = paramDef.Index,
@@ -816,12 +818,14 @@ public partial class IRBuilder
     /// Only scans reachable, non-abstract, non-CLR-internal methods to avoid pulling in
     /// too many uncompilable types.
     /// </summary>
-    private void DiscoverTransitiveGenericTypes()
+    private void DiscoverTransitiveGenericTypes(HashSet<string> scannedKeys)
     {
         var snapshot = _genericInstantiations.ToList();
 
         foreach (var (key, info) in snapshot)
         {
+            if (scannedKeys.Contains(key)) continue;
+            scannedKeys.Add(key);
             if (info.CecilOpenType == null) continue;
             var openType = info.CecilOpenType;
             if (!openType.HasGenericParameters) continue;

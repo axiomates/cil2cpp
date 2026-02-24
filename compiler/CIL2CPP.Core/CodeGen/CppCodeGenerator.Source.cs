@@ -721,6 +721,8 @@ public partial class CppCodeGenerator
             return "void* → intptr_t implicit conversion";
         if (rendered.Contains("gc_allocate_uninitialized_array") && rendered.Contains("CompareExchange"))
             return "gc_allocate_uninitialized_array + CompareExchange type mismatch";
+        if (rendered.Contains("CIL2CPP_FINALLY") && !rendered.Contains("CIL2CPP_END_TRY"))
+            return "CIL2CPP_FINALLY without CIL2CPP_END_TRY (missing brace closure)";
         if (rendered.Contains("Action_1_System_Object_Invoke"))
             return "undeclared Action<Object> delegate specialization";
         if (rendered.Contains("CancellationToken") && rendered.Contains("->f_message = (cil2cpp::String*)"))
@@ -829,9 +831,19 @@ public partial class CppCodeGenerator
                 return "FreeCoTaskMem pointer→intptr_t";
             if (s.Contains("lParam.f_")) return "void* dot access";
             if (s.Contains("SpanHelpers_UnalignedCount")) return "SpanHelpers pointer alignment";
+            if (s.Contains("->method_ptr)") && s.Contains("cil2cpp::Object*"))
+                return "delegate invoke Object* → typed pointer mismatch";
         }
 
         // === Multi-line patterns ===
+        // MdArray** from array_get_element_ptr with field access
+        if (rendered.Contains("(cil2cpp::MdArray**)cil2cpp::array_get_element_ptr("))
+            return "MdArray** element field access (generic array type mapping)";
+
+        // MdArray* passed as typed pointer argument
+        if (rendered.Contains("(cil2cpp::MdArray*)(void*)"))
+            return "MdArray* → typed pointer mismatch (generic array type mapping)";
+
         if (rendered.Contains("= *(cil2cpp::Object**)"))
             return "Object* from byref dereference used as typed pointer";
 

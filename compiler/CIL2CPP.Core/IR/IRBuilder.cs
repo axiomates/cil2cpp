@@ -385,15 +385,22 @@ public partial class IRBuilder
             _typeCache[typeDef.FullName] = irType;
         }
 
+        // Pass 0.5: Discover transitive generic types from method bodies.
+        // When Dictionary<Int32,Task> is discovered, its open body calls EqualityComparer<TKey>.Default
+        // — resolve TKey→Int32 to discover EqualityComparer<Int32> as a new instantiation.
+        // Fixpoint loop: newly discovered types may reference further generic types.
+        {
+            var scannedKeys = new HashSet<string>();
+            int prevCount;
+            do
+            {
+                prevCount = _genericInstantiations.Count;
+                DiscoverTransitiveGenericTypes(scannedKeys);
+            } while (_genericInstantiations.Count > prevCount);
+        }
+
         // Pass 1.5: Create specialized types for each generic instantiation
         CreateGenericSpecializations();
-
-        // FIXME: Transitive generic discovery (DiscoverTransitiveGenericTypes) is implemented
-        // but disabled. It discovers ~200 additional types (e.g., ArraySortHelper<Object> from
-        // Array.Sort<Object>'s body) and reduces UndeclaredFunction stubs by ~50. However,
-        // the newly-created types expose ~154 compilation errors that need RenderedBodyHasErrors
-        // gate hardening before this can be enabled. Key patterns: delegate invoke type mismatch,
-        // Object* vs concrete type casts in generic method bodies.
 
         // Pass 2: Fill in fields, base types, interfaces
         foreach (var typeDef in _allTypes)
