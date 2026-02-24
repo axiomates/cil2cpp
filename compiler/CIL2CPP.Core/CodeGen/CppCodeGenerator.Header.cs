@@ -526,9 +526,9 @@ public partial class CppCodeGenerator
     }
 
     /// <summary>
-    /// Scan method locals for unknown non-pointer value types and add opaque stubs.
-    /// This catches value type locals like Span&lt;T&gt;, EventData, ListBuilder&lt;T&gt;, etc.
-    /// that don't have struct definitions in the IR module.
+    /// Scan method locals, parameters, and return types for unknown non-pointer value types
+    /// and add opaque stubs. This catches value types like Span&lt;T&gt;, EventData, ListBuilder&lt;T&gt;,
+    /// ReadOnlySpan&lt;T&gt; etc. that don't have struct definitions in the IR module.
     /// </summary>
     private static void CollectUnknownValueTypeLocals(
         List<IRType> types, HashSet<string> definedTypes, HashSet<string> stubs)
@@ -538,22 +538,33 @@ public partial class CppCodeGenerator
             if (type.IsEnum || type.IsDelegate) continue;
             foreach (var method in type.Methods)
             {
+                // Scan locals
                 foreach (var local in method.Locals)
-                {
-                    var cppType = local.CppTypeName;
-                    if (string.IsNullOrEmpty(cppType)) continue;
-                    if (cppType.EndsWith("*")) continue; // pointer types only need forward decl
-                    var rawType = cppType.Trim();
-                    if (rawType.Length == 0 || rawType.StartsWith("cil2cpp::") ||
-                        IsCppPrimitiveType(rawType)) continue;
-                    if (definedTypes.Contains(rawType)) continue;
-                    if (!IsValidCppIdentifier(rawType)) continue;
-                    // Skip unresolved generic params (TChar, T1, etc.) — no underscore
-                    if (!rawType.Contains('_')) continue;
-                    stubs.Add(rawType);
-                }
+                    TryAddValueTypeStub(local.CppTypeName, definedTypes, stubs);
+
+                // Scan parameters (non-pointer value types in method signatures)
+                foreach (var param in method.Parameters)
+                    TryAddValueTypeStub(param.CppTypeName, definedTypes, stubs);
+
+                // Scan return type
+                if (!string.IsNullOrEmpty(method.ReturnTypeCpp))
+                    TryAddValueTypeStub(method.ReturnTypeCpp, definedTypes, stubs);
             }
         }
+    }
+
+    private static void TryAddValueTypeStub(string cppType, HashSet<string> definedTypes, HashSet<string> stubs)
+    {
+        if (string.IsNullOrEmpty(cppType)) return;
+        if (cppType.EndsWith("*")) return; // pointer types only need forward decl
+        var rawType = cppType.Trim();
+        if (rawType.Length == 0 || rawType.StartsWith("cil2cpp::") ||
+            IsCppPrimitiveType(rawType)) return;
+        if (definedTypes.Contains(rawType)) return;
+        if (!IsValidCppIdentifier(rawType)) return;
+        // Skip unresolved generic params (TChar, T1, etc.) — no underscore
+        if (!rawType.Contains('_')) return;
+        stubs.Add(rawType);
     }
 
     private static void CheckFieldForStub(string fieldTypeName, HashSet<string> definedTypes, HashSet<string> stubs)
