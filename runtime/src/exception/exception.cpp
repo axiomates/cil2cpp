@@ -584,4 +584,10 @@ EXCEPTION_TYPEINFO(DirectoryNotFoundException,     "System.IO", "System.IO.Direc
     throw_exception(ex);
 }
 
+#ifndef NDEBUG
+void stub_called(const char* name) {
+    fprintf(stderr, "[CIL2CPP] WARNING: stub method called: %s\n", name);
+}
+#endif
+
 } // namespace cil2cpp

@@ -1,0 +1,12 @@
+{
+  "HelloWorld": {
+    "total": 3310,
+    "MissingBody": 2039,
+    "KnownBrokenPattern": 808,
+    "UndeclaredFunction": 305,
+    "ClrInternalType": 96,
+    "UnknownBodyReferences": 40,
+    "UnknownParameterTypes": 22,
+    "RenderedBodyError": 0
+  }
+}

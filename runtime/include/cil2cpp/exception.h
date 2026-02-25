@@ -209,6 +209,16 @@ extern TypeInfo IOException_TypeInfo;
 extern TypeInfo FileNotFoundException_TypeInfo;
 extern TypeInfo DirectoryNotFoundException_TypeInfo;
 
+/**
+ * Debug diagnostic: log when a stub method is called at runtime.
+ * Debug builds print to stderr; Release builds are no-ops.
+ */
+#ifdef NDEBUG
+inline void stub_called(const char* /*name*/) {}
+#else
+void stub_called(const char* name);
+#endif
+
 } // namespace cil2cpp
 
 // Exception handling macros for generated code

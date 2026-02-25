@@ -107,6 +107,8 @@ bool join_timeout(ManagedThread* t, Int32 timeout_ms) {
     auto deadline = std::chrono::steady_clock::now() +
         std::chrono::milliseconds(timeout_ms);
 
+    // Exponential backoff: 1ms → 2ms → 4ms → ... → cap 50ms
+    Int32 sleep_ms = 1;
     while (std::chrono::steady_clock::now() < deadline) {
         if (t->state == 2) {
             // Thread finished — join to clean up
@@ -118,7 +120,8 @@ bool join_timeout(ManagedThread* t, Int32 timeout_ms) {
             }
             return true;
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        std::this_thread::sleep_for(std::chrono::milliseconds(sleep_ms));
+        if (sleep_ms < 50) sleep_ms *= 2;
     }
     return false;
 }
@@ -128,9 +131,14 @@ void sleep(Int32 milliseconds) {
         std::this_thread::sleep_for(std::chrono::milliseconds(milliseconds));
     } else if (milliseconds == 0) {
         std::this_thread::yield();
+    } else {
+        // .NET: Sleep(-1) = Timeout.Infinite = wait forever.
+        // Other negative values are ArgumentOutOfRange in full .NET,
+        // but we treat all negatives as infinite for simplicity.
+        while (true) {
+            std::this_thread::sleep_for(std::chrono::hours(24));
+        }
     }
-    // milliseconds < 0: throw ArgumentOutOfRange in full .NET, but Sleep(-1) = infinite wait.
-    // For simplicity, treat negative as yield (except -1 which would be infinite — rare).
 }
 
 bool is_alive(ManagedThread* t) {

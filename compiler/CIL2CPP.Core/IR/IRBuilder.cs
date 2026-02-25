@@ -234,6 +234,11 @@ public partial class IRBuilder
     private static void GenerateStubBody(IRMethod irMethod)
     {
         var block = new IRBasicBlock { Id = 0 };
+
+        // Emit stub_called diagnostic (Debug builds print to stderr, Release is no-op)
+        var escapedName = (irMethod.CppName ?? irMethod.Name ?? "unknown").Replace("\\", "\\\\").Replace("\"", "\\\"");
+        block.Instructions.Add(new IRRawCpp { Code = $"cil2cpp::stub_called(\"{escapedName}\");" });
+
         string? retVal = null;
         if (irMethod.ReturnTypeCpp != "void")
         {

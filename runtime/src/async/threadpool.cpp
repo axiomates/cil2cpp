@@ -86,9 +86,17 @@ bool is_initialized() {
 void queue_work(void (*func)(void*), void* state) {
     {
         std::lock_guard<std::mutex> lock(s_mutex);
-        s_queue.push({func, state});
+        if (s_shutdown) {
+            // Pool shut down — run synchronously to avoid silent data loss.
+            // Unlock before calling func to avoid deadlock if func re-enters.
+        } else {
+            s_queue.push({func, state});
+            s_cv.notify_one();
+            return;
+        }
     }
-    s_cv.notify_one();
+    // Fallback: synchronous execution after shutdown
+    func(state);
 }
 
 // Delegate invocation trampoline

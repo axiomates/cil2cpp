@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.Json;
 using CIL2CPP.Core.IR;
 
 namespace CIL2CPP.Core.CodeGen;
@@ -453,6 +454,100 @@ public class StubAnalyzer
         }
 
         return sb.ToString();
+    }
+
+    /// <summary>
+    /// Check stub counts against a budget file. Returns true if within budget.
+    /// Ratchets down (auto-updates) the budget file when actual counts are lower.
+    /// </summary>
+    public static bool CheckBudget(string budgetPath, string assemblyName,
+        StubAnalysisResult result, out string message)
+    {
+        if (!File.Exists(budgetPath))
+        {
+            message = $"[STUB BUDGET] No budget file found at {budgetPath}";
+            return true; // No budget file = no check
+        }
+
+        var json = File.ReadAllText(budgetPath);
+        var doc = JsonDocument.Parse(json);
+
+        if (!doc.RootElement.TryGetProperty(assemblyName, out var budget))
+        {
+            message = $"[STUB BUDGET] No budget entry for '{assemblyName}'";
+            return true;
+        }
+
+        var sb = new StringBuilder();
+        bool exceeded = false;
+        bool ratcheted = false;
+
+        var categories = new (string Name, StubRootCause Cause)[]
+        {
+            ("MissingBody", StubRootCause.MissingBody),
+            ("KnownBrokenPattern", StubRootCause.KnownBrokenPattern),
+            ("UndeclaredFunction", StubRootCause.UndeclaredFunction),
+            ("ClrInternalType", StubRootCause.ClrInternalType),
+            ("UnknownBodyReferences", StubRootCause.UnknownBodyReferences),
+            ("UnknownParameterTypes", StubRootCause.UnknownParameterTypes),
+            ("RenderedBodyError", StubRootCause.RenderedBodyError),
+        };
+
+        int actualTotal = result.CountByRootCause.Values.Sum();
+        int budgetTotal = budget.TryGetProperty("total", out var t) ? t.GetInt32() : int.MaxValue;
+
+        if (actualTotal > budgetTotal)
+        {
+            sb.AppendLine($"  EXCEEDED total: {actualTotal} > {budgetTotal} (budget)");
+            exceeded = true;
+        }
+
+        foreach (var (name, cause) in categories)
+        {
+            int actual = result.CountByRootCause.GetValueOrDefault(cause);
+            int budgetVal = budget.TryGetProperty(name, out var bv) ? bv.GetInt32() : int.MaxValue;
+            if (actual > budgetVal)
+            {
+                sb.AppendLine($"  EXCEEDED {name}: {actual} > {budgetVal} (budget)");
+                exceeded = true;
+            }
+        }
+
+        if (exceeded)
+        {
+            message = $"[STUB BUDGET EXCEEDED]\n{sb}";
+            return false;
+        }
+
+        // Ratchet: auto-tighten budget if actual < budget
+        if (actualTotal < budgetTotal)
+        {
+            ratcheted = true;
+            var newBudget = new Dictionary<string, object>
+            {
+                ["total"] = actualTotal,
+            };
+            foreach (var (name, cause) in categories)
+            {
+                newBudget[name] = result.CountByRootCause.GetValueOrDefault(cause);
+            }
+
+            // Read entire JSON, replace this assembly's entry, write back
+            var root = JsonSerializer.Deserialize<Dictionary<string, Dictionary<string, int>>>(json) ?? new();
+            var entry = new Dictionary<string, int> { ["total"] = actualTotal };
+            foreach (var (name, cause) in categories)
+                entry[name] = result.CountByRootCause.GetValueOrDefault(cause);
+            root[assemblyName] = entry;
+
+            var options = new JsonSerializerOptions { WriteIndented = true };
+            File.WriteAllText(budgetPath, JsonSerializer.Serialize(root, options) + "\n");
+        }
+
+        if (ratcheted)
+            message = $"[STUB BUDGET RATCHETED: {budgetTotal} → {actualTotal}]";
+        else
+            message = $"[STUB BUDGET OK: {actualTotal} <= {budgetTotal}]";
+        return true;
     }
 }
 

@@ -555,7 +555,9 @@ def cmd_integration(args):
 
     def hw_codegen():
         run(["dotnet", "run", "--project", str(CLI_PROJECT), "--",
-             "codegen", "-i", str(hw_sample), "-o", str(hw_output)],
+             "codegen", "-i", str(hw_sample), "-o", str(hw_output),
+             "--analyze-stubs",
+             "--stub-budget", str(REPO_ROOT / "tests" / "baselines" / "stub_budget.json")],
             capture=True)
 
     def hw_files_exist():

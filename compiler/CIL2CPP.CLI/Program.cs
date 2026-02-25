@@ -67,16 +67,20 @@ class Program
             name: "--analyze-stubs",
             getDefaultValue: () => false,
             description: "Run stub root-cause analysis and generate detailed report");
+        var stubBudgetOption = new Option<string?>(
+            name: "--stub-budget",
+            getDefaultValue: () => null,
+            description: "Path to stub budget JSON file for ratchet check (requires --analyze-stubs)");
 
         var codegenCommand = new Command("codegen", "Generate C++ code from C# project (without compiling)")
         {
-            codegenInputOption, codegenOutputOption, codegenConfigOption, analyzeStubsOption
+            codegenInputOption, codegenOutputOption, codegenConfigOption, analyzeStubsOption, stubBudgetOption
         };
 
-        codegenCommand.SetHandler((input, output, config, analyzeStubs) =>
+        codegenCommand.SetHandler((input, output, config, analyzeStubs, stubBudget) =>
         {
-            GenerateCpp(input, output, config, analyzeStubs);
-        }, codegenInputOption, codegenOutputOption, codegenConfigOption, analyzeStubsOption);
+            GenerateCpp(input, output, config, analyzeStubs, stubBudget);
+        }, codegenInputOption, codegenOutputOption, codegenConfigOption, analyzeStubsOption, stubBudgetOption);
 
         rootCommand.AddCommand(codegenCommand);
 
@@ -220,7 +224,7 @@ class Program
     }
 
     static void GenerateCpp(FileInfo input, DirectoryInfo output, string configName = "Release",
-        bool analyzeStubs = false)
+        bool analyzeStubs = false, string? stubBudgetPath = null)
     {
         var prepared = PrepareBuild(input, output, configName);
         if (prepared is not var (assemblyFile, config)) return;
@@ -274,6 +278,19 @@ class Program
                     var reportPath = Path.Combine(output.FullName, "stub_analysis.txt");
                     File.WriteAllText(reportPath, report);
                     Console.WriteLine($"Analysis report written to: {reportPath}");
+                }
+
+                // Budget check (ratchet)
+                if (stubBudgetPath != null && generator.AnalysisResult != null)
+                {
+                    var ok = StubAnalyzer.CheckBudget(stubBudgetPath,
+                        module.Name, generator.AnalysisResult, out var budgetMsg);
+                    Console.WriteLine(budgetMsg);
+                    if (!ok)
+                    {
+                        Console.Error.WriteLine("Stub budget check FAILED.");
+                        Environment.Exit(1);
+                    }
                 }
             }
         }
