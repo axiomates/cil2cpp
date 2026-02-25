@@ -86,25 +86,25 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 
 详见上方"RuntimeProvided 类型分类"章节。
 
-### Stub 分布（HelloWorld, 3,167 个 / 25,444 总方法，87.6% 翻译率）
+### Stub 分布（HelloWorld, 2,860 个 / 25,444 总方法，88.8% 翻译率）
 
-> codegen stub 数。`--analyze-stubs` 额外报告 96 个 ClrInternalType（QCall/MetadataImport），总计 3,263。
+> codegen stub 数。`--analyze-stubs` 额外报告 96 个 ClrInternalType（QCall/MetadataImport），总计 2,956。
 
 | 类别 | 数量 | 占比 | 性质 |
 |------|------|------|------|
-| MissingBody | 1,904 | 60.1% | 无 IL body（abstract/extern/JIT intrinsic）— 多数合理 |
-| KnownBrokenPattern | 808 | 25.5% | SIMD 333 + SIMD-heavy 83 + TypeHandle/MethodTable 19 + 其他 |
-| UndeclaredFunction | 298 | 9.4% | 泛型特化缺失（IRBuilder 未创建特化类型）+ 级联 |
-| UnknownBodyReferences | 39 | 1.2% | 方法体引用未声明类型（多为嵌套泛型） |
-| UnknownParameterTypes | 22 | 0.7% | 参数类型未声明（INumberBase DIM + 少量 Span 特化） |
-| RenderedBodyError | 0 | 0% | III.15 全部重分类至 KBP（根因待修复） |
+| MissingBody | 1,713 | 59.9% | 无 IL body（abstract/extern/JIT intrinsic）— 多数合理 |
+| KnownBrokenPattern | 611 | 21.4% | SIMD 333 + line-level 体扫描 patterns + TypeHandle/MethodTable |
+| UndeclaredFunction | 287 | 10.0% | 泛型特化缺失（IRBuilder 未创建特化类型）+ 级联 |
+| RenderedBodyError | 90 | 3.1% | 实际 C++ codegen bug（void* cast、MdArray、DIM struct 等） |
+| UnknownBodyReferences | 41 | 1.4% | 方法体引用未声明类型（多为嵌套泛型） |
+| UnknownParameterTypes | 22 | 0.8% | 参数类型未声明（INumberBase DIM + 少量 Span 特化） |
 
-**可修复的编译器问题**：UndeclaredFunction (298) + UnknownBodyRefs (39) = **~337 个方法**。修复后预计 stub < 2,800，翻译率 > 89%。
+**可修复的编译器问题**：RenderedBodyError (90) + UndeclaredFunction (287) + UnknownBodyRefs (41) = **~418 个方法**。RenderedBodyError 最易修复（逐个 codegen bug），UndeclaredFunction 需 IRBuilder 泛型修复。
 
-**不可修复或暂缓**：MissingBody 中大部分是 abstract/extern/CLR intrinsic；SIMD (333+83) 需要 intrinsics 支持或运行时回退。
+**不可修复或暂缓**：MissingBody 中大部分是 abstract/extern/CLR intrinsic；SIMD (333+) 需要 intrinsics 支持或运行时回退。
 
-**IL 转译率**：87.6%（22,277 compiled / 25,444 total）。
-**测试**：1,240 C# + 592 C++ + 35 集成 — 全部通过。
+**IL 转译率**：88.8%（22,584 compiled / 25,444 total）。
+**测试**：1,240 C# + 591 C++ + 35 集成 — 全部通过。
 
 ### 距离最终目标
 
@@ -135,7 +135,7 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 
 **目标**：提升 IL 转译率——修复阻止 BCL IL 编译的根因
 
-**进展**：4,402 → 3,167 stubs（-1,235，-28.1%），IL 转译率 87.6%
+**进展**：4,402 → 2,860 stubs（-1,542，-35.1%），IL 转译率 88.8%
 
 | # | 任务 | 影响量 | 状态 | 说明 |
 |---|------|--------|------|------|
@@ -165,6 +165,8 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 | III.16 | 修复 reclassified RE 根因 | -10 | ✅ | GuidResult/RuntimeType.SplitName RE 根因修复 + KBP 误判移除（TimeSpanFormat/Number/GuidResult/SplitName） |
 | III.17 | IRBuilder 泛型特化补全 | -57 | ✅ | 嵌套类型方法体编译 + DiscoverTransitiveGenericTypesFromMethods + GIM 参数扫描 |
 | III.18 | ICall-mapped 方法体跳过 + ThreadPool ICall | -143 | ✅ | HasICallMapping 方法跳过体转换（-124 MissingBody）+ ThreadPool/Interlocked ICall（-19） |
+| III.19 | stub budget ratchet 更新 | 诊断 | ✅ | stub_budget.json 基线从 3,310 → 3,147 |
+| III.20 | KBP false positive audit | -287 | ✅ | 移除 30+ 过度宽泛的 method-level KBP 检查（Numerics DIM -60、DISH -35、Span/IAsyncLocal -58、CWT -23、P/Invoke/Buffers/Reflection -68 等）。RenderedBodyError 0→90（真实 codegen bug 正确暴露） |
 
 ---
 
@@ -205,9 +207,9 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 
 **V.1.1 前置条件**：无——纯 ICall 注册，可立即开始。
 
-**V.1.2 前置条件**：
-- RenderedBodyError < 150（当前 249）
-- IRBuilder 泛型特化修复（PortableThreadPool 方法）
+**V.1.2 前置条件**：✅ 已满足
+- RenderedBodyError < 150（当前 90 ✅）
+- IRBuilder 泛型特化修复（PortableThreadPool 方法）— V.1.2 已完成
 
 **V.2-V.5 前置条件**：
 - V.1.1 + V.1.2 完成并验证
@@ -264,8 +266,8 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 Phase I  (基础打通) ✅
 Phase II (中间层解锁) ✅
        ↓
-Phase III (编译器管道质量) ← 当前（4,402→3,167, -28.1%, 87.6%）
-  III.1-18 ✅ (泛型特化补全 + ICall-mapped 跳过 + ThreadPool ICall)
+Phase III (编译器管道质量) ← 拐点（4,402→2,860, -35.1%, 88.8%）
+  III.1-20 ✅ (泛型特化补全 + ICall-mapped 跳过 + KBP audit)
        ↓
 Phase IV (可行类型 → IL) 40 → 32 ✅
        ↓                    ↓（可并行）
@@ -287,7 +289,7 @@ Phase VI (反射评估)            ↓
 
 | 指标 | 定义 | 当前值 | 短期目标 | 长期目标 |
 |------|------|--------|----------|----------|
-| IL 转译率 | (reachable 方法 - stub 方法) / reachable 方法 | **87.6%** (3167/25444) | >70% ✅ | >90% |
+| IL 转译率 | (reachable 方法 - stub 方法) / reachable 方法 | **88.8%** (2860/25444) | >70% ✅ | >90% |
 | RuntimeProvided 数 | RuntimeProvidedTypes 集合条目数 | **32** (was 40, -8) | ~32 | ~25（Task 重构后） |
 | CoreRuntime 数 | 方法完全由 C++ 提供的类型数 | 22 | ~22 | ~10（若反射可 IL） |
 | ICall 数 | C++ 实现的内部调用 | ~282 | ~300 | ~500 |
