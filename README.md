@@ -120,7 +120,7 @@ void Program_Main() {
 |------|------|
 | [项目目标与定位](docs/goals.md) | 项目定义、对标 Unity IL2CPP / NativeAOT、设计原则、AOT 限制 |
 | [技术架构](docs/architecture.md) | 编译流水线、IR 8 遍构建、BCL 策略、C++ 代码生成、GC 架构、CMake 包 |
-| [现状与限制](docs/status.md) | 阶段完成表、C# 功能支持表、ICall 明细、System.IO/P/Invoke 状态、Stub 分析 |
+| [现状与限制](docs/capabilities.md) | 阶段完成表、C# 功能支持表、ICall 明细、System.IO/P/Invoke 状态、Stub 分析 |
 | [未来开发计划](docs/roadmap.md) | Phase H（Native Libs 集成）、中期/长期计划、阻断分析、风险 |
 | [开发工具](docs/tools.md) | 前置要求、构建命令、dev.py 使用、测试体系、Debug/Release 配置 |
 | [踩坑记录](docs/lessons.md) | 架构反思（GC/BCL/多文件）、C++/Cecil/IR/异常/异步陷阱 |
