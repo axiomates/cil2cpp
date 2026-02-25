@@ -387,7 +387,6 @@ public partial class CppCodeGenerator
                     ? GetRenderedErrorDetail(rendered, method)
                     : "trial render error";
 
-
                 TrackStubWithAnalysis(method, "rendered body has errors",
                     StubRootCause.RenderedBodyError, renderDetail);
                 GenerateStubForMethod(sb, method);
@@ -1970,12 +1969,15 @@ public partial class CppCodeGenerator
         // Don't wrap nullptr (compatible with any pointer type)
         if (rhs == "nullptr") return code;
 
-        // Don't wrap function calls, arithmetic, or ternary expressions
-        if (rhs.Contains('(') || rhs.Contains('+') || rhs.Contains('?') || rhs.Contains(','))
+        // Don't wrap ternary expressions or arithmetic
+        if (rhs.Contains('?') || rhs.Contains('+') || rhs.Contains('-') && !rhs.StartsWith("-"))
             return code;
 
+        // For simple expressions (__tM, __tM->field, loc_N): wrap directly
+        // For function calls (FuncName(args)): wrap the whole expression
         // Wrap: __tN = expr → __tN = (PreType)(void*)expr
-        // For field access (__tM->field): -> binds tighter than cast, so precedence is correct
+        // Parentheses in function calls bind tighter than (void*) cast, so
+        // (PreType)(void*)FuncName(args) evaluates as (PreType)(void*)(FuncName(args)) — correct.
         return $"{varName} = ({preType})(void*){rhs};";
     }
 

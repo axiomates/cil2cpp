@@ -1255,6 +1255,28 @@ public partial class IRBuilder
                 if (isValueTarget
                     && methodRef.DeclaringType.FullName != "System.ArgIterator")
                     thisArg = $"*({thisArg})";
+                else if (!isValueTarget)
+                {
+                    // ICall for reference type: cast 'this' to the correct pointer type.
+                    // The stack may have Object* (from array_get, generic code) but the ICall
+                    // expects the concrete type (e.g., cil2cpp::string_length expects String*).
+                    // Runtime types have C++ struct definitions → cast to cil2cpp::Type*.
+                    // BCL types may not have struct definitions → cast to void* (ICalls accept void*).
+                    var fullName = methodRef.DeclaringType.FullName;
+                    var runtimeCppName = fullName switch
+                    {
+                        "System.String" => "cil2cpp::String",
+                        "System.Array" => "cil2cpp::Array",
+                        "System.Object" => "cil2cpp::Object",
+                        "System.Exception" => "cil2cpp::Exception",
+                        "System.Delegate" or "System.MulticastDelegate" => "cil2cpp::Delegate",
+                        _ => null
+                    };
+                    if (runtimeCppName != null)
+                        thisArg = $"({runtimeCppName}*)(void*){thisArg}";
+                    else
+                        thisArg = $"(void*){thisArg}";
+                }
             }
             else if (!irCall.IsVirtual && mappedName == null
                 && methodRef.DeclaringType.FullName != "System.Object")
@@ -1620,6 +1642,14 @@ public partial class IRBuilder
             if (methodRef is GenericInstanceMethod gim2)
             {
                 paramType = SubstituteMethodGenericParams(paramType, gim2);
+            }
+
+            // Char parameter with literal 0: MSVC can't disambiguate char16_t vs int overloads.
+            // Cast 0 to (char16_t)0 to resolve the ambiguity.
+            if (paramType.FullName == "System.Char" && args[i] == "0")
+            {
+                args[i] = "(char16_t)0";
+                continue;
             }
 
             // Skip value types (enums, structs) — use Cecil for authoritative check.

@@ -2632,9 +2632,10 @@ public partial class CppCodeGenerator
             }
         }
 
-        // Pattern: Interop calls with wrong pointer types in BCL IL bodies
+        // Pattern: Interop_Globalization_ calls with wrong pointer types
         // BCL code passes typed pointers (uint32_t*, uint64_t*, struct*) where uint8_t* expected
-        if (s.Contains("Interop_GetRandomBytes(") || s.Contains("Interop_Globalization_"))
+        // Note: Interop_GetRandomBytes REMOVED — callers now correctly cast to (uint8_t*)
+        if (s.Contains("Interop_Globalization_"))
             return true;
         // Note: RuntimeHelpers.CreateSpan<T>(RuntimeFieldHandle) is now intercepted in IRBuilder
         // and produces inline span init code. Only catch unintercepted CreateSpan calls.
@@ -2664,8 +2665,9 @@ public partial class CppCodeGenerator
             return true;
 
         // Pattern: GetLocaleInfoEx — BCL code passes int32_t* where char16_t* expected
-        // Only match the actual P/Invoke Interop call, not managed wrapper methods
-        if (s.Contains("Interop_Kernel32_GetLocaleInfoEx(") || s.Contains("Interop_Kernel32_GetLocaleInfoExInt("))
+        // Only match actual calls (not function definitions which end with '{')
+        if ((s.Contains("Interop_Kernel32_GetLocaleInfoEx(") || s.Contains("Interop_Kernel32_GetLocaleInfoExInt("))
+            && !s.TrimEnd().EndsWith("{"))
             return true;
 
         // Pattern: AsyncLocal<T>.ctor called with wrong arg count (2 args for 1-arg ctor
@@ -2725,7 +2727,8 @@ public partial class CppCodeGenerator
         // (moved to RenderedBodyHasErrors with method context to avoid false positives on concrete subtypes)
 
         // Phase II.1: GetCalendarInfoEx passes char16_t* where intptr_t expected
-        // Match P/Invoke Interop calls (may have disambiguated names with __ suffix)
+        // Also catches definitions — some variants call nested PInvoke helpers that may have no body
+        // FIXME: fix PInvoke helper body generation for _g____PInvoke variants, then exclude definitions
         if (s.Contains("Interop_Kernel32_GetCalendarInfoEx") || s.Contains("Interop_Kernel32_GetCalendarInfoW"))
             return true;
 
@@ -2933,9 +2936,10 @@ public partial class CppCodeGenerator
         // Phase III.7: Span_1_System_TimeZoneInfo_AdjustmentRule check REMOVED — compiles fine in MSVC
 
         // Pattern: enum pointer passed where enum value expected (ResourceTypeCode, etc.)
-        // The enum pointer cast like (ResourceTypeCode*)typeCode or (ResourceTypeCode*)&loc_
-        // when the callee expects the value
-        if (s.Contains("ResourceTypeCode*)"))
+        // Only flag when address-of (&) is taken on a non-pointer variable — this creates a pointer
+        // where a value is expected. Pointer-to-pointer casts like (ResourceTypeCode*)typeCode
+        // are valid when the variable is already ResourceTypeCode*.
+        if (s.Contains("ResourceTypeCode*)&"))
             return true;
 
         // Pattern: MethodTable field access — JIT internal structure not fully supported
@@ -3001,9 +3005,8 @@ public partial class CppCodeGenerator
         if (s.Contains("GetThreadIOPendingFlag("))
             return true;
 
-        // Pattern: ReadUnalignedI4 with uintptr_t arg (needs int32_t*)
-        if (s.Contains("ReadUnalignedI4("))
-            return true;
+        // Pattern: ReadUnalignedI4 — REMOVED: body compiles fine (creates ReadOnlySpan + calls BinaryPrimitives).
+        // The old check caught the function's own definition line. Callers pass (int32_t*)(void*) which is valid.
 
         // FIXME: codegen bug — conv.i before Marshal_FreeHGlobal not emitting (intptr_t) cast
         // Pointer arg passed where intptr_t expected → C2664
@@ -3057,7 +3060,9 @@ public partial class CppCodeGenerator
         if (s.Contains("EventProvider_WriteEvent") && s.Contains("EventData*"))
             return true;
 
-        // Pattern: SearchValues_TryGetSingleRange — bool*/char16_t* and Span assignment
+        // Pattern: SearchValues_TryGetSingleRange — Span<Char> inline init bug: generic specialization
+        // uses Span<Char> where Span<bool> is needed → bool*/char16_t* type mismatch in f_reference.
+        // FIXME: fix the Span inline init type inference in IRBuilder
         if (s.Contains("SearchValues_TryGetSingleRange"))
             return true;
 
