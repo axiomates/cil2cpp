@@ -86,24 +86,24 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 
 详见上方"RuntimeProvided 类型分类"章节。
 
-### Stub 分布（HelloWorld, 2,841 个 / 25,444 总方法，88.8% 翻译率）
+### Stub 分布（HelloWorld, 2,854 个 / 25,444 总方法，88.8% 翻译率）
 
-> codegen stub 数。`--analyze-stubs` 额外报告 96 个 ClrInternalType（QCall/MetadataImport），总计 2,937。
+> codegen stub 数。`--analyze-stubs` 额外报告 96 个 ClrInternalType（QCall/MetadataImport），总计 2,950。
 
 | 类别 | 数量 | 占比 | 性质 |
 |------|------|------|------|
-| MissingBody | 1,718 | 60.5% | 无 IL body（abstract/extern/JIT intrinsic）— 多数合理 |
-| KnownBrokenPattern | 521 | 18.3% | SIMD 345 + SIMD-heavy BCL 83 + undeclared TypeInfo 86 + 其他 7 |
-| UndeclaredFunction | 319 | 11.2% | 泛型特化缺失（IRBuilder 未创建特化类型）+ 级联 |
-| RenderedBodyError | 225 | 7.9% | **编译器 bug — IL 有 body 但 C++ 渲染失败** |
-| UnknownBodyReferences | 36 | 1.3% | 方法体引用未声明类型（多为嵌套泛型） |
-| UnknownParameterTypes | 22 | 0.8% | 参数类型未声明（INumberBase DIM + 少量 Span 特化） |
+| MissingBody | 1,745 | 59.2% | 无 IL body（abstract/extern/JIT intrinsic）— 多数合理 |
+| KnownBrokenPattern | 545 | 18.5% | SIMD 345 + SIMD-heavy 83 + TypeHandle/MethodTable 24 + undeclared TypeInfo 86 + 其他 7 |
+| UndeclaredFunction | 315 | 10.7% | 泛型特化缺失（IRBuilder 未创建特化类型）+ 级联 |
+| RenderedBodyError | 184 | 6.2% | **编译器 bug — IL 有 body 但 C++ 渲染失败** |
+| UnknownBodyReferences | 43 | 1.5% | 方法体引用未声明类型（多为嵌套泛型） |
+| UnknownParameterTypes | 22 | 0.7% | 参数类型未声明（INumberBase DIM + 少量 Span 特化） |
 
-**可修复的编译器问题**：RenderedBodyError (225) + UndeclaredFunction (319) + KnownBrokenPattern.undeclaredTypeInfo (86) + UnknownBodyRefs (36) = **~666 个方法**，占总 stub 的 22.7%。修复后预计 stub < 2,200，翻译率 > 91%。
+**可修复的编译器问题**：RenderedBodyError (184) + UndeclaredFunction (315) + KnownBrokenPattern.undeclaredTypeInfo (86) + UnknownBodyRefs (43) = **~628 个方法**，占总 stub 的 21.3%。修复后预计 stub < 2,200，翻译率 > 91%。
 
-**不可修复或暂缓**：MissingBody (1,718) 中大部分是 abstract/extern/CLR intrinsic；SIMD (428) 需要 intrinsics 支持或运行时回退。
+**不可修复或暂缓**：MissingBody (1,745) 中大部分是 abstract/extern/CLR intrinsic；SIMD (428+24 TypeHandle) 需要 intrinsics 支持或运行时回退。
 
-**IL 转译率**：88.8%（22,603 compiled / 25,444 total）。
+**IL 转译率**：88.8%（22,494 compiled / 25,444 total）。
 **测试**：1,240 C# + 591 C++ + 35 集成 — 全部通过。
 
 ### 距离最终目标
@@ -135,7 +135,7 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 
 **目标**：提升 IL 转译率——修复阻止 BCL IL 编译的根因
 
-**进展**：4,402 → 2,841 stubs（-1,561，-35.5%），IL 转译率 88.8%
+**进展**：4,402 → 2,854 stubs（-1,548，-35.2%），IL 转译率 88.8%
 
 | # | 任务 | 影响量 | 状态 | 说明 |
 |---|------|--------|------|------|
@@ -160,6 +160,7 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 | III.12 | 泛型特化 mangled 名解析 | -49 | ✅ | arity-prefixed mangled name resolution（_N_TKey → _N_System_String），29 unresolved generic → 0 |
 | III.13 | transitive generic discovery | +1319 compiled | ✅ | fixpoint loop 发现 207 新类型 1393 方法，gate hardening 5 pattern（Object*→f_、MdArray**、MdArray*→typed、FINALLY without END_TRY、delegate invoke Object*→typed） |
 | III.14 | delegate invoke typed pointer cast | -28 | ✅ | IRDelegateInvoke 对所有 typed 指针参数添加 (void*) 中间转换，修复 Object*→String* 等 C2664 |
+| III.15 | RenderedBodyError false positives + ldind.ref type tracking | RE -41 | ✅ | 5 fixes: non-pointer void* cast RHS check, static_cast skip, TypeHandle→KnownBroken, ldind.ref StackEntry typed deref, Span byref detection |
 
 ---
 
@@ -259,8 +260,8 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 Phase I  (基础打通) ✅
 Phase II (中间层解锁) ✅
        ↓
-Phase III (编译器管道质量) ← 当前（4,402→2,841, -35.5%, 88.8%）
-  III.1-14 ✅
+Phase III (编译器管道质量) ← 当前（4,402→2,854, -35.2%, 88.8%）
+  III.1-15 ✅
   下一步: RenderedBodyError 修复 + 嵌套泛型特化补全
        ↓
 Phase IV (可行类型 → IL) 40 → 32 ✅
@@ -283,7 +284,7 @@ Phase VI (反射评估)            ↓
 
 | 指标 | 定义 | 当前值 | 短期目标 | 长期目标 |
 |------|------|--------|----------|----------|
-| IL 转译率 | (reachable 方法 - stub 方法) / reachable 方法 | **88.8%** (2841/25444) | >70% ✅ | >90% |
+| IL 转译率 | (reachable 方法 - stub 方法) / reachable 方法 | **88.8%** (2854/25444) | >70% ✅ | >90% |
 | RuntimeProvided 数 | RuntimeProvidedTypes 集合条目数 | **32** (was 40, -8) | ~32 | ~25（Task 重构后） |
 | CoreRuntime 数 | 方法完全由 C++ 提供的类型数 | 22 | ~22 | ~10（若反射可 IL） |
 | ICall 数 | C++ 实现的内部调用 | ~243 | ~300 | ~500 |
