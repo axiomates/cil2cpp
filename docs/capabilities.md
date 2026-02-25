@@ -6,18 +6,18 @@
 
 ## 概览
 
-CIL2CPP 是 C# → C++ AOT 编译器（类似 Unity IL2CPP）。当前支持完整 C# 语法（100% IL 操作码覆盖），BCL 从 IL 编译（Unity IL2CPP 架构），~243 个 ICall 条目。1,240 C# + 591 C++ + 35 集成测试全部通过。
+CIL2CPP 是 C# → C++ AOT 编译器（类似 Unity IL2CPP）。当前支持完整 C# 语法（100% IL 操作码覆盖），BCL 从 IL 编译（Unity IL2CPP 架构），~270 个 ICall 条目。1,240 C# + 591 C++ + 35 集成测试全部通过。
 
 ## 核心指标
 
 | 指标 | 数量 |
 |------|------|
 | IL 操作码覆盖率 | **100%**（全部 ~230 种 ECMA-335 操作码） |
-| ICallRegistry 条目 | **~243 个**（涵盖 30+ 类别） |
+| ICallRegistry 条目 | **~270 个**（涵盖 30+ 类别） |
 | C# 编译器测试 | **~1,240 个**（xUnit） |
 | C++ 运行时测试 | **591 个**（Google Test，18 个测试文件） |
 | 端到端集成测试 | **35 个**（9 个阶段） |
-| 运行时头文件 | **29 个** |
+| 运行时头文件 | **32 个** |
 
 ---
 
@@ -132,7 +132,7 @@ CIL2CPP 是 C# → C++ AOT 编译器（类似 Unity IL2CPP）。当前支持完�
 
 ---
 
-## ICallRegistry 分类明细（~243 个条目）
+## ICallRegistry 分类明细（~270 个条目）
 
 | 类别 | 条目数 | 说明 |
 |------|--------|------|
@@ -159,7 +159,8 @@ CIL2CPP 是 C# → C++ AOT 编译器（类似 Unity IL2CPP）。当前支持完�
 | System.ArgIterator | 4 | 变长参数支持 |
 | System.Globalization.OrdinalCasing | 3 | 序数大小写转换 |
 | System.IO.Directory | 2 | Exists/CreateDirectory |
-| 其他 (Volatile, Enum, Type, SafeHandle, ...) | ~15 | 各 1-2 个条目 |
+| System.Runtime.InteropServices.SafeHandle | 8 | .ctor/DangerousGetHandle/SetHandle/DangerousAddRef/DangerousRelease/IsClosed/SetHandleAsInvalid/Dispose |
+| 其他 (Volatile, Enum, Type, HashCode, Marvin, NativeLibrary, ...) | ~18 | 各 1-3 个条目 |
 
 ---
 
@@ -205,9 +206,9 @@ System.IO 采用 ICall 拦截模式，在公共 API 层拦截 File/Path/Director
 
 | 功能 | 状态 | 说明 |
 |------|------|------|
-| 调用约定 | ⚠️ | 解析但未发射到声明，x64 无害但 x86 错误 |
+| 调用约定 | ✅ | StdCall/FastCall/ThisCall 已发射到 extern 声明 |
 | CharSet.Auto | ⚠️ | 硬编码为 Unicode |
-| SafeHandle 方法 | ❌ | 仅 .ctor，缺少 8 个方法 |
+| SafeHandle 方法 | ⚠️ | 8 个 ICall（.ctor/DangerousGetHandle/SetHandle/DangerousAddRef/DangerousRelease/IsClosed/SetHandleAsInvalid/Dispose），缺 ReleaseHandle 虚方法分派 |
 | MarshalAs 特性 | ❌ | 未解析 |
 | Out/In 特性 | ❌ | 未区分参数方向 |
 | 数组编组 / Ref String | ❌ | 不支持 |

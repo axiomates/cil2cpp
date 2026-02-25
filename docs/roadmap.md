@@ -86,7 +86,7 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 
 详见上方"RuntimeProvided 类型分类"章节。
 
-### Stub 分布（HelloWorld, 3,390 个 / 25,444 总方法，86.7% 翻译率）
+### Stub 分布（HelloWorld, 3,367 个 / 25,444 总方法，86.8% 翻译率）
 
 > codegen stub 数。`--analyze-stubs` 额外报告 96 个 ClrInternalType（QCall/MetadataImport），总计 3,486。
 
@@ -99,13 +99,13 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 | UnknownParameterTypes | 22 | 0.6% | 参数类型未声明（INumberBase DIM + 少量 Span 特化） |
 | RenderedBodyError | 0 | 0% | III.15 全部重分类至 KBP（根因待修复） |
 
-**RE→KBP 重分类**：III.15 将 113 个 RE 方法移到 KBP 预检（权宜之计），级联导致 MissingBody +312, KBP +318，总 stubs 从 2,854→3,390 (+536)。根因修复后 stubs 会下降。
+**RE→KBP 重分类**：III.15 将 113 个 RE 方法移到 KBP 预检（权宜之计），级联导致总 stubs 暂时回升。III.16 修复部分根因后 3,390→3,367 (-23)。
 
 **可修复的编译器问题**：reclassified RE (113) + UndeclaredFunction (312) + KBP.undeclaredTypeInfo (86) + UnknownBodyRefs (40) = **~551 个方法**。修复后预计 stub < 2,800，翻译率 > 89%。
 
 **不可修复或暂缓**：MissingBody 中大部分是 abstract/extern/CLR intrinsic；SIMD (428+24 TypeHandle) 需要 intrinsics 支持或运行时回退。
 
-**IL 转译率**：86.7%（22,054 compiled / 25,444 total）。
+**IL 转译率**：86.8%（22,077 compiled / 25,444 total）。
 **测试**：1,240 C# + 591 C++ + 35 集成 — 全部通过。
 
 ### 距离最终目标
@@ -137,7 +137,7 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 
 **目标**：提升 IL 转译率——修复阻止 BCL IL 编译的根因
 
-**进展**：4,402 → 3,390 stubs（-1,012，-23.0%），IL 转译率 86.7%
+**进展**：4,402 → 3,367 stubs（-1,035，-23.5%），IL 转译率 86.8%
 > 注：III.15 将 113 RE→KBP 重分类产生级联 +536 stubs，总数暂时回升。根因修复后会下降。
 
 | # | 任务 | 影响量 | 状态 | 说明 |
@@ -165,7 +165,7 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 | III.14 | delegate invoke typed pointer cast | -28 | ✅ | IRDelegateInvoke 对所有 typed 指针参数添加 (void*) 中间转换，修复 Object*→String* 等 C2664 |
 | III.15 | RenderedBodyError false positives + ldind.ref type tracking | RE -41 | ✅ | 5 fixes: non-pointer void* cast RHS check, static_cast skip, TypeHandle→KnownBroken, ldind.ref StackEntry typed deref, Span byref detection |
 | III.15b | IntPtr/UIntPtr ICall + intptr_t casting + RE reclassification | RE 113→0 | ✅ | IntPtr/UIntPtr ctor ICall + intptr_t arg/return casting + 113 RE→KBP 方法级重分类（权宜之计，根因待修复） |
-| III.16 | 修复 reclassified RE 根因 | 进行中 | 🔧 | void*↔intptr_t 转换、Reflection ICall、Span 追踪、try-finally 闭合等 |
+| III.16 | 修复 reclassified RE 根因 | -10 | ✅ | GuidResult/RuntimeType.SplitName RE 根因修复 + KBP 误判移除（TimeSpanFormat/Number/GuidResult/SplitName） |
 | III.17 | IRBuilder 泛型特化补全 | 待定 | ⏳ | 嵌套类型方法体、DiscoverTransitiveGenericTypes 扩展、FilteredNamespaces 放开 |
 
 ---
@@ -178,7 +178,7 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 |---|------|--------|--------|------|
 | IV.1 | IAsyncStateMachine → IL | 1 | ✅ 完成 | 纯接口，移除 RuntimeProvided + 删除 task.h alias |
 | IV.2 | CancellationToken → IL | 1 | ✅ 完成 | 只有 f_source 指针，struct 从 Cecil 生成 |
-| IV.3-7 | WaitHandle 层级×6 → IL | 6 | ✅ 完成 | struct 从 Cecil 生成，TypeInfo 从 IL 生成，WaitOneCore ICall 保留，其余通过 P/Invoke |
+| IV.3-7 | WaitHandle 层级×6 → IL | 6 | ✅ 完成 | struct 从 Cecil 生成，TypeInfo 从 IL 生成，WaitOneCore ICall 保留；POSIX Mutex/Semaphore 有 TODO（当前为 stub 实现） |
 
 **前提**：Phase III 编译器质量足够让 BCL WaitHandle/CancellationToken IL 正确编译。
 
@@ -266,9 +266,9 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 Phase I  (基础打通) ✅
 Phase II (中间层解锁) ✅
        ↓
-Phase III (编译器管道质量) ← 当前（4,402→3,390, -23.0%, 86.7%）
-  III.1-15b ✅ (RE 113→0 via reclassification)
-  下一步: III.16 RE 根因修复 + III.17 泛型特化补全
+Phase III (编译器管道质量) ← 当前（4,402→3,367, -23.5%, 86.8%）
+  III.1-16 ✅ (RE 根因修复 + KBP 精简)
+  下一步: III.17 泛型特化补全
        ↓
 Phase IV (可行类型 → IL) 40 → 32 ✅
        ↓                    ↓（可并行）
@@ -290,10 +290,10 @@ Phase VI (反射评估)            ↓
 
 | 指标 | 定义 | 当前值 | 短期目标 | 长期目标 |
 |------|------|--------|----------|----------|
-| IL 转译率 | (reachable 方法 - stub 方法) / reachable 方法 | **86.7%** (3390/25444) | >70% ✅ | >90% |
+| IL 转译率 | (reachable 方法 - stub 方法) / reachable 方法 | **86.8%** (3367/25444) | >70% ✅ | >90% |
 | RuntimeProvided 数 | RuntimeProvidedTypes 集合条目数 | **32** (was 40, -8) | ~32 | ~25（Task 重构后） |
 | CoreRuntime 数 | 方法完全由 C++ 提供的类型数 | 22 | ~22 | ~10（若反射可 IL） |
-| ICall 数 | C++ 实现的内部调用 | ~243 | ~300 | ~500 |
+| ICall 数 | C++ 实现的内部调用 | ~270 | ~300 | ~500 |
 
 ---
 

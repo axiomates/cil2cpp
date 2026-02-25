@@ -2,7 +2,7 @@
 
 将 .NET/C# 程序编译为原生 C++ 代码的 AOT 编译工具，类似于 Unity IL2CPP。
 
-**定位**：通用 AOT 编译器，对标 .NET NativeAOT 覆盖范围。采用 Unity IL2CPP 架构——所有 BCL IL 方法体直接编译为 C++，仅在最底层保留 `[InternalCall]` 的 C++ 实现（~243 个 icall）。
+**定位**：通用 AOT 编译器，对标 .NET NativeAOT 覆盖范围。采用 Unity IL2CPP 架构——所有 BCL IL 方法体直接编译为 C++，仅在最底层保留 `[InternalCall]` 的 C++ 实现（~270 个 icall）。
 
 ```
 .csproj → dotnet build → .NET DLL (IL) → Mono.Cecil → IR (8 遍) → C++ 源码 + CMakeLists.txt → 原生可执行文件
@@ -109,7 +109,7 @@ void Program_Main() {
 | 指标 | 数量 |
 |------|------|
 | IL 操作码覆盖率 | 100%（全部 ~230 种 ECMA-335 操作码） |
-| ICallRegistry 条目 | ~243 个 |
+| ICallRegistry 条目 | ~270 个 |
 | C# 编译器测试 | ~1240 个 (xUnit) |
 | C++ 运行时测试 | 591 个 (Google Test) |
 | 端到端集成测试 | 35 个 |
@@ -134,7 +134,7 @@ cil2cpp/
 │   ├── CIL2CPP.Core/           #   核心：IL 解析 → IR → C++ 代码生成
 │   └── CIL2CPP.Tests/          #   编译器测试 (xUnit, ~1240 tests)
 ├── runtime/                    # C++ 运行时 (C++20, CMake)
-│   ├── include/cil2cpp/        #   头文件（29 个）
+│   ├── include/cil2cpp/        #   头文件（32 个）
 │   ├── src/                    #   GC / 类型系统 / 异常 / BCL icall
 │   └── tests/                  #   运行时测试 (GTest, 591 tests)
 ├── tests/                      # 测试用 C# 项目

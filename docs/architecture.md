@@ -39,8 +39,8 @@ cil2cpp/
 │   │       ├── CppCodeGenerator.cs       # 生成入口
 │   │       ├── CppCodeGenerator.Header.cs  # .h 生成
 │   │       ├── CppCodeGenerator.Source.cs  # .cpp 生成
-│   │       ├── CppCodeGenerator.CMake.cs   # CMakeLists.txt 生成
-│   │       └── CppCodeGenerator.KnownStubs.cs  # 手写 stub
+│   │       ├── CppCodeGenerator.KnownStubs.cs  # 手写 stub
+│   │       └── StubAnalyzer.cs                 # stub 分析工具 (--analyze-stubs)
 │   └── CIL2CPP.Tests/          #   编译器单元测试 (xUnit)
 │       └── Fixtures/           #     测试 fixture 缓存
 ├── tests/                      # 测试用 C# 项目（编译器输入）
@@ -51,7 +51,7 @@ cil2cpp/
 ├── runtime/                    # C++ 运行时库 (CMake)
 │   ├── CMakeLists.txt
 │   ├── cmake/                  #   CMake 包配置模板
-│   ├── include/cil2cpp/        #   头文件（29 个）
+│   ├── include/cil2cpp/        #   头文件（32 个）
 │   ├── src/                    #   源码（GC、类型系统、异常、BCL icall）
 │   │   ├── gc/
 │   │   ├── exception/
@@ -124,7 +124,7 @@ CIL2CPP 采用与 Unity IL2CPP 相同的策略：**所有有 IL 方法体的 BCL
 ```
 方法调用
   ↓
-ICallRegistry 查找 (~243 个映射)
+ICallRegistry 查找 (~270 个映射)
   ├─ 命中 → [InternalCall] 方法，无 IL 方法体
   │         GC / Monitor / Interlocked / Buffer / Math / IO / Globalization 等
   │         → 调用 C++ 运行时实现
@@ -182,7 +182,7 @@ ICallRegistry 查找 (~243 个映射)
 │  这一层决定: 哪些标准库方法可用                           │
 ├─────────────────────────────────────────────────────────┤
 │  Layer 3: 运行时 icall                                  │
-│  ~243 个 [InternalCall] 方法 → C++ 运行时实现            │
+│  ~270 个 [InternalCall] 方法 → C++ 运行时实现            │
 │  限制: 未实现的 icall → 功能不可用                        │
 │  这一层决定: GC、线程、字符串布局、IO 等底层能力           │
 └─────────────────────────────────────────────────────────┘
@@ -283,7 +283,7 @@ target_link_libraries(MyApp PRIVATE cil2cpp::runtime)
 
 ```
 <prefix>/
-├── include/cil2cpp/    # 29 个头文件
+├── include/cil2cpp/    # 32 个头文件
 ├── lib/
 │   ├── cil2cpp_runtime.lib   # Release
 │   ├── cil2cpp_runtimed.lib  # Debug (DEBUG_POSTFIX "d")
