@@ -645,6 +645,27 @@ public partial class CppCodeGenerator
             || method.DeclaringType?.CppName?.Contains("Vector64") == true)
             return "SIMD type argument in declaring type";
 
+        // Numerics interface DIM — struct operator implementations (dead code, inlined by compiler)
+        if (method.DeclaringType?.IsInterface == true &&
+            (method.DeclaringType.ILFullName?.StartsWith("System.Numerics.I") == true ||
+             method.DeclaringType.ILFullName?.StartsWith("System.IComparable") == true ||
+             method.DeclaringType.ILFullName?.StartsWith("System.IEquatable") == true))
+            return "Numerics interface DIM (struct operators)";
+
+        // VectorMath — hardware SIMD helper
+        if (method.DeclaringType?.ILFullName == "System.Numerics.VectorMath")
+            return "VectorMath hardware intrinsic";
+
+        // Methods taking Vector128/256/512 value parameters (SIMD operations)
+        foreach (var param in method.Parameters)
+        {
+            if (param.Name == "__this") continue;
+            var pt = param.CppTypeName.TrimEnd('*');
+            if (pt.StartsWith("System_Runtime_Intrinsics_Vector128_1_") ||
+                pt.StartsWith("System_Runtime_Intrinsics_Vector256_1_") ||
+                pt.StartsWith("System_Runtime_Intrinsics_Vector512_1_"))
+                return $"SIMD Vector parameter: {param.CppTypeName}";
+        }
 
         // Array types as non-pointer parameters/locals/return (T__ without * suffix)
         foreach (var param in method.Parameters)

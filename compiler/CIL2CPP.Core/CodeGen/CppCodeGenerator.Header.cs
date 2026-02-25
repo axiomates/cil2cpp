@@ -1374,6 +1374,34 @@ public partial class CppCodeGenerator
         // algorithms (IntroSort, FormatCustomized, String.Concat, etc.), not JIT intrinsics.
         // JIT intrinsics are already caught by System.Runtime.Intrinsics namespace check above.
 
+        // Numerics interface DIM (Default Interface Methods) — struct operator implementations
+        // like IBitwiseOperators<byte,byte,byte>.op_BitwiseOr. The actual operators are already
+        // inlined by the C# compiler at call sites; these DIM bodies are dead code that references
+        // struct members unavailable in flat struct model.
+        if (method.DeclaringType?.IsInterface == true &&
+            (method.DeclaringType.ILFullName?.StartsWith("System.Numerics.I") == true ||
+             method.DeclaringType.ILFullName?.StartsWith("System.IComparable") == true ||
+             method.DeclaringType.ILFullName?.StartsWith("System.IEquatable") == true))
+            return true;
+
+        // VectorMath — hardware SIMD helper, same as System.Runtime.Intrinsics
+        if (method.DeclaringType?.ILFullName == "System.Numerics.VectorMath")
+            return true;
+
+        // Methods taking Vector128/256/512 value parameters — their bodies use SIMD operations
+        // that require hardware intrinsics. Examples: SpanHelpers.ComputeFirstIndex,
+        // PackedSpanHelpers.ComputeFirstIndex, SpanHelpers.UnalignedCountVector128.
+        // Only match direct Vector types (not generic types parameterized with Vector).
+        foreach (var param in method.Parameters)
+        {
+            if (param.Name == "__this") continue;
+            var pt = param.CppTypeName.TrimEnd('*');
+            if (pt.StartsWith("System_Runtime_Intrinsics_Vector128_1_") ||
+                pt.StartsWith("System_Runtime_Intrinsics_Vector256_1_") ||
+                pt.StartsWith("System_Runtime_Intrinsics_Vector512_1_"))
+                return true;
+        }
+
         foreach (var block in method.BasicBlocks)
         {
             foreach (var instr in block.Instructions)
@@ -1624,6 +1652,36 @@ public partial class CppCodeGenerator
                     var varName = ps[varStart..varEnd];
                     if (varName.Length > 2 && varName.Skip(3).All(char.IsDigit))
                         knownStringTemps.Add(varName);
+                }
+            }
+        }
+
+        // Reflection aliased type field access — check if accessed through aliased types
+        // RuntimeFieldInfo→ManagedFieldInfo, RuntimeMethodInfo→ManagedMethodInfo — these DON'T have the fields.
+        // Concrete subtypes (RtFieldInfo, MdFieldInfo, etc.) DO have these fields via struct definitions.
+        // The rendered body may cast to aliased types (RuntimeFieldInfo*) and access fields through them,
+        // which is invalid. Check each line: only flag when accessed through aliased type, not through __this
+        // or through a concrete subtype.
+        {
+            bool hasReflectionFieldAccess = rendered.Contains("f_m_reflectedTypeCache") || rendered.Contains("f_m_fieldAttributes") ||
+                rendered.Contains("f_m_fieldType") || rendered.Contains("f_m_returnType") || rendered.Contains("f_m_parameters") ||
+                rendered.Contains("->f_m_declaringType");
+            if (hasReflectionFieldAccess)
+            {
+                foreach (var line in rendered.AsSpan().EnumerateLines())
+                {
+                    var s = line.ToString().TrimStart();
+                    // Skip lines accessing through __this (concrete declaring type)
+                    if (s.Contains("__this->f_m_") || s.Contains("__this)->f_m_"))
+                        continue;
+                    // Flag lines that cast to aliased reflection types and access these fields
+                    bool hasAliasedCast = s.Contains("RuntimeFieldInfo*)") || s.Contains("RuntimeMethodInfo*)") ||
+                                          s.Contains("ManagedFieldInfo*)") || s.Contains("ManagedMethodInfo*)");
+                    bool hasFieldAccess = s.Contains("f_m_reflectedTypeCache") || s.Contains("f_m_fieldAttributes") ||
+                        s.Contains("f_m_fieldType") || s.Contains("f_m_returnType") || s.Contains("f_m_parameters") ||
+                        s.Contains("->f_m_declaringType");
+                    if (hasAliasedCast && hasFieldAccess)
+                        return true;
                 }
             }
         }
@@ -2060,10 +2118,15 @@ public partial class CppCodeGenerator
             }
         }
 
-        // Method-level: System.Reflection.Pointer methods use void* as intptr_t/uintptr_t
-        if (method.DeclaringType?.ILFullName == "System.Reflection.Pointer")
+        // Method-level: System.Reflection.Pointer — f_ptr is void* but IL treats as IntPtr.
+        // GetPointerType and Equals compile fine (pointer-to-pointer operations).
+        // GetPointerValue returns intptr_t from void* field, GetHashCode assigns void* to uintptr_t local.
+        // Only block methods where f_ptr value flows to intptr_t/uintptr_t without cast.
+        if (method.DeclaringType?.ILFullName == "System.Reflection.Pointer" && rendered.Contains("f_ptr"))
         {
-            if (rendered.Contains("f_ptr"))
+            if (method.ReturnTypeCpp is "intptr_t" or "uintptr_t")
+                return true;
+            if (method.Locals.Any(l => l.CppTypeName is "intptr_t" or "uintptr_t") && !rendered.Contains("(intptr_t)") && !rendered.Contains("(uintptr_t)"))
                 return true;
         }
 
@@ -2470,7 +2533,8 @@ public partial class CppCodeGenerator
             return true;
 
         // Pattern: GetLocaleInfoEx — BCL code passes int32_t* where char16_t* expected
-        if (s.Contains("GetLocaleInfoEx(") || s.Contains("GetLocaleInfoExInt("))
+        // Only match the actual P/Invoke Interop call, not managed wrapper methods
+        if (s.Contains("Interop_Kernel32_GetLocaleInfoEx(") || s.Contains("Interop_Kernel32_GetLocaleInfoExInt("))
             return true;
 
         // Pattern: AsyncLocal constructor with wrong arg count
@@ -2507,16 +2571,18 @@ public partial class CppCodeGenerator
 
         // Phase II.3/II.4: Reflection type BCL internal fields that don't exist on our aliased types
         // RuntimeFieldInfo.m_reflectedTypeCache, RuntimeMethodInfo.m_declaringType, etc.
-        if (s.Contains("f_m_reflectedTypeCache") || s.Contains("f_m_fieldAttributes") ||
-            s.Contains("f_m_fieldType") || s.Contains("f_m_returnType") || s.Contains("f_m_parameters"))
-            return true;
-        // RuntimeFieldInfo/RuntimeMethodInfo.m_declaringType accessed via arrow
-        if (s.Contains("->f_m_declaringType") && (s.Contains("RuntimeFieldInfo") || s.Contains("RuntimeMethodInfo") ||
-            s.Contains("ManagedFieldInfo") || s.Contains("ManagedMethodInfo")))
-            return true;
+        // NOTE: These field names are VALID on concrete subtypes (RtFieldInfo, MdFieldInfo, RuntimeEventInfo,
+        // RuntimeParameterInfo, Signature) which have full struct definitions with these fields.
+        // Only flag when used on aliased types (RuntimeFieldInfo→ManagedFieldInfo, RuntimeMethodInfo→ManagedMethodInfo)
+        // that don't have the fields. The check is now in RenderedBodyHasErrors with method context.
+        // See: RenderedBodyHasErrors "Reflection aliased type field access" section.
+
+        // RuntimeFieldInfo/RuntimeMethodInfo.m_declaringType accessed via arrow — only for aliased types
+        // (moved to RenderedBodyHasErrors with method context to avoid false positives on concrete subtypes)
 
         // Phase II.1: GetCalendarInfoEx passes char16_t* where intptr_t expected
-        if (s.Contains("GetCalendarInfoEx") || s.Contains("GetCalendarInfoW"))
+        // Match P/Invoke Interop calls (may have disambiguated names with __ suffix)
+        if (s.Contains("Interop_Kernel32_GetCalendarInfoEx") || s.Contains("Interop_Kernel32_GetCalendarInfoW"))
             return true;
 
         // Pattern: enum type pointer cast where value expected
