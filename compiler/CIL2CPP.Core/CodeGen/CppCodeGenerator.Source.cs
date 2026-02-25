@@ -687,6 +687,197 @@ public partial class CppCodeGenerator
         // NOTE: Self-recursion check removed (legitimate recursive methods, not JIT intrinsics).
         // JIT intrinsics are caught by System.Runtime.Intrinsics namespace check above.
 
+        // MethodBaseInvoker — CLR JIT infrastructure
+        if (method.DeclaringType?.ILFullName == "System.Reflection.MethodBaseInvoker")
+            return "MethodBaseInvoker (CLR JIT invoke infrastructure)";
+
+        // SpanHelpers pointer alignment
+        if (method.DeclaringType?.ILFullName == "System.SpanHelpers" &&
+            (method.Name == "IndexOfNullByte" || method.Name == "IndexOfNullCharacter" ||
+             method.Name == "UnalignedCountVector128"))
+            return "SpanHelpers pointer alignment (bitwise AND on pointers)";
+
+        // Thread CLR internals
+        if (method.DeclaringType?.ILFullName == "System.Threading.Thread" &&
+            method.Name is "StartCore" or "GetNativeHandle" or "ThreadNameChanged")
+            return "Thread CLR internal fields";
+
+        // RuntimeMethodInfoStub
+        if (method.DeclaringType?.ILFullName == "System.RuntimeMethodInfoStub" && method.Name == ".ctor")
+            return "RuntimeMethodInfoStub (CLR internal)";
+
+        // ConcurrentQueue internal types
+        if (method.DeclaringType?.ILFullName?.Contains("ConcurrentQueue") == true &&
+            (method.Name == "EnqueueSlow" || method.Name == "TryDequeueSlow"))
+            return "ConcurrentQueue forward-declared Segment type";
+
+        // Reflection.Pointer
+        if (method.DeclaringType?.ILFullName == "System.Reflection.Pointer" &&
+            method.Name is "GetHashCode" or "GetPointerValue")
+            return "Reflection.Pointer f_ptr field void*→intptr_t";
+
+        // IntPtr/UIntPtr .ctor definitions
+        if (method.DeclaringType?.ILFullName is "System.IntPtr" or "System.UIntPtr" &&
+            method.Name == ".ctor")
+            return "IntPtr/UIntPtr f_value on scalar alias";
+
+        // RuntimeParameterInfo .ctor
+        if (method.DeclaringType?.ILFullName == "System.Reflection.RuntimeParameterInfo" &&
+            method.Name == ".ctor")
+            return "RuntimeParameterInfo f_MemberImpl missing";
+
+        // Encoding GetCharsWithFallback
+        if ((method.DeclaringType?.ILFullName == "System.Text.UTF8Encoding" ||
+             method.DeclaringType?.ILFullName == "System.Text.ASCIIEncoding") &&
+            method.Name == "GetCharsWithFallback")
+            return "Encoding cross-scope Span type mismatch";
+
+        // ConditionalWeakTable generic array
+        if (method.DeclaringType?.ILFullName?.Contains("ConditionalWeakTable") == true)
+            return "ConditionalWeakTable MdArray generic array type mapping";
+
+        // SharedArrayPool.Rent
+        if (method.DeclaringType?.ILFullName?.Contains("SharedArrayPool") == true &&
+            method.Name == "Rent")
+            return "SharedArrayPool cross-scope type issues";
+
+        // Globalization NLS
+        if (method.DeclaringType?.ILFullName?.StartsWith("System.Globalization.CompareInfo") == true &&
+            method.Name.StartsWith("Nls"))
+            return "Globalization NLS P/Invoke pointer mismatch";
+        if (method.DeclaringType?.ILFullName?.StartsWith("System.Globalization.CalendarData") == true &&
+            (method.Name.Contains("CalendarInfo") || method.Name == "InitializeAbbreviatedEraNames"))
+            return "CalendarData P/Invoke pointer mismatch";
+
+        // ResourceReader
+        if (method.DeclaringType?.ILFullName == "System.Resources.ResourceReader")
+            return "ResourceReader ReadUnalignedI4/ResourceTypeCode mismatch";
+        if (method.DeclaringType?.ILFullName == "System.Resources.RuntimeResourceSet" &&
+            method.Name == "ReadValue")
+            return "RuntimeResourceSet Dictionary type mismatch";
+
+        // Interop P/Invoke wrappers
+        if (method.DeclaringType?.ILFullName == "Interop" && method.Name == "CallStringMethod")
+            return "Interop.CallStringMethod P/Invoke pointer mismatch";
+        if (method.DeclaringType?.ILFullName?.StartsWith("Interop/Kernel32") == true)
+            return "Interop.Kernel32 P/Invoke pointer mismatch";
+        if (method.DeclaringType?.ILFullName == "System.Globalization.CultureData" &&
+            (method.Name == "GetLocaleInfoEx" || method.Name == "EnumTimeCallback"))
+            return "CultureData P/Invoke pointer mismatch";
+        if (method.DeclaringType?.ILFullName == "System.Globalization.TimeSpanFormat")
+            return "TimeSpanFormat wrong argument ordering";
+        if (method.DeclaringType?.ILFullName == "System.Number" &&
+            method.Name is "FormatFixed" or "NumberToStringFormat")
+            return "Number ValueListBuilder wrong this pointer";
+        if (method.DeclaringType?.ILFullName == "System.Globalization.InvariantModeCasing" &&
+            method.Name is "ToLower" or "ToUpper")
+            return "InvariantModeCasing Span↔void* conversion";
+        if (method.DeclaringType?.ILFullName == "System.Globalization.TextInfo" &&
+            method.Name == "ToLowerAsciiInvariant")
+            return "TextInfo Span↔void* conversion";
+        if (method.DeclaringType?.ILFullName == "System.Threading.CancellationTokenSource" &&
+            method.Name == "ExecuteCallbackHandlers")
+            return "CancellationTokenSource try-finally + void* patterns";
+        if (method.DeclaringType?.ILFullName == "System.TimeZoneInfo" &&
+            method.Name == "GetLocalizedNameByMuiNativeResource")
+            return "TimeZoneInfo P/Invoke pointer type issues";
+        if (method.DeclaringType?.ILFullName == "System.OperationCanceledException" &&
+            method.Name == "get_CancellationToken")
+            return "OperationCanceledException f_cancellationToken type mismatch";
+        if (method.DeclaringType?.ILFullName?.StartsWith("System.Buffers.ProbabilisticMap") == true)
+            return "ProbabilisticMap SIMD bitmap operations";
+        if (method.DeclaringType?.ILFullName?.Contains("AsciiCharSearchValues") == true)
+            return "AsciiCharSearchValues SIMD scalar fallback";
+        if (method.DeclaringType?.ILFullName == "System.Buffers.Latin1CharSearchValues")
+            return "Latin1CharSearchValues SIMD scalar fallback";
+        if (method.DeclaringType?.ILFullName == "System.Buffers.SearchValues")
+            return "SearchValues SIMD search creation";
+
+        // CultureData.InitIcuCultureDataCore
+        if (method.DeclaringType?.ILFullName == "System.Globalization.CultureData" &&
+            method.Name == "InitIcuCultureDataCore")
+            return "CultureData Interop_Globalization P/Invoke mismatch";
+        // HashCode/Marvin seed
+        if (method.DeclaringType?.ILFullName == "System.HashCode" && method.Name == "GenerateGlobalSeed")
+            return "HashCode Interop_GetRandomBytes P/Invoke mismatch";
+        if (method.DeclaringType?.ILFullName == "System.Marvin" && method.Name == "GenerateSeed")
+            return "Marvin Interop_GetRandomBytes P/Invoke mismatch";
+        // Marshal.StringToCoTaskMemUni
+        if (method.DeclaringType?.ILFullName == "System.Runtime.InteropServices.Marshal" &&
+            method.Name == "StringToCoTaskMemUni")
+            return "Marshal void* pointer arithmetic";
+        // NativeLibrary.GetSymbol
+        if (method.DeclaringType?.ILFullName == "System.Runtime.InteropServices.NativeLibrary" &&
+            method.Name == "GetSymbol")
+            return "NativeLibrary void* pointer arithmetic";
+        // RuntimeTypeHandle .ctor
+        if (method.DeclaringType?.ILFullName == "System.RuntimeTypeHandle" && method.Name == ".ctor")
+            return "RuntimeTypeHandle TypeHandle JIT internal";
+        // RandomizedStringEqualityComparer
+        if (method.DeclaringType?.ILFullName?.Contains("RandomizedStringEqualityComparer") == true)
+            return "RandomizedStringEqualityComparer Interop_GetRandomBytes mismatch";
+        // Random/XoshiroImpl
+        if (method.DeclaringType?.ILFullName?.Contains("XoshiroImpl") == true)
+            return "XoshiroImpl Interop_GetRandomBytes mismatch";
+        // DateTimeFormatInfoScanner
+        if (method.DeclaringType?.ILFullName == "System.Globalization.DateTimeFormatInfoScanner" &&
+            method.Name == "ArrayElementsHaveSpace")
+            return "DateTimeFormatInfoScanner Span↔void* conversion";
+        // ExecutionContext.SetLocalValue
+        if (method.DeclaringType?.ILFullName == "System.Threading.ExecutionContext" &&
+            method.Name == "SetLocalValue")
+            return "ExecutionContext AsyncLocal + Thread cross-scope";
+        // IO.UnmanagedMemoryStream.Initialize
+        if (method.DeclaringType?.ILFullName == "System.IO.UnmanagedMemoryStream" &&
+            method.Name == "Initialize")
+            return "UnmanagedMemoryStream static_cast<uint64_t>(pointer)";
+        // GuidResult.SetFailure
+        if (method.DeclaringType?.ILFullName?.Contains("GuidResult") == true)
+            return "GuidResult pointer param dot-access";
+        // CultureInfo.set_Current*
+        if (method.DeclaringType?.ILFullName == "System.Globalization.CultureInfo" &&
+            method.Name.StartsWith("set_Current"))
+            return "CultureInfo AsyncLocal + void* patterns";
+        // Math.CopySign
+        if (method.DeclaringType?.ILFullName == "System.Math" && method.Name == "CopySign")
+            return "Math.CopySign void* pointer arithmetic";
+        // StringBuilder.set_Length
+        if (method.DeclaringType?.ILFullName == "System.Text.StringBuilder" && method.Name == "set_Length")
+            return "StringBuilder VectorMath hardware intrinsic";
+        // ConstArray.get_Item
+        if (method.DeclaringType?.ILFullName == "System.Reflection.ConstArray")
+            return "ConstArray ToPointer void* arithmetic";
+        // CustomAttribute
+        if (method.DeclaringType?.ILFullName == "System.Reflection.CustomAttribute")
+            return "CustomAttribute Interop pointer mismatch";
+        // CustomAttributeTypedArgument
+        if (method.DeclaringType?.ILFullName == "System.Reflection.CustomAttributeTypedArgument")
+            return "CustomAttributeTypedArgument void* cast pattern";
+        // MdFieldInfo/RtFieldInfo
+        if (method.DeclaringType?.ILFullName is "System.Reflection.MdFieldInfo" or "System.Reflection.RtFieldInfo")
+            return "Reflection field Equals aliased type field access";
+        // Number.FormatFixed/NumberToStringFormat
+        if (method.DeclaringType?.ILFullName == "System.Number")
+            return "Number ValueListBuilder wrong this pointer";
+        // MemoryExtensions
+        if (method.DeclaringType?.ILFullName == "System.MemoryExtensions")
+            return "MemoryExtensions Span↔void* conversion";
+        // DefaultInterpolatedStringHandler
+        if (method.DeclaringType?.ILFullName == "System.Runtime.CompilerServices.DefaultInterpolatedStringHandler")
+            return "DefaultInterpolatedStringHandler void* + undeclared call";
+        // RuntimeType.SplitName
+        if (method.DeclaringType?.ILFullName == "System.RuntimeType" && method.Name == "SplitName")
+            return "RuntimeType undeclared disambiguated function";
+        // MemberInfoCache.AddMethod
+        if (method.DeclaringType?.ILFullName?.Contains("MemberInfoCache") == true)
+            return "MemberInfoCache undeclared disambiguated function";
+        // Span<KVP<IAsyncLocal,Object>>
+        if (method.DeclaringType?.ILFullName?.Contains("IAsyncLocal") == true)
+            return "Span<IAsyncLocal KVP> pointer parameter dot-access";
+        // TimeSpan
+        if (method.DeclaringType?.ILFullName == "System.TimeSpan")
+            return "TimeSpan void*→intptr_t conversion";
+
         // Check specific instruction patterns + undeclared TypeInfo
         foreach (var block in method.BasicBlocks)
         {
