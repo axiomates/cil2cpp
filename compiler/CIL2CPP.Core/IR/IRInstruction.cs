@@ -512,7 +512,7 @@ public class IRDelegateInvoke : IRInstruction
         for (int i = 0; i < Arguments.Count; i++)
         {
             if (i < ParamTypes.Count && ParamTypes[i].EndsWith("*")
-                && !ParamTypes[i].StartsWith("cil2cpp::"))
+                && ParamTypes[i] != "cil2cpp::Object*" && ParamTypes[i] != "void*")
             {
                 castedArgs.Add($"({ParamTypes[i]})(void*){Arguments[i]}");
             }

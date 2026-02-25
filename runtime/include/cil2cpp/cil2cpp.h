@@ -36,6 +36,7 @@
 #include "safe_handle.h"
 #include "waithandle.h"
 #include "io.h"
+#include "eventsource.h"
 
 // BCL types
 #include "bcl/System.Object.h"

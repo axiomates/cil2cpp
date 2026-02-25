@@ -439,6 +439,17 @@ public static class ICallRegistry
         RegisterICall("System.ThrowHelper", "GetArgumentName", 1,
             "cil2cpp::icall::ThrowHelper_GetArgumentName");
 
+        // ===== System.Diagnostics.Tracing.EventSource (no-op — ETW tracing disabled in AOT) =====
+        // EventSource is excluded by ReachabilityAnalyzer (System.Diagnostics.Tracing namespace),
+        // but derived types TplEventSource (System.Threading.Tasks) and ArrayPoolEventSource
+        // (System.Buffers) ARE reachable and call base EventSource methods.
+        // Returning false from IsEnabled() makes all tracing methods early-return (no-op at runtime).
+        RegisterICall("System.Diagnostics.Tracing.EventSource", ".ctor", 0, "cil2cpp::eventsource_ctor");
+        RegisterICall("System.Diagnostics.Tracing.EventSource", "IsEnabled", 0, "cil2cpp::eventsource_is_enabled");
+        RegisterICall("System.Diagnostics.Tracing.EventSource", "IsEnabled", 2, "cil2cpp::eventsource_is_enabled_level");
+        RegisterICall("System.Diagnostics.Tracing.EventSource", "get_IsSupported", 0, "cil2cpp::eventsource_get_is_supported");
+        RegisterICallWildcard("System.Diagnostics.Tracing.EventSource", "WriteEvent", "cil2cpp::eventsource_write_event");
+
         // ===== System.ArgIterator =====
         // ArgIterator is 100% [InternalCall] in BCL. Our runtime uses VarArgHandle metadata
         // constructed at call sites and passed as intptr_t to varargs methods.

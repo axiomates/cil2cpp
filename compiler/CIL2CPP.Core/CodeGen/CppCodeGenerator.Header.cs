@@ -2896,14 +2896,11 @@ public partial class CppCodeGenerator
             return true;
 
         // Pattern: delegate invoke with Object* arg where typed pointer expected (C2664).
-        // Generic collection methods (List<T>.FindIndex, Array.Sort<T>) use ldelem.ref
-        // which produces Object*, but the delegate function pointer expects T*.
-        // Detect: inline delegate dispatch (->method_ptr) where a non-Object* parameter
-        // type appears in the function pointer cast but the actual arg is Object*.
-        if (s.Contains("->method_ptr)") && s.Contains("cil2cpp::Object*"))
+        // NOTE: IRDelegateInvoke.ToCpp() now inserts (Type*)(void*) casts for all typed
+        // pointer arguments. Only flag if the line lacks these casts (legacy codegen).
+        if (s.Contains("->method_ptr)") && s.Contains("cil2cpp::Object*")
+            && !s.Contains("(void*)"))
         {
-            // Check if the function pointer type expects a non-Object typed pointer
-            // Pattern: (bool(*)(Object*, SomeType*))(delegate->method_ptr)
             var fptIdx = s.IndexOf("(*)(");
             if (fptIdx >= 0)
             {
@@ -2911,7 +2908,6 @@ public partial class CppCodeGenerator
                 if (fptEnd > fptIdx)
                 {
                     var fptParams = s[(fptIdx + 4)..fptEnd];
-                    // Count non-Object pointer params in the function pointer signature
                     var parts = fptParams.Split(',');
                     foreach (var part in parts)
                     {
