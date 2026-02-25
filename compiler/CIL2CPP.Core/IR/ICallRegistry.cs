@@ -79,6 +79,16 @@ public static class ICallRegistry
         RegisterICall("System.Enum", "InternalBoxEnum", 2, "cil2cpp::icall::Enum_InternalBoxEnum");
         RegisterICall("System.Enum", "InternalGetCorElementType", 1, "cil2cpp::icall::Enum_InternalGetCorElementType");
 
+        // ===== System.IntPtr / System.UIntPtr =====
+        // IntPtr/UIntPtr are aliased to intptr_t/uintptr_t (scalars).
+        // IL methods access f_value field which doesn't exist on a scalar alias.
+        RegisterICallTyped("System.IntPtr", ".ctor", 1, "System.Int32", "cil2cpp::icall::IntPtr_ctor_i32");
+        RegisterICallTyped("System.IntPtr", ".ctor", 1, "System.Int64", "cil2cpp::icall::IntPtr_ctor_i64");
+        RegisterICall("System.IntPtr", "ToPointer", 0, "cil2cpp::icall::IntPtr_ToPointer");
+        RegisterICallTyped("System.UIntPtr", ".ctor", 1, "System.UInt32", "cil2cpp::icall::UIntPtr_ctor_u32");
+        RegisterICallTyped("System.UIntPtr", ".ctor", 1, "System.UInt64", "cil2cpp::icall::UIntPtr_ctor_u64");
+        RegisterICall("System.UIntPtr", "ToPointer", 0, "cil2cpp::icall::UIntPtr_ToPointer");
+
         // ===== System.Char (ICU-backed classification + case conversion) =====
         // BCL Char methods have IL bodies, but their chain goes through CharUnicodeInfo →
         // System.Globalization → large Unicode data tables that are impractical for AOT.

@@ -1481,6 +1481,13 @@ public partial class IRBuilder
                     // Cast return value to method's declared return type for interface/generic returns
                     if (method.ReturnTypeCpp.EndsWith("*"))
                         retVal = $"({method.ReturnTypeCpp}){retVal}";
+                    // intptr_t/uintptr_t returns: cast from pointer types
+                    // In .NET, IntPtr/UIntPtr and pointers are interchangeable.
+                    // In C++, MSVC rejects implicit void*→intptr_t.
+                    else if (method.ReturnTypeCpp is "intptr_t" or "uintptr_t"
+                             && !retVal.StartsWith($"({method.ReturnTypeCpp})")
+                             && retVal != "0" && retVal != "nullptr")
+                        retVal = $"({method.ReturnTypeCpp}){retVal}";
                     block.Instructions.Add(new IRReturn { Value = retVal });
                 }
                 else

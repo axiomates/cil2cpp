@@ -37,6 +37,16 @@ void Marshal_FreeHGlobal(intptr_t hglobal);
 intptr_t Marshal_AllocCoTaskMem(Int32 cb);
 void Marshal_FreeCoTaskMem(intptr_t ptr);
 
+// System.IntPtr / System.UIntPtr
+// IntPtr/UIntPtr are aliased to intptr_t/uintptr_t (scalars).
+// IL methods access f_value field which doesn't exist on a scalar.
+inline void IntPtr_ctor_i32(intptr_t* self, Int32 value) { *self = static_cast<intptr_t>(value); }
+inline void IntPtr_ctor_i64(intptr_t* self, Int64 value) { *self = static_cast<intptr_t>(value); }
+inline void* IntPtr_ToPointer(intptr_t* self) { return reinterpret_cast<void*>(*self); }
+inline void UIntPtr_ctor_u32(uintptr_t* self, UInt32 value) { *self = static_cast<uintptr_t>(value); }
+inline void UIntPtr_ctor_u64(uintptr_t* self, UInt64 value) { *self = static_cast<uintptr_t>(value); }
+inline void* UIntPtr_ToPointer(uintptr_t* self) { return reinterpret_cast<void*>(*self); }
+
 // System.Type
 Object* Type_GetTypeFromHandle(void* handle);
 

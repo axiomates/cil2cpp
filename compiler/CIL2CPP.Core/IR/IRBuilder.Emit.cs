@@ -1610,7 +1610,10 @@ public partial class IRBuilder
             // BUT: PointerType (e.g., System.UInt16*) must NOT be skipped — Cecil's
             // PointerType.Resolve() resolves the ELEMENT type (UInt16.IsValueType=true),
             // but the parameter is actually a pointer (uint16_t*) which needs a cast.
-            if (paramType is not Mono.Cecil.PointerType)
+            // IntPtr/UIntPtr are value types but aliased to intptr_t/uintptr_t (scalars).
+            // They need casts from pointer types (C++ rejects implicit void*→intptr_t).
+            if (paramType is not Mono.Cecil.PointerType
+                && paramType.FullName is not "System.IntPtr" and not "System.UIntPtr")
             {
                 bool isValueParam = false;
                 try { isValueParam = paramType.Resolve()?.IsValueType == true; }
@@ -1625,6 +1628,16 @@ public partial class IRBuilder
                 continue;
 
             var expectedType = CppNameMapper.GetCppTypeForDecl(resolvedName);
+
+            // IntPtr/UIntPtr parameters (intptr_t/uintptr_t): cast pointer args to the expected type.
+            // In .NET, IntPtr/UIntPtr and pointers are interchangeable (native int = pointer).
+            // In C++, uintptr_t/intptr_t are integer types — MSVC rejects implicit void*→intptr_t.
+            if (expectedType is "intptr_t" or "uintptr_t")
+            {
+                if (args[i] != "nullptr" && args[i] != "0" && !args[i].StartsWith($"({expectedType})"))
+                    args[i] = $"({expectedType}){args[i]}";
+                continue;
+            }
 
             // Only cast pointer parameters (reference types)
             if (!expectedType.EndsWith("*")) continue;

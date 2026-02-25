@@ -2143,10 +2143,8 @@ public partial class CppCodeGenerator
             method.Parameters.Any(p => p.CppTypeName == "void*"))
             return true;
 
-        // Method-level: void* local returned from intptr_t/uintptr_t function
-        // In .NET, IntPtr and void* are identical; in C++ they're incompatible
-        if ((method.ReturnTypeCpp is "intptr_t" or "uintptr_t") && rendered.Contains("void* loc_"))
-            return true;
+        // Note: void* local in intptr_t-returning method gate removed —
+        // return value casting now adds (intptr_t) cast at ret instruction.
 
         // Method-level: Span ctor called with intptr_t/uintptr_t parameter as actual argument
         // Only flag when the Span ctor call line actually contains the intptr_t param as argument
@@ -2537,9 +2535,22 @@ public partial class CppCodeGenerator
         if (s.Contains("Interop_Kernel32_GetLocaleInfoEx(") || s.Contains("Interop_Kernel32_GetLocaleInfoExInt("))
             return true;
 
-        // Pattern: AsyncLocal constructor with wrong arg count
-        if (s.Contains("System_Threading_AsyncLocal_1_") && s.Contains("__ctor("))
-            return true;
+        // Pattern: AsyncLocal<T>.ctor called with wrong arg count (2 args for 1-arg ctor
+        // mapped to no-arg ctor name). Exclude function definition lines (ending with '{').
+        if (s.Contains("System_Threading_AsyncLocal_1_") && s.Contains("__ctor(")
+            && !s.TrimEnd().EndsWith("{"))
+        {
+            // Count commas to detect multi-arg calls to the no-arg ctor name
+            var ctorIdx = s.IndexOf("__ctor(");
+            var parenIdx = s.IndexOf('(', ctorIdx);
+            if (parenIdx >= 0)
+            {
+                var afterParen = s[(parenIdx + 1)..];
+                var closeIdx = afterParen.IndexOf(')');
+                if (closeIdx >= 0 && afterParen[..closeIdx].Contains(','))
+                    return true; // multi-arg call to no-arg ctor name — wrong overload resolution
+            }
+        }
 
         // Pattern: broken type name from function pointer mishandling
         // e.g., "methodSystem_Void*" or "reinterpret_cast<void(*)"
@@ -2780,6 +2791,8 @@ public partial class CppCodeGenerator
 
         // Pattern: void* pointer arithmetic (void has unknown size)
         // e.g., __t3 + index where __t3 is void*
+        // Note: IntPtr.ToPointer is now an ICall, but callers still produce void* values
+        // that may be used in pointer arithmetic. Keep the gate for now.
         if (s.Contains("ToPointer("))
             return true;
 
