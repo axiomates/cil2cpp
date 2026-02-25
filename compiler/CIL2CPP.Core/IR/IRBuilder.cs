@@ -388,14 +388,18 @@ public partial class IRBuilder
         // Pass 0.5: Discover transitive generic types from method bodies.
         // When Dictionary<Int32,Task> is discovered, its open body calls EqualityComparer<TKey>.Default
         // — resolve TKey→Int32 to discover EqualityComparer<Int32> as a new instantiation.
+        // Also scan generic METHOD specialization bodies (e.g., SpanHelpers.IndexOf<Byte, DontNegate<Byte>>
+        // references DontNegate<Byte> which needs to be created before Pass 1.5).
         // Fixpoint loop: newly discovered types may reference further generic types.
         {
-            var scannedKeys = new HashSet<string>();
+            var scannedTypeKeys = new HashSet<string>();
+            var scannedMethodKeys = new HashSet<string>();
             int prevCount;
             do
             {
                 prevCount = _genericInstantiations.Count;
-                DiscoverTransitiveGenericTypes(scannedKeys);
+                DiscoverTransitiveGenericTypes(scannedTypeKeys);
+                DiscoverTransitiveGenericTypesFromMethods(scannedMethodKeys);
             } while (_genericInstantiations.Count > prevCount);
         }
 

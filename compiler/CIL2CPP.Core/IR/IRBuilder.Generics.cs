@@ -762,13 +762,15 @@ public partial class IRBuilder
             _module.Types.Add(irType);
             _typeCache[nestedKey] = irType;
 
-            // Create method stubs for nested type (declarations only, no body conversion)
-            // The bodies are mostly inaccessible from user code anyway — we only need
-            // the struct definition for sizeof/locals in parent type methods.
+            // Create method shells + defer body conversion for nested type methods.
+            // Same pattern as CreateGenericSpecializations: reachability + CLR gate → defer.
             foreach (var methodDef in openType.Methods)
             {
                 var returnTypeName = ResolveGenericTypeName(methodDef.ReturnType, typeParamMap);
                 var cppName = CppNameMapper.MangleMethodName(info.MangledName, methodDef.Name);
+                // op_Explicit/op_Implicit: disambiguate by return type (C++ can't overload by return type)
+                if (methodDef.Name is "op_Explicit" or "op_Implicit" or "op_CheckedExplicit" or "op_CheckedImplicit")
+                    cppName = $"{cppName}_{CppNameMapper.MangleTypeName(returnTypeName)}";
 
                 var irMethod = new IRMethod
                 {
@@ -783,12 +785,17 @@ public partial class IRBuilder
                     IsStaticConstructor = methodDef.IsConstructor && methodDef.IsStatic,
                 };
 
+                // Propagate HasICallMapping for methods with icall mappings
+                if (ICallRegistry.Lookup(openType.FullName, methodDef.Name, methodDef.Parameters.Count) != null)
+                    irMethod.HasICallMapping = true;
+
                 foreach (var paramDef in methodDef.Parameters)
                 {
                     var paramTypeName = ResolveGenericTypeName(paramDef.ParameterType, typeParamMap);
+                    var rawParamName = paramDef.Name.Length > 0 ? paramDef.Name : $"p{paramDef.Index}";
                     irMethod.Parameters.Add(new IRParameter
                     {
-                        Name = paramDef.Name.Length > 0 ? paramDef.Name : $"p{paramDef.Index}",
+                        Name = rawParamName,
                         CppName = SanitizeParamName(paramDef.Name, paramDef.Index),
                         CppTypeName = ResolveTypeForDecl(paramTypeName),
                         ILTypeName = paramTypeName,
@@ -796,15 +803,40 @@ public partial class IRBuilder
                     });
                 }
 
+                // Local variables (needed for body conversion)
+                if (methodDef.HasBody)
+                {
+                    foreach (var localDef in methodDef.Body.Variables)
+                    {
+                        var localTypeName = ResolveGenericTypeName(localDef.VariableType, typeParamMap);
+                        irMethod.Locals.Add(new IRLocal
+                        {
+                            Index = localDef.Index,
+                            CppName = $"loc_{localDef.Index}",
+                            CppTypeName = ResolveTypeForDecl(localTypeName),
+                        });
+                    }
+                }
+
                 irType.Methods.Add(irMethod);
 
-                // TODO: Nested type method bodies are stubbed for now.
-                // The struct definitions are sufficient for resolving HasUnknownBodyReferences
-                // in parent type methods (e.g., Dictionary uses Entry as local variable type).
-                // Future: compile bodies for methods like Enumerator.MoveNext when needed.
+                // Defer body conversion to after Pass 3.3 (same as parent type methods).
+                // Only convert reachable, non-CLR-internal methods.
                 if (methodDef.HasBody && !methodDef.IsAbstract)
                 {
-                    GenerateStubBody(irMethod);
+                    if (!_reachability.IsReachable(methodDef))
+                    {
+                        // Unreachable — leave empty (no stub, no body)
+                    }
+                    else if (HasClrInternalDependencies(methodDef))
+                    {
+                        GenerateStubBody(irMethod);
+                    }
+                    else
+                    {
+                        _deferredGenericBodies.Add((methodDef, irMethod,
+                            new Dictionary<string, string>(typeParamMap)));
+                    }
                 }
             }
         }
@@ -857,6 +889,10 @@ public partial class IRBuilder
                             TryCollectResolvedGenericType(methodRef.ReturnType, nameMap);
                             foreach (var p in methodRef.Parameters)
                                 TryCollectResolvedGenericType(p.ParameterType, nameMap);
+                            // Scan generic method arguments (e.g., call IndexOfAny<T, DontNegate<T>>)
+                            if (methodRef is GenericInstanceMethod gim)
+                                foreach (var ga in gim.GenericArguments)
+                                    TryCollectResolvedGenericType(ga, nameMap);
                             break;
                         case FieldReference fieldRef:
                             TryCollectResolvedGenericType(fieldRef.DeclaringType, nameMap);
@@ -866,6 +902,83 @@ public partial class IRBuilder
                             TryCollectResolvedGenericType(typeRef, nameMap);
                             break;
                     }
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Discover generic types referenced by generic method specialization bodies.
+    /// Complements DiscoverTransitiveGenericTypes (which only scans generic TYPE bodies).
+    /// E.g., SpanHelpers.IndexOf&lt;Byte, DontNegate&lt;Byte&gt;&gt; body references DontNegate&lt;Byte&gt;
+    /// which needs to be created as an IRType before Pass 1.5.
+    /// </summary>
+    private void DiscoverTransitiveGenericTypesFromMethods(HashSet<string> scannedKeys)
+    {
+        var snapshot = _genericMethodInstantiations.ToList();
+
+        foreach (var (key, info) in snapshot)
+        {
+            if (scannedKeys.Contains(key)) continue;
+            scannedKeys.Add(key);
+
+            var cecilMethod = info.CecilMethod;
+            if (cecilMethod == null || !cecilMethod.HasBody) continue;
+            if (HasClrInternalDependencies(cecilMethod)) continue;
+
+            // Build method-level type parameter map (!!0, !!1, etc.)
+            var nameMap = new Dictionary<string, string>();
+            for (int i = 0; i < cecilMethod.GenericParameters.Count && i < info.TypeArguments.Count; i++)
+                nameMap[cecilMethod.GenericParameters[i].Name] = info.TypeArguments[i];
+
+            // Also add declaring type's generic params if it's a generic type
+            var declaringType = cecilMethod.DeclaringType;
+            if (declaringType.HasGenericParameters)
+            {
+                // Look up the declaring type's instantiation to get resolved type args
+                // For generic types like List<T>, the method might be List<T>.Sort<TComparer>()
+                // We need T resolved too. Check if _genericInstantiations has the declaring type.
+                foreach (var (typeKey, typeInfo) in _genericInstantiations)
+                {
+                    if (typeInfo.CecilOpenType == declaringType)
+                    {
+                        for (int i = 0; i < declaringType.GenericParameters.Count && i < typeInfo.TypeArguments.Count; i++)
+                        {
+                            var paramName = declaringType.GenericParameters[i].Name;
+                            if (!nameMap.ContainsKey(paramName))
+                                nameMap[paramName] = typeInfo.TypeArguments[i];
+                        }
+                        break;
+                    }
+                }
+            }
+
+            // Scan local variables
+            foreach (var local in cecilMethod.Body.Variables)
+                TryCollectResolvedGenericType(local.VariableType, nameMap);
+
+            // Scan instructions
+            foreach (var instr in cecilMethod.Body.Instructions)
+            {
+                switch (instr.Operand)
+                {
+                    case MethodReference methodRef:
+                        TryCollectResolvedGenericType(methodRef.DeclaringType, nameMap);
+                        TryCollectResolvedGenericType(methodRef.ReturnType, nameMap);
+                        foreach (var p in methodRef.Parameters)
+                            TryCollectResolvedGenericType(p.ParameterType, nameMap);
+                        // Scan generic method arguments (e.g., call IndexOfAny<T, DontNegate<T>>)
+                        if (methodRef is GenericInstanceMethod gim)
+                            foreach (var ga in gim.GenericArguments)
+                                TryCollectResolvedGenericType(ga, nameMap);
+                        break;
+                    case FieldReference fieldRef:
+                        TryCollectResolvedGenericType(fieldRef.DeclaringType, nameMap);
+                        TryCollectResolvedGenericType(fieldRef.FieldType, nameMap);
+                        break;
+                    case TypeReference typeRef:
+                        TryCollectResolvedGenericType(typeRef, nameMap);
+                        break;
                 }
             }
         }
