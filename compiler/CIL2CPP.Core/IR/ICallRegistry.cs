@@ -237,6 +237,22 @@ public static class ICallRegistry
             "cil2cpp::icall::Thread_get_CurrentThread");
         RegisterICall("System.Threading.Thread", "GetCurrentOSThreadId", 0,
             "cil2cpp::icall::Thread_GetCurrentOSThreadId");
+        RegisterICall("System.Threading.Thread", "Initialize", 0,
+            "cil2cpp::icall::Thread_Initialize");
+        RegisterICall("System.Threading.Thread", "GetCurrentThreadNative", 0,
+            "cil2cpp::icall::Thread_GetCurrentThreadNative");
+        RegisterICall("System.Threading.Thread", "IsBackgroundNative", 0,
+            "cil2cpp::icall::Thread_IsBackgroundNative");
+        RegisterICall("System.Threading.Thread", "SetBackgroundNative", 1,
+            "cil2cpp::icall::Thread_SetBackgroundNative");
+        RegisterICall("System.Threading.Thread", "GetPriorityNative", 0,
+            "cil2cpp::icall::Thread_GetPriorityNative");
+        RegisterICall("System.Threading.Thread", "SetPriorityNative", 1,
+            "cil2cpp::icall::Thread_SetPriorityNative");
+        RegisterICall("System.Threading.Thread", "get_ManagedThreadId", 0,
+            "cil2cpp::icall::Thread_get_ManagedThreadId");
+        RegisterICall("System.Threading.Thread", "InternalFinalize", 0,
+            "cil2cpp::icall::Thread_InternalFinalize");
 
         // ===== System.Environment =====
         RegisterICall("System.Environment", "get_NewLine", 0, "cil2cpp::icall::Environment_get_NewLine");

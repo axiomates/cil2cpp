@@ -95,6 +95,14 @@ Boolean Thread_Yield();
 Int32 Thread_get_OptimalMaxSpinWaitsPerSpinIteration();
 void* Thread_get_CurrentThread();
 UInt64 Thread_GetCurrentOSThreadId();
+void Thread_Initialize(void* __this);
+void* Thread_GetCurrentThreadNative();
+Boolean Thread_IsBackgroundNative(void* __this);
+void Thread_SetBackgroundNative(void* __this, Boolean isBackground);
+Int32 Thread_GetPriorityNative(void* __this);
+void Thread_SetPriorityNative(void* __this, Int32 priority);
+Int32 Thread_get_ManagedThreadId(void* __this);
+void Thread_InternalFinalize(void* __this);
 
 // System.Runtime.CompilerServices.RuntimeHelpers
 void RuntimeHelpers_InitializeArray(Object* array, void* fieldHandle);

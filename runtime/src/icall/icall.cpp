@@ -339,6 +339,51 @@ UInt64 Thread_GetCurrentOSThreadId() {
 #endif
 }
 
+void Thread_Initialize(void* __this) {
+    // HACK: No-op — CIL2CPP manages threads through its own runtime.
+    // TODO: implement proper thread initialization when Thread becomes IL-compiled
+    (void)__this;
+}
+
+void* Thread_GetCurrentThreadNative() {
+    // Delegate to the existing Thread_get_CurrentThread implementation
+    return Thread_get_CurrentThread();
+}
+
+Boolean Thread_IsBackgroundNative(void* __this) {
+    (void)__this;
+    return 1; // HACK: all non-main threads are background by default in CIL2CPP
+}
+
+void Thread_SetBackgroundNative(void* __this, Boolean isBackground) {
+    (void)__this;
+    (void)isBackground;
+    // HACK: no-op — CIL2CPP thread pool manages thread lifecycle
+}
+
+Int32 Thread_GetPriorityNative(void* __this) {
+    (void)__this;
+    return 2; // Normal priority (ThreadPriority.Normal = 2)
+}
+
+void Thread_SetPriorityNative(void* __this, Int32 priority) {
+    (void)__this;
+    (void)priority;
+    // HACK: no-op — thread priority not implemented
+}
+
+Int32 Thread_get_ManagedThreadId(void* __this) {
+    (void)__this;
+    // HACK: return OS thread ID as managed thread ID for now
+    // TODO: implement proper managed thread ID tracking
+    return static_cast<Int32>(Thread_GetCurrentOSThreadId() & 0x7FFFFFFF);
+}
+
+void Thread_InternalFinalize(void* __this) {
+    (void)__this;
+    // No-op — CIL2CPP doesn't need thread finalization
+}
+
 // ===== System.Runtime.CompilerServices.RuntimeHelpers =====
 
 Boolean RuntimeHelpers_TryEnsureSufficientExecutionStack() {

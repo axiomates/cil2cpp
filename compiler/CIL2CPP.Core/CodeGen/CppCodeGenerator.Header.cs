@@ -1378,11 +1378,10 @@ public partial class CppCodeGenerator
         // like IBitwiseOperators<byte,byte,byte>.op_BitwiseOr. The actual operators are already
         // inlined by the C# compiler at call sites; these DIM bodies are dead code that references
         // struct members unavailable in flat struct model.
-        if (method.DeclaringType?.IsInterface == true &&
-            (method.DeclaringType.ILFullName?.StartsWith("System.Numerics.I") == true ||
-             method.DeclaringType.ILFullName?.StartsWith("System.IComparable") == true ||
-             method.DeclaringType.ILFullName?.StartsWith("System.IEquatable") == true))
-            return true;
+        // REMOVED: Numerics DIM check was too broad — methods now tested through remaining gates
+        // if (method.DeclaringType?.IsInterface == true &&
+        //     (method.DeclaringType.ILFullName?.StartsWith("System.Numerics.I") == true || ...))
+        //     return true;
 
         // VectorMath — hardware SIMD helper, same as System.Runtime.Intrinsics
         if (method.DeclaringType?.ILFullName == "System.Numerics.VectorMath")
@@ -1426,86 +1425,25 @@ public partial class CppCodeGenerator
         if (method.DeclaringType?.ILFullName == "System.RuntimeMethodInfoStub" && method.Name == ".ctor")
             return true;
 
-        // ConcurrentQueue.Segment — forward-declared internal type with field access
-        if (method.DeclaringType?.ILFullName?.Contains("ConcurrentQueue") == true &&
-            (method.Name == "EnqueueSlow" || method.Name == "TryDequeueSlow"))
-            return true;
+        // ConcurrentQueue.Segment — REMOVED: tested through remaining gates
+        // Reflection.Pointer — REMOVED: tested through remaining gates
+        // IntPtr/UIntPtr method definitions — REMOVED: tested through remaining gates
+        // RuntimeParameterInfo .ctor — REMOVED: tested through remaining gates
 
-        // Reflection.Pointer — f_ptr field is void* but IL treats as IntPtr; no runtime struct
-        if (method.DeclaringType?.ILFullName == "System.Reflection.Pointer" &&
-            method.Name is "GetHashCode" or "GetPointerValue")
-            return true;
+        // Encoding GetCharsWithFallback — REMOVED: tested through remaining gates
 
-        // IntPtr/UIntPtr method definitions — ->f_value on intptr_t/uintptr_t scalar aliases
-        // (these are method DEFINITIONS, callers use ICalls instead)
-        if (method.DeclaringType?.ILFullName is "System.IntPtr" or "System.UIntPtr" &&
-            method.Name == ".ctor")
-            return true;
+        // ConditionalWeakTable Container.Finalize/Resize and CWT.ctor — REMOVED: MdArray** field access
+        // was flagged as KBP but methods now tested through remaining gates
 
-        // RuntimeParameterInfo .ctor — references f_MemberImpl not in our struct
-        if (method.DeclaringType?.ILFullName == "System.Reflection.RuntimeParameterInfo" &&
-            method.Name == ".ctor")
-            return true;
+        // SharedArrayPool.Rent — REMOVED: ConditionalWeakTable + AsyncLocal — now tested through remaining gates
 
-        // Encoding GetCharsWithFallback — Span<Char> passed as ReadOnlySpan<Byte> cross-scope
-        if ((method.DeclaringType?.ILFullName == "System.Text.UTF8Encoding" ||
-             method.DeclaringType?.ILFullName == "System.Text.ASCIIEncoding") &&
-            method.Name == "GetCharsWithFallback")
-            return true;
+        // Globalization NLS methods — REMOVED: tested through remaining gates
+        // CalendarData — REMOVED: tested through remaining gates
+        // ResourceReader/RuntimeResourceSet — REMOVED: tested through remaining gates
+        // Interop P/Invoke — REMOVED: tested through remaining gates
+        // Interop/Kernel32 — REMOVED: tested through remaining gates
 
-        // ConditionalWeakTable Container.Finalize/Resize and CWT.ctor — MdArray** field access
-        // from array_get_element_ptr on generic array type parameters.
-        // Only match the specific methods that have MdArray issues, not ALL CWT methods.
-        if (method.DeclaringType?.ILFullName?.Contains("ConditionalWeakTable") == true)
-        {
-            if (method.DeclaringType.ILFullName.Contains("/Container") &&
-                method.Name is "Finalize" or "Resize")
-                return true;
-            // CWT.ctor — the declaring type name starts with ConditionalWeakTable`2< (not nested)
-            // Note: ILFullName may contain "/" in generic args (e.g., SharedArrayPool`1/ThreadLocalArray),
-            // so we check by type name prefix rather than absence of "/"
-            if (method.DeclaringType.ILFullName.StartsWith("System.Runtime.CompilerServices.ConditionalWeakTable`2") &&
-                !method.DeclaringType.ILFullName.Contains("/Container") &&
-                !method.DeclaringType.ILFullName.Contains("/<>c") &&
-                method.Name == ".ctor")
-                return true;
-        }
-
-        // SharedArrayPool.Rent — ConditionalWeakTable + AsyncLocal + cross-scope type issues
-        if (method.DeclaringType?.ILFullName?.Contains("SharedArrayPool") == true &&
-            method.Name == "Rent")
-            return true;
-
-        // Globalization NLS methods — call Interop_Kernel32_* P/Invoke with pointer type mismatches.
-        // NLS is the legacy Windows path; ICU is the primary codepath on modern Windows/Linux.
-        if (method.DeclaringType?.ILFullName?.StartsWith("System.Globalization.CompareInfo") == true &&
-            method.Name.StartsWith("Nls"))
-            return true;
-        if (method.DeclaringType?.ILFullName?.StartsWith("System.Globalization.CalendarData") == true &&
-            (method.Name.Contains("CalendarInfo") || method.Name == "InitializeAbbreviatedEraNames"))
-            return true;
-
-        // ResourceReader — uses ReadUnalignedI4 (uintptr_t→int32_t*) and ResourceTypeCode enum pointers
-        if (method.DeclaringType?.ILFullName == "System.Resources.ResourceReader" &&
-            method.Name is "GetNameHash" or "GetNamePosition" or "LoadObject" or "LoadObjectV2"
-                        or "ReadUnalignedI4")
-            return true;
-        if (method.DeclaringType?.ILFullName == "System.Resources.RuntimeResourceSet" &&
-            method.Name == "ReadValue")
-            return true;
-
-        // Interop P/Invoke wrappers with pointer type mismatches — BCL passes typed pointers
-        // where different pointer types are expected in the P/Invoke signature
-        if (method.DeclaringType?.ILFullName == "Interop" && method.Name == "CallStringMethod")
-            return true;
-        if (method.DeclaringType?.ILFullName?.StartsWith("Interop/Kernel32") == true &&
-            method.Name is "GetCalendarInfoEx" or "GetLocaleInfoEx" or "LoadLibraryEx" or "LocalFree")
-            return true;
-
-        // Globalization CultureData P/Invoke wrappers — similar pointer type mismatches
-        if (method.DeclaringType?.ILFullName == "System.Globalization.CultureData" &&
-            (method.Name == "GetLocaleInfoEx" || method.Name == "EnumTimeCallback"))
-            return true;
+        // Globalization CultureData P/Invoke — REMOVED: tested through remaining gates
 
         // TimeSpanFormat.Format/FormatC/FormatG — REMOVED: these are stubs, calls to them compile fine.
         // The "wrong argument ordering" comment was from a false positive in RenderedLineHasError.
@@ -1513,76 +1451,31 @@ public partial class CppCodeGenerator
         // Number.FormatFixed/NumberToStringFormat — REMOVED: ValueListBuilder calls compile correctly.
         // Callers already pass correct this pointers; the false positive was from the line-level check.
 
-        // Globalization InvariantModeCasing.ToLower/ToUpper — Span struct ↔ void* conversion
-        if (method.DeclaringType?.ILFullName == "System.Globalization.InvariantModeCasing" &&
-            method.Name is "ToLower" or "ToUpper")
-            return true;
+        // Globalization InvariantModeCasing.ToLower/ToUpper — REMOVED: Span struct ↔ void* conversion
+        // was flagged as KBP but methods compile correctly after code gen improvements
 
-        // Globalization TextInfo.ToLowerAsciiInvariant — Span struct conversion
-        if (method.DeclaringType?.ILFullName == "System.Globalization.TextInfo" &&
-            method.Name == "ToLowerAsciiInvariant")
-            return true;
+        // Globalization TextInfo.ToLowerAsciiInvariant — REMOVED: Span struct conversion
+        // was flagged as KBP but method compiles correctly now
 
-        // CancellationTokenSource.ExecuteCallbackHandlers — try-finally + void* cast patterns
-        if (method.DeclaringType?.ILFullName == "System.Threading.CancellationTokenSource" &&
-            method.Name == "ExecuteCallbackHandlers")
-            return true;
+        // CancellationTokenSource.ExecuteCallbackHandlers — REMOVED: tested through remaining gates
 
-        // TimeZoneInfo.GetLocalizedNameByMuiNativeResource — P/Invoke pointer type issues
-        if (method.DeclaringType?.ILFullName == "System.TimeZoneInfo" &&
-            method.Name == "GetLocalizedNameByMuiNativeResource")
-            return true;
+        // TimeZoneInfo.GetLocalizedNameByMuiNativeResource — REMOVED: tested through remaining gates
 
-        // OperationCanceledException.get_CancellationToken — f_cancellationToken field type mismatch
-        if (method.DeclaringType?.ILFullName == "System.OperationCanceledException" &&
-            method.Name == "get_CancellationToken")
-            return true;
+        // OperationCanceledException.get_CancellationToken — REMOVED: tested through remaining gates
 
-        // Buffers search methods — SIMD scalar fallbacks with pointer alignment/bitmap operations
-        if (method.DeclaringType?.ILFullName?.StartsWith("System.Buffers.ProbabilisticMap") == true)
-            return true;
-        if (method.DeclaringType?.ILFullName?.Contains("AsciiCharSearchValues") == true &&
-            method.Name == "IndexOfAnyScalar")
-            return true;
-        if (method.DeclaringType?.ILFullName == "System.Buffers.Latin1CharSearchValues" &&
-            method.Name == "IndexOfAny")
-            return true;
-        if (method.DeclaringType?.ILFullName == "System.Buffers.SearchValues" &&
-            method.Name is "Create" or "TryGetSingleRange")
-            return true;
-
-        // CultureData.InitIcuCultureDataCore — calls Interop_Globalization_* P/Invoke
-        if (method.DeclaringType?.ILFullName == "System.Globalization.CultureData" &&
-            method.Name == "InitIcuCultureDataCore")
-            return true;
+        // Buffers search methods — REMOVED: tested through remaining gates
+        // CultureData.InitIcuCultureDataCore — REMOVED: tested through remaining gates
 
         // HashCode.GenerateGlobalSeed / Marvin.GenerateSeed → now have ICalls (removed KBP)
         // Marshal.StringToCoTaskMemUni → now has ICall (removed KBP)
         // RuntimeTypeHandle .ctor → now has ICall (removed KBP)
 
-        // NativeLibrary.GetSymbol — IL body still has P/Invoke pointer mismatch (ICall only affects callers)
-        if (method.DeclaringType?.ILFullName == "System.Runtime.InteropServices.NativeLibrary" &&
-            method.Name == "GetSymbol")
-            return true;
+        // NativeLibrary.GetSymbol — REMOVED: tested through remaining gates
+        // RandomizedStringEqualityComparer .ctor — REMOVED: tested through remaining gates
+        // XoshiroImpl .ctor — REMOVED: tested through remaining gates
+        // DateTimeFormatInfoScanner.ArrayElementsHaveSpace — REMOVED: tested through remaining gates
 
-        // RandomizedStringEqualityComparer .ctor — IL body calls Interop.GetRandomBytes P/Invoke
-        if (method.DeclaringType?.ILFullName?.Contains("RandomizedStringEqualityComparer") == true &&
-            method.Name == ".ctor")
-            return true;
-
-        // XoshiroImpl .ctor — IL body calls Interop.GetRandomBytes P/Invoke
-        if (method.DeclaringType?.ILFullName?.Contains("XoshiroImpl") == true && method.Name == ".ctor")
-            return true;
-
-        // DateTimeFormatInfoScanner.ArrayElementsHaveSpace — Span ↔ void* conversion
-        if (method.DeclaringType?.ILFullName == "System.Globalization.DateTimeFormatInfoScanner" &&
-            method.Name == "ArrayElementsHaveSpace")
-            return true;
-
-        // ExecutionContext.SetLocalValue — AsyncLocal + Thread.CurrentThread cross-scope
-        if (method.DeclaringType?.ILFullName == "System.Threading.ExecutionContext" &&
-            method.Name == "SetLocalValue")
-            return true;
+        // ExecutionContext.SetLocalValue — REMOVED: tested through remaining gates
 
         // IO.UnmanagedMemoryStream.Initialize — fixed: pointer→integer now uses C-style cast
         // Math.CopySign → now has ICall (removed KBP)
@@ -1590,69 +1483,32 @@ public partial class CppCodeGenerator
         // GuidResult.SetFailure — REMOVED: body-level dot-access check handles any remaining issues.
         // Method-level KBP was overly broad (blocked even after root cause fix).
 
-        // CultureInfo.set_CurrentCulture/CurrentUICulture — AsyncLocal + void* patterns
-        if (method.DeclaringType?.ILFullName == "System.Globalization.CultureInfo" &&
-            method.Name.StartsWith("set_Current"))
-            return true;
+        // CultureInfo.set_CurrentCulture/CurrentUICulture — REMOVED: tested through remaining gates
 
-        // StringBuilder.set_Length — contains VectorMath hardware intrinsic calls
-        if (method.DeclaringType?.ILFullName == "System.Text.StringBuilder" &&
-            method.Name == "set_Length")
-            return true;
+        // StringBuilder.set_Length — REMOVED: tested through remaining gates
 
-        // ConstArray.get_Item — ToPointer() void* pointer arithmetic
-        if (method.DeclaringType?.ILFullName == "System.Reflection.ConstArray" &&
-            method.Name == "get_Item")
-            return true;
+        // ConstArray.get_Item — REMOVED: tested through remaining gates
+        // CustomAttribute.GetPropertyOrFieldData — REMOVED: tested through remaining gates
+        // CustomAttributeTypedArgument.CanonicalizeValue — REMOVED: tested through remaining gates
+        // MdFieldInfo.Equals/CacheEquals — REMOVED: tested through remaining gates
+        // RtFieldInfo.Equals — REMOVED: tested through remaining gates
 
-        // CustomAttribute.GetPropertyOrFieldData — Interop pointer type mismatch
-        if (method.DeclaringType?.ILFullName == "System.Reflection.CustomAttribute" &&
-            method.Name == "GetPropertyOrFieldData")
-            return true;
+        // Number.FormatFixed/NumberToStringFormat — REMOVED: ValueListBuilder calls compile correctly
+        // (false positive was from the line-level check, callers already pass correct this pointers)
 
-        // CustomAttributeTypedArgument.CanonicalizeValue — void* cast pattern
-        if (method.DeclaringType?.ILFullName == "System.Reflection.CustomAttributeTypedArgument" &&
-            method.Name == "CanonicalizeValue")
-            return true;
+        // MemoryExtensions.Equals/StartsWith — REMOVED: Span struct ↔ void* conversion
+        // was flagged as KBP but methods compile correctly now
 
-        // MdFieldInfo.Equals/CacheEquals — accesses f_m_declaringType via aliased type
-        if (method.DeclaringType?.ILFullName == "System.Reflection.MdFieldInfo" &&
-            method.Name is "Equals" or "CacheEquals")
-            return true;
-
-        // RtFieldInfo.Equals — accesses f_m_declaringType via aliased type
-        if (method.DeclaringType?.ILFullName == "System.Reflection.RtFieldInfo" &&
-            method.Name == "Equals")
-            return true;
-
-        // Number.FormatFixed/NumberToStringFormat — ValueListBuilder wrong this pointer
-        if (method.DeclaringType?.ILFullName == "System.Number" &&
-            (method.Name == "FormatFixed" || method.Name == "NumberToStringFormat"))
-            return true;
-
-        // MemoryExtensions.Equals/StartsWith — Span struct ↔ void* conversion
-        if (method.DeclaringType?.ILFullName == "System.MemoryExtensions" &&
-            method.Name is "Equals" or "StartsWith")
-            return true;
-
-        // DefaultInterpolatedStringHandler — ExceptionHandlingClauseOptions TypeInfo undeclared
-        // (generic specialization with this enum type, but TypeInfo not emitted)
-        if (method.DeclaringType?.ILFullName == "System.Runtime.CompilerServices.DefaultInterpolatedStringHandler" &&
-            method.Name is "AppendCustomFormatter" or "AppendFormatted")
-            return true;
+        // DefaultInterpolatedStringHandler — REMOVED: ExceptionHandlingClauseOptions TypeInfo
+        // was undeclared but methods now pass through correctly after gate improvements
 
         // RuntimeType.SplitName — FIXED: string_length false positive resolved (knownStringTemps now includes param-derived temps)
         // REMOVED KBP check
 
-        // MemberInfoCache<RuntimeType>.AddMethod — cross-scope cast overlap
-        if (method.DeclaringType?.ILFullName?.Contains("MemberInfoCache") == true &&
-            method.Name == "AddMethod")
-            return true;
+        // MemberInfoCache<RuntimeType>.AddMethod — REMOVED: tested through remaining gates
 
-        // Span<KeyValuePair<IAsyncLocal,Object>>.ctor — forward-declared type field access
-        if (method.DeclaringType?.ILFullName?.Contains("System.Span`1") == true &&
-            method.DeclaringType?.ILFullName?.Contains("IAsyncLocal") == true)
-            return true;
+        // Span<KeyValuePair<IAsyncLocal,Object>>.ctor — REMOVED: forward-declared type field access
+        // was flagged as KBP but methods should pass through correctly now
 
         // TimeSpan — ALL methods now compile:
         // - void*→intptr_t FIXED by IRConversion SourceCppType (C-style cast)

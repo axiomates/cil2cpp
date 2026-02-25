@@ -168,14 +168,15 @@ public partial class IRBuilder
     /// Types that should be filtered from generic specialization arguments only.
     /// More aggressive than ClrInternalTypeNames — these types may still compile as types,
     /// but creating generic specializations like List&lt;TimeZoneInfo&gt; produces stubs.
+    /// NOTE: Removed System.Attribute, System.AttributeUsageAttribute,
+    /// System.Runtime.ExceptionServices.ExceptionDispatchInfo — they caused cascade
+    /// UndeclaredFunction stubs (ListBuilder&lt;Attribute&gt;, Dictionary&lt;Type, AttributeUsageAttribute&gt;,
+    /// List&lt;ExceptionDispatchInfo&gt;) that are more harmful than the few extra stubs from compilation.
     /// </summary>
     private static readonly HashSet<string> FilteredGenericArgTypes =
     [
         "System.TimeZoneInfo",
-        "System.Runtime.ExceptionServices.ExceptionDispatchInfo",
         "Internal.Win32.RegistryKey",
-        "System.Attribute",
-        "System.AttributeUsageAttribute",
     ];
 
     private void CollectGenericType(TypeReference typeRef)
