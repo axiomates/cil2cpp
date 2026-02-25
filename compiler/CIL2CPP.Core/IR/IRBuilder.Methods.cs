@@ -1401,15 +1401,26 @@ public partial class IRBuilder
 
             case Code.Ldind_Ref:
             {
-                var addr = stack.PopExprOr("nullptr");
+                var addrEntry = stack.PopEntry();
+                var addr = addrEntry.Expr;
                 var tmp = $"__t{tempCounter++}";
+                // Use StackEntry type to determine the actual element type.
+                // For byref params like "out String" (CppType = "cil2cpp::String**"),
+                // the dereference should produce "cil2cpp::String*", not "Object*".
+                var derefType = "cil2cpp::Object*";
+                var castType = "cil2cpp::Object**";
+                if (addrEntry.CppType != null && addrEntry.CppType.EndsWith("**"))
+                {
+                    castType = addrEntry.CppType; // T**
+                    derefType = addrEntry.CppType[..^1]; // T** → T*
+                }
                 block.Instructions.Add(new IRRawCpp
                 {
-                    Code = $"auto {tmp} = *(cil2cpp::Object**){addr};",
+                    Code = $"auto {tmp} = *({castType}){addr};",
                     ResultVar = tmp,
-                    ResultTypeCpp = "cil2cpp::Object*",
+                    ResultTypeCpp = derefType,
                 });
-                stack.Push(tmp);
+                stack.Push(new StackEntry(tmp, derefType));
                 break;
             }
 

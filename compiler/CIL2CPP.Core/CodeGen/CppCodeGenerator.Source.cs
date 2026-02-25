@@ -672,6 +672,13 @@ public partial class CppCodeGenerator
             foreach (var instr in block.Instructions)
             {
                 var code = instr.ToCpp();
+                // TypeHandle/MethodTable JIT internals (matches InstructionHasBrokenPattern)
+                if (code.Contains("f_m_asTAddr") || code.Contains("TypeHandle__ctor(") ||
+                    code.Contains("TypeHandle_TypeHandleOf"))
+                    return "TypeHandle/MethodTable JIT internal";
+                if (code.Contains("f_ComponentSize") || code.Contains("f_BaseSize") ||
+                    (code.Contains("f_Flags") && code.Contains("MethodTable")))
+                    return "MethodTable JIT internal field";
                 if (HasUndeclaredTypeInfoRef(code, _knownTypeNames))
                 {
                     var tiIdx = code.IndexOf("_TypeInfo");

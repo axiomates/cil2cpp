@@ -1389,6 +1389,16 @@ public partial class CppCodeGenerator
     {
         var code = instr.ToCpp();
 
+        // Pattern 0: TypeHandle/MethodTable JIT internals — CLR runtime structures with no AOT equivalent.
+        // These access CoreCLR-internal fields (m_asTAddr, ComponentSize, BaseSize) or call
+        // TypeHandle constructors. Moved from RenderedLineHasError to pre-render gate for
+        // accurate classification as KnownBrokenPattern instead of RenderedBodyError.
+        if (code.Contains("f_m_asTAddr") || code.Contains("TypeHandle__ctor(") ||
+            code.Contains("TypeHandle_TypeHandleOf") ||
+            code.Contains("f_ComponentSize") || code.Contains("f_BaseSize") ||
+            (code.Contains("f_Flags") && code.Contains("MethodTable")))
+            return true;
+
         // Pattern 1: References to _TypeInfo that are not declared
         if (HasUndeclaredTypeInfoRef(code, knownTypeNames))
             return true;
@@ -1828,8 +1838,15 @@ public partial class CppCodeGenerator
                     foreach (var (varName, _) in nonPtrVarTypes)
                     {
                         // varName = (SomeType*)(void*) expr; — pointer assigned to int/double
-                        if (s.StartsWith($"{varName} = ") && s.Contains("*)(void*)"))
-                            return true;
+                        // Only flag when the pointer cast is the DIRECT assignment, not inside a function argument.
+                        // Direct cast: __t33 = (SomeType*)(void*)expr; — RHS starts with "("
+                        // Function call with cast arg: __t33 = FuncName((SomeType*)(void*)arg); — RHS starts with identifier
+                        if (s.StartsWith($"{varName} = "))
+                        {
+                            var rhs = s.Substring($"{varName} = ".Length);
+                            if (rhs.StartsWith("(") && rhs.Contains("*)(void*)"))
+                                return true;
+                        }
                     }
                 }
             }
@@ -2368,6 +2385,9 @@ public partial class CppCodeGenerator
                                     if (rhs == t || rhs == $"({t})")
                                         continue;
                                 }
+                                // Skip static_cast — integer-to-integer conversion, not a function call
+                                if (s.Contains("static_cast<"))
+                                    continue;
                                 return true; // function call result: auto __tM = func(__tN, ...);
                             }
                             return true;
@@ -2520,10 +2540,11 @@ public partial class CppCodeGenerator
             while (endIdx < s.Length && (char.IsLetterOrDigit(s[endIdx]) || s[endIdx] == '_'))
                 endIdx++;
             // If identifier is followed by '(' → function call name → safe
-            // If identifier is followed by '*)' → pointer-to-Span cast → problematic
+            // If identifier is followed by '*)(void*)' → Span pointer cast through void* → problematic
+            // If identifier is followed by '*)&' or '*)<expr>' without void* → byref address-of → safe
             // If identifier is followed by ')' without '*' → function pointer param type → safe
-            if (endIdx < s.Length && s[endIdx] == '*')
-                return true; // (SpanType*)(void*) — pointer cast to Span
+            if (endIdx + 9 <= s.Length && s.Substring(endIdx, 9) == "*)(void*)")
+                return true; // (SpanType*)(void*) — pointer cast to Span through void*
             if (endIdx >= s.Length)
                 return true; // truncated line — flag as error
         }
