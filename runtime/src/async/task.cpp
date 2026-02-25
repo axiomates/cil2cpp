@@ -14,8 +14,18 @@
 #include <thread>
 #include <atomic>
 #include <chrono>
+#include <new>
 
 namespace cil2cpp {
+
+// Releases the CRT-heap mutex when Task is GC-collected.
+static void task_finalizer(Object* raw) {
+    auto* t = reinterpret_cast<Task*>(raw);
+    if (t->f_lock) {
+        delete static_cast<std::mutex*>(t->f_lock);
+        t->f_lock = nullptr;
+    }
+}
 
 static TypeInfo Task_TypeInfo_Internal = {
     .name = "Task",
@@ -33,12 +43,21 @@ static TypeInfo Task_TypeInfo_Internal = {
     .methods = nullptr,
     .method_count = 0,
     .default_ctor = nullptr,
-    .finalizer = nullptr,
+    .finalizer = task_finalizer,
     .interface_vtables = nullptr,
     .interface_vtable_count = 0,
 };
 
+static std::once_flag s_completed_task_once;
 static Task* s_completed_task = nullptr;
+
+// Atomic helpers: avoid data races between mutex-protected writes and non-mutex reads
+static inline Int32 task_load_status(Task* t) {
+    return std::atomic_ref<Int32>(t->f_status).load(std::memory_order_acquire);
+}
+static inline void task_store_status(Task* t, Int32 status) {
+    std::atomic_ref<Int32>(t->f_status).store(status, std::memory_order_release);
+}
 
 // Allocate a new Task with a fresh mutex
 // Note: Task doesn't inherit from Object (to avoid MSVC tail-padding mismatch),
@@ -67,9 +86,9 @@ Task* task_create_completed() {
 }
 
 Task* task_get_completed() {
-    if (!s_completed_task) {
+    std::call_once(s_completed_task_once, []() {
         s_completed_task = task_create_completed();
-    }
+    });
     return s_completed_task;
 }
 
@@ -99,8 +118,8 @@ void task_complete(Task* t) {
     {
         auto* mtx = static_cast<std::mutex*>(t->f_lock);
         std::lock_guard<std::mutex> lock(*mtx);
-        if (t->f_status >= 1) return;
-        t->f_status = 1;
+        if (task_load_status(t) >= 1) return;
+        task_store_status(t, 1);
         conts = t->f_continuations;
         t->f_continuations = nullptr;
     }
@@ -113,8 +132,8 @@ void task_fault(Task* t, Exception* ex) {
     {
         auto* mtx = static_cast<std::mutex*>(t->f_lock);
         std::lock_guard<std::mutex> lock(*mtx);
-        if (t->f_status >= 1) return;
-        t->f_status = 2;
+        if (task_load_status(t) >= 1) return;
+        task_store_status(t, 2);
         t->f_exception = ex;
         conts = t->f_continuations;
         t->f_continuations = nullptr;
@@ -127,7 +146,7 @@ void task_add_continuation(Task* t, void (*callback)(void*), void* state) {
     {
         auto* mtx = static_cast<std::mutex*>(t->f_lock);
         std::lock_guard<std::mutex> lock(*mtx);
-        if (t->f_status < 1) {
+        if (task_load_status(t) < 1) {
             // Task not yet complete — queue the continuation
             auto* cont = static_cast<TaskContinuation*>(
                 gc::alloc(sizeof(TaskContinuation), nullptr));
@@ -143,8 +162,8 @@ void task_add_continuation(Task* t, void (*callback)(void*), void* state) {
 }
 
 void task_wait(Task* t) {
-    if (!t || t->f_status >= 1) return;
-    while (t->f_status < 1) {
+    if (!t || task_load_status(t) >= 1) return;
+    while (task_load_status(t) < 1) {
         std::this_thread::yield();
     }
 }
@@ -169,6 +188,8 @@ Task* task_when_all(Array* tasks) {
     }
 
     auto* result = task_create_pending();
+    // FIXME: WhenAllState is CRT-heap allocated (std::atomic not safe in GC memory).
+    // Leaked after all tasks complete. Acceptable for short-lived combinators.
     auto* state = new WhenAllState();
     state->result_task = result;
     state->remaining.store(tasks->length);
@@ -205,6 +226,8 @@ Task* task_when_any(Array* tasks) {
     }
 
     auto* result = task_create_pending();
+    // FIXME: WhenAnyState is CRT-heap allocated (std::atomic not safe in GC memory).
+    // Leaked after any task completes. Acceptable for short-lived combinators.
     auto* state = new WhenAnyState();
     state->result_task = result;
     state->completed.store(false);

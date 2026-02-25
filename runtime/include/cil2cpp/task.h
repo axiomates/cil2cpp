@@ -8,6 +8,8 @@
 #include "object.h"
 #include "exception.h"
 
+#include <atomic>
+
 namespace cil2cpp {
 
 struct Array;
@@ -91,9 +93,10 @@ void task_init_pending(Task* t);
  */
 void task_init_completed(Task* t);
 
-/** Check if a Task has completed (status >= 1). */
+/** Check if a Task has completed (status >= 1). Thread-safe (acquire load). */
 inline bool task_is_completed(Task* t) {
-    return t != nullptr && t->f_status >= 1;
+    if (!t) return false;
+    return std::atomic_ref<Int32>(t->f_status).load(std::memory_order_acquire) >= 1;
 }
 
 /**

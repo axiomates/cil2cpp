@@ -11,6 +11,8 @@
 #include "object.h"
 #include "exception.h"
 
+#include <atomic>
+
 namespace cil2cpp {
 
 struct Task;
@@ -49,14 +51,18 @@ void cts_cancel(CancellationTokenSource* cts);
 /** Cancel after a delay in milliseconds (thread pool). */
 void cts_cancel_after(CancellationTokenSource* cts, Int32 milliseconds);
 
-/** Check if cancellation has been requested. */
+/** Check if cancellation has been requested. Thread-safe (acquire load). */
 inline Boolean cts_is_cancellation_requested(CancellationTokenSource* cts) {
-    return cts != nullptr && cts->f_state == 1;
+    if (!cts) return false;
+    return std::atomic_ref<Int32>(cts->f_state).load(std::memory_order_acquire) == 1;
 }
 
-/** Dispose the token source (prevents further cancellation). */
+/** Dispose the token source (prevents further cancellation). Thread-safe CAS. */
 inline void cts_dispose(CancellationTokenSource* cts) {
-    if (cts) cts->f_state = 2;
+    if (!cts) return;
+    Int32 expected = 0;
+    std::atomic_ref<Int32>(cts->f_state).compare_exchange_strong(
+        expected, 2, std::memory_order_acq_rel);
 }
 
 /** Get the CancellationToken for this source. */
@@ -66,9 +72,10 @@ inline CancellationToken cts_get_token(CancellationTokenSource* cts) {
 
 // ===== CancellationToken API =====
 
-/** Check if cancellation has been requested. */
+/** Check if cancellation has been requested. Thread-safe (acquire load). */
 inline Boolean ct_is_cancellation_requested(CancellationToken token) {
-    return token.f_source != nullptr && token.f_source->f_state == 1;
+    if (!token.f_source) return false;
+    return std::atomic_ref<Int32>(token.f_source->f_state).load(std::memory_order_acquire) == 1;
 }
 
 /** Check if this token can be canceled (has a non-null source). */

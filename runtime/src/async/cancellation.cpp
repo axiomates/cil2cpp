@@ -25,9 +25,9 @@ CancellationTokenSource* cts_create() {
 void cts_cancel(CancellationTokenSource* cts) {
     if (!cts) return;
     // Atomic CAS: only cancel if currently active (state 0 -> 1)
-    auto* state = reinterpret_cast<std::atomic<Int32>*>(&cts->f_state);
     Int32 expected = 0;
-    state->compare_exchange_strong(expected, 1);
+    std::atomic_ref<Int32>(cts->f_state).compare_exchange_strong(
+        expected, 1, std::memory_order_acq_rel);
 }
 
 // Context struct for delayed cancellation (avoids std::pair template issues)
@@ -79,19 +79,19 @@ void tcs_set_canceled(Task* task) {
 }
 
 Boolean tcs_try_set_result(Task* task) {
-    if (!task || task->f_status != 0) return false;
+    if (!task || task_is_completed(task)) return false;
     task_complete(task);
     return true;
 }
 
 Boolean tcs_try_set_exception(Task* task, Exception* ex) {
-    if (!task || task->f_status != 0) return false;
+    if (!task || task_is_completed(task)) return false;
     task_fault(task, ex);
     return true;
 }
 
 Boolean tcs_try_set_canceled(Task* task) {
-    if (!task || task->f_status != 0) return false;
+    if (!task || task_is_completed(task)) return false;
     tcs_set_canceled(task);
     return true;
 }

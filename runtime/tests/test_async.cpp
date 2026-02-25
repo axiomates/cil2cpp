@@ -346,6 +346,29 @@ TEST(TaskTest, Run_ExecutesDelegateOnPool) {
     EXPECT_EQ(g_run_result.load(), 123);
 }
 
+// ===== Singleton Thread-Safety Tests =====
+
+TEST(TaskTest, GetCompleted_ThreadSafe_SameInstance) {
+    constexpr int num_threads = 8;
+    std::vector<Task*> results(num_threads, nullptr);
+    std::vector<std::thread> threads;
+
+    for (int i = 0; i < num_threads; i++) {
+        threads.emplace_back([&results, i]() {
+            gc::register_thread();
+            results[i] = task_get_completed();
+            gc::unregister_thread();
+        });
+    }
+    for (auto& th : threads) th.join();
+
+    // All threads must get the exact same pointer
+    for (int i = 1; i < num_threads; i++) {
+        EXPECT_EQ(results[0], results[i]);
+    }
+    EXPECT_TRUE(task_is_completed(results[0]));
+}
+
 // ===== Thread-Safety Tests =====
 
 TEST(TaskTest, ConcurrentContinuations_ThreadSafe) {

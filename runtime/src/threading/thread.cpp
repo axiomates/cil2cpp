@@ -92,6 +92,8 @@ void join(ManagedThread* t) {
     auto* native = static_cast<std::thread*>(t->native_handle);
     if (native && native->joinable()) {
         native->join();
+        delete native;
+        t->native_handle = nullptr;
     }
 }
 
@@ -111,6 +113,8 @@ bool join_timeout(ManagedThread* t, Int32 timeout_ms) {
             auto* native = static_cast<std::thread*>(t->native_handle);
             if (native && native->joinable()) {
                 native->join();
+                delete native;
+                t->native_handle = nullptr;
             }
             return true;
         }
