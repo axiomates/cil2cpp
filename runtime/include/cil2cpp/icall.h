@@ -36,6 +36,17 @@ intptr_t Marshal_AllocHGlobal(intptr_t cb);
 void Marshal_FreeHGlobal(intptr_t hglobal);
 intptr_t Marshal_AllocCoTaskMem(Int32 cb);
 void Marshal_FreeCoTaskMem(intptr_t ptr);
+Object* Marshal_StringToCoTaskMemUni(Object* str);
+
+// System.HashCode / System.Marvin (RNG seed)
+uint64_t HashCode_GenerateGlobalSeed();
+uint64_t Marvin_GenerateSeed();
+
+// System.RuntimeTypeHandle
+void RuntimeTypeHandle_ctor(void* __this, intptr_t value);
+
+// System.Runtime.InteropServices.NativeLibrary
+intptr_t NativeLibrary_GetSymbol(intptr_t handle, Object* name);
 
 // System.IntPtr / System.UIntPtr
 // IntPtr/UIntPtr are aliased to intptr_t/uintptr_t (scalars).
@@ -131,6 +142,9 @@ int32_t Math_Min_int(int32_t a, int32_t b);
 double Math_Cbrt(double value);
 double Math_IEEERemainder(double x, double y);
 double Math_FusedMultiplyAdd(double x, double y, double z);
+double Math_CopySign(double x, double y);
+double Math_BitDecrement(double value);
+double Math_BitIncrement(double value);
 
 // System.MathF (float)
 float MathF_Sqrt(float value);

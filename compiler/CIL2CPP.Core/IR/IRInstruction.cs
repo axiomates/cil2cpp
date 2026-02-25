@@ -339,6 +339,11 @@ public class IRConversion : IRInstruction
     public string SourceExpr { get; set; } = "";
     public string TargetType { get; set; } = "";
     public string ResultVar { get; set; } = "";
+    /// <summary>
+    /// C++ type of the source expression (if known). Used to detect pointer→integer casts
+    /// that need C-style cast instead of static_cast (MSVC C2440).
+    /// </summary>
+    public string? SourceCppType { get; set; }
 
     public override string ToCpp()
     {
@@ -347,6 +352,10 @@ public class IRConversion : IRInstruction
         // since static_cast can't handle pointer↔integer conversions
         bool useCStyleCast = TargetType is "uintptr_t" or "intptr_t"
             || TargetType.EndsWith("*");
+        // Also use C-style cast when source is a pointer type and target is any integer
+        // (e.g., conv.u8 on void* → (uint64_t)(ptr) instead of static_cast<uint64_t>(ptr))
+        if (!useCStyleCast && SourceCppType != null && SourceCppType.EndsWith("*"))
+            useCStyleCast = true;
         if (useCStyleCast)
             return $"{ResultVar} = ({TargetType})({SourceExpr});";
         return $"{ResultVar} = static_cast<{TargetType}>({SourceExpr});";

@@ -18,6 +18,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
+#include <string>
 #include <thread>
 
 #if defined(_MSC_VER)
@@ -164,6 +165,69 @@ intptr_t Marshal_AllocCoTaskMem(Int32 cb) {
 
 void Marshal_FreeCoTaskMem(intptr_t ptr) {
     std::free(reinterpret_cast<void*>(ptr));
+}
+
+Object* Marshal_StringToCoTaskMemUni(Object* str) {
+    // Allocate CoTaskMem and copy UTF-16 string content (static method — no __this)
+    if (!str) return reinterpret_cast<Object*>(static_cast<intptr_t>(0));
+    auto* s = reinterpret_cast<String*>(str);
+    auto len = string_length(s);
+    auto bytes = static_cast<size_t>(len + 1) * sizeof(char16_t);
+    auto* mem = std::malloc(bytes);
+    if (!mem) return reinterpret_cast<Object*>(static_cast<intptr_t>(0));
+    std::memcpy(mem, string_get_raw_data(s), static_cast<size_t>(len) * sizeof(char16_t));
+    reinterpret_cast<char16_t*>(mem)[len] = u'\0';
+    return reinterpret_cast<Object*>(reinterpret_cast<intptr_t>(mem));
+}
+
+// ===== System.HashCode / System.Marvin (RNG seed) =====
+
+uint64_t HashCode_GenerateGlobalSeed() {
+    uint64_t seed = 0;
+#ifdef _WIN32
+    // BCrypt.GenRandom — minimal approach with system time + address entropy
+    auto tp = std::chrono::high_resolution_clock::now().time_since_epoch().count();
+    seed = static_cast<uint64_t>(tp) ^ reinterpret_cast<uintptr_t>(&seed);
+#else
+    auto tp = std::chrono::high_resolution_clock::now().time_since_epoch().count();
+    seed = static_cast<uint64_t>(tp) ^ reinterpret_cast<uintptr_t>(&seed);
+#endif
+    return seed;
+}
+
+uint64_t Marvin_GenerateSeed() {
+    return HashCode_GenerateGlobalSeed();
+}
+
+// ===== System.RuntimeTypeHandle =====
+
+void RuntimeTypeHandle_ctor(void* __this, intptr_t value) {
+    // RuntimeTypeHandle is aliased to intptr_t — ctor is a no-op
+    // The value is already stored by the generated struct assignment
+    (void)__this;
+    (void)value;
+}
+
+// ===== System.Runtime.InteropServices.NativeLibrary =====
+
+intptr_t NativeLibrary_GetSymbol(intptr_t handle, Object* name) {
+#ifdef _WIN32
+    if (!name) return 0;
+    auto* s = reinterpret_cast<String*>(name);
+    // Convert managed string to narrow string for GetProcAddress
+    auto len = string_length(s);
+    auto* chars = string_get_raw_data(s);
+    std::string narrow;
+    narrow.reserve(static_cast<size_t>(len));
+    for (int32_t i = 0; i < len; i++)
+        narrow.push_back(static_cast<char>(reinterpret_cast<const char16_t*>(chars)[i]));
+    auto* result = GetProcAddress(reinterpret_cast<HMODULE>(handle), narrow.c_str());
+    return reinterpret_cast<intptr_t>(result);
+#else
+    // TODO: dlsym on Linux
+    (void)handle; (void)name;
+    return 0;
+#endif
 }
 
 // ===== System.Type =====

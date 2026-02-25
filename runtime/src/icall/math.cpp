@@ -8,6 +8,7 @@
 #include <cil2cpp/types.h>
 #include <cmath>
 #include <cstdlib>
+#include <limits>
 
 namespace cil2cpp {
 namespace icall {
@@ -47,6 +48,9 @@ int32_t Math_Min_int(int32_t a, int32_t b) { return a < b ? a : b; }
 double Math_Cbrt(double value) { return std::cbrt(value); }
 double Math_IEEERemainder(double x, double y) { return std::remainder(x, y); }
 double Math_FusedMultiplyAdd(double x, double y, double z) { return std::fma(x, y, z); }
+double Math_CopySign(double x, double y) { return std::copysign(x, y); }
+double Math_BitDecrement(double value) { return std::nextafter(value, -std::numeric_limits<double>::infinity()); }
+double Math_BitIncrement(double value) { return std::nextafter(value, std::numeric_limits<double>::infinity()); }
 
 // ===== System.MathF (float) =====
 

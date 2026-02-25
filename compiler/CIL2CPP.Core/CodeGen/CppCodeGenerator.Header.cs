@@ -1507,15 +1507,11 @@ public partial class CppCodeGenerator
             (method.Name == "GetLocaleInfoEx" || method.Name == "EnumTimeCallback"))
             return true;
 
-        // TimeSpanFormat — wrong argument ordering (missing TimeSpan first arg)
-        if (method.DeclaringType?.ILFullName == "System.Globalization.TimeSpanFormat" &&
-            method.Name is "Format" or "FormatC" or "FormatG")
-            return true;
+        // TimeSpanFormat.Format/FormatC/FormatG — REMOVED: these are stubs, calls to them compile fine.
+        // The "wrong argument ordering" comment was from a false positive in RenderedLineHasError.
 
-        // Number.FormatFixed/NumberToStringFormat — calls ValueListBuilder with wrong this pointer
-        if (method.DeclaringType?.ILFullName == "System.Number" &&
-            method.Name is "FormatFixed" or "NumberToStringFormat")
-            return true;
+        // Number.FormatFixed/NumberToStringFormat — REMOVED: ValueListBuilder calls compile correctly.
+        // Callers already pass correct this pointers; the false positive was from the line-level check.
 
         // Globalization InvariantModeCasing.ToLower/ToUpper — Span struct ↔ void* conversion
         if (method.DeclaringType?.ILFullName == "System.Globalization.InvariantModeCasing" &&
@@ -1537,7 +1533,7 @@ public partial class CppCodeGenerator
             method.Name == "GetLocalizedNameByMuiNativeResource")
             return true;
 
-        // OperationCanceledException.get_CancellationToken — f_cancellationToken type mismatch
+        // OperationCanceledException.get_CancellationToken — f_cancellationToken field type mismatch
         if (method.DeclaringType?.ILFullName == "System.OperationCanceledException" &&
             method.Name == "get_CancellationToken")
             return true;
@@ -1560,31 +1556,21 @@ public partial class CppCodeGenerator
             method.Name == "InitIcuCultureDataCore")
             return true;
 
-        // HashCode/Marvin seed generation — calls Interop_GetRandomBytes P/Invoke (pointer mismatch)
-        if ((method.DeclaringType?.ILFullName == "System.HashCode" && method.Name == "GenerateGlobalSeed") ||
-            (method.DeclaringType?.ILFullName == "System.Marvin" && method.Name == "GenerateSeed"))
-            return true;
+        // HashCode.GenerateGlobalSeed / Marvin.GenerateSeed → now have ICalls (removed KBP)
+        // Marshal.StringToCoTaskMemUni → now has ICall (removed KBP)
+        // RuntimeTypeHandle .ctor → now has ICall (removed KBP)
 
-        // Marshal.StringToCoTaskMemUni — void* pointer arithmetic
-        if (method.DeclaringType?.ILFullName == "System.Runtime.InteropServices.Marshal" &&
-            method.Name == "StringToCoTaskMemUni")
-            return true;
-
-        // NativeLibrary.GetSymbol — ToPointer() void* arithmetic
+        // NativeLibrary.GetSymbol — IL body still has P/Invoke pointer mismatch (ICall only affects callers)
         if (method.DeclaringType?.ILFullName == "System.Runtime.InteropServices.NativeLibrary" &&
             method.Name == "GetSymbol")
             return true;
 
-        // RuntimeTypeHandle constructor — TypeHandle JIT internal
-        if (method.DeclaringType?.ILFullName == "System.RuntimeTypeHandle" && method.Name == ".ctor")
-            return true;
-
-        // RandomizedStringEqualityComparer .ctor — Interop_GetRandomBytes P/Invoke
+        // RandomizedStringEqualityComparer .ctor — IL body calls Interop.GetRandomBytes P/Invoke
         if (method.DeclaringType?.ILFullName?.Contains("RandomizedStringEqualityComparer") == true &&
             method.Name == ".ctor")
             return true;
 
-        // Random/XoshiroImpl .ctor — Interop_GetRandomBytes P/Invoke
+        // XoshiroImpl .ctor — IL body calls Interop.GetRandomBytes P/Invoke
         if (method.DeclaringType?.ILFullName?.Contains("XoshiroImpl") == true && method.Name == ".ctor")
             return true;
 
@@ -1598,22 +1584,15 @@ public partial class CppCodeGenerator
             method.Name == "SetLocalValue")
             return true;
 
-        // IO.UnmanagedMemoryStream.Initialize — static_cast<uint64_t>(pointer)
-        if (method.DeclaringType?.ILFullName == "System.IO.UnmanagedMemoryStream" &&
-            method.Name == "Initialize")
-            return true;
+        // IO.UnmanagedMemoryStream.Initialize — fixed: pointer→integer now uses C-style cast
+        // Math.CopySign → now has ICall (removed KBP)
 
-        // GuidResult.SetFailure — pointer parameter dot-access (result.f_X instead of result->f_X)
-        if (method.DeclaringType?.ILFullName?.Contains("GuidResult") == true && method.Name == "SetFailure")
-            return true;
+        // GuidResult.SetFailure — REMOVED: body-level dot-access check handles any remaining issues.
+        // Method-level KBP was overly broad (blocked even after root cause fix).
 
         // CultureInfo.set_CurrentCulture/CurrentUICulture — AsyncLocal + void* patterns
         if (method.DeclaringType?.ILFullName == "System.Globalization.CultureInfo" &&
             method.Name.StartsWith("set_Current"))
-            return true;
-
-        // Math.CopySign — uses BitConverter.DoubleToInt64Bits → void* pointer arithmetic
-        if (method.DeclaringType?.ILFullName == "System.Math" && method.Name == "CopySign")
             return true;
 
         // StringBuilder.set_Length — contains VectorMath hardware intrinsic calls
@@ -1656,29 +1635,29 @@ public partial class CppCodeGenerator
             method.Name is "Equals" or "StartsWith")
             return true;
 
-        // DefaultInterpolatedStringHandler — void* cast patterns + undeclared disambiguated calls
+        // DefaultInterpolatedStringHandler — ExceptionHandlingClauseOptions TypeInfo undeclared
+        // (generic specialization with this enum type, but TypeInfo not emitted)
         if (method.DeclaringType?.ILFullName == "System.Runtime.CompilerServices.DefaultInterpolatedStringHandler" &&
             method.Name is "AppendCustomFormatter" or "AppendFormatted")
             return true;
 
-        // RuntimeType.SplitName — undeclared disambiguated function call
-        if (method.DeclaringType?.ILFullName == "System.RuntimeType" && method.Name == "SplitName")
-            return true;
+        // RuntimeType.SplitName — FIXED: string_length false positive resolved (knownStringTemps now includes param-derived temps)
+        // REMOVED KBP check
 
-        // MemberInfoCache<RuntimeType>.AddMethod — undeclared disambiguated function call
+        // MemberInfoCache<RuntimeType>.AddMethod — cross-scope cast overlap
         if (method.DeclaringType?.ILFullName?.Contains("MemberInfoCache") == true &&
             method.Name == "AddMethod")
             return true;
 
-        // Span<KeyValuePair<IAsyncLocal,Object>>.ctor — pointer parameter dot-access
+        // Span<KeyValuePair<IAsyncLocal,Object>>.ctor — forward-declared type field access
         if (method.DeclaringType?.ILFullName?.Contains("System.Span`1") == true &&
             method.DeclaringType?.ILFullName?.Contains("IAsyncLocal") == true)
             return true;
 
-        // TimeSpan.op_UnaryNegation — void* → intptr_t implicit conversion
-        if (method.DeclaringType?.ILFullName == "System.TimeSpan" &&
-            method.Name is "op_UnaryNegation" or "ToString")
-            return true;
+        // TimeSpan — ALL methods now compile:
+        // - void*→intptr_t FIXED by IRConversion SourceCppType (C-style cast)
+        // - ldsflda pointer tracking FIXED by StackEntry CppType propagation
+        // - TimeSpanFormat_FormatC/FormatG false positive REMOVED from RenderedLineHasError
 
         foreach (var block in method.BasicBlocks)
         {
@@ -1914,11 +1893,19 @@ public partial class CppCodeGenerator
         // Pre-pass: collect temp vars known to be String* (from explicit casts)
         // Used to avoid false positives in string_length(__tN) check
         var knownStringTemps = new HashSet<string>();
+        // Collect param names known to be String*
+        var stringParamNames = new HashSet<string>();
+        foreach (var p in method.Parameters)
+        {
+            if (p.CppTypeName == "cil2cpp::String*")
+                stringParamNames.Add(p.CppName ?? p.Name);
+        }
         foreach (var preLine in rendered.AsSpan().EnumerateLines())
         {
             var ps = preLine.ToString().TrimStart();
             // auto __tN = (cil2cpp::String*)(void*)... or __tN = (cil2cpp::String*)(void*)...
-            if (ps.Contains("(cil2cpp::String*)") && ps.Contains("__t"))
+            // Also: auto __tN = *(cil2cpp::String**)... (dereference of String**)
+            if ((ps.Contains("(cil2cpp::String*)") || ps.Contains("(cil2cpp::String**)")) && ps.Contains("__t"))
             {
                 // Extract variable name: "auto __tN = ..." or "__tN = ..."
                 var varStart = ps.IndexOf("__t");
@@ -1930,6 +1917,18 @@ public partial class CppCodeGenerator
                     var varName = ps[varStart..varEnd];
                     if (varName.Length > 2 && varName.Skip(3).All(char.IsDigit))
                         knownStringTemps.Add(varName);
+                }
+            }
+            // auto __tN = stringParam; — temp assigned from String* parameter
+            if (ps.StartsWith("auto __t") && ps.Contains(" = "))
+            {
+                var eqIdx = ps.IndexOf(" = ");
+                var rhs = ps[(eqIdx + 3)..].TrimEnd(';').Trim();
+                if (stringParamNames.Contains(rhs) || knownStringTemps.Contains(rhs))
+                {
+                    var spIdx = ps.IndexOf(' ', 5);
+                    if (spIdx > 5)
+                        knownStringTemps.Add(ps[5..spIdx]);
                 }
             }
         }
@@ -2907,7 +2906,8 @@ public partial class CppCodeGenerator
         // Pattern: missing this pointer — function call where first arg is small int
         // but function expects a pointer (value type method on struct)
         // Detect: GuidResult_SetFailure(7, or GetLocaleInfoFromLCType(4099,
-        if (s.Contains("GuidResult_SetFailure(") && !s.Contains("GuidResult_SetFailure(result") &&
+        if (s.Contains("GuidResult_SetFailure(") && !s.TrimEnd().EndsWith("{") &&
+            !s.Contains("GuidResult_SetFailure(result") &&
             !s.Contains("GuidResult_SetFailure(&") && !s.Contains("GuidResult_SetFailure(loc_") &&
             !s.Contains("GuidResult_SetFailure(__"))
             return true;
@@ -3105,7 +3105,7 @@ public partial class CppCodeGenerator
         // Pattern: string_length with array_get result (Object* not String*)
         if (s.Contains("string_length(") && !s.Contains("string_length((cil2cpp::String*)"))
         {
-            // Allow: string_length(__this), string_length(someStringVar)
+            // Allow: string_length(__this), string_length(someStringVar), string_length(paramName)
             // Reject: string_length(__tN) where __tN came from array_get — unless __tN
             // was previously assigned from a (cil2cpp::String*) cast (known to be safe)
             var idx = s.IndexOf("string_length(");
@@ -3124,6 +3124,9 @@ public partial class CppCodeGenerator
                     if (knownStringTemps == null || !knownStringTemps.Contains(tempName))
                         return true;
                 }
+                // Also allow: string_length(loc_N) and string_length(paramName) — locals and
+                // params of String* type are safe
+                // Only flag __tN temps from array_get, not named vars
             }
         }
 
@@ -3131,9 +3134,8 @@ public partial class CppCodeGenerator
         if (s.Contains("SpanHelpers_UnalignedCount"))
             return true;
 
-        // Pattern: TimeSpanFormat_FormatG/FormatC — wrong arg order (missing TimeSpan first arg)
-        if (s.Contains("TimeSpanFormat_FormatG(") || s.Contains("TimeSpanFormat_FormatC("))
-            return true;
+        // NOTE: TimeSpanFormat_FormatG/FormatC pattern removed — the functions are declared as stubs
+        // and calls to them are valid C++. The stubs themselves have wrong arg order, but callers are fine.
 
         // Pattern: EventPipeMetadataGenerator_WriteToBuffer — char16_t* → uint8_t* mismatch
         if (s.Contains("EventPipeMetadataGenerator_WriteToBuffer("))

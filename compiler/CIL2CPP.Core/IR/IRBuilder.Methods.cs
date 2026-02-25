@@ -1316,7 +1316,7 @@ public partial class IRBuilder
                     ResultVar = tmp,
                     ResultTypeCpp = sfaPtrType,
                 });
-                stack.Push(tmp);
+                stack.Push(new StackEntry(tmp, sfaPtrType));
                 break;
             }
 

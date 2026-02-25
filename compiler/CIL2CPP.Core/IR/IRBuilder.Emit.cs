@@ -186,6 +186,22 @@ public partial class IRBuilder
             right = $"(void*){right}";
         }
 
+        // Bitwise ops (&, |, ^) on pointer operands: C++ doesn't allow bitwise operations
+        // on pointer types (MSVC C2296). IL treats native int and pointers interchangeably
+        // for bitwise ops (e.g., alignment checks: (uintptr_t)ptr & 0xF).
+        // Cast pointer operands to uintptr_t so the bitwise op is on integers.
+        if (op is "&" or "|" or "^")
+        {
+            bool leftIsPtr = leftEntry.IsPointer
+                || (method != null && IsPointerTypedOperand(left, method));
+            bool rightIsPtr = rightEntry.IsPointer
+                || (method != null && IsPointerTypedOperand(right, method));
+            if (leftIsPtr)
+                left = $"(uintptr_t){left}";
+            if (rightIsPtr)
+                right = $"(uintptr_t){right}";
+        }
+
         var tmp = $"__t{tempCounter++}";
         block.Instructions.Add(new IRBinaryOp
         {
@@ -2497,9 +2513,13 @@ public partial class IRBuilder
 
     private void EmitConversion(IRBasicBlock block, Stack<StackEntry> stack, string targetType, ref int tempCounter)
     {
-        var val = stack.PopExpr();
+        var entry = stack.PopEntry();
         var tmp = $"__t{tempCounter++}";
-        block.Instructions.Add(new IRConversion { SourceExpr = val, TargetType = targetType, ResultVar = tmp });
+        block.Instructions.Add(new IRConversion
+        {
+            SourceExpr = entry.Expr, TargetType = targetType, ResultVar = tmp,
+            SourceCppType = entry.CppType
+        });
         stack.Push(new StackEntry(tmp, targetType));
     }
 

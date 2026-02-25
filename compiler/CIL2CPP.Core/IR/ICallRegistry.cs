@@ -382,6 +382,9 @@ public static class ICallRegistry
         RegisterICall("System.Math", "Cbrt", 1, "cil2cpp::icall::Math_Cbrt");
         RegisterICall("System.Math", "IEEERemainder", 2, "cil2cpp::icall::Math_IEEERemainder");
         RegisterICall("System.Math", "FusedMultiplyAdd", 3, "cil2cpp::icall::Math_FusedMultiplyAdd");
+        RegisterICall("System.Math", "CopySign", 2, "cil2cpp::icall::Math_CopySign");
+        RegisterICall("System.Math", "BitDecrement", 1, "cil2cpp::icall::Math_BitDecrement");
+        RegisterICall("System.Math", "BitIncrement", 1, "cil2cpp::icall::Math_BitIncrement");
 
         // ===== System.MathF (float) =====
         RegisterICall("System.MathF", "Sqrt", 1, "cil2cpp::icall::MathF_Sqrt");
@@ -459,6 +462,25 @@ public static class ICallRegistry
         RegisterICall("System.Diagnostics.Tracing.EventSource", "IsEnabled", 2, "cil2cpp::eventsource_is_enabled_level");
         RegisterICall("System.Diagnostics.Tracing.EventSource", "get_IsSupported", 0, "cil2cpp::eventsource_get_is_supported");
         RegisterICallWildcard("System.Diagnostics.Tracing.EventSource", "WriteEvent", "cil2cpp::eventsource_write_event");
+
+        // ===== Interop.GetRandomBytes — platform-specific RNG =====
+        // BCL uses Interop.GetRandomBytes (→ BCrypt.GenRandom on Windows, /dev/urandom on Linux)
+        // for seeding hash tables, PRNG, etc. Provide C++ implementation.
+        RegisterICall("System.HashCode", "GenerateGlobalSeed", 0, "cil2cpp::icall::HashCode_GenerateGlobalSeed");
+        RegisterICall("System.Marvin", "GenerateSeed", 0, "cil2cpp::icall::Marvin_GenerateSeed");
+
+        // ===== System.RuntimeTypeHandle =====
+        // .ctor stores intptr_t — trivial ICall avoids void*→intptr_t cast issues in IL body
+        RegisterICall("System.RuntimeTypeHandle", ".ctor", 1, "cil2cpp::icall::RuntimeTypeHandle_ctor");
+
+        // ===== System.Runtime.InteropServices.Marshal (additional) =====
+        // StringToCoTaskMemUni — IL body does void* arithmetic (C++ C2036). ICall avoids this.
+        RegisterICall("System.Runtime.InteropServices.Marshal", "StringToCoTaskMemUni", 1,
+            "cil2cpp::icall::Marshal_StringToCoTaskMemUni");
+
+        // ===== System.Runtime.InteropServices.NativeLibrary =====
+        RegisterICall("System.Runtime.InteropServices.NativeLibrary", "GetSymbol", 2,
+            "cil2cpp::icall::NativeLibrary_GetSymbol");
 
         // ===== System.ArgIterator =====
         // ArgIterator is 100% [InternalCall] in BCL. Our runtime uses VarArgHandle metadata

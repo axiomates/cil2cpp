@@ -797,26 +797,17 @@ public partial class CppCodeGenerator
         if (method.DeclaringType?.ILFullName == "System.Globalization.CultureData" &&
             method.Name == "InitIcuCultureDataCore")
             return "CultureData Interop_Globalization P/Invoke mismatch";
-        // HashCode/Marvin seed
-        if (method.DeclaringType?.ILFullName == "System.HashCode" && method.Name == "GenerateGlobalSeed")
-            return "HashCode Interop_GetRandomBytes P/Invoke mismatch";
-        if (method.DeclaringType?.ILFullName == "System.Marvin" && method.Name == "GenerateSeed")
-            return "Marvin Interop_GetRandomBytes P/Invoke mismatch";
-        // Marshal.StringToCoTaskMemUni
-        if (method.DeclaringType?.ILFullName == "System.Runtime.InteropServices.Marshal" &&
-            method.Name == "StringToCoTaskMemUni")
-            return "Marshal void* pointer arithmetic";
-        // NativeLibrary.GetSymbol
+        // HashCode/Marvin → now have ICalls (removed)
+        // Marshal.StringToCoTaskMemUni → now has ICall (removed)
+        // RuntimeTypeHandle .ctor → now has ICall (removed)
+        // NativeLibrary.GetSymbol — IL body still has P/Invoke pointer mismatch
         if (method.DeclaringType?.ILFullName == "System.Runtime.InteropServices.NativeLibrary" &&
             method.Name == "GetSymbol")
             return "NativeLibrary void* pointer arithmetic";
-        // RuntimeTypeHandle .ctor
-        if (method.DeclaringType?.ILFullName == "System.RuntimeTypeHandle" && method.Name == ".ctor")
-            return "RuntimeTypeHandle TypeHandle JIT internal";
         // RandomizedStringEqualityComparer
         if (method.DeclaringType?.ILFullName?.Contains("RandomizedStringEqualityComparer") == true)
             return "RandomizedStringEqualityComparer Interop_GetRandomBytes mismatch";
-        // Random/XoshiroImpl
+        // XoshiroImpl
         if (method.DeclaringType?.ILFullName?.Contains("XoshiroImpl") == true)
             return "XoshiroImpl Interop_GetRandomBytes mismatch";
         // DateTimeFormatInfoScanner
@@ -827,10 +818,7 @@ public partial class CppCodeGenerator
         if (method.DeclaringType?.ILFullName == "System.Threading.ExecutionContext" &&
             method.Name == "SetLocalValue")
             return "ExecutionContext AsyncLocal + Thread cross-scope";
-        // IO.UnmanagedMemoryStream.Initialize
-        if (method.DeclaringType?.ILFullName == "System.IO.UnmanagedMemoryStream" &&
-            method.Name == "Initialize")
-            return "UnmanagedMemoryStream static_cast<uint64_t>(pointer)";
+        // IO.UnmanagedMemoryStream.Initialize → fixed: pointer→integer now uses C-style cast (removed)
         // GuidResult.SetFailure
         if (method.DeclaringType?.ILFullName?.Contains("GuidResult") == true)
             return "GuidResult pointer param dot-access";
@@ -838,9 +826,7 @@ public partial class CppCodeGenerator
         if (method.DeclaringType?.ILFullName == "System.Globalization.CultureInfo" &&
             method.Name.StartsWith("set_Current"))
             return "CultureInfo AsyncLocal + void* patterns";
-        // Math.CopySign
-        if (method.DeclaringType?.ILFullName == "System.Math" && method.Name == "CopySign")
-            return "Math.CopySign void* pointer arithmetic";
+        // Math.CopySign → now has ICall (removed)
         // StringBuilder.set_Length
         if (method.DeclaringType?.ILFullName == "System.Text.StringBuilder" && method.Name == "set_Length")
             return "StringBuilder VectorMath hardware intrinsic";
@@ -874,9 +860,9 @@ public partial class CppCodeGenerator
         // Span<KVP<IAsyncLocal,Object>>
         if (method.DeclaringType?.ILFullName?.Contains("IAsyncLocal") == true)
             return "Span<IAsyncLocal KVP> pointer parameter dot-access";
-        // TimeSpan
-        if (method.DeclaringType?.ILFullName == "System.TimeSpan")
-            return "TimeSpan void*→intptr_t conversion";
+        // TimeSpan.ToString() no-arg — undeclared disambiguated TimeSpanFormat function
+        if (method.DeclaringType?.ILFullName == "System.TimeSpan" && method.Name == "ToString")
+            return "TimeSpan ToString undeclared disambiguated call";
 
         // Check specific instruction patterns + undeclared TypeInfo
         foreach (var block in method.BasicBlocks)
