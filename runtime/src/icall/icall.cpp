@@ -409,5 +409,64 @@ Object* Delegate_InternalAlloc(void* type) {
     return reinterpret_cast<Object*>(gc::alloc(size, typeInfo));
 }
 
+// ===== System.Threading.Interlocked (additional) =====
+
+Int32 Interlocked_ExchangeAdd_i32(Int32* location, Int32 value) {
+    // ExchangeAdd returns the OLD value (unlike Add which returns new)
+    auto* atomic = reinterpret_cast<std::atomic<Int32>*>(location);
+    return atomic->fetch_add(value, std::memory_order_seq_cst);
+}
+
+Int64 Interlocked_ExchangeAdd_i64(Int64* location, Int64 value) {
+    auto* atomic = reinterpret_cast<std::atomic<Int64>*>(location);
+    return atomic->fetch_add(value, std::memory_order_seq_cst);
+}
+
+// ===== System.Threading.ThreadPool (CIL2CPP thread pool — mostly no-ops) =====
+// CIL2CPP uses its own fixed-size thread pool (cil2cpp::threadpool).
+// BCL ThreadPool API calls are redirected here as no-ops or simple stubs.
+
+Int32 ThreadPool_GetNextConfigUInt32Value(Int32 /*configVariableIndex*/,
+    uint32_t* configValue, bool* isBoolean, char16_t** /*appContextConfigName*/) {
+    // No runtime config variables — return 0 (not found)
+    if (configValue) *configValue = 0;
+    if (isBoolean) *isBoolean = false;
+    return 0; // 0 = not found
+}
+
+Object* ThreadPool_GetOrCreateThreadLocalCompletionCountObject() {
+    // CIL2CPP thread pool doesn't track per-thread completion counts.
+    // Return nullptr — callers check for null before use.
+    return nullptr;
+}
+
+bool ThreadPool_NotifyWorkItemComplete(Object* /*threadLocalCompletionCountObject*/,
+    Int32 /*currentTimeMs*/) {
+    // No-op: CIL2CPP thread pool manages its own worker lifecycle
+    return false; // false = don't request more workers
+}
+
+void ThreadPool_NotifyWorkItemProgress() {
+    // No-op: CIL2CPP thread pool doesn't track progress metrics
+}
+
+void ThreadPool_ReportThreadStatus(bool /*isWorking*/) {
+    // No-op: CIL2CPP thread pool manages its own worker states
+}
+
+void ThreadPool_RequestWorkerThread() {
+    // No-op: CIL2CPP thread pool has a fixed worker count
+}
+
+bool ThreadPoolWorkQueue_Dispatch() {
+    // No-op: CIL2CPP thread pool handles its own dispatch loop
+    return false; // false = no more work items
+}
+
+void ThreadPoolWorkQueue_Enqueue(void* /*__this*/, Object* callback, bool /*forceGlobal*/) {
+    // TODO: delegate to cil2cpp::threadpool::queue_work if callback is IThreadPoolWorkItem
+    (void)callback;
+}
+
 } // namespace icall
 } // namespace cil2cpp

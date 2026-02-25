@@ -85,6 +85,8 @@ Int64 Interlocked_CompareExchange_i64(Int64* location, Int64 value, Int64 compar
 void* Interlocked_Exchange_obj(void* location, void* value);
 void* Interlocked_CompareExchange_obj(void* location, void* value, void* comparand);
 void Interlocked_MemoryBarrier();
+Int32 Interlocked_ExchangeAdd_i32(Int32* location, Int32 value);
+Int64 Interlocked_ExchangeAdd_i64(Int64* location, Int64 value);
 
 // System.Threading.Thread
 void Thread_Sleep(Int32 milliseconds);
@@ -112,6 +114,17 @@ Int32 Enum_InternalGetCorElementType(void* enumType);
 
 // System.Delegate (internal)
 Object* Delegate_InternalAlloc(void* type);
+
+// System.Threading.ThreadPool (CIL2CPP has its own thread pool — mostly no-ops)
+Int32 ThreadPool_GetNextConfigUInt32Value(Int32 configVariableIndex,
+    uint32_t* configValue, bool* isBoolean, char16_t** appContextConfigName);
+Object* ThreadPool_GetOrCreateThreadLocalCompletionCountObject();
+bool ThreadPool_NotifyWorkItemComplete(Object* threadLocalCompletionCountObject, Int32 currentTimeMs);
+void ThreadPool_NotifyWorkItemProgress();
+void ThreadPool_ReportThreadStatus(bool isWorking);
+void ThreadPool_RequestWorkerThread();
+bool ThreadPoolWorkQueue_Dispatch();
+void ThreadPoolWorkQueue_Enqueue(void* __this, Object* callback, bool forceGlobal);
 
 // System.Math (double)
 double Math_Abs_double(double value);

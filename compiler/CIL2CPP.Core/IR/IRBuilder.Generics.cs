@@ -387,6 +387,10 @@ public partial class IRBuilder
 
             declaringIrType.Methods.Add(irMethod);
 
+            // Skip body conversion for ICall-mapped methods — dead code
+            // (callers are redirected to the ICall function by EmitMethodCall)
+            if (irMethod.HasICallMapping) return;
+
             // Convert method body with generic substitution context
             // (not added to methodBodies — we convert immediately with the type param map)
             if (cecilMethod.HasBody && !cecilMethod.IsAbstract)
@@ -573,6 +577,9 @@ public partial class IRBuilder
                     }
 
                     irType.Methods.Add(irMethod);
+
+                    // Skip body conversion for ICall-mapped methods — dead code
+                    if (irMethod.HasICallMapping) continue;
 
                     // Defer method body conversion to after DisambiguateOverloadedMethods (Pass 3.3).
                     // Converting bodies before disambiguation causes call sites to use
@@ -819,6 +826,9 @@ public partial class IRBuilder
                 }
 
                 irType.Methods.Add(irMethod);
+
+                // Skip body conversion for ICall-mapped methods — dead code
+                if (irMethod.HasICallMapping) continue;
 
                 // Defer body conversion to after Pass 3.3 (same as parent type methods).
                 // Only convert reachable, non-CLR-internal methods.
@@ -1230,6 +1240,9 @@ public partial class IRBuilder
             // Skip record compiler-generated methods — Pass 7 synthesizes replacements
             if (irMethod.DeclaringType?.IsRecord == true && IsRecordSynthesizedMethod(irMethod.Name))
                 continue;
+
+            // Skip ICall-mapped methods — dead code (callers redirected to ICall function)
+            if (irMethod.HasICallMapping) continue;
 
             var methodInfo = new IL.MethodInfo(cecilMethod);
             ConvertMethodBodyWithGenerics(methodInfo, irMethod, typeParamMap);

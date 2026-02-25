@@ -482,6 +482,34 @@ public static class ICallRegistry
         RegisterICall("System.Runtime.InteropServices.NativeLibrary", "GetSymbol", 2,
             "cil2cpp::icall::NativeLibrary_GetSymbol");
 
+        // ===== System.Threading.ThreadPool (CIL2CPP has its own thread pool) =====
+        // BCL ThreadPool methods are [InternalCall] — map to our runtime thread pool.
+        // Most are no-ops (CIL2CPP thread pool manages its own workers/metrics).
+        RegisterICall("System.Threading.ThreadPool", "GetNextConfigUInt32Value", 4,
+            "cil2cpp::icall::ThreadPool_GetNextConfigUInt32Value");
+        RegisterICall("System.Threading.ThreadPool", "GetOrCreateThreadLocalCompletionCountObject", 0,
+            "cil2cpp::icall::ThreadPool_GetOrCreateThreadLocalCompletionCountObject");
+        RegisterICall("System.Threading.ThreadPool", "NotifyWorkItemComplete", 2,
+            "cil2cpp::icall::ThreadPool_NotifyWorkItemComplete");
+        RegisterICall("System.Threading.ThreadPool", "NotifyWorkItemProgress", 0,
+            "cil2cpp::icall::ThreadPool_NotifyWorkItemProgress");
+        RegisterICall("System.Threading.ThreadPool", "ReportThreadStatus", 1,
+            "cil2cpp::icall::ThreadPool_ReportThreadStatus");
+        RegisterICall("System.Threading.ThreadPool", "RequestWorkerThread", 0,
+            "cil2cpp::icall::ThreadPool_RequestWorkerThread");
+        RegisterICall("System.Threading.ThreadPoolWorkQueue", "Dispatch", 0,
+            "cil2cpp::icall::ThreadPoolWorkQueue_Dispatch");
+        RegisterICall("System.Threading.ThreadPoolWorkQueue", "Enqueue", 2,
+            "cil2cpp::icall::ThreadPoolWorkQueue_Enqueue");
+        RegisterICall("System.Threading.WindowsThreadPool", "RequestWorkerThread", 0,
+            "cil2cpp::icall::ThreadPool_RequestWorkerThread"); // same impl
+
+        // ===== System.Threading.Interlocked (additional) =====
+        RegisterICallTyped("System.Threading.Interlocked", "ExchangeAdd", 2, "System.Int32&",
+            "cil2cpp::icall::Interlocked_ExchangeAdd_i32");
+        RegisterICallTyped("System.Threading.Interlocked", "ExchangeAdd", 2, "System.Int64&",
+            "cil2cpp::icall::Interlocked_ExchangeAdd_i64");
+
         // ===== System.ArgIterator =====
         // ArgIterator is 100% [InternalCall] in BCL. Our runtime uses VarArgHandle metadata
         // constructed at call sites and passed as intptr_t to varargs methods.

@@ -544,6 +544,9 @@ public partial class IRBuilder
             if (irMethod.DeclaringType?.IsRecord == true && IsRecordSynthesizedMethod(irMethod.Name))
                 continue;
 
+            // Skip ICall-mapped methods — dead code (callers redirected to ICall function)
+            if (irMethod.HasICallMapping) continue;
+
             // Skip methods with CLR-internal dependencies (QCallTypeHandle, RuntimeType, etc.)
             // These cannot be compiled to C++ — generate a minimal stub body instead
             if (HasClrInternalDependencies(methodDef.GetCecilMethod(), out var clrReason))
