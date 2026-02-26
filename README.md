@@ -1,16 +1,18 @@
 # CIL2CPP
 
-将 .NET/C# 程序编译为原生 C++ 代码的 AOT 编译工具，类似于 Unity IL2CPP。
+An AOT compiler that compiles .NET/C# programs into native C++ code, similar to Unity IL2CPP.
 
-**定位**：通用 AOT 编译器，对标 .NET NativeAOT 覆盖范围。采用 Unity IL2CPP 架构——所有 BCL IL 方法体直接编译为 C++，仅在最底层保留 `[InternalCall]` 的 C++ 实现（~270 个 icall）。
+**Positioning**: General-purpose AOT compiler targeting .NET NativeAOT-level coverage. Uses Unity IL2CPP architecture — all BCL IL method bodies are compiled directly to C++, with only the lowest-level `[InternalCall]` C++ implementations (~270 icalls) retained.
 
 ```
-.csproj → dotnet build → .NET DLL (IL) → Mono.Cecil → IR (8 遍) → C++ 源码 + CMakeLists.txt → 原生可执行文件
+.csproj → dotnet build → .NET DLL (IL) → Mono.Cecil → IR (8 passes) → C++ source + CMakeLists.txt → native executable
 ```
 
-## 快速上手
+> [中文文档 (Chinese)](README.zh-CN.md)
 
-### 1. 构建并安装运行时（一次性）
+## Quick Start
+
+### 1. Build and install runtime (one-time)
 
 ```bash
 cmake -B build -S runtime
@@ -20,37 +22,37 @@ cmake --install build --config Release --prefix C:/cil2cpp
 cmake --install build --config Debug --prefix C:/cil2cpp
 ```
 
-### 2. 生成 C++ 代码
+### 2. Generate C++ code
 
 ```bash
 dotnet run --project compiler/CIL2CPP.CLI -- codegen \
     -i tests/HelloWorld/HelloWorld.csproj -o output
 ```
 
-### 3. 编译为原生可执行文件
+### 3. Compile to native executable
 
 ```bash
 cmake -B build_output -S output -DCMAKE_PREFIX_PATH=C:/cil2cpp
 cmake --build build_output --config Release
 ```
 
-### 4. 运行
+### 4. Run
 
 ```bash
 build_output/Release/HelloWorld.exe   # Windows
 ./build_output/HelloWorld             # Linux / macOS
 ```
 
-输出：
+Output:
 ```
 Hello, CIL2CPP!
 30
 42
 ```
 
-## 代码转换示例
+## Code Translation Example
 
-**输入 (C#)**:
+**Input (C#)**:
 
 ```csharp
 public class Calculator
@@ -70,7 +72,7 @@ public class Program
 }
 ```
 
-**输出 (C++，简化，Windows 版本)**:
+**Output (C++, simplified, Windows version)**:
 
 ```cpp
 // ---- HelloWorld.h ----
@@ -99,50 +101,50 @@ void Program_Main() {
     System_Console_WriteLine__System_Int32(__t1);
 }
 
-// Console.WriteLine 调用链（全部由 BCL IL 编译生成）：
+// Console.WriteLine call chain (all compiled from BCL IL):
 //   Console.WriteLine → TextWriter.WriteLine → StreamWriter.Write
-//     → Encoding.GetBytes → P/Invoke → 平台相关（如 Windows: WriteFile，Linux/macOS: write/stdout）
+//     → Encoding.GetBytes → P/Invoke → platform-specific (Windows: WriteFile, Linux/macOS: write/stdout)
 ```
 
-## 核心指标
+## Key Metrics
 
-| 指标 | 数量 |
-|------|------|
-| IL 操作码覆盖率 | 100%（全部 ~230 种 ECMA-335 操作码） |
-| ICallRegistry 条目 | ~270 个 |
-| C# 编译器测试 | ~1240 个 (xUnit) |
-| C++ 运行时测试 | 591 个 (Google Test) |
-| 端到端集成测试 | 35 个 |
+| Metric | Count |
+|--------|-------|
+| IL opcode coverage | 100% (all ~230 ECMA-335 opcodes) |
+| ICallRegistry entries | ~270 |
+| C# compiler tests | ~1240 (xUnit) |
+| C++ runtime tests | 591 (Google Test) |
+| End-to-end integration tests | 35 |
 
-## 项目文档
+## Documentation
 
-| 文档 | 内容 |
-|------|------|
-| [项目目标与定位](docs/goals.md) | 项目定义、对标 Unity IL2CPP / NativeAOT、设计原则、AOT 限制 |
-| [技术架构](docs/architecture.md) | 编译流水线、IR 8 遍构建、BCL 策略、C++ 代码生成、GC 架构、CMake 包 |
-| [现状与限制](docs/capabilities.md) | 阶段完成表、C# 功能支持表、ICall 明细、System.IO/P/Invoke 状态、Stub 分析 |
-| [未来开发计划](docs/roadmap.md) | Phase H（Native Libs 集成）、中期/长期计划、阻断分析、风险 |
-| [开发工具](docs/tools.md) | 前置要求、构建命令、dev.py 使用、测试体系、Debug/Release 配置 |
-| [踩坑记录](docs/lessons.md) | 架构反思（GC/BCL/多文件）、C++/Cecil/IR/异常/异步陷阱 |
+| Document | Contents |
+|----------|----------|
+| [Project Goals](docs/goals.md) | Project definition, comparison with Unity IL2CPP / NativeAOT, design principles, AOT limitations |
+| [Technical Architecture](docs/architecture.md) | Compilation pipeline, IR 8-pass build, BCL strategy, C++ code generation, GC architecture, CMake package |
+| [Capabilities & Limitations](docs/capabilities.md) | Phase completion table, C# feature support, ICall details, System.IO/P/Invoke status, stub analysis |
+| [Development Roadmap](docs/roadmap.md) | Phase H (Native Libs integration), mid/long-term plans, blocker analysis, risks |
+| [Development Tools](docs/tools.md) | Prerequisites, build commands, dev.py usage, test system, Debug/Release configuration |
+| [Lessons Learned](docs/lessons.md) | Architecture reflections (GC/BCL/multi-file), C++/Cecil/IR/exception/async pitfalls |
 
-## 项目结构
+## Project Structure
 
 ```
 cil2cpp/
-├── compiler/                   # C# 编译器 (.NET 8)
-│   ├── CIL2CPP.CLI/            #   命令行入口
-│   ├── CIL2CPP.Core/           #   核心：IL 解析 → IR → C++ 代码生成
-│   └── CIL2CPP.Tests/          #   编译器测试 (xUnit, ~1240 tests)
-├── runtime/                    # C++ 运行时 (C++20, CMake)
-│   ├── include/cil2cpp/        #   头文件（32 个）
-│   ├── src/                    #   GC / 类型系统 / 异常 / BCL icall
-│   └── tests/                  #   运行时测试 (GTest, 591 tests)
-├── tests/                      # 测试用 C# 项目
-├── tools/dev.py                # 开发者 CLI
-└── docs/                       # 项目文档
+├── compiler/                   # C# compiler (.NET 8)
+│   ├── CIL2CPP.CLI/            #   CLI entry point
+│   ├── CIL2CPP.Core/           #   Core: IL parsing → IR → C++ code generation
+│   └── CIL2CPP.Tests/          #   Compiler tests (xUnit, ~1240 tests)
+├── runtime/                    # C++ runtime (C++20, CMake)
+│   ├── include/cil2cpp/        #   Headers (32 files)
+│   ├── src/                    #   GC / type system / exception / BCL icall
+│   └── tests/                  #   Runtime tests (GTest, 591 tests)
+├── tests/                      # Test C# projects
+├── tools/dev.py                # Developer CLI
+└── docs/                       # Project documentation
 ```
 
-## 参考
+## References
 
 - [Unity IL2CPP](https://docs.unity3d.com/Manual/IL2CPP.html)
 - [Mono.Cecil](https://github.com/jbevain/cecil)

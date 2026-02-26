@@ -1,150 +1,152 @@
-# CIL2CPP 能力清单
+# CIL2CPP Capabilities
 
-> 最后更新：2026-02-25
+> Last updated: 2026-02-25
 >
-> 本文档描述 CIL2CPP 当前**能做什么**。开发计划与进度见 [roadmap.md](roadmap.md)。
+> This document describes what CIL2CPP **can currently do**. For development plans and progress, see [roadmap.md](roadmap.md).
+>
+> [中文版 (Chinese)](capabilities.zh-CN.md)
 
-## 概览
+## Overview
 
-CIL2CPP 是 C# → C++ AOT 编译器（类似 Unity IL2CPP）。当前支持完整 C# 语法（100% IL 操作码覆盖），BCL 从 IL 编译（Unity IL2CPP 架构），~270 个 ICall 条目。1,240 C# + 591 C++ + 35 集成测试全部通过。
+CIL2CPP is a C# → C++ AOT compiler (similar to Unity IL2CPP). Currently supports complete C# syntax (100% IL opcode coverage), BCL compiled from IL (Unity IL2CPP architecture), ~270 ICall entries. 1,240 C# + 591 C++ + 35 integration tests all passing.
 
-## 核心指标
+## Key Metrics
 
-| 指标 | 数量 |
-|------|------|
-| IL 操作码覆盖率 | **100%**（全部 ~230 种 ECMA-335 操作码） |
-| ICallRegistry 条目 | **~270 个**（涵盖 30+ 类别） |
-| C# 编译器测试 | **~1,240 个**（xUnit） |
-| C++ 运行时测试 | **591 个**（Google Test，18 个测试文件） |
-| 端到端集成测试 | **35 个**（9 个阶段） |
-| 运行时头文件 | **32 个** |
+| Metric | Count |
+|--------|-------|
+| IL opcode coverage | **100%** (all ~230 ECMA-335 opcodes) |
+| ICallRegistry entries | **~270** (covering 30+ categories) |
+| C# compiler tests | **~1,240** (xUnit) |
+| C++ runtime tests | **591** (Google Test, 18 test files) |
+| End-to-end integration tests | **35** (9 stages) |
+| Runtime headers | **32** |
 
 ---
 
-## C# 功能支持表
+## C# Feature Support Table
 
-> ✅ 已支持 ⚠️ 部分支持（BCL/运行时限制） ❌ 未支持（缺失 icall 或 AOT 限制）
+> ✅ Supported ⚠️ Partial support (BCL/runtime limitation) ❌ Not supported (missing icall or AOT limitation)
 >
-> 所有 C# 语法经 Roslyn 编译为标准 IL 后，CIL 指令翻译层均已覆盖。
-> 状态标记 ⚠️/❌ 反映的是 BCL 依赖链或运行时 icall 层面的限制。
+> All C# syntax compiles to standard IL via Roslyn; the CIL instruction translation layer covers all opcodes.
+> Status marks ⚠️/❌ reflect limitations at the BCL dependency chain or runtime icall level.
 
-### 基本类型
+### Basic Types
 
-| 功能 | 状态 | 备注 |
-|------|------|------|
-| int, long, float, double | ✅ | 映射到 C++ int32_t, int64_t, float, double |
-| bool, byte, sbyte, short, ushort, uint, ulong | ✅ | 完整基本类型映射 |
+| Feature | Status | Notes |
+|---------|--------|-------|
+| int, long, float, double | ✅ | Maps to C++ int32_t, int64_t, float, double |
+| bool, byte, sbyte, short, ushort, uint, ulong | ✅ | Complete primitive type mapping |
 | char | ✅ | UTF-16 (char16_t) |
-| string | ✅ | 不可变，UTF-16 编码，字面量驻留池 |
+| string | ✅ | Immutable, UTF-16 encoding, literal interning pool |
 | IntPtr, UIntPtr | ✅ | intptr_t, uintptr_t |
-| 类型转换 (全部 Conv_*) | ✅ | 13 种基本 + 20 种 checked |
-| struct (值类型) | ✅ | initobj/ldobj/stobj + 装箱/拆箱 + 拷贝 + ldind/stind |
-| enum | ✅ | typedef + constexpr 常量 + TypeInfo |
-| 装箱/拆箱 | ✅ | box\<T\>() / unbox\<T\>()，Nullable box 拆包 |
-| Nullable\<T\> | ✅ | BCL IL 编译 + box 拆包 + 泛型单态化 |
-| ValueTuple | ✅ | BCL IL 编译，支持 >7 嵌套 |
-| record / record struct | ✅ | 方法合成（ToString/Equals/GetHashCode/Clone），with 表达式 |
+| Type conversions (all Conv_*) | ✅ | 13 basic + 20 checked |
+| struct (value types) | ✅ | initobj/ldobj/stobj + boxing/unboxing + copy + ldind/stind |
+| enum | ✅ | typedef + constexpr constants + TypeInfo |
+| Boxing/Unboxing | ✅ | box\<T\>() / unbox\<T\>(), Nullable box unwrapping |
+| Nullable\<T\> | ✅ | BCL IL compiled + box unwrapping + generic monomorphization |
+| ValueTuple | ✅ | BCL IL compiled, supports >7 nesting |
+| record / record struct | ✅ | Method synthesis (ToString/Equals/GetHashCode/Clone), with expressions |
 
-### 面向对象
+### Object-Oriented
 
-| 功能 | 状态 | 备注 |
-|------|------|------|
-| 类定义 / 构造函数 | ✅ | 实例字段 + 静态字段 + 方法 + newobj |
-| 静态构造函数 (.cctor) | ✅ | `_ensure_cctor()` once-guard |
-| 继承（单继承） | ✅ | 基类字段拷贝 + VTable 继承 |
-| 虚方法 / 多态 | ✅ | VTable 分派 |
-| 属性 | ✅ | get_/set_ 方法调用 |
-| 类型转换 (is/as) | ✅ | isinst → object_as()，castclass → object_cast() |
-| 抽象类/方法 | ✅ | VTable 正确分配槽位 |
-| 接口 | ✅ | InterfaceVTable 分派 |
-| 泛型类/方法 | ✅ | 单态化（monomorphization） |
-| 运算符重载 | ✅ | op_Addition 等静态方法调用 |
-| 终结器 / 析构函数 | ✅ | TypeInfo.finalizer + BoehmGC 注册 |
-| 默认接口方法 (DIM) | ✅ | 接口默认实现作 VTable 回退 |
-| 泛型协变/逆变 | ✅ | ECMA-335 variance-aware 检查 |
+| Feature | Status | Notes |
+|---------|--------|-------|
+| Class definition / constructors | ✅ | Instance fields + static fields + methods + newobj |
+| Static constructors (.cctor) | ✅ | `_ensure_cctor()` once-guard |
+| Inheritance (single) | ✅ | Base class field copying + VTable inheritance |
+| Virtual methods / polymorphism | ✅ | VTable dispatch |
+| Properties | ✅ | get_/set_ method calls |
+| Type casting (is/as) | ✅ | isinst → object_as(), castclass → object_cast() |
+| Abstract classes/methods | ✅ | VTable correctly allocates slots |
+| Interfaces | ✅ | InterfaceVTable dispatch |
+| Generic classes/methods | ✅ | Monomorphization |
+| Operator overloading | ✅ | op_Addition etc. static method calls |
+| Finalizers / destructors | ✅ | TypeInfo.finalizer + BoehmGC registration |
+| Default interface methods (DIM) | ✅ | Interface default implementations as VTable fallback |
+| Generic covariance/contravariance | ✅ | ECMA-335 variance-aware checking |
 
-### 控制流
+### Control Flow
 
-| 功能 | 状态 | 备注 |
-|------|------|------|
-| if/else, while/for, do-while | ✅ | 全部条件分支指令 |
-| switch (IL switch 表) | ✅ | C++ switch/goto 跳转表 |
-| 模式匹配 (switch 表达式) | ✅ | Roslyn 编译为标准 IL |
-| Range / Index (..) | ✅ | Index/Range 结构体 |
-| checked 算术 | ✅ | OverflowException 抛出 |
+| Feature | Status | Notes |
+|---------|--------|-------|
+| if/else, while/for, do-while | ✅ | All conditional branch instructions |
+| switch (IL switch table) | ✅ | C++ switch/goto jump table |
+| Pattern matching (switch expressions) | ✅ | Roslyn compiles to standard IL |
+| Range / Index (..) | ✅ | Index/Range structs |
+| Checked arithmetic | ✅ | OverflowException throwing |
 
-### 数组
+### Arrays
 
-| 功能 | 状态 | 备注 |
-|------|------|------|
-| 一维数组 | ✅ | newarr + ldelem/stelem 全类型 + 越界检查 |
-| 数组初始化器 | ✅ | RuntimeHelpers.InitializeArray → memcpy |
-| 多维数组 (T[,]) | ✅ | MdArray 运行时 |
-| Span\<T\> / ReadOnlySpan\<T\> | ✅ | BCL IL 编译，ref struct |
+| Feature | Status | Notes |
+|---------|--------|-------|
+| Single-dimensional arrays | ✅ | newarr + ldelem/stelem all types + bounds checking |
+| Array initializers | ✅ | RuntimeHelpers.InitializeArray → memcpy |
+| Multi-dimensional arrays (T[,]) | ✅ | MdArray runtime |
+| Span\<T\> / ReadOnlySpan\<T\> | ✅ | BCL IL compiled, ref struct |
 
-### 异常处理
+### Exception Handling
 
-| 功能 | 状态 | 备注 |
-|------|------|------|
-| throw / try / catch / finally | ✅ | setjmp/longjmp 宏 |
+| Feature | Status | Notes |
+|---------|--------|-------|
+| throw / try / catch / finally | ✅ | setjmp/longjmp macros |
 | rethrow | ✅ | CIL2CPP_RETHROW |
-| 异常过滤器 (catch when) | ✅ | ECMA-335 Filter handler |
-| 嵌套 try/catch/finally | ✅ | 多层嵌套完整支持 |
-| 自定义异常类型 | ✅ | 继承 Exception |
-| 栈回溯 | ✅ | Windows: DbgHelp, POSIX: backtrace（仅 Debug） |
-| using 语句 | ✅ | try/finally + IDisposable 接口分派 |
+| Exception filters (catch when) | ✅ | ECMA-335 Filter handler |
+| Nested try/catch/finally | ✅ | Full multi-level nesting support |
+| Custom exception types | ✅ | Inheriting Exception |
+| Stack traces | ✅ | Windows: DbgHelp, POSIX: backtrace (Debug only) |
+| using statements | ✅ | try/finally + IDisposable interface dispatch |
 
-### 标准库 (BCL)
+### Standard Library (BCL)
 
-| 功能 | 状态 | 备注 |
-|------|------|------|
+| Feature | Status | Notes |
+|---------|--------|-------|
 | System.Object | ✅ | ToString/GetHashCode/Equals/GetType |
-| System.String | ✅ | 布局 icall + BCL IL 编译（Concat/Format/Join/Split 等） |
-| Console.WriteLine/Write/ReadLine | ✅ | BCL IL 全链路编译 |
-| System.Math / MathF | ✅ | ~40 个 icall |
-| List\<T\> / Dictionary\<K,V\> | ✅ | BCL IL 编译 |
-| LINQ | ✅ | Where/Select/OrderBy 等，BCL IL 编译 |
-| yield return / IEnumerable | ✅ | 迭代器状态机 |
+| System.String | ✅ | Layout icall + BCL IL compiled (Concat/Format/Join/Split etc.) |
+| Console.WriteLine/Write/ReadLine | ✅ | Full BCL IL chain compiled |
+| System.Math / MathF | ✅ | ~40 icalls |
+| List\<T\> / Dictionary\<K,V\> | ✅ | BCL IL compiled |
+| LINQ | ✅ | Where/Select/OrderBy etc., BCL IL compiled |
+| yield return / IEnumerable | ✅ | Iterator state machines |
 | IAsyncEnumerable\<T\> | ✅ | await foreach |
-| System.IO (File/Path/Directory) | ✅ | 22 个 ICall，C++17 filesystem |
-| System.Net | ❌ | 底层 icall 未实现 |
+| System.IO (File/Path/Directory) | ✅ | 22 ICalls, C++17 filesystem |
+| System.Net | ❌ | Low-level icall not implemented |
 
-### 委托与事件
+### Delegates & Events
 
-| 功能 | 状态 | 备注 |
-|------|------|------|
-| 委托 / 多播委托 | ✅ | delegate_create / Combine / Remove |
-| 事件 | ✅ | add_/remove_ + Delegate.Combine |
-| Lambda / 闭包 | ✅ | 编译器生成 DisplayClass |
+| Feature | Status | Notes |
+|---------|--------|-------|
+| Delegates / multicast delegates | ✅ | delegate_create / Combine / Remove |
+| Events | ✅ | add_/remove_ + Delegate.Combine |
+| Lambda / closures | ✅ | Compiler-generated DisplayClass |
 
-### 高级功能
+### Advanced Features
 
-| 功能 | 状态 | 备注 |
-|------|------|------|
-| async / await | ✅ | 线程池 + continuation + Task 组合器 |
-| CancellationToken | ✅ | BCL IL 编译 |
-| 多线程 | ✅ | Thread/Monitor/Interlocked/lock/volatile |
-| 反射 | ✅ | typeof/GetType/GetMethods/GetFields/MethodInfo.Invoke |
-| 特性 (Attribute) | ✅ | 元数据存储 + 运行时查询 |
-| unsafe (指针/fixed/stackalloc) | ✅ | 指针类型 + BoehmGC 保守扫描 |
-| P/Invoke / DllImport | ✅ | extern "C" + 类型编组 + SetLastError |
-| Span\<T\> | ✅ | ref struct + BCL IL 编译 |
+| Feature | Status | Notes |
+|---------|--------|-------|
+| async / await | ✅ | Thread pool + continuation + Task combinators |
+| CancellationToken | ✅ | BCL IL compiled |
+| Multithreading | ✅ | Thread/Monitor/Interlocked/lock/volatile |
+| Reflection | ✅ | typeof/GetType/GetMethods/GetFields/MethodInfo.Invoke |
+| Attributes | ✅ | Metadata storage + runtime query |
+| unsafe (pointers/fixed/stackalloc) | ✅ | Pointer types + BoehmGC conservative scanning |
+| P/Invoke / DllImport | ✅ | extern "C" + type marshaling + SetLastError |
+| Span\<T\> | ✅ | ref struct + BCL IL compiled |
 
 ---
 
-## ICallRegistry 分类明细（~270 个条目）
+## ICallRegistry Breakdown (~270 entries)
 
-| 类别 | 条目数 | 说明 |
-|------|--------|------|
-| System.Math | 28 | Sqrt/Sin/Cos/Pow/Log/Floor/Ceiling 等 double 版本 |
-| System.MathF | 20 | 对应 float 版本 |
-| System.ThrowHelper | 17 | 各种异常抛出辅助 |
-| System.Char | 16 | IsLetter/IsDigit/IsUpper/ToUpper/ToLower 等 |
+| Category | Count | Description |
+|----------|-------|-------------|
+| System.Math | 28 | Sqrt/Sin/Cos/Pow/Log/Floor/Ceiling etc. double versions |
+| System.MathF | 20 | Corresponding float versions |
+| System.ThrowHelper | 17 | Various exception throw helpers |
+| System.Char | 16 | IsLetter/IsDigit/IsUpper/ToUpper/ToLower etc. |
 | System.Threading.Interlocked | 14 | Increment/Decrement/Exchange/CompareExchange |
 | System.Array | 13 | Copy/Clear/GetLength/GetLowerBound/Reverse/Sort |
 | System.IO.File | 12 | Exists/ReadAllText/WriteAllText/ReadAllBytes/Delete/Copy/Move |
 | System.String | 12 | FastAllocateString/get_Length/get_Chars/Comparison |
-| System.Globalization.CompareInfo | 11 | 区域感知字符串比较 |
+| System.Globalization.CompareInfo | 11 | Culture-aware string comparison |
 | System.GC | 11 | Collect/WaitForPendingFinalizers/GetTotalMemory |
 | System.IO.Path | 8 | GetFullPath/GetDirectoryName/GetFileName/GetExtension/GetTempPath |
 | System.Threading.Monitor | 8 | Enter/Exit/TryEnter/Wait/Pulse/PulseAll |
@@ -156,83 +158,83 @@ CIL2CPP 是 C# → C++ AOT 编译器（类似 Unity IL2CPP）。当前支持完�
 | System.Delegate/MulticastDelegate | 5 | Combine/Remove/GetInvocationList |
 | System.RuntimeHelpers | 4 | InitializeArray/IsReferenceOrContainsReferences |
 | System.Runtime.InteropServices.GCHandle | 4 | Alloc/Free/Target/IsAllocated |
-| System.ArgIterator | 4 | 变长参数支持 |
-| System.Globalization.OrdinalCasing | 3 | 序数大小写转换 |
+| System.ArgIterator | 4 | Varargs support |
+| System.Globalization.OrdinalCasing | 3 | Ordinal case conversion |
 | System.IO.Directory | 2 | Exists/CreateDirectory |
 | System.Runtime.InteropServices.SafeHandle | 8 | .ctor/DangerousGetHandle/SetHandle/DangerousAddRef/DangerousRelease/IsClosed/SetHandleAsInvalid/Dispose |
-| 其他 (Volatile, Enum, Type, HashCode, Marvin, NativeLibrary, ...) | ~18 | 各 1-3 个条目 |
+| Other (Volatile, Enum, Type, HashCode, Marvin, NativeLibrary, ...) | ~18 | 1-3 entries each |
 
 ---
 
-## System.IO 实现明细
+## System.IO Implementation Details
 
-### 架构
+### Architecture
 
-System.IO 采用 ICall 拦截模式，在公共 API 层拦截 File/Path/Directory 调用，使用 C++17 `<filesystem>` 实现跨平台支持。
+System.IO uses ICall interception at the public API level, intercepting File/Path/Directory calls and using C++17 `<filesystem>` for cross-platform support.
 
-### 已实现的 ICall（22 个）
+### Implemented ICalls (22)
 
-**File（12 个）**：Exists, ReadAllText(1/2 参数), WriteAllText(1/2 参数), ReadAllBytes, WriteAllBytes, Delete, Copy, Move, ReadAllLines, AppendAllText
+**File (12)**: Exists, ReadAllText (1/2 params), WriteAllText (1/2 params), ReadAllBytes, WriteAllBytes, Delete, Copy, Move, ReadAllLines, AppendAllText
 
-**Path（8 个）**：GetFullPath, GetDirectoryName, GetFileName, GetFileNameWithoutExtension, GetExtension, GetTempPath, Combine(2 参数), Combine(3 参数)
+**Path (8)**: GetFullPath, GetDirectoryName, GetFileName, GetFileNameWithoutExtension, GetExtension, GetTempPath, Combine (2 params), Combine (3 params)
 
-**Directory（2 个）**：Exists, CreateDirectory
+**Directory (2)**: Exists, CreateDirectory
 
-### 未实现
+### Not Implemented
 
-| 功能 | 说明 |
-|------|------|
-| FileStream / StreamReader / StreamWriter | 无流式 I/O |
-| 目录枚举 | 无 GetFiles / EnumerateFiles / Delete |
-| 文件信息 | 无 FileInfo / DirectoryInfo，无时间戳/属性 |
-| Encoding 参数 | ReadAllText/WriteAllText 的 Encoding 参数被忽略 (FIXME) |
+| Feature | Description |
+|---------|-------------|
+| FileStream / StreamReader / StreamWriter | No streaming I/O |
+| Directory enumeration | No GetFiles / EnumerateFiles / Delete |
+| File info | No FileInfo / DirectoryInfo, no timestamps/attributes |
+| Encoding parameter | ReadAllText/WriteAllText Encoding parameter is ignored (FIXME) |
 
 ---
 
-## P/Invoke 实现明细
+## P/Invoke Implementation Details
 
-### 已支持
+### Supported
 
-- DllImport 声明（extern "C"，自动过滤 .NET 内部模块）
-- 基本类型编组（int/long/float/double/IntPtr 直接传递）
-- String 编组（Ansi: UTF-8，Unicode: 零拷贝 UTF-16）
-- Boolean 编组（C# bool ↔ Win32 BOOL）
-- Blittable Struct 编组（SequentialLayout 值类型直接传递）
-- 回调委托（函数指针：提取 method_ptr → C 函数指针）
-- SetLastError（TLS 存储，调用前清零 + 调用后捕获）
+- DllImport declarations (extern "C", auto-filters .NET internal modules)
+- Basic type marshaling (int/long/float/double/IntPtr passed directly)
+- String marshaling (Ansi: UTF-8, Unicode: zero-copy UTF-16)
+- Boolean marshaling (C# bool ↔ Win32 BOOL)
+- Blittable struct marshaling (SequentialLayout value types passed directly)
+- Callback delegates (function pointers: extract method_ptr → C function pointer)
+- SetLastError (TLS storage, clear before + capture after call)
 - Marshal.AllocHGlobal/FreeHGlobal/AllocCoTaskMem/FreeCoTaskMem
 
-### FIXME / 未实现
+### FIXME / Not Implemented
 
-| 功能 | 状态 | 说明 |
-|------|------|------|
-| 调用约定 | ✅ | StdCall/FastCall/ThisCall 已发射到 extern 声明 |
-| CharSet.Auto | ⚠️ | 硬编码为 Unicode |
-| SafeHandle 方法 | ⚠️ | 8 个 ICall（.ctor/DangerousGetHandle/SetHandle/DangerousAddRef/DangerousRelease/IsClosed/SetHandleAsInvalid/Dispose），缺 ReleaseHandle 虚方法分派 |
-| MarshalAs 特性 | ❌ | 未解析 |
-| Out/In 特性 | ❌ | 未区分参数方向 |
-| 数组编组 / Ref String | ❌ | 不支持 |
-
----
-
-## 已知限制
-
-| 限制 | 说明 |
-|------|------|
-| CLR 内部类型依赖 | BCL IL 引用 QCallTypeHandle / MetadataImport 等 CLR 内部类型 → 方法体自动 stub 化 |
-| BCL 深层依赖链 | 中间层被 stub 化 → 上层方法不可用 |
-| System.Net | 网络层底层 icall 未实现 |
-| Regex 内部 | 依赖 CLR 内部 RegexCache 等 |
-| SIMD | 需要平台特定 intrinsics，当前使用标量回退 struct |
+| Feature | Status | Description |
+|---------|--------|-------------|
+| Calling conventions | ✅ | StdCall/FastCall/ThisCall emitted to extern declarations |
+| CharSet.Auto | ⚠️ | Hard-coded to Unicode |
+| SafeHandle methods | ⚠️ | 8 ICalls (.ctor/DangerousGetHandle/SetHandle/DangerousAddRef/DangerousRelease/IsClosed/SetHandleAsInvalid/Dispose), missing ReleaseHandle virtual dispatch |
+| MarshalAs attribute | ❌ | Not parsed |
+| Out/In attributes | ❌ | Parameter direction not distinguished |
+| Array marshaling / Ref String | ❌ | Not supported |
 
 ---
 
-## 测试覆盖
+## Known Limitations
 
-### C++ 运行时测试（591 个，18 个文件）
+| Limitation | Description |
+|-----------|-------------|
+| CLR internal type dependencies | BCL IL references QCallTypeHandle / MetadataImport etc. → method bodies auto-stubbed |
+| BCL deep dependency chains | Middle layers stubbed → upper-level methods unavailable |
+| System.Net | Network layer low-level icall not implemented |
+| Regex internals | Depends on CLR internal RegexCache etc. |
+| SIMD | Requires platform-specific intrinsics, currently uses scalar fallback structs |
 
-| 模块 | 测试数 |
-|------|--------|
+---
+
+## Test Coverage
+
+### C++ Runtime Tests (591, 18 files)
+
+| Module | Test Count |
+|--------|-----------|
 | Exception | 71 |
 | String | 52 |
 | Type System | 48 |
@@ -251,19 +253,19 @@ System.IO 采用 ICall 拦截模式，在公共 API 层拦截 File/Path/Director
 | Threading | 17 |
 | GC | 16 |
 | TypedReference | 11 |
-| **合计** | **591** |
+| **Total** | **591** |
 
-### 端到端集成测试（35 个，9 个阶段）
+### End-to-End Integration Tests (35, 9 stages)
 
-| 阶段 | 测试内容 | 测试数 |
-|------|---------|--------|
-| 前置检查 | dotnet、CMake、runtime 安装 | 3 |
-| HelloWorld | codegen → build → run → 验证输出 | 5 |
-| 类库项目 | 无入口点 → add_library | 4 |
-| Debug 配置 | #line 指令、IL 注释 | 4 |
-| 字符串字面量 | string_literal、__init_string_literals | 2 |
-| 多程序集 | 跨程序集类型/方法 | 5 |
-| ArglistTest | 变长参数 | 5 |
-| FeatureTest | 综合语言特性 codegen-only | 3 |
-| SystemIOTest | System.IO 端到端 | 4 |
-| **合计** | | **35** |
+| Stage | Test Content | Count |
+|-------|-------------|-------|
+| Prerequisites | dotnet, CMake, runtime installation | 3 |
+| HelloWorld | codegen → build → run → verify output | 5 |
+| Library project | No entry point → add_library | 4 |
+| Debug configuration | #line directives, IL comments | 4 |
+| String literals | string_literal, __init_string_literals | 2 |
+| Multi-assembly | Cross-assembly types/methods | 5 |
+| ArglistTest | Varargs | 5 |
+| FeatureTest | Comprehensive language features codegen-only | 3 |
+| SystemIOTest | System.IO end-to-end | 4 |
+| **Total** | | **35** |

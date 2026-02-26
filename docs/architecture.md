@@ -1,300 +1,307 @@
-# 技术架构
+# Technical Architecture
 
-## 技术栈
+> [中文版 (Chinese)](architecture.zh-CN.md)
 
-| 组件 | 技术 | 版本 |
-|------|------|------|
-| 编译器 | C# / .NET | 8.0 |
-| IL 解析 | Mono.Cecil | NuGet 最新 |
-| 运行时 | C++ | 20 |
+## Technology Stack
+
+| Component | Technology | Version |
+|-----------|-----------|---------|
+| Compiler | C# / .NET | 8.0 |
+| IL parsing | Mono.Cecil | Latest NuGet |
+| Runtime | C++ | 20 |
 | GC | BoehmGC (bdwgc) | v8.2.12 (FetchContent) |
-| 构建系统 | dotnet + CMake | CMake 3.20+ |
-| 运行时分发 | CMake install + find_package | |
-| 编译器测试 | xUnit + coverlet | xUnit 2.9 |
-| 运行时测试 | Google Test | v1.15.2 (FetchContent) |
-| 集成测试 | Python (`tools/dev.py integration`) | stdlib only |
-| Unicode/国际化 | ICU4C | 78.2 |
+| Build system | dotnet + CMake | CMake 3.20+ |
+| Runtime distribution | CMake install + find_package | |
+| Compiler tests | xUnit + coverlet | xUnit 2.9 |
+| Runtime tests | Google Test | v1.15.2 (FetchContent) |
+| Integration tests | Python (`tools/dev.py integration`) | stdlib only |
+| Unicode/i18n | ICU4C | 78.2 |
 
-## 项目布局
+## Project Layout
 
 ```
 cil2cpp/
-├── compiler/                   # C# 编译器 (.NET 项目)
-│   ├── CIL2CPP.CLI/            #   命令行入口 (System.CommandLine)
-│   ├── CIL2CPP.Core/           #   核心编译逻辑
-│   │   ├── IL/                 #     IL 解析 (Mono.Cecil 封装)
+├── compiler/                   # C# compiler (.NET project)
+│   ├── CIL2CPP.CLI/            #   CLI entry point (System.CommandLine)
+│   ├── CIL2CPP.Core/           #   Core compilation logic
+│   │   ├── IL/                 #     IL parsing (Mono.Cecil wrappers)
 │   │   │   ├── AssemblyReader.cs
 │   │   │   ├── TypeDefinitionInfo.cs
 │   │   │   └── ILInstruction.cs
-│   │   ├── IR/                 #     中间表示
-│   │   │   ├── IRBuilder.cs          # 8 遍构建入口
-│   │   │   ├── IRBuilder.Emit.cs     # IL → IR 指令翻译
-│   │   │   ├── IRBuilder.Methods.cs  # 方法体构建
-│   │   │   ├── IRModule.cs           # 模块（类型集合）
-│   │   │   ├── IRType.cs             # 类型
-│   │   │   ├── IRMethod.cs           # 方法
-│   │   │   ├── IRInstruction.cs      # 25+ 指令子类
-│   │   │   └── CppNameMapper.cs      # IL ↔ C++ 名称映射
-│   │   └── CodeGen/            #     C++ 代码生成
-│   │       ├── CppCodeGenerator.cs       # 生成入口
-│   │       ├── CppCodeGenerator.Header.cs  # .h 生成
-│   │       ├── CppCodeGenerator.Source.cs  # .cpp 生成
-│   │       ├── CppCodeGenerator.KnownStubs.cs  # 手写 stub
-│   │       └── StubAnalyzer.cs                 # stub 分析工具 (--analyze-stubs)
-│   └── CIL2CPP.Tests/          #   编译器单元测试 (xUnit)
-│       └── Fixtures/           #     测试 fixture 缓存
-├── tests/                      # 测试用 C# 项目（编译器输入）
+│   │   ├── IR/                 #     Intermediate representation
+│   │   │   ├── IRBuilder.cs          # 8-pass build entry
+│   │   │   ├── IRBuilder.Emit.cs     # IL → IR instruction translation
+│   │   │   ├── IRBuilder.Methods.cs  # Method body construction
+│   │   │   ├── IRModule.cs           # Module (type collection)
+│   │   │   ├── IRType.cs             # Type
+│   │   │   ├── IRMethod.cs           # Method
+│   │   │   ├── IRInstruction.cs      # 25+ instruction subclasses
+│   │   │   └── CppNameMapper.cs      # IL ↔ C++ name mapping
+│   │   └── CodeGen/            #     C++ code generation
+│   │       ├── CppCodeGenerator.cs       # Generation entry point
+│   │       ├── CppCodeGenerator.Header.cs  # .h generation
+│   │       ├── CppCodeGenerator.Source.cs  # .cpp generation
+│   │       ├── CppCodeGenerator.KnownStubs.cs  # Hand-written stubs
+│   │       └── StubAnalyzer.cs                 # Stub analysis tool (--analyze-stubs)
+│   └── CIL2CPP.Tests/          #   Compiler unit tests (xUnit)
+│       └── Fixtures/           #     Test fixture caching
+├── tests/                      # Test C# projects (compiler input)
 │   ├── HelloWorld/
 │   ├── ArrayTest/
 │   ├── FeatureTest/
 │   └── MultiAssemblyTest/
-├── runtime/                    # C++ 运行时库 (CMake)
+├── runtime/                    # C++ runtime library (CMake)
 │   ├── CMakeLists.txt
-│   ├── cmake/                  #   CMake 包配置模板
-│   ├── include/cil2cpp/        #   头文件（32 个）
-│   ├── src/                    #   源码（GC、类型系统、异常、BCL icall）
+│   ├── cmake/                  #   CMake package config template
+│   ├── include/cil2cpp/        #   Headers (32 files)
+│   ├── src/                    #   Source (GC, type system, exception, BCL icall)
 │   │   ├── gc/
 │   │   ├── exception/
 │   │   ├── type_system/
 │   │   ├── io/
 │   │   └── bcl/
-│   └── tests/                  #   运行时单元测试 (Google Test)
+│   └── tests/                  #   Runtime unit tests (Google Test)
 ├── tools/
-│   └── dev.py                  # 开发者 CLI
-└── docs/                       # 项目文档
+│   └── dev.py                  # Developer CLI
+└── docs/                       # Project documentation
 ```
 
-## 编译流水线全景
+## Compilation Pipeline Overview
 
 ```
- C# 源码                    CIL2CPP 编译器 (C#)                             原生编译
-─────────    ┌─────────────────────────────────────────────────────┐    ──────────────
-             │                                                     │
- .csproj ──→ │ dotnet build ──→ .NET DLL (IL)                      │
-             │       ↓                                             │
-             │ Mono.Cecil ──→ 读取 IL 字节码 + 类型元数据            │
-             │       ↓         (Debug: 同时读取 PDB 源码行号映射)    │
-             │ AssemblySet ──→ 加载用户 + 第三方 + BCL 程序集        │
-             │       ↓         (deps.json 依赖发现 + 自动解析)       │
-             │ ReachabilityAnalyzer ──→ 可达性分析（树摇）           │
-             │       ↓                 (从入口点/公共类型出发)       │
-             │ IRBuilder.Build() ──→ 中间表示（8 遍，见下文）        │
-             │       ↓                                             │
-             │ CppCodeGenerator ──→ C++ 头文件 + 多源文件 + CMake    │
-             │                      (多文件分割 + 试渲染 + 自动 stub)│     .h / *_data.cpp
-             └─────────────────────────────────────────────────────┘ ──→ *_methods_N.cpp
-                                                                        CMakeLists.txt
-                                                                            ↓
-                                                                         cmake + C++ 编译器
-                                                                            ↓
-    C++ 运行时 (cil2cpp::runtime) ──────────────────────── find_package ──→ 链接
-    BoehmGC / 类型系统 / 异常 / 线程池                                       ↓
-                                                                       原生可执行文件
+ C# source code          CIL2CPP compiler (C#)                                Native compilation
+──────────────    ┌─────────────────────────────────────────────────────┐    ──────────────────
+                  │                                                     │
+ .csproj ──────→  │ dotnet build ──→ .NET DLL (IL)                      │
+                  │       ↓                                             │
+                  │ Mono.Cecil ──→ Read IL bytecode + type metadata      │
+                  │       ↓         (Debug: also read PDB source maps)  │
+                  │ AssemblySet ──→ Load user + third-party + BCL       │
+                  │       ↓         assemblies (deps.json discovery)    │
+                  │ ReachabilityAnalyzer ──→ Reachability analysis      │
+                  │       ↓                 (tree shaking from entry    │
+                  │       ↓                  point / public types)      │
+                  │ IRBuilder.Build() ──→ IR (8 passes, see below)      │
+                  │       ↓                                             │
+                  │ CppCodeGenerator ──→ C++ headers + multi-source     │
+                  │                      + CMake (file splitting +      │     .h / *_data.cpp
+                  │                      trial render + auto stub)      │ ──→ *_methods_N.cpp
+                  └─────────────────────────────────────────────────────┘     CMakeLists.txt
+                                                                                  ↓
+                                                                          cmake + C++ compiler
+                                                                                  ↓
+     C++ runtime (cil2cpp::runtime) ──────────────────────── find_package ──→ link
+     BoehmGC / type system / exception / thread pool                          ↓
+                                                                        native executable
 ```
 
-## IR 构建：8 遍流水线
+## IR Build: 8-Pass Pipeline
 
-编译器的核心是 `IRBuilder.Build()`，将 Mono.Cecil 的 IL 数据转换为中间表示 (IR)，分 8 遍完成：
+The compiler core is `IRBuilder.Build()`, which transforms Mono.Cecil IL data into an intermediate representation (IR) over 8 passes:
 
-| 遍次 | 名称 | 做什么 | 为什么需要这个顺序 |
-|------|------|--------|-------------------|
-| 1 | 类型外壳 | 创建所有 `IRType`（名称、标志、命名空间） | 后续遍次需要通过名称查找类型 |
-| 2 | 字段与基类 | 填充字段、基类引用、接口列表、静态构造函数 | VTable 构建需要知道继承链 |
-| 3 | 方法壳 | 创建 `IRMethod`（签名、参数），不含方法体 | 方法体中的 call 指令需要能找到目标方法 |
-| 4 | 泛型单态化 | 收集所有泛型实例化 → 生成具体类型/方法 | `List<int>` → `List_1_System_Int32` 独立类型 |
-| 5 | VTable | 按继承链递归构建虚方法表 | 方法体中的 callvirt 需要 VTable 槽号 |
-| 6 | 接口映射 | 构建 InterfaceVTable（接口→实现方法映射） | 接口分派需要知道实现方法地址 |
-| 7 | 方法体 | IL 栈模拟 → 变量赋值，生成 `IRInstruction` | 依赖前几遍：call 解析、VTable 槽号、接口映射 |
-| 8 | 方法合成 | record 的 ToString/Equals/GetHashCode/Clone | 替换编译器生成的引用 EqualityComparer 的方法体 |
+| Pass | Name | What it does | Why this ordering |
+|------|------|-------------|-------------------|
+| 1 | Type shells | Create all `IRType` (names, flags, namespaces) | Later passes need type lookup by name |
+| 2 | Fields & base types | Fill fields, base type refs, interface lists, static constructors | VTable construction needs inheritance chain |
+| 3 | Method shells | Create `IRMethod` (signatures, parameters), no bodies | Method bodies need call targets resolved |
+| 4 | Generic monomorphization | Collect all generic instantiations → generate concrete types/methods | `List<int>` → `List_1_System_Int32` as standalone type |
+| 5 | VTable | Recursively build virtual method tables along inheritance chain | callvirt in method bodies needs VTable slot numbers |
+| 6 | Interface mapping | Build InterfaceVTable (interface → implementation method mapping) | Interface dispatch needs implementation method addresses |
+| 7 | Method bodies | IL stack simulation → variable assignments, generate `IRInstruction` | Depends on prior passes: call resolution, VTable slots, interface mapping |
+| 8 | Method synthesis | record ToString/Equals/GetHashCode/Clone | Replace compiler-generated bodies that reference EqualityComparer |
 
-### 关键类
+### Key Classes
 
-- `IRModule` — 包含 `List<IRType>`、入口点、数组初始化数据、基本类型信息
-- `IRType` — 包含字段、静态字段、方法、VTable 条目、基类引用
-- `IRMethod` — 包含 `List<IRBasicBlock>`，每个基本块有 `List<IRInstruction>`
-- `IRInstruction` — 25+ 个具体子类（IRBinaryOp, IRCall, IRCast, IRBox 等）
-- `CppNameMapper` — IL 类型名 ↔ C++ 类型名的双向映射与标识符 mangling
+- `IRModule` — Contains `List<IRType>`, entry point, array initialization data, primitive type info
+- `IRType` — Contains fields, static fields, methods, VTable entries, base type ref
+- `IRMethod` — Contains `List<IRBasicBlock>`, each basic block has `List<IRInstruction>`
+- `IRInstruction` — 25+ concrete subclasses (IRBinaryOp, IRCall, IRCast, IRBox, etc.)
+- `CppNameMapper` — Bidirectional mapping between IL type names ↔ C++ type names with identifier mangling
 
-## BCL 编译策略
+## BCL Compilation Strategy
 
-### Unity IL2CPP 模型
+### Unity IL2CPP Model
 
-CIL2CPP 采用与 Unity IL2CPP 相同的策略：**所有有 IL 方法体的 BCL 方法直接从 IL 编译为 C++**，与用户代码走完全相同的编译路径。仅在最底层保留 `[InternalCall]` 方法的 C++ 手写实现（icall）。
+CIL2CPP adopts the same strategy as Unity IL2CPP: **all BCL methods with IL bodies are compiled directly from IL to C++**, following the exact same compilation path as user code. Only the lowest-level `[InternalCall]` methods have hand-written C++ implementations (icall).
 
 ```
-方法调用
+Method call
   ↓
-ICallRegistry 查找 (~270 个映射)
-  ├─ 命中 → [InternalCall] 方法，无 IL 方法体
-  │         GC / Monitor / Interlocked / Buffer / Math / IO / Globalization 等
-  │         → 调用 C++ 运行时实现
+ICallRegistry lookup (~270 mappings)
+  ├─ Hit → [InternalCall] method, no IL body
+  │         GC / Monitor / Interlocked / Buffer / Math / IO / Globalization etc.
+  │         → Call C++ runtime implementation
   │
-  └─ 未命中 → 正常 IL 编译（BCL 方法与用户方法相同路径）
-              → 生成 C++ 函数
+  └─ Miss → Normal IL compilation (BCL methods follow same path as user code)
+              → Generate C++ function
 ```
 
-### RuntimeProvidedTypes（运行时提供的类型）
+### RuntimeProvidedTypes (Runtime-provided types)
 
-以下类型的**结构体定义**由 C++ 运行时提供（不从 BCL IL 编译结构体）。基于第一性原理分析：C++ runtime 直接访问字段 / BCL IL 引用 CLR 内部类型 / 嵌入 C++ 类型。
+The following types have their **struct definitions** provided by the C++ runtime (not compiled from BCL IL). Based on first-principles analysis: C++ runtime directly accesses fields / BCL IL references CLR internal types / embeds C++ types.
 
-**必须 RuntimeProvided（26 个）**：
-- **对象模型**: Object, ValueType, Enum — GC 头 + 类型系统基础
-- **字符串/数组**: String, Array — 变长布局 + GC 互操作
-- **异常**: Exception — setjmp/longjmp 机制
-- **委托**: Delegate, MulticastDelegate — 函数指针调度
-- **类型系统**: Type, RuntimeType — 类型元数据
-- **线程**: Thread — TLS + OS 线程管理
-- **反射 struct ×12**: MemberInfo, MethodInfo, FieldInfo, ParameterInfo + Runtime* 子类 + Assembly — .NET 8 BCL 反射 IL 深度依赖 QCall/MetadataImport，无法 AOT 编译
-- **Task**: 4 个自定义运行时字段 + f_lock (std::mutex*) + MSVC padding 问题
+**Must be RuntimeProvided (26 types)**:
+- **Object model**: Object, ValueType, Enum — GC header + type system foundation
+- **String/Array**: String, Array — Variable-length layout + GC interop
+- **Exception**: Exception — setjmp/longjmp mechanism
+- **Delegate**: Delegate, MulticastDelegate — Function pointer dispatch
+- **Type system**: Type, RuntimeType — Type metadata
+- **Thread**: Thread — TLS + OS thread management
+- **Reflection structs ×12**: MemberInfo, MethodInfo, FieldInfo, ParameterInfo + Runtime* subtypes + Assembly — .NET 8 BCL reflection IL deeply depends on QCall/MetadataImport, cannot AOT compile
+- **Task**: 4 custom runtime fields + f_lock (std::mutex*) + MSVC padding issue
 - **Varargs**: TypedReference, ArgIterator
 
-**短期可迁移为 IL（8 个，Phase IV）**：
-- **IAsyncStateMachine** — 纯接口，无需 struct
-- **CancellationToken** — 只有 f_source 指针
-- **WaitHandle 层级 ×6** — BCL IL 可编译，需注册 OS 原语 ICall
+**Short-term migratable to IL (8 types, Phase IV)**:
+- **IAsyncStateMachine** — Pure interface, no struct needed
+- **CancellationToken** — Only has f_source pointer
+- **WaitHandle hierarchy ×6** — BCL IL compilable, needs OS primitive ICall registration
 
-**长期需架构重构（6 个，Phase V）**：
-- **TaskAwaiter / AsyncTaskMethodBuilder / ValueTask / ValueTaskAwaiter / AsyncIteratorMethodBuilder** — 依赖 Task struct 布局
-- **CancellationTokenSource** — 依赖 ITimer + ManualResetEvent 链
+**Long-term requires architectural refactoring (6 types, Phase V)**:
+- **TaskAwaiter / AsyncTaskMethodBuilder / ValueTask / ValueTaskAwaiter / AsyncIteratorMethodBuilder** — Depend on Task struct layout
+- **CancellationTokenSource** — Depends on ITimer + ManualResetEvent chain
 
-详见 [roadmap.md](roadmap.md) Phase IV-V。
+See [roadmap.md](roadmap.md) Phase IV-V for details.
 
-### 编译器内置 intrinsics
+### Compiler Built-in Intrinsics
 
-少数 JIT intrinsic 方法由编译器内联处理（不经过 ICallRegistry）：
+A few JIT intrinsic methods are inlined by the compiler (not going through ICallRegistry):
 
-- `Unsafe.SizeOf<T>` / `Unsafe.As<T>` / `Unsafe.Add<T>` → C++ sizeof / reinterpret_cast / 指针运算
-- `Array.Empty<T>()` → 静态空数组实例
-- `RuntimeHelpers.InitializeArray` → memcpy 静态数据
+- `Unsafe.SizeOf<T>` / `Unsafe.As<T>` / `Unsafe.Add<T>` → C++ sizeof / reinterpret_cast / pointer arithmetic
+- `Array.Empty<T>()` → Static empty array instance
+- `RuntimeHelpers.InitializeArray` → memcpy static data
 
-## 三层架构
+## Three-Layer Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│  Layer 1: CIL 指令翻译                                   │
-│  ConvertInstruction() switch — ~230 opcodes             │
-│  覆盖率: 100%                                           │
-│  这一层决定: 能否将 IL 方法体翻译为 C++                   │
+│  Layer 1: CIL Instruction Translation                    │
+│  ConvertInstruction() switch — ~230 opcodes              │
+│  Coverage: 100%                                          │
+│  This layer determines: can an IL method body be         │
+│  translated to C++                                       │
 ├─────────────────────────────────────────────────────────┤
-│  Layer 2: BCL 方法编译                                   │
-│  所有有 IL 方法体的 BCL 方法从 IL 编译为 C++              │
-│  限制: CLR 内部类型依赖 → 自动 stub 化                    │
-│  这一层决定: 哪些标准库方法可用                           │
+│  Layer 2: BCL Method Compilation                         │
+│  All BCL methods with IL bodies compiled from IL to C++  │
+│  Limitation: CLR internal type deps → auto stubbed       │
+│  This layer determines: which standard library methods   │
+│  are available                                           │
 ├─────────────────────────────────────────────────────────┤
-│  Layer 3: 运行时 icall                                  │
-│  ~270 个 [InternalCall] 方法 → C++ 运行时实现            │
-│  限制: 未实现的 icall → 功能不可用                        │
-│  这一层决定: GC、线程、字符串布局、IO 等底层能力           │
+│  Layer 3: Runtime ICall                                  │
+│  ~270 [InternalCall] methods → C++ runtime               │
+│  implementation                                          │
+│  Limitation: unimplemented icall → feature unavailable   │
+│  This layer determines: GC, threading, string layout,    │
+│  IO and other low-level capabilities                     │
 └─────────────────────────────────────────────────────────┘
 ```
 
-## C++ 代码生成策略
+## C++ Code Generation Strategy
 
-生成的 C++ 代码将每个 .NET 类型映射为 C++ struct，每个方法映射为独立的 C 函数：
+Generated C++ code maps each .NET type to a C++ struct, and each method to a standalone C function:
 
-- **引用类型** → `struct` + `__type_info` 指针 + `__sync_block` + 用户字段，通过 `gc::alloc()` 堆分配
-- **值类型** → 普通 `struct`（无对象头），栈分配，按值传递
-- **实例方法** → `RetType FuncName(ThisType* __this, ...)` — 显式 this 参数
-- **静态字段** → `<Type>_statics` 全局结构体 + `_ensure_cctor()` 初始化守卫
-- **虚方法调用** → `obj->__type_info->vtable->methods[slot]` 函数指针调用
-- **接口分派** → `type_get_interface_vtable()` 查找接口实现表
+- **Reference types** → `struct` + `__type_info` pointer + `__sync_block` + user fields, heap-allocated via `gc::alloc()`
+- **Value types** → Plain `struct` (no object header), stack-allocated, passed by value
+- **Instance methods** → `RetType FuncName(ThisType* __this, ...)` — explicit this parameter
+- **Static fields** → `<Type>_statics` global struct + `_ensure_cctor()` initialization guard
+- **Virtual method calls** → `obj->__type_info->vtable->methods[slot]` function pointer call
+- **Interface dispatch** → `type_get_interface_vtable()` lookup for interface implementation table
 
-### 多文件分割与并行编译
+### Multi-File Splitting & Parallel Compilation
 
-生成的 C++ 代码自动拆分为多个编译单元，利用 MSVC `/MP` 并行编译加速：
+Generated C++ code is automatically split into multiple compilation units, leveraging MSVC `/MP` for parallel compilation:
 
 ```
 output/
-├── HelloWorld.h              ← 统一头文件（所有类型声明 + 前向引用）
-├── HelloWorld_data.cpp       ← 静态数据（TypeInfo、VTable、字符串字面量、P/Invoke）
-├── HelloWorld_methods_0.cpp  ← 方法实现分区 0
-├── HelloWorld_methods_1.cpp  ← 方法实现分区 1
-├── ...                       ← 按指令数自动分区（每分区 ~20000 条 IR 指令）
-├── HelloWorld_stubs.cpp      ← 未实现方法的默认 stub
-├── main.cpp                  ← 入口点（可执行项目）
-└── CMakeLists.txt            ← 自动列出所有源文件 + /MP 编译选项
+├── HelloWorld.h              ← Unified header (all type declarations + forward refs)
+├── HelloWorld_data.cpp       ← Static data (TypeInfo, VTable, string literals, P/Invoke)
+├── HelloWorld_methods_0.cpp  ← Method implementation partition 0
+├── HelloWorld_methods_1.cpp  ← Method implementation partition 1
+├── ...                       ← Auto-partitioned by IR instruction count (~20000/partition)
+├── HelloWorld_stubs.cpp      ← Default stubs for unimplemented methods
+├── main.cpp                  ← Entry point (executable projects)
+└── CMakeLists.txt            ← Auto-lists all source files + /MP compile options
 ```
 
-分区策略：按 IR 指令数均匀分割（`MinInstructionsPerPartition = 20000`），每个 `.cpp` 文件约 13k-17k 行 C++ 代码。
+Partitioning strategy: evenly split by IR instruction count (`MinInstructionsPerPartition = 20000`), each `.cpp` file is approximately 13k-17k lines of C++ code.
 
-### 多层安全网：自动 stub 机制
+### Multi-Layer Safety Net: Auto Stub Mechanism
 
-BCL 中部分方法的 IL 引用了 CLR 内部类型，无法编译为 C++。编译器有 4 层安全网：
+Some BCL methods' IL references CLR internal types that cannot be compiled to C++. The compiler has 4 safety layers:
 
-1. **HasClrInternalDependencies** — IR 级：方法引用 CLR 内部类型 → 替换为返回默认值的 stub
-2. **HasKnownBrokenPatterns** — 预渲染：JIT intrinsics、自递归等已知问题 → 跳过
-3. **RenderedBodyHasErrors** — 试渲染：将方法体渲染为 C++ 后检测编译错误模式 → stub 化
-4. **GenerateMissingMethodStubImpls** — 兜底：所有声明但未定义的函数 → 生成默认 stub
+1. **HasClrInternalDependencies** — IR level: method references CLR internal type → replaced with default-value-returning stub
+2. **HasKnownBrokenPatterns** — Pre-render: JIT intrinsics, known issues → skip
+3. **RenderedBodyHasErrors** — Trial render: render method body to C++, detect compilation error patterns → stub
+4. **GenerateMissingMethodStubImpls** — Catch-all: all declared but undefined functions → generate default stub
 
-每次 codegen 生成 `stubbed_methods.txt` 报告，列出所有被 stub 化的方法及原因。
+Each codegen run produces a `stubbed_methods.txt` report listing all stubbed methods and their reasons.
 
-## 垃圾收集器 (GC)
+## Garbage Collector (GC)
 
-运行时使用 [BoehmGC (bdwgc)](https://github.com/ivmai/bdwgc) 作为垃圾收集器——与 Mono 相同的保守式 GC。
+The runtime uses [BoehmGC (bdwgc)](https://github.com/ivmai/bdwgc) as its garbage collector — the same conservative GC used by Mono.
 
-### 为什么选择 BoehmGC
+### Why BoehmGC
 
-BoehmGC 的**保守扫描**自动解决所有根追踪问题：
+BoehmGC's **conservative scanning** automatically solves all root tracking problems:
 
-| 场景 | 自定义 GC（已废弃） | BoehmGC |
-|------|---------------------|---------|
-| 栈上局部变量 | 需要 shadow stack | 自动扫描栈 |
-| 引用类型字段 | 需要引用位图 | 自动扫描堆 |
-| 数组中的引用元素 | 需要手动标记 | 自动扫描 |
-| 静态字段（全局变量） | 需要 add_root | 自动扫描全局区 |
-| 值类型中的引用字段 | 需要精确布局 | 自动扫描 |
+| Scenario | Custom GC (deprecated) | BoehmGC |
+|----------|----------------------|---------|
+| Stack local variables | Requires shadow stack | Auto-scans stack |
+| Reference type fields | Requires reference bitmap | Auto-scans heap |
+| Reference elements in arrays | Requires manual marking | Auto-scans |
+| Static fields (globals) | Requires add_root | Auto-scans global area |
+| Reference fields in value types | Requires precise layout | Auto-scans |
 
-### 依赖管理
+### Dependency Management
 
 ```
 runtime/CMakeLists.txt
-├── FetchContent: bdwgc v8.2.12        ← 自动下载
-├── FetchContent: libatomic_ops v7.10.0 ← MSVC 需要
-└── 缓存: runtime/.deps/               ← gitignored，删 build/ 不重新下载
+├── FetchContent: bdwgc v8.2.12        ← Auto-download
+├── FetchContent: libatomic_ops v7.10.0 ← Required for MSVC
+└── Cache: runtime/.deps/              ← gitignored, survives build/ deletion
 ```
 
-- bdwgc 编译为静态库，PRIVATE 链接到 cil2cpp_runtime
-- 安装时 gc.lib / gcd.lib 单独拷贝到 `lib/`
-- 消费者通过 `find_package(cil2cpp)` 自动链接
+- bdwgc compiled as static library, PRIVATE linked to cil2cpp_runtime
+- gc.lib / gcd.lib installed separately to `lib/`
+- Consumers auto-link via `find_package(cil2cpp)`
 
-### GC 功能状态
+### GC Feature Status
 
-| 功能 | 状态 |
-|------|------|
-| 对象分配 + TypeInfo | `gc::alloc()` → `GC_MALLOC()` + 设置 `__type_info` |
-| 数组分配 | `alloc_array()` → `GC_MALLOC()` + 元素类型 + 长度 |
-| 自动根扫描 | BoehmGC 保守扫描，无需 shadow stack |
-| Finalizer 注册 | `GC_register_finalizer_no_order()` |
-| Finalizer 检测 | 编译器检测 `Finalize()` → TypeInfo.finalizer |
-| GC 统计 | `GC_get_heap_size()` / `GC_get_total_bytes()` |
-| 增量回收 | `GC_enable_incremental()` + `gc::collect_a_little()` |
+| Feature | Status |
+|---------|--------|
+| Object allocation + TypeInfo | `gc::alloc()` → `GC_MALLOC()` + set `__type_info` |
+| Array allocation | `alloc_array()` → `GC_MALLOC()` + element type + length |
+| Auto root scanning | BoehmGC conservative scan, no shadow stack needed |
+| Finalizer registration | `GC_register_finalizer_no_order()` |
+| Finalizer detection | Compiler detects `Finalize()` → TypeInfo.finalizer |
+| GC statistics | `GC_get_heap_size()` / `GC_get_total_bytes()` |
+| Incremental collection | `GC_enable_incremental()` + `gc::collect_a_little()` |
 
-## Runtime 安装与 CMake 包
+## Runtime Installation & CMake Package
 
-运行时编译为静态库，通过 CMake install + find_package 分发：
+The runtime is compiled as a static library and distributed via CMake install + find_package:
 
 ```cmake
-# 消费者 CMakeLists.txt
+# Consumer CMakeLists.txt
 find_package(cil2cpp REQUIRED)
 target_link_libraries(MyApp PRIVATE cil2cpp::runtime)
 ```
 
-安装后的目录结构：
+Installed directory structure:
 
 ```
 <prefix>/
-├── include/cil2cpp/    # 32 个头文件
+├── include/cil2cpp/    # 32 headers
 ├── lib/
 │   ├── cil2cpp_runtime.lib   # Release
 │   ├── cil2cpp_runtimed.lib  # Debug (DEBUG_POSTFIX "d")
 │   ├── gc.lib                # BoehmGC Release
 │   ├── gcd.lib               # BoehmGC Debug
-│   └── cmake/cil2cpp/        # CMake 包配置
+│   └── cmake/cil2cpp/        # CMake package config
 │       ├── cil2cppConfig.cmake
 │       ├── cil2cppTargets.cmake
 │       └── ...
 ```
 
-安装路径约定：
-- 开发环境：`C:/cil2cpp`
-- 集成测试：`C:/cil2cpp_test`
+Install path conventions:
+- Development: `C:/cil2cpp`
+- Integration tests: `C:/cil2cpp_test`

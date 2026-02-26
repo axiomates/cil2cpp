@@ -1,86 +1,88 @@
-# 开发工具与环境配置
+# Development Tools & Environment Setup
 
-## 前置要求
+> [中文版 (Chinese)](tools.zh-CN.md)
 
-| 工具 | 版本要求 | 用途 |
-|------|---------|------|
-| .NET 8 SDK | 8.0+ | 构建编译器 + 编译输入的 C# 项目 |
-| CMake | 3.20+ | 构建运行时和生成的 C++ 代码 |
-| C++ 编译器 | C++20 | 编译运行时和生成的代码 |
-| Python | 3.8+ | 开发者 CLI 工具 (stdlib only) |
+## Prerequisites
 
-### C++ 编译器支持
+| Tool | Version | Purpose |
+|------|---------|---------|
+| .NET 8 SDK | 8.0+ | Build compiler + compile input C# projects |
+| CMake | 3.20+ | Build runtime and generated C++ code |
+| C++ compiler | C++20 | Compile runtime and generated code |
+| Python | 3.8+ | Developer CLI tool (stdlib only) |
 
-| 平台 | 编译器 | 最低版本 |
-|------|--------|---------|
+### Supported C++ Compilers
+
+| Platform | Compiler | Minimum Version |
+|----------|----------|----------------|
 | Windows | MSVC 2022 | Visual Studio 17.0+ |
 | Linux | GCC | 12+ |
 | Linux | Clang | 15+ |
 | macOS | Apple Clang | 14+ (Xcode 14+) |
 
-### 可选依赖（覆盖率报告）
+### Optional Dependencies (Coverage Reports)
 
-> 快速安装：`python tools/dev.py setup` 会自动检测并安装
+> Quick install: `python tools/dev.py setup` auto-detects and installs
 
-- **[OpenCppCoverage](https://github.com/OpenCppCoverage/OpenCppCoverage)** — C++ 覆盖率（Windows）
+- **[OpenCppCoverage](https://github.com/OpenCppCoverage/OpenCppCoverage)** — C++ coverage (Windows)
   ```bash
   winget install OpenCppCoverage.OpenCppCoverage
   ```
-- **[ReportGenerator](https://github.com/danielpalme/ReportGenerator)** — 合并覆盖率 HTML 报告
+- **[ReportGenerator](https://github.com/danielpalme/ReportGenerator)** — Merged coverage HTML reports
   ```bash
   dotnet tool install -g dotnet-reportgenerator-globaltool
   ```
-- **lcov + lcov_cobertura** — C++ 覆盖率（Linux，替代 OpenCppCoverage）
+- **lcov + lcov_cobertura** — C++ coverage (Linux, alternative to OpenCppCoverage)
 
 ---
 
-## 快速上手（4 步）
+## Quick Start (4 Steps)
 
-### 步骤 1：构建并安装运行时（一次性）
+### Step 1: Build and Install Runtime (One-Time)
 
 ```bash
-# 配置
+# Configure
 cmake -B build -S runtime
 
-# 编译（Release + Debug）
+# Compile (Release + Debug)
 cmake --build build --config Release
 cmake --build build --config Debug
 
-# 安装到指定路径
+# Install to specified path
 cmake --install build --config Release --prefix C:/cil2cpp
 cmake --install build --config Debug --prefix C:/cil2cpp
 ```
 
-> BoehmGC 通过 FetchContent 自动下载，缓存在 `runtime/.deps/`，删 `build/` 不重新下载。
+> BoehmGC is auto-downloaded via FetchContent, cached in `runtime/.deps/`. Deleting `build/` won't re-download.
 
-> **捷径**：步骤 2-4 可用 `python tools/dev.py compile HelloWorld` 一步完成。
+> **Shortcut**: Steps 2-4 can be done in one step with `python tools/dev.py compile HelloWorld`.
 
-### 步骤 2：生成 C++ 代码
+### Step 2: Generate C++ Code
 
 ```bash
-# Release（默认）
+# Release (default)
 dotnet run --project compiler/CIL2CPP.CLI -- codegen \
     -i tests/HelloWorld/HelloWorld.csproj -o output
 
-# Debug（#line 指令 + IL 偏移注释 + 栈回溯）
+# Debug (#line directives + IL offset comments + stack traces)
 dotnet run --project compiler/CIL2CPP.CLI -- codegen \
     -i tests/HelloWorld/HelloWorld.csproj -o output -c Debug
 ```
 
-| 选项 | 说明 | 默认值 |
-|------|------|--------|
-| `-i, --input` | 输入 .csproj 文件（必填） | — |
-| `-o, --output` | 输出目录（必填） | — |
-| `-c, --configuration` | 构建配置 | `Release` |
+| Option | Description | Default |
+|--------|-------------|---------|
+| `-i, --input` | Input .csproj file (required) | — |
+| `-o, --output` | Output directory (required) | — |
+| `-c, --configuration` | Build configuration | `Release` |
 
-### 步骤 3：编译为原生可执行文件
+### Step 3: Compile to Native Executable
 
 ```bash
 cmake -B build_output -S output -DCMAKE_PREFIX_PATH=C:/cil2cpp
 cmake --build build_output --config Release
 ```
 
-### 步骤 4：运行
+### Step 4: Run
 
 ```bash
 # Windows
@@ -92,100 +94,100 @@ build_output\Release\HelloWorld.exe
 
 ---
 
-## 生成的文件
+## Generated Files
 
-| 文件 | 内容 | 条件 |
-|------|------|------|
-| `<Name>.h` | 结构体声明、方法签名、TypeInfo、静态字段 | 始终 |
-| `<Name>_data.cpp` | TypeInfo 定义、VTable、字符串字面量、P/Invoke | 始终 |
-| `<Name>_methods_N.cpp` | 方法实现（按 IR 指令数分区，每分区 ~20000） | 始终 |
-| `<Name>_stubs.cpp` | 未实现方法的默认 stub | 有 stub 时 |
-| `main.cpp` | 运行时初始化 → 入口方法 → 运行时关闭 | 仅可执行程序 |
-| `CMakeLists.txt` | CMake 配置 | 始终 |
-| `stubbed_methods.txt` | Stub 诊断报告 | 有 stub 时 |
+| File | Contents | Condition |
+|------|----------|-----------|
+| `<Name>.h` | Struct declarations, method signatures, TypeInfo, static fields | Always |
+| `<Name>_data.cpp` | TypeInfo definitions, VTable, string literals, P/Invoke | Always |
+| `<Name>_methods_N.cpp` | Method implementations (partitioned by IR instruction count, ~20000/partition) | Always |
+| `<Name>_stubs.cpp` | Default stubs for unimplemented methods | When stubs exist |
+| `main.cpp` | Runtime init → entry method → runtime shutdown | Executable only |
+| `CMakeLists.txt` | CMake configuration | Always |
+| `stubbed_methods.txt` | Stub diagnostic report | When stubs exist |
 
-## 可执行程序与类库
+## Executable vs Library
 
-| C# 项目 | 检测条件 | 生成结果 |
-|---------|---------|---------|
-| 有 `static void Main()` | 可执行程序 | `main.cpp` + `add_executable` |
-| 无入口点（类库） | 静态库 | 无 `main.cpp`，`add_library(STATIC)` |
+| C# Project | Detection | Generated Result |
+|------------|-----------|-----------------|
+| Has `static void Main()` | Executable | `main.cpp` + `add_executable` |
+| No entry point (library) | Static library | No `main.cpp`, `add_library(STATIC)` |
 
-## Debug 与 Release 配置
+## Debug vs Release Configuration
 
-| 特性 | Release | Debug |
-|------|---------|-------|
-| `#line` 指令（映射回 C# 源码） | — | Yes |
-| `/* IL_XXXX */` 偏移注释 | — | Yes |
-| PDB 符号读取 | — | Yes |
-| 运行时栈回溯 | 禁用 | Windows: DbgHelp, POSIX: backtrace |
-| `CIL2CPP_DEBUG` 定义 | — | Yes |
-| C++ 优化 | MSVC: `/O2`, GCC: `-O2` | MSVC: `/Zi /Od /RTC1`, GCC: `-g -O0` |
+| Feature | Release | Debug |
+|---------|---------|-------|
+| `#line` directives (map back to C# source) | — | Yes |
+| `/* IL_XXXX */` offset comments | — | Yes |
+| PDB symbol reading | — | Yes |
+| Runtime stack traces | Disabled | Windows: DbgHelp, POSIX: backtrace |
+| `CIL2CPP_DEBUG` define | — | Yes |
+| C++ optimization | MSVC: `/O2`, GCC: `-O2` | MSVC: `/Zi /Od /RTC1`, GCC: `-g -O0` |
 
-Debug 模式下用 Visual Studio 调试时，`#line` 指令让断点和单步执行定位到原始 C# 源文件。
+In Debug mode, when debugging with Visual Studio, `#line` directives make breakpoints and stepping navigate to original C# source files.
 
 ---
 
-## 开发者 CLI（`tools/dev.py`）
+## Developer CLI (`tools/dev.py`)
 
-Python 交互式 CLI（仅标准库），统一所有构建/测试/覆盖率/代码生成操作。
+Python interactive CLI (stdlib only), unifying all build/test/coverage/code generation operations.
 
-### 子命令模式
+### Subcommand Mode
 
 ```bash
-python tools/dev.py build                  # 编译 compiler + runtime
-python tools/dev.py build --compiler       # 仅编译 compiler
-python tools/dev.py build --runtime        # 仅编译 runtime
-python tools/dev.py test --all             # 运行全部测试
-python tools/dev.py test --compiler        # 仅编译器测试 (xUnit)
-python tools/dev.py test --runtime         # 仅运行时测试 (GTest)
-python tools/dev.py test --coverage        # 测试 + 覆盖率 HTML 报告
-python tools/dev.py test --compiler --filter ILOpcode  # 筛选测试
-python tools/dev.py install                # 安装 runtime (Debug + Release)
-python tools/dev.py codegen HelloWorld     # 快速代码生成测试
-python tools/dev.py compile HelloWorld     # 一步编译：codegen → cmake → build
-python tools/dev.py compile HelloWorld --run  # 编译并运行
-python tools/dev.py compile -i myapp.csproj   # 编译任意项目
-python tools/dev.py integration            # 集成测试
-python tools/dev.py setup                  # 检查前置 + 安装可选依赖
+python tools/dev.py build                  # Compile compiler + runtime
+python tools/dev.py build --compiler       # Compiler only
+python tools/dev.py build --runtime        # Runtime only
+python tools/dev.py test --all             # Run all tests
+python tools/dev.py test --compiler        # Compiler tests only (xUnit)
+python tools/dev.py test --runtime         # Runtime tests only (GTest)
+python tools/dev.py test --coverage        # Tests + coverage HTML report
+python tools/dev.py test --compiler --filter ILOpcode  # Filter tests
+python tools/dev.py install                # Install runtime (Debug + Release)
+python tools/dev.py codegen HelloWorld     # Quick code generation test
+python tools/dev.py compile HelloWorld     # One-step compile: codegen → cmake → build
+python tools/dev.py compile HelloWorld --run  # Compile and run
+python tools/dev.py compile -i myapp.csproj   # Compile arbitrary project
+python tools/dev.py integration            # Integration tests
+python tools/dev.py setup                  # Check prerequisites + install optional deps
 ```
 
-### 交互式菜单
+### Interactive Menu
 
-无参数运行时进入交互式菜单：
+Run without arguments for interactive menu:
 
 ```bash
 python tools/dev.py
 ```
 
-### 覆盖率报告
+### Coverage Reports
 
 ```bash
 python tools/dev.py test --coverage
-# 1. C# 覆盖率 (coverlet) — dotnet test --collect:"XPlat Code Coverage"
-# 2. C++ 覆盖率 (OpenCppCoverage) — 收集 runtime 测试覆盖
-# 3. 合并两份 Cobertura XML → ReportGenerator → 统一 HTML 报告
-# → 自动打开浏览器查看报告
-# → 报告路径: CoverageResults/CoverageReport/index.html
+# 1. C# coverage (coverlet) — dotnet test --collect:"XPlat Code Coverage"
+# 2. C++ coverage (OpenCppCoverage) — collect runtime test coverage
+# 3. Merge two Cobertura XMLs → ReportGenerator → unified HTML report
+# → Auto-opens browser to view report
+# → Report path: CoverageResults/CoverageReport/index.html
 ```
 
 ---
 
-## 测试体系
+## Test System
 
-项目包含三层测试：编译器单元测试、运行时单元测试、端到端集成测试。
+The project has three layers of tests: compiler unit tests, runtime unit tests, and end-to-end integration tests.
 
-### C# 编译器测试（~1240 个，xUnit）
+### C# Compiler Tests (~1240, xUnit)
 
 ```bash
 dotnet test compiler/CIL2CPP.Tests
 ```
 
-**Fixture 缓存机制**：`SampleAssemblyFixture` 使用 xUnit 的 `ICollectionFixture<T>` 模式，每个 sample（HelloWorld、ArrayTest、FeatureTest 等）的编译结果在整个测试运行期间只创建一次并缓存。
+**Fixture caching mechanism**: `SampleAssemblyFixture` uses xUnit's `ICollectionFixture<T>` pattern — each sample's (HelloWorld, ArrayTest, FeatureTest, etc.) compilation result is created once and cached for the entire test run.
 
-> **重要**：新增测试时必须使用 `GetXxxReleaseContext()` / `GetXxxReleaseModule()` 获取缓存的编译结果，禁止在测试方法中直接 `new AssemblySet()` + `new ReachabilityAnalyzer()`（每次约 12 秒）。
+> **Important**: When adding tests, you must use `GetXxxReleaseContext()` / `GetXxxReleaseModule()` to access cached compilation results. Never directly `new AssemblySet()` + `new ReachabilityAnalyzer()` in test methods (~12 seconds each).
 
-### C++ 运行时测试（591 个，Google Test）
+### C++ Runtime Tests (591, Google Test)
 
 ```bash
 cmake -B runtime/tests/build -S runtime/tests
@@ -193,21 +195,21 @@ cmake --build runtime/tests/build --config Debug
 ctest --test-dir runtime/tests/build -C Debug --output-on-failure
 ```
 
-### 端到端集成测试（35 个）
+### End-to-End Integration Tests (35)
 
-完整编译流水线：C# `.csproj` → codegen → CMake configure → C++ build → run → 验证输出。
+Full compilation pipeline: C# `.csproj` → codegen → CMake configure → C++ build → run → verify output.
 
 ```bash
 python tools/dev.py integration
 ```
 
-### 全部测试
+### All Tests
 
 ```bash
-# 推荐
+# Recommended
 python tools/dev.py test --all
 
-# 或手动
+# Or manually
 dotnet test compiler/CIL2CPP.Tests
 cmake --build runtime/tests/build --config Debug && ctest --test-dir runtime/tests/build -C Debug --output-on-failure
 python tools/dev.py integration
@@ -215,10 +217,10 @@ python tools/dev.py integration
 
 ---
 
-## 安装路径约定
+## Install Path Conventions
 
-| 用途 | 路径 | 说明 |
-|------|------|------|
-| 开发环境 | `C:/cil2cpp` | 手动 cmake --install |
-| 集成测试 | `C:/cil2cpp_test` | dev.py integration 自动安装 |
-| 消费者 | 自定义 | `find_package(cil2cpp REQUIRED)` → `cil2cpp::runtime` |
+| Usage | Path | Description |
+|-------|------|-------------|
+| Development | `C:/cil2cpp` | Manual cmake --install |
+| Integration tests | `C:/cil2cpp_test` | dev.py integration auto-installs |
+| Consumer | Custom | `find_package(cil2cpp REQUIRED)` → `cil2cpp::runtime` |
