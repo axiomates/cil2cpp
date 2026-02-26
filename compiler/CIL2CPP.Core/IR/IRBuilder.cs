@@ -390,11 +390,14 @@ public partial class IRBuilder
             _typeCache[typeDef.FullName] = irType;
         }
 
-        // Pass 0.5: Discover transitive generic types from method bodies.
+        // Pass 0.5: Discover transitive generic types AND methods from method bodies.
         // When Dictionary<Int32,Task> is discovered, its open body calls EqualityComparer<TKey>.Default
         // — resolve TKey→Int32 to discover EqualityComparer<Int32> as a new instantiation.
         // Also scan generic METHOD specialization bodies (e.g., SpanHelpers.IndexOf<Byte, DontNegate<Byte>>
         // references DontNegate<Byte> which needs to be created before Pass 1.5).
+        // Transitive generic method discovery: when IndexOf<T,TNegator> calls FindValue<!!T,!!TNegator>,
+        // resolve the type args to discover FindValue<Byte,DontNegate<Byte>> as a new method instantiation,
+        // which in turn may reference new generic types (INegator<Byte>) in its body.
         // Fixpoint loop: newly discovered types may reference further generic types.
         {
             var scannedTypeKeys = new HashSet<string>();
@@ -484,10 +487,10 @@ public partial class IRBuilder
                         irType.Finalizer = irMethod;
 
                     // Save for body conversion later (skip abstract and InternalCall)
-                    if (methodDef.HasBody && !methodDef.IsAbstract && !irMethod.IsInternalCall
-                        && _reachability.IsReachable(methodDef.GetCecilMethod()))
+                    if (methodDef.HasBody && !methodDef.IsAbstract && !irMethod.IsInternalCall)
                     {
-                        methodBodies.Add((methodDef, irMethod));
+                        if (_reachability.IsReachable(methodDef.GetCecilMethod()))
+                            methodBodies.Add((methodDef, irMethod));
                     }
                 }
 

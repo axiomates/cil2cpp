@@ -59,9 +59,14 @@ public partial class IRBuilder
         // Check if this method has an icall mapping (even if it has an IL body).
         // This happens for methods like Volatile.Read/Write, Console.WriteLine, Math.*, etc.
         // When an icall mapping exists, callers use the runtime function, making the IL body dead code.
-        if (declaringType != null && ICallRegistry.Lookup(
-                declaringType.ILFullName, methodDef.Name, methodDef.Parameters.Count) != null)
-            irMethod.HasICallMapping = true;
+        // Pass firstParamType for type-dispatched overloads (e.g., IntPtr.ctor(Int32) vs ctor(Int64)).
+        {
+            string? firstParamType = methodDef.Parameters.Count > 0
+                ? methodDef.Parameters[0].TypeName : null;
+            if (declaringType != null && ICallRegistry.Lookup(
+                    declaringType.ILFullName, methodDef.Name, methodDef.Parameters.Count, firstParamType) != null)
+                irMethod.HasICallMapping = true;
+        }
 
         // Detect P/Invoke (DllImport) — ECMA-335 II.15.5
         if (methodDef.IsPInvokeImpl && methodDef.PInvokeInfo != null)
@@ -557,6 +562,27 @@ public partial class IRBuilder
                 }
             }
         }
+
+        // Emit remaining HandlerEnd events that were never processed.
+        // This happens when a handler extends to the end of the method body
+        // (Cecil's HandlerEnd is null → offset int.MaxValue, never reached by the loop).
+        var lastInstrOffset = instructions[^1].Offset;
+        foreach (var (offset, events) in exceptionEvents)
+        {
+            if (offset > lastInstrOffset)
+            {
+                foreach (var evt in events)
+                {
+                    if (evt.Kind != ExceptionEventKind.HandlerEnd) continue;
+                    var hasFollowingHandler = events.Any(e =>
+                        e != evt && e.TryStart == evt.TryStart && e.TryEnd == evt.TryEnd
+                        && e.Kind is ExceptionEventKind.CatchBegin or ExceptionEventKind.FinallyBegin
+                            or ExceptionEventKind.FilterBegin);
+                    if (!hasFollowingHandler)
+                        block.Instructions.Add(new IRTryEnd());
+                }
+            }
+        }
     }
 
     /// <summary>
@@ -744,6 +770,10 @@ public partial class IRBuilder
                     {
                         var param = method.Parameters[paramIdx];
                         if (param.CppTypeName.EndsWith("*"))
+                        {
+                            stArgVal = $"({param.CppTypeName}){stArgVal}";
+                        }
+                        else if (param.CppTypeName is "intptr_t" or "uintptr_t")
                         {
                             stArgVal = $"({param.CppTypeName}){stArgVal}";
                         }
@@ -1043,7 +1073,7 @@ public partial class IRBuilder
                 if (fieldRef.Name == "m_value" && CppNameMapper.IsPrimitive(fieldRef.DeclaringType.FullName))
                 {
                     var tmp = $"__t{tempCounter++}";
-                    var lfFieldTypeName = ResolveTypeRefOperand(fieldRef.FieldType);
+                    var lfFieldTypeName = ResolveFieldTypeRef(fieldRef);
                     var lfFieldTypeCpp = CppNameMapper.GetCppTypeForDecl(lfFieldTypeName);
                     string readExpr;
                     if (obj.StartsWith("&"))
@@ -1077,7 +1107,7 @@ public partial class IRBuilder
                         castToType = declTypeName;
                 }
                 var tmp2 = $"__t{tempCounter++}";
-                var lfFieldTypeName2 = ResolveTypeRefOperand(fieldRef.FieldType);
+                var lfFieldTypeName2 = ResolveFieldTypeRef(fieldRef);
                 var lfFieldTypeCpp2 = CppNameMapper.GetCppTypeForDecl(lfFieldTypeName2);
                 block.Instructions.Add(new IRFieldAccess
                 {
@@ -1119,7 +1149,7 @@ public partial class IRBuilder
 
                 // Cast value for reference type fields to handle derived→base type mismatch
                 // (flat struct model: no C++ inheritance, so all pointer casts must be explicit)
-                var fieldTypeName = ResolveTypeRefOperand(fieldRef.FieldType);
+                var fieldTypeName = ResolveFieldTypeRef(fieldRef);
                 var fieldTypeCpp = CppNameMapper.GetCppTypeForDecl(fieldTypeName);
                 if (fieldTypeCpp.EndsWith("*") && !CppNameMapper.IsValueType(fieldTypeName)
                     && fieldTypeCpp != "void*" && val != "nullptr" && val != "0")
@@ -1187,7 +1217,7 @@ public partial class IRBuilder
                     _pendingVolatile = false;
                 }
                 var tmp = $"__t{tempCounter++}";
-                var sfTypeName = ResolveTypeRefOperand(fieldRef.FieldType);
+                var sfTypeName = ResolveFieldTypeRef(fieldRef);
                 var sfTypeCpp = CppNameMapper.GetCppTypeForDecl(sfTypeName);
                 block.Instructions.Add(new IRStaticFieldAccess
                 {
@@ -1210,7 +1240,7 @@ public partial class IRBuilder
                 bool isVolatileStore = _pendingVolatile;
                 _pendingVolatile = false;
                 // Cast value for reference type static fields (derived→base in flat struct model)
-                var sfieldTypeName = ResolveTypeRefOperand(fieldRef.FieldType);
+                var sfieldTypeName = ResolveFieldTypeRef(fieldRef);
                 var sfieldTypeCpp = CppNameMapper.GetCppTypeForDecl(sfieldTypeName);
                 if (sfieldTypeCpp.EndsWith("*") && !CppNameMapper.IsValueType(sfieldTypeName)
                     && sfieldTypeCpp != "void*" && val != "nullptr" && val != "0")
@@ -1241,7 +1271,7 @@ public partial class IRBuilder
                 if (fieldRef.Name == "m_value" && CppNameMapper.IsPrimitive(fieldRef.DeclaringType.FullName))
                 {
                     var tmp = $"__t{tempCounter++}";
-                    var fldaTypeName = ResolveTypeRefOperand(fieldRef.FieldType);
+                    var fldaTypeName = ResolveFieldTypeRef(fieldRef);
                     var fldaTypeCpp = CppNameMapper.GetCppTypeForDecl(fldaTypeName);
                     var fldaPtrType = fldaTypeCpp.EndsWith("*") ? fldaTypeCpp : fldaTypeCpp + "*";
                     string addrExpr;
@@ -1270,7 +1300,7 @@ public partial class IRBuilder
                     expr = $"&({obj[1..]}.{fieldName})";
                 else
                     expr = $"&{obj}->{fieldName}";
-                var fldaTypeName2 = ResolveTypeRefOperand(fieldRef.FieldType);
+                var fldaTypeName2 = ResolveFieldTypeRef(fieldRef);
                 var fldaTypeCpp2 = CppNameMapper.GetCppTypeForDecl(fldaTypeName2);
                 // ldflda pushes a pointer to the field
                 var fldaPtrType2 = fldaTypeCpp2.EndsWith("*") ? fldaTypeCpp2 : fldaTypeCpp2 + "*";
@@ -1307,7 +1337,7 @@ public partial class IRBuilder
                 var fieldCacheKey = ResolveCacheKey(fieldRef.DeclaringType);
                 EmitCctorGuardIfNeeded(block, fieldCacheKey, typeCppName);
                 var tmp = $"__t{tempCounter++}";
-                var sfaTypeName = ResolveTypeRefOperand(fieldRef.FieldType);
+                var sfaTypeName = ResolveFieldTypeRef(fieldRef);
                 var sfaTypeCpp = CppNameMapper.GetCppTypeForDecl(sfaTypeName);
                 var sfaPtrType = sfaTypeCpp.EndsWith("*") ? sfaTypeCpp : sfaTypeCpp + "*";
                 block.Instructions.Add(new IRRawCpp

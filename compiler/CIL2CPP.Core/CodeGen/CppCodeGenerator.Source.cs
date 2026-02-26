@@ -423,8 +423,7 @@ public partial class CppCodeGenerator
         }
         if (HasUnknownBodyReferences(method, _knownTypeNames))
         {
-            var detail = _stubAnalyzer != null
-                ? GetUnknownBodyDetail(method) : "unknown body references";
+            var detail = GetUnknownBodyDetail(method);
             TrackStubWithAnalysis(method, "unknown body references",
                 StubRootCause.UnknownBodyReferences, detail);
             return false;
@@ -921,8 +920,7 @@ public partial class CppCodeGenerator
         // === Method-level patterns ===
         if (method.IsStatic && rendered.Contains("__this"))
             return "__this in static method";
-        if (method.ReturnTypeCpp is "intptr_t" or "uintptr_t" && rendered.Contains("= (void*)"))
-            return "void* → intptr_t implicit conversion";
+        // NOTE: removed void*→intptr_t check — now handled by stloc/ret IR-level casts
         if (rendered.Contains("gc_allocate_uninitialized_array") && rendered.Contains("CompareExchange"))
             return "gc_allocate_uninitialized_array + CompareExchange type mismatch";
         if (rendered.Contains("CIL2CPP_FINALLY") && !rendered.Contains("CIL2CPP_END_TRY"))
@@ -1082,10 +1080,6 @@ public partial class CppCodeGenerator
             if (castVars2.Overlaps(plainAssignVars2))
                 return "cross-scope pointer cast type mismatch";
         }
-
-        // intptr_t/uintptr_t return with (void*) cast — Unsafe.AsPointer etc.
-        if ((method.ReturnTypeCpp is "intptr_t" or "uintptr_t") && rendered.Contains("= (void*)"))
-            return "intptr_t return with void* cast";
 
         // Residual (void*) casts not caught above — these methods have (void*) in the
         // rendered code but are actually stubbed by OTHER RenderedBodyHasErrors patterns

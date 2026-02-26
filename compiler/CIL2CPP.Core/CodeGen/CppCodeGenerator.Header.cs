@@ -1634,15 +1634,6 @@ public partial class CppCodeGenerator
         if (method.IsStatic && rendered.Contains("__this"))
             return true;
 
-        // Method-level check: method returns intptr_t/uintptr_t but body has (void*) casts
-        // that feed into return values (Unsafe.AsPointer producing void* that MSVC can't implicitly
-        // convert to intptr_t). Detect any auto __tN = (void*)expr; return __tN; pattern.
-        if (method.ReturnTypeCpp is "intptr_t" or "uintptr_t"
-            && rendered.Contains("= (void*)"))
-        {
-            return true;
-        }
-
         // Body-level check: gc_allocate_uninitialized_array returns void*, CompareExchange expects Array*
         if (rendered.Contains("gc_allocate_uninitialized_array") && rendered.Contains("CompareExchange"))
             return true;

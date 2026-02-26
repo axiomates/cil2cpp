@@ -218,6 +218,9 @@ public partial class CppCodeGenerator
         // Primitive types with TypeInfo definitions (emitted in data file)
         foreach (var entry in _module.PrimitiveTypeInfos.Values)
             _knownTypeNames.Add(entry.CppMangledName);
+        // Array initializer data blobs (declared as extern const unsigned char[] in header)
+        foreach (var blob in _module.ArrayInitDataBlobs)
+            _knownTypeNames.Add(blob.Id);
         // NOTE: _headerForwardDeclared types are NOT added to _knownTypeNames here.
         // Forward-declared types only support pointer usage (Type*), not value usage (sizeof/locals).
         // The HasUnknownBodyReferences gate checks _headerForwardDeclared separately for pointer locals.

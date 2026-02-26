@@ -1,12 +1,12 @@
 {
   "HelloWorld": {
-    "total": 2846,
-    "MissingBody": 1713,
+    "total": 2805,
+    "MissingBody": 1696,
     "KnownBrokenPattern": 611,
-    "UndeclaredFunction": 287,
+    "UndeclaredFunction": 288,
     "ClrInternalType": 96,
-    "UnknownBodyReferences": 41,
+    "UnknownBodyReferences": 21,
     "UnknownParameterTypes": 22,
-    "RenderedBodyError": 76
+    "RenderedBodyError": 71
   }
 }

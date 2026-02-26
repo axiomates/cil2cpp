@@ -22,6 +22,12 @@ public partial class IRBuilder
             {
                 val = $"({local.CppTypeName}){val}";
             }
+            // Cast void*/pointer to intptr_t/uintptr_t — in .NET these are native int (pointer-sized),
+            // but in C++ intptr_t is an integer type, not implicitly convertible from void*.
+            else if (local.CppTypeName is "intptr_t" or "uintptr_t")
+            {
+                val = $"({local.CppTypeName}){val}";
+            }
         }
         block.Instructions.Add(new IRAssign
         {
@@ -658,12 +664,6 @@ public partial class IRBuilder
             stack.Push(new StackEntry(tmp, "void*"));
             return;
         }
-        // Debug: catch AsPointer with different declaring type
-        if (methodRef.Name == "AsPointer" && methodRef.Parameters.Count == 1)
-        {
-            Console.Error.WriteLine($"[DIAG] AsPointer not intercepted: DeclaringType='{methodRef.DeclaringType.FullName}'");
-        }
-
         // Unsafe.Unbox<T>(object) — unbox to ref T
         if (methodRef.DeclaringType.FullName == "System.Runtime.CompilerServices.Unsafe"
             && methodRef.Name == "Unbox" && methodRef is GenericInstanceMethod gimUnbox
@@ -977,9 +977,12 @@ public partial class IRBuilder
         {
             var fieldHandle = stack.PopExpr();
             var arr = stack.PopExprOr("nullptr");
+            // Look up blob size from ArrayInitDataBlobs — sizeof() doesn't work on extern incomplete arrays
+            var blob = _module.ArrayInitDataBlobs.FirstOrDefault(b => b.Id == fieldHandle);
+            var sizeExpr = blob != null ? $"{blob.Data.Length}" : $"sizeof({fieldHandle})";
             block.Instructions.Add(new IRRawCpp
             {
-                Code = $"std::memcpy(cil2cpp::array_data({arr}), {fieldHandle}, sizeof({fieldHandle}));"
+                Code = $"std::memcpy(cil2cpp::array_data({arr}), {fieldHandle}, {sizeExpr});"
             });
             return;
         }
@@ -2261,6 +2264,15 @@ public partial class IRBuilder
             var elemResolved = ResolveGenericTypeRef(ptrType.ElementType, declaringType);
             return elemResolved + "*";
         }
+        // Handle RequiredModifierType (modreq) — e.g., T& modreq(InAttribute) for readonly refs
+        if (typeRef is RequiredModifierType rmt)
+            return ResolveGenericTypeRef(rmt.ElementType, declaringType);
+        // Handle OptionalModifierType (modopt)
+        if (typeRef is OptionalModifierType omt)
+            return ResolveGenericTypeRef(omt.ElementType, declaringType);
+        // Handle PinnedType — locals with 'pinned' modifier
+        if (typeRef is PinnedType pnt)
+            return ResolveGenericTypeRef(pnt.ElementType, declaringType);
 
         // Resolve generic parameters — first check method-level map, then type-level
         if (typeRef is GenericParameter gp)
@@ -2409,6 +2421,20 @@ public partial class IRBuilder
             var resolved = SubstituteMethodGenericParams(arrType.ElementType, gim);
             if (resolved != arrType.ElementType)
                 return new ArrayType(resolved, arrType.Rank);
+        }
+
+        if (typeRef is RequiredModifierType rmt)
+        {
+            var resolved = SubstituteMethodGenericParams(rmt.ElementType, gim);
+            if (resolved != rmt.ElementType)
+                return new RequiredModifierType(rmt.ModifierType, resolved);
+        }
+
+        if (typeRef is OptionalModifierType omt)
+        {
+            var resolved = SubstituteMethodGenericParams(omt.ElementType, gim);
+            if (resolved != omt.ElementType)
+                return new OptionalModifierType(omt.ModifierType, resolved);
         }
 
         return typeRef;

@@ -1061,6 +1061,106 @@ public partial class IRBuilder
     }
 
     /// <summary>
+    /// Resolve a generic method call with unresolved type arguments using nameMap,
+    /// and add the resolved method to _genericMethodInstantiations.
+    /// This discovers transitive generic method calls: when IndexOf&lt;Byte, DontNegate&lt;Byte&gt;&gt;
+    /// calls FindValue&lt;!!T, !!TNegator&gt;, resolve T→Byte, TNegator→DontNegate&lt;Byte&gt; to discover
+    /// FindValue&lt;Byte, DontNegate&lt;Byte&gt;&gt; as a new method instantiation.
+    /// </summary>
+    private void TryCollectResolvedGenericMethod(GenericInstanceMethod gim, Dictionary<string, string> nameMap)
+    {
+        // Skip methods whose declaring type is in a filtered namespace.
+        // This check is done early (before resolution) to avoid discovering
+        // SIMD, reflection, and other internal generic methods that cascade into stubs.
+        var earlyDeclNs = gim.ElementMethod.DeclaringType.Namespace;
+        if (string.IsNullOrEmpty(earlyDeclNs))
+        {
+            var declFullName = gim.ElementMethod.DeclaringType.FullName;
+            if (declFullName.Contains('.'))
+                earlyDeclNs = declFullName[..declFullName.LastIndexOf('.')];
+        }
+        if (!string.IsNullOrEmpty(earlyDeclNs) &&
+            FilteredGenericNamespaces.Any(f => earlyDeclNs.StartsWith(f)))
+        {
+            if (!IsVectorScalarFallbackILType(gim.ElementMethod.DeclaringType.FullName))
+                return;
+        }
+
+        // If already fully resolved (no generic params), delegate to normal collection
+        if (!gim.GenericArguments.Any(ContainsGenericParameter))
+        {
+            CollectGenericMethod(gim);
+            return;
+        }
+
+        // Resolve each generic argument
+        var resolvedArgs = new List<string>();
+        foreach (var arg in gim.GenericArguments)
+        {
+            var resolved = ResolveTypeArgument(arg, nameMap);
+            if (resolved == null) return; // Can't fully resolve — skip
+            resolvedArgs.Add(resolved);
+        }
+
+        var elementMethod = gim.ElementMethod;
+        var declaringType = elementMethod.DeclaringType.FullName;
+        var methodName = elementMethod.Name;
+
+        // Skip methods whose declaring type is in a filtered namespace.
+        // This prevents transitive discovery of SIMD, reflection, and other
+        // internal generic methods that cascade into thousands of stubs.
+        var declNs = elementMethod.DeclaringType.Namespace;
+        // For nested types, Namespace may be empty — use outer type's namespace
+        if (string.IsNullOrEmpty(declNs) && declaringType.Contains('.'))
+            declNs = declaringType[..declaringType.LastIndexOf('.')];
+        if (!string.IsNullOrEmpty(declNs) &&
+            FilteredGenericNamespaces.Any(f => declNs.StartsWith(f)))
+        {
+            if (!IsVectorScalarFallbackILType(declaringType))
+                return;
+        }
+
+        var paramSig = string.Join(",", elementMethod.Parameters.Select(p => p.ParameterType.FullName));
+        var key = MakeGenericMethodKey(declaringType, methodName, resolvedArgs, paramSig);
+        if (_genericMethodInstantiations.ContainsKey(key)) return;
+
+        var cecilMethod = elementMethod.Resolve();
+        if (cecilMethod == null) return;
+
+        // Apply the same namespace/type filters as CollectGenericType for type args
+        foreach (var argName in resolvedArgs)
+        {
+            var argNs = argName.Contains('.') ? argName[..argName.LastIndexOf('.')] : "";
+            if (!string.IsNullOrEmpty(argNs) &&
+                FilteredGenericNamespaces.Any(f => argNs.StartsWith(f)))
+            {
+                if (!IsVectorScalarFallbackILType(argName))
+                    return;
+            }
+            if (ClrInternalTypeNames.Contains(argName) || FilteredGenericArgTypes.Contains(argName))
+                return;
+        }
+
+        var mangledName = MangleGenericMethodName(declaringType, methodName, resolvedArgs);
+
+        // Disambiguate mangled name if another overload already uses it
+        if (_genericMethodInstantiations.Values.Any(v => v.MangledName == mangledName))
+        {
+            var typeParamMap = new Dictionary<string, string>();
+            for (int i = 0; i < cecilMethod.GenericParameters.Count && i < resolvedArgs.Count; i++)
+                typeParamMap[cecilMethod.GenericParameters[i].Name] = resolvedArgs[i];
+
+            var paramSuffix = string.Join("_", cecilMethod.Parameters
+                .Select(p => CppNameMapper.MangleTypeName(
+                    ResolveGenericTypeName(p.ParameterType, typeParamMap))));
+            mangledName += $"__{paramSuffix}";
+        }
+
+        _genericMethodInstantiations[key] = new GenericMethodInstantiationInfo(
+            declaringType, methodName, resolvedArgs, mangledName, cecilMethod);
+    }
+
+    /// <summary>
     /// Resolve a type argument reference using a name map. Returns null if unresolvable.
     /// </summary>
     private static string? ResolveTypeArgument(TypeReference typeRef, Dictionary<string, string> nameMap)
@@ -1191,6 +1291,42 @@ public partial class IRBuilder
         if (_activeTypeParamMap != null)
             return ResolveGenericTypeName(typeRef, _activeTypeParamMap);
         return typeRef.FullName;
+    }
+
+    /// <summary>
+    /// Resolve a field's type through its declaring generic instance type.
+    /// When accessing fields of generic types (e.g., Span&lt;char&gt;._reference),
+    /// Cecil gives the unresolved field type (ByReference&lt;T&gt; / T&amp;). This method
+    /// builds a temporary type param map from the declaring GenericInstanceType
+    /// and resolves T → the concrete type argument (e.g., System.Char).
+    /// </summary>
+    private string ResolveFieldTypeRef(FieldReference fieldRef)
+    {
+        // If the declaring type is a generic instance, resolve generic params in the field type
+        if (fieldRef.DeclaringType is GenericInstanceType git)
+        {
+            var openType = git.ElementType.Resolve();
+            if (openType != null && openType.HasGenericParameters)
+            {
+                // Build combined map: start with active type param map (if in generic context),
+                // then overlay with declaring type's generic arguments
+                var localMap = _activeTypeParamMap != null
+                    ? new Dictionary<string, string>(_activeTypeParamMap)
+                    : new Dictionary<string, string>();
+
+                for (int i = 0; i < openType.GenericParameters.Count && i < git.GenericArguments.Count; i++)
+                {
+                    var paramName = openType.GenericParameters[i].Name;
+                    // Resolve the argument through active map (handles nested generics)
+                    var argResolved = ResolveTypeRefOperand(git.GenericArguments[i]);
+                    localMap[paramName] = argResolved;
+                }
+
+                return ResolveGenericTypeName(fieldRef.FieldType, localMap);
+            }
+        }
+
+        return ResolveTypeRefOperand(fieldRef.FieldType);
     }
 
     /// <summary>
