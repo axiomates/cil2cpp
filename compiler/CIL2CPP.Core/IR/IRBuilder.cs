@@ -535,11 +535,9 @@ public partial class IRBuilder
         //
         // This pass creates type shells and method DECLARATIONS only — no body compilation.
         // Stub bodies are generated so methods are declared in the header (reducing
-        // UndeclaredFunction stubs). Full body compilation is intentionally skipped because:
-        // 1. New bodies may reference types not yet in the module → C++ compilation errors
-        // 2. Newly discovered types need the full pass pipeline (disambiguation, vtables,
-        //    interface impls) which is expensive to re-run
-        // 3. The primary goal is reducing UF by having function declarations exist
+        // UndeclaredFunction stubs). Full body compilation is intentionally skipped because
+        // compiled bodies discover new callees → CodeGen creates cascade stubs → net increase.
+        // FIXME: selective body compilation could reduce UF further if cascade is controlled
         {
             var scannedTypeKeys = new HashSet<string>();
             var scannedMethodKeys = new HashSet<string>();
@@ -566,7 +564,7 @@ public partial class IRBuilder
                     DisambiguateOverloadedMethods();
                     // Generate stub bodies instead of compiling full bodies.
                     // This ensures method declarations exist (reducing UF stubs) without
-                    // risking undeclared type references in complex BCL method bodies.
+                    // risking cascade stub creation from compiled body callees.
                     foreach (var (_, irMethod, _) in _deferredGenericBodies)
                         GenerateStubBody(irMethod);
                     _deferredGenericBodies.Clear();

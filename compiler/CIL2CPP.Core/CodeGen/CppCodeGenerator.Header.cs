@@ -1374,14 +1374,17 @@ public partial class CppCodeGenerator
         // algorithms (IntroSort, FormatCustomized, String.Concat, etc.), not JIT intrinsics.
         // JIT intrinsics are already caught by System.Runtime.Intrinsics namespace check above.
 
-        // Numerics interface DIM (Default Interface Methods) — struct operator implementations
-        // like IBitwiseOperators<byte,byte,byte>.op_BitwiseOr. The actual operators are already
-        // inlined by the C# compiler at call sites; these DIM bodies are dead code that references
-        // struct members unavailable in flat struct model.
-        // REMOVED: Numerics DIM check was too broad — methods now tested through remaining gates
-        // if (method.DeclaringType?.IsInterface == true &&
-        //     (method.DeclaringType.ILFullName?.StartsWith("System.Numerics.I") == true || ...))
-        //     return true;
+        // Numerics interface DIM with non-primitive struct params (Int128, UInt128, Decimal, Half).
+        // These are INumber<T>/IComparisonOperators<T> DIM bodies that operate on large value types
+        // (128-bit integers, 128-bit decimals, 16-bit floats) which aren't supported in our
+        // flat struct model. Primitive numeric DIM (byte, int, etc.) work fine through remaining gates.
+        if (method.DeclaringType?.IsInterface == true &&
+            method.DeclaringType.ILFullName?.StartsWith("System.Numerics.I") == true)
+        {
+            if (method.Parameters.Any(p => p.ILTypeName is "System.Int128" or "System.UInt128"
+                or "System.Decimal" or "System.Half"))
+                return true;
+        }
 
         // VectorMath — hardware SIMD helper, same as System.Runtime.Intrinsics
         if (method.DeclaringType?.ILFullName == "System.Numerics.VectorMath")
@@ -2793,14 +2796,17 @@ public partial class CppCodeGenerator
             return "Detect: GuidResult_SetFailure(7, or GetLocaleInfoFromLCType(4099,";
         // Pattern: ValueListBuilder method called with wrong this (literal instead of pointer)
         // Skip function definition lines (ending with '{').
+        // Fix: find the '(' immediately after the VLB method name, not the last '(' on the line
+        // (which could be inside a cast like (char16_t)48).
         if (s.Contains("ValueListBuilder_1_") && !s.TrimEnd().EndsWith("{"))
         {
-            var fnEnd = s.LastIndexOf('(');
-            if (fnEnd > 0)
+            var vlbIdx = s.IndexOf("ValueListBuilder_1_");
+            var parenIdx = s.IndexOf('(', vlbIdx);
+            if (parenIdx > 0)
             {
-                var afterParen = s[(fnEnd + 1)..].TrimStart();
-                // Only flag if first arg is a literal (digit or string), not a variable/param
-                if (afterParen.Length > 0 && (char.IsDigit(afterParen[0]) || afterParen[0] == '"'))
+                var firstArg = s[(parenIdx + 1)..].TrimStart();
+                // Only flag if first arg is a literal (digit or string), not a variable/pointer
+                if (firstArg.Length > 0 && (char.IsDigit(firstArg[0]) || firstArg[0] == '"'))
                     return "ValueListBuilder method called with wrong this (literal instead of pointer)";
             }
         }
