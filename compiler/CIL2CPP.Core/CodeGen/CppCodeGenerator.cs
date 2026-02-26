@@ -178,6 +178,12 @@ public partial class CppCodeGenerator
     private HashSet<string> _headerForwardDeclared = new();
 
     /// <summary>
+    /// Auto-discovered TypeInfo declarations — types referenced via _TypeInfo in method bodies
+    /// but not in userTypes or PrimitiveTypeInfos. Populated during header generation.
+    /// </summary>
+    private HashSet<string> _autoTypeInfoDecls = new();
+
+    /// <summary>
     /// Minimum IR instructions per method partition. Each TU re-parses the full header,
     /// so partitions need enough method code to amortize that overhead.
     /// ~20000 instructions ≈ 13k-17k C++ lines per partition (ratio ~0.7 lines/instruction).
@@ -221,6 +227,9 @@ public partial class CppCodeGenerator
         // Array initializer data blobs (declared as extern const unsigned char[] in header)
         foreach (var blob in _module.ArrayInitDataBlobs)
             _knownTypeNames.Add(blob.Id);
+        // Auto-discovered TypeInfo types (from method body _TypeInfo references)
+        foreach (var name in _autoTypeInfoDecls)
+            _knownTypeNames.Add(name);
         // NOTE: _headerForwardDeclared types are NOT added to _knownTypeNames here.
         // Forward-declared types only support pointer usage (Type*), not value usage (sizeof/locals).
         // The HasUnknownBodyReferences gate checks _headerForwardDeclared separately for pointer locals.

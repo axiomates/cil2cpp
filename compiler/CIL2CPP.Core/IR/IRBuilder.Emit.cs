@@ -1153,6 +1153,10 @@ public partial class IRBuilder
             }
 
             irCall.FunctionName = funcName;
+            // Store IL param key for deferred fixup (Pass 3.7) — the target type
+            // may not be disambiguated yet when this body is compiled.
+            if (ilParamKey.Length > 0)
+                irCall.DeferredDisambigKey = ilParamKey;
         }
 
         // Collect arguments (in reverse order from stack)
@@ -2354,7 +2358,12 @@ public partial class IRBuilder
                         continue;
                     }
                 }
-                argNames.Add(arg.FullName);
+                // Recursively resolve nested GenericInstanceType arguments
+                // (e.g., AsyncLocalValueChangedArgs`1<T> → AsyncLocalValueChangedArgs`1<CultureInfo>)
+                var resolvedArgName = ResolveGenericTypeRef(arg, declaringType);
+                if (resolvedArgName != arg.FullName)
+                    anyResolved = true;
+                argNames.Add(resolvedArgName);
             }
             if (anyResolved)
                 return $"{returnGit.ElementType.FullName}<{string.Join(",", argNames)}>";

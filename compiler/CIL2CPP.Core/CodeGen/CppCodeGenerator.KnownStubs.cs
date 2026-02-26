@@ -157,6 +157,21 @@ public partial class CppCodeGenerator
                 while (value) { count += static_cast<int32_t>(value & 1); value >>= 1; }
                 return count;
             """,
+
+        // ===== Interop.Kernel32.LocalFree(void*) =====
+        // Forwards to the intptr_t overload with explicit cast (void* → intptr_t)
+        ["Interop_Kernel32_LocalFree__System_Void"] =
+            """
+                return reinterpret_cast<void*>(Interop_Kernel32_LocalFree(reinterpret_cast<intptr_t>(ptr)));
+            """,
+
+        // ===== OperationCanceledException.get_CancellationToken =====
+        // Returns default CancellationToken (runtime stores as void*)
+        ["System_OperationCanceledException_get_CancellationToken"] =
+            """
+                // HACK: CancellationToken is stored as void* in runtime — return default
+                return {};
+            """,
     };
 
     /// <summary>

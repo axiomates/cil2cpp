@@ -236,6 +236,41 @@ public partial class IRBuilder
     }
 
     /// <summary>
+    /// Retroactively fix up IRCall.FunctionName in already-compiled method bodies
+    /// that reference undisambiguated names. This handles the case where a generic method
+    /// specialization (Pass 3.5) calls methods on a type that is only discovered and
+    /// disambiguated in the Pass 3.6 re-discovery loop.
+    /// Uses the DeferredDisambigKey stored at emit time for precise matching.
+    /// </summary>
+    private void FixupDisambiguatedCalls()
+    {
+        if (_module.DisambiguatedMethodNames.Count == 0) return;
+
+        foreach (var irType in _module.Types)
+        {
+            foreach (var irMethod in irType.Methods)
+            {
+                foreach (var block in irMethod.BasicBlocks)
+                {
+                    foreach (var instr in block.Instructions)
+                    {
+                        if (instr is not IRCall call) continue;
+                        if (call.DeferredDisambigKey == null) continue;
+
+                        // Rebuild the lookup key using the stored IL param key
+                        var lookupKey = $"{call.FunctionName}|{call.DeferredDisambigKey}";
+                        if (_module.DisambiguatedMethodNames.TryGetValue(lookupKey, out var disambiguated))
+                        {
+                            call.FunctionName = disambiguated;
+                            call.DeferredDisambigKey = null; // resolved
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// <summary>
     /// Mangle an IL type name for use in disambiguated method names.
     /// Strips pointer/ref suffixes and applies standard mangling.
     /// </summary>

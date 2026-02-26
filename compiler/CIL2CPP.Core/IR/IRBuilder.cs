@@ -597,12 +597,19 @@ public partial class IRBuilder
                     // Generate stub bodies instead of compiling full bodies.
                     // This ensures method declarations exist (reducing UF stubs) without
                     // risking cascade stub creation from compiled body callees.
+                    // FIXME: selective body compilation could reduce UF further if cascade is controlled
                     foreach (var (_, irMethod, _) in _deferredGenericBodies)
                         GenerateStubBody(irMethod);
                     _deferredGenericBodies.Clear();
                 }
             } while (_genericInstantiations.Count > prevTypeCount);
         }
+
+        // Pass 3.7: Fix up undisambiguated call sites in already-compiled method bodies.
+        // Generic method specializations (Pass 3.5) may call methods on types that are only
+        // discovered and disambiguated in Pass 3.6. Their IRCall.FunctionName was set before
+        // disambiguation entries existed. Retroactively apply disambiguation lookups.
+        FixupDisambiguatedCalls();
 
         // Pass 4: Build vtables (needs method shells with IsVirtual)
         // Use recursive helper to ensure base types are built before derived types

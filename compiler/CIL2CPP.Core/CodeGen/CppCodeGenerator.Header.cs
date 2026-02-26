@@ -148,14 +148,44 @@ public partial class CppCodeGenerator
             else
                 sb.AppendLine($"extern cil2cpp::TypeInfo {entry.CppMangledName}_TypeInfo;");
         }
+        // External enum TypeInfo declarations — BCL enums referenced in generic specializations
+        // need TypeInfo for boxing/formatting (e.g., Enum.TryFormatUnconstrained<T>)
+        foreach (var (mangledName, _) in _module.ExternalEnumTypes)
+        {
+            if (runtimeDeclaredTypeInfos.Contains(mangledName)) continue;
+            sb.AppendLine($"extern cil2cpp::TypeInfo {mangledName}_TypeInfo;");
+        }
         // Exception TypeInfo reference aliases — maps mangled names to runtime-declared TypeInfos
         // (e.g., System_Exception_TypeInfo → cil2cpp::Exception_TypeInfo)
         foreach (var (mangledName, runtimeTypeInfoName) in GetExceptionTypeInfoAliases())
         {
             sb.AppendLine($"extern cil2cpp::TypeInfo& {mangledName}_TypeInfo;");
         }
-        sb.AppendLine();
-
+        // Forward-declared types that need TypeInfo — scan method bodies for _TypeInfo references
+        // and declare TypeInfo for any types that are forward-declared but don't yet have TypeInfo.
+        var declaredTypeInfoNames = new HashSet<string>();
+        foreach (var type in userTypes) declaredTypeInfoNames.Add(type.CppName);
+        foreach (var entry in _module.PrimitiveTypeInfos.Values) declaredTypeInfoNames.Add(entry.CppMangledName);
+        foreach (var (m, _) in _module.ExternalEnumTypes) declaredTypeInfoNames.Add(m);
+        foreach (var (m, _) in GetExceptionTypeInfoAliases()) declaredTypeInfoNames.Add(m);
+        // Also skip runtime-declared
+        foreach (var n in runtimeDeclaredTypeInfos) declaredTypeInfoNames.Add(n);
+        // Scan IR method instructions for _TypeInfo references
+        var neededTypeInfos = new HashSet<string>();
+        foreach (var type in userTypes)
+        {
+            foreach (var method in type.Methods)
+            {
+                foreach (var block in method.BasicBlocks)
+                {
+                    foreach (var instr in block.Instructions)
+                    {
+                        var code = instr.ToCpp();
+                        CollectTypeInfoRefs(code, neededTypeInfos);
+                    }
+                }
+            }
+        }
         // Build set of all types that will be defined (for field type sanitization)
         var definedTypeNames = new HashSet<string>();
         foreach (var type in userTypes)
@@ -165,6 +195,29 @@ public partial class CppCodeGenerator
             definedTypeNames.Add(name);
         foreach (var name in enumTypes)
             definedTypeNames.Add(name);
+
+        // Declare TypeInfo for referenced types not yet declared — only for types
+        // that have full struct definitions (not just forward-declared). This prevents
+        // unblocking methods that have other codegen issues.
+        _autoTypeInfoDecls = new HashSet<string>();
+        var allStructNames = new HashSet<string>(forwardDeclared);
+        foreach (var type in userTypes) allStructNames.Add(type.CppName);
+        foreach (var name in aliasedTypes) allStructNames.Add(name);
+        foreach (var name in enumTypes) allStructNames.Add(name);
+        foreach (var typeName in neededTypeInfos)
+        {
+            if (declaredTypeInfoNames.Contains(typeName)) continue;
+            if (typeName.StartsWith("cil2cpp")) continue;
+            if (!IsValidCppIdentifier(typeName)) continue;
+            // Skip if the symbol name conflicts with an existing struct/type
+            if (allStructNames.Contains(typeName + "_TypeInfo")) continue;
+            // Only for types with full struct definitions or aliases
+            if (!definedTypeNames.Contains(typeName)) continue;
+            sb.AppendLine($"extern cil2cpp::TypeInfo {typeName}_TypeInfo;");
+            declaredTypeInfoNames.Add(typeName);
+            _autoTypeInfoDecls.Add(typeName);
+        }
+        sb.AppendLine();
 
         // Type Definitions — ordering: enums first, then delegates, then structs (topologically sorted).
         sb.AppendLine("// ===== Type Definitions =====");
@@ -1249,8 +1302,30 @@ public partial class CppCodeGenerator
             }
         }
 
+        // Build declared function names from already-emitted declarations.
+        // Used both for UF prediction (callee scan) and for finding missing functions.
+        var declaredNames = new HashSet<string>();
+        foreach (var sig in emittedMethodDecls)
+        {
+            var parenIdx = sig.IndexOf('(');
+            if (parenIdx > 0)
+            {
+                var beforeParen = sig[..parenIdx].TrimEnd();
+                var spaceIdx = beforeParen.LastIndexOf(' ');
+                if (spaceIdx >= 0)
+                    declaredNames.Add(beforeParen[(spaceIdx + 1)..]);
+                var starIdx = beforeParen.LastIndexOf('*');
+                if (starIdx > spaceIdx)
+                    declaredNames.Add(beforeParen[(starIdx + 1)..].TrimStart());
+            }
+        }
+
         // Collect all called function names from method bodies that WILL be compiled.
         // Only scan methods that pass the same filters as method implementation generation.
+        // Skip methods that will definitely be gated (KBP, UBR, UP, CLR-internal stubs) — their
+        // bodies will be replaced with stubs during source generation, so their callees
+        // don't need forward declarations. This prevents thousands of transitive MissingBody
+        // stubs from SIMD/intrinsics and CLR-internal cascade chains.
         var calledFunctions = new HashSet<string>();
         foreach (var type in userTypes)
         {
@@ -1261,38 +1336,43 @@ public partial class CppCodeGenerator
                 if (method.BasicBlocks.Count == 0 && !method.IsPInvoke) continue;
                 // Only check methods that will actually be emitted
                 if (!emittedMethodDecls.Contains(method.GetCppSignature())) continue;
+                // Skip methods that will be gated during source generation —
+                // their bodies are replaced with stubs, callees don't need declarations.
+                if (HasKnownBrokenPatterns(method, knownTypeNames)) continue;
+                if (HasUnknownBodyReferences(method, knownTypeNames)) continue;
+                if (HasUnknownParameterTypes(method, knownTypeNames)) continue;
+                if (method.IrStubReason != null) continue;
 
+                // Predict UF gate failure: if ANY callee has no IRMethod in the module
+                // AND is not already declared, this method will fail the UndeclaredFunction gate.
+                // Skip scanning its callees to avoid cascading MissingBody declarations.
+                bool willFailUF = false;
+                var methodCallees = new List<string>();
                 foreach (var block in method.BasicBlocks)
                 {
                     foreach (var instr in block.Instructions)
                     {
                         if (instr is IR.IRCall call && !string.IsNullOrEmpty(call.FunctionName)
                             && !call.FunctionName.StartsWith("cil2cpp::"))
-                            calledFunctions.Add(call.FunctionName);
+                        {
+                            methodCallees.Add(call.FunctionName);
+                            if (!call.FunctionName.EndsWith("_ensure_cctor") &&
+                                !methodLookup.ContainsKey(call.FunctionName) &&
+                                !declaredNames.Contains(call.FunctionName))
+                            {
+                                willFailUF = true;
+                            }
+                        }
                     }
                 }
+                if (willFailUF) continue;
+
+                foreach (var callee in methodCallees)
+                    calledFunctions.Add(callee);
             }
         }
 
         // Find called functions that have no declaration
-        var declaredNames = new HashSet<string>();
-        foreach (var sig in emittedMethodDecls)
-        {
-            // Extract function name from signature: "retType funcName(..."
-            var parenIdx = sig.IndexOf('(');
-            if (parenIdx > 0)
-            {
-                var beforeParen = sig[..parenIdx].TrimEnd();
-                var spaceIdx = beforeParen.LastIndexOf(' ');
-                if (spaceIdx >= 0)
-                    declaredNames.Add(beforeParen[(spaceIdx + 1)..]);
-                // Handle pointer return types: "retType* funcName("
-                var starIdx = beforeParen.LastIndexOf('*');
-                if (starIdx > spaceIdx)
-                    declaredNames.Add(beforeParen[(starIdx + 1)..].TrimStart());
-            }
-        }
-
         var missingFunctions = new List<(string name, IR.IRMethod? method)>();
         foreach (var funcName in calledFunctions)
         {
@@ -1743,6 +1823,49 @@ public partial class CppCodeGenerator
             tiIdx += 9;
         }
         return false;
+    }
+
+    /// <summary>
+    /// Collect all type names referenced as _TypeInfo in a C++ code string.
+    /// Used to auto-generate TypeInfo declarations for types referenced in method bodies.
+    /// </summary>
+    private static void CollectTypeInfoRefs(string code, HashSet<string> result)
+    {
+        var tiIdx = 0;
+        while ((tiIdx = code.IndexOf("_TypeInfo", tiIdx)) >= 0)
+        {
+            int start = tiIdx - 1;
+            while (start >= 0 && (char.IsLetterOrDigit(code[start]) || code[start] == '_'))
+                start--;
+            start++;
+            if (start < tiIdx)
+            {
+                var typeName = code[start..tiIdx];
+                // Skip cil2cpp:: prefixed refs (runtime-defined)
+                if (start >= 2 && code[(start - 2)..start] == "::")
+                {
+                    tiIdx += 9;
+                    continue;
+                }
+                if (!string.IsNullOrEmpty(typeName) && !typeName.StartsWith("cil2cpp"))
+                {
+                    // Handle types whose name ENDS with "TypeInfo" (e.g., System.Reflection.TypeInfo).
+                    // The reference is System_Reflection_TypeInfo_TypeInfo — the first _TypeInfo is
+                    // part of the type name. Check the char after "_TypeInfo" — if it's also "_TypeInfo",
+                    // then the real type name includes the first "_TypeInfo".
+                    var afterTi = tiIdx + 9; // position after first "_TypeInfo"
+                    if (afterTi + 9 <= code.Length && code.Substring(afterTi, 9) == "_TypeInfo")
+                    {
+                        // The real type name is typeName + "_TypeInfo"
+                        result.Add(typeName + "_TypeInfo");
+                        tiIdx = afterTi + 9;
+                        continue;
+                    }
+                    result.Add(typeName);
+                }
+            }
+            tiIdx += 9;
+        }
     }
 
     /// <summary>
@@ -2516,12 +2639,8 @@ public partial class CppCodeGenerator
             return "ValueTuple`4<String,...>.GetHashCode &f_Item yields String** assigned to String*";
         }
 
-        // Method-level: Interop.Kernel32.LocalFree(void*) — calls LocalFree(IntPtr) overload
-        // but void* doesn't implicitly convert to intptr_t in MSVC
-        if (method.CppName == "Interop_Kernel32_LocalFree__System_Void")
-        {
-            return "Interop.Kernel32.LocalFree void* to intptr_t mismatch";
-        }
+        // NOTE: Interop.Kernel32.LocalFree(void*) RE check removed — handled via known stub body
+        // that casts void* to intptr_t before calling the intptr_t overload.
 
         // Method-level: EventPipe methods using intptr_t fields with Span ctors
         if (method.CppName.Contains("DispatchEventsToEventListeners") ||
@@ -2804,16 +2923,13 @@ public partial class CppCodeGenerator
         if (s.Contains("array_set<") && s.Contains(">(0,"))
             return "array_set with 0 as first arg (null array pointer)";
 
-        // Pattern: OperationCanceledException.f_cancellationToken is void* in runtime
-        if (s.Contains("f_cancellationToken") && !s.Contains("(void*)") && !s.Contains("nullptr")
-            && !s.Contains("//"))
-            return "OperationCanceledException.f_cancellationToken is void* in runtime";
+        // OperationCanceledException.get_CancellationToken: f_cancellationToken is void* but
+        // return type is System_Threading_CancellationToken (a struct). The void*→struct return is C2440.
+        if (s.Contains("f_cancellationToken"))
+            return "OperationCanceledException f_cancellationToken void*→struct return type mismatch";
 
-        // Pattern: GetLocaleInfoEx — BCL code passes int32_t* where char16_t* expected
-        // Only match actual calls (not function definitions which end with '{')
-        if ((s.Contains("Interop_Kernel32_GetLocaleInfoEx(") || s.Contains("Interop_Kernel32_GetLocaleInfoExInt("))
-            && !s.TrimEnd().EndsWith("{"))
-            return "GetLocaleInfoEx — BCL code passes int32_t* where char16_t* expected";
+        // NOTE: GetLocaleInfoEx RE check removed — the Interop.Kernel32 wrapper takes void* lpLCData
+        // which accepts char16_t* via implicit conversion. No type mismatch in generated C++.
 
         // Pattern: AsyncLocal<T>.ctor called with wrong arg count (2 args for 1-arg ctor
         // mapped to no-arg ctor name). Exclude function definition lines (ending with '{').
@@ -3083,12 +3199,8 @@ public partial class CppCodeGenerator
 
         // Phase III.7: Span_1_System_TimeZoneInfo_AdjustmentRule check REMOVED — compiles fine in MSVC
 
-        // Pattern: enum pointer passed where enum value expected (ResourceTypeCode, etc.)
-        // Only flag when address-of (&) is taken on a non-pointer variable — this creates a pointer
-        // where a value is expected. Pointer-to-pointer casts like (ResourceTypeCode*)typeCode
-        // are valid when the variable is already ResourceTypeCode*.
-        if (s.Contains("ResourceTypeCode*)&"))
-            return "are valid when the variable is already ResourceTypeCode*.";
+        // ResourceTypeCode*)& check REMOVED — using alias (= int32_t) makes the cast valid.
+        // (int32_t*)&int32_t_local is legal C++.
 
         // Pattern: MethodTable field access — JIT internal structure not fully supported
         if (s.Contains("f_ComponentSize") || s.Contains("f_BaseSize") ||
@@ -3269,9 +3381,8 @@ public partial class CppCodeGenerator
         if (s.Contains("char16_t*") && s.Contains("/ 2"))
             return "e.g., (char16_t*) ... / 2 → C2296 pointer division is invalid";
 
-        // Pattern: ExceptionHandlingClauseOptions_TypeInfo — undeclared reflection enum TypeInfo
-        if (s.Contains("ExceptionHandlingClauseOptions_TypeInfo"))
-            return "ExceptionHandlingClauseOptions_TypeInfo — undeclared reflection enum TypeInfo";
+        // ExceptionHandlingClauseOptions_TypeInfo check REMOVED — external enum TypeInfo
+        // declarations are now generated for all ExternalEnumTypes (see GenerateHeader).
 
         // Pattern: RuntimeMethodInfo/RuntimeConstructorInfo __ctor — undeclared constructor calls
         // These runtime-provided types don't have generated constructors

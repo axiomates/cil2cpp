@@ -216,6 +216,33 @@ public partial class CppCodeGenerator
             }
             GenerateTypeInfo(sb, type);
         }
+        // External enum TypeInfo definitions — minimal stubs for BCL enums referenced in
+        // generic specializations (e.g., Enum.TryFormatUnconstrained<ExceptionHandlingClauseOptions>)
+        foreach (var (mangledName, underlyingType) in _module.ExternalEnumTypes)
+        {
+            if (emittedTypeInfo.Contains(mangledName)) continue;
+            // Extract name/namespace from mangled name (e.g., "System_Reflection_ExceptionHandlingClauseOptions")
+            var parts = mangledName.Split('_');
+            var ns = parts.Length > 2 ? string.Join(".", parts[..^1]) : "";
+            var name = parts.Length > 0 ? parts[^1] : mangledName;
+            sb.AppendLine($"cil2cpp::TypeInfo {mangledName}_TypeInfo = {{ .name = \"{name}\", " +
+                $".namespace_name = \"{ns}\", .full_name = \"{mangledName}\", " +
+                $".base_type = &System_Enum_TypeInfo, " +
+                $".flags = cil2cpp::TypeFlags::ValueType | cil2cpp::TypeFlags::Enum }};");
+            emittedTypeInfo.Add(mangledName);
+        }
+        // Auto-discovered TypeInfo definitions — types referenced as _TypeInfo in method bodies
+        // but not present in userTypes or other TypeInfo sources.
+        foreach (var typeName in _autoTypeInfoDecls)
+        {
+            if (emittedTypeInfo.Contains(typeName)) continue;
+            // Extract name part (last segment) and namespace (everything before)
+            var lastSep = typeName.LastIndexOf('_');
+            var name = lastSep >= 0 ? typeName[(lastSep + 1)..] : typeName;
+            sb.AppendLine($"cil2cpp::TypeInfo {typeName}_TypeInfo = {{ .name = \"{name}\", " +
+                $".full_name = \"{typeName}\" }};");
+            emittedTypeInfo.Add(typeName);
+        }
         sb.AppendLine();
 
         // Static constructor guards — collect all types that SHOULD have ensure_cctor
@@ -1366,9 +1393,15 @@ public partial class CppCodeGenerator
             }
             else
             {
-                TrackStubWithAnalysis(method, "missing method body (runtime-provided/unreachable)",
-                    StubRootCause.MissingBody,
-                    method.IrStubReason ?? "runtime-provided or unreachable");
+                // Only track as MissingBody if not already tracked under a gate category
+                // (KBP, UBR, UP, UF). Gate-failed methods in userTypes have stubs generated
+                // here but were already tracked under their specific gate category.
+                if (_stubAnalyzer == null || !_stubAnalyzer.IsStubbed(method.CppName))
+                {
+                    TrackStubWithAnalysis(method, "missing method body (runtime-provided/unreachable)",
+                        StubRootCause.MissingBody,
+                        method.IrStubReason ?? "runtime-provided or unreachable");
+                }
                 sb.AppendLine($"{sig} {{");
                 if (method.ReturnTypeCpp == "void" || string.IsNullOrEmpty(method.ReturnTypeCpp))
                     sb.AppendLine("    // TODO: compile from IL");

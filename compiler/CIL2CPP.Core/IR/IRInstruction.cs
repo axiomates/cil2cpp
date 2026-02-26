@@ -58,6 +58,12 @@ public class IRCall : IRInstruction
     public List<string>? VTableParamTypes { get; set; }
     public bool IsInterfaceCall { get; set; }
     public string? InterfaceTypeCppName { get; set; }
+    /// <summary>
+    /// IL parameter key for deferred disambiguation fixup. Set when the disambiguation
+    /// lookup fails at emit time (e.g., type created after body compilation in Pass 3.6).
+    /// Format: "ilParam1,ilParam2" matching DisambiguatedMethodNames key suffix.
+    /// </summary>
+    public string? DeferredDisambigKey { get; set; }
 
     public override string ToCpp()
     {
