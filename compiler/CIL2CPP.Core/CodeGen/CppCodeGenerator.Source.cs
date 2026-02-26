@@ -339,13 +339,11 @@ public partial class CppCodeGenerator
                 var dimTrialSb = new StringBuilder();
                 GenerateMethodImpl(dimTrialSb, method);
                 var dimRendered = dimTrialSb.ToString();
-                if (RenderedBodyHasErrors(dimRendered, method, _knownTypeNames))
+                var dimReReason = GetRenderedBodyErrorReason(dimRendered, method, _knownTypeNames);
+                if (dimReReason != null)
                 {
-                    var renderDetail = _stubAnalyzer != null
-                        ? GetRenderedErrorDetail(dimRendered, method)
-                        : "trial render error";
                     TrackStubWithAnalysis(method, "rendered body has errors",
-                        StubRootCause.RenderedBodyError, renderDetail);
+                        StubRootCause.RenderedBodyError, dimReReason);
                     GenerateStubForMethod(sb, method);
                     continue;
                 }
@@ -381,10 +379,11 @@ public partial class CppCodeGenerator
             var trialSb = new StringBuilder();
             GenerateMethodImpl(trialSb, method);
             var rendered = trialSb.ToString();
-            if (RenderedBodyHasErrors(rendered, method, _knownTypeNames))
+            var reReason = GetRenderedBodyErrorReason(rendered, method, _knownTypeNames);
+            if (reReason != null)
             {
                 var renderDetail = _stubAnalyzer != null
-                    ? GetRenderedErrorDetail(rendered, method)
+                    ? reReason  // Use the exact reason from the check that caught it
                     : "trial render error";
 
                 TrackStubWithAnalysis(method, "rendered body has errors",

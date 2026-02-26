@@ -162,6 +162,8 @@ public partial class IRBuilder
     {
         foreach (var irType in _module.Types)
         {
+            // Skip types already disambiguated — prevents suffix accumulation on re-runs
+            if (!_disambiguatedTypes.Add(irType)) continue;
             // Group methods by their C++ mangled name
             var groups = irType.Methods
                 .GroupBy(m => m.CppName)
@@ -1537,7 +1539,15 @@ public partial class IRBuilder
                 // Address-of expressions (&loc_N, &field) are already native pointers
                 // — conv.i is a no-op, preserving pointer type avoids intptr_t→T* casts
                 var convIEntry = stack.PeekEntry();
-                if (!convIEntry.IsAddressOf)
+                if (convIEntry.IsAddressOf) break;
+                // Pointer values: convert to void* instead of intptr_t.
+                // In .NET, IntPtr and void* are interchangeable (native int = pointer).
+                // Using void* preserves pointer semantics so typed casts at call sites work.
+                // intptr_t is an integer type — MSVC rejects implicit intptr_t→T* casts (C2664).
+                // Bitwise ops already handle void* operands (cast to uintptr_t internally).
+                if (convIEntry.IsPointer)
+                    EmitConversion(block, stack, "void*", ref tempCounter);
+                else
                     EmitConversion(block, stack, "intptr_t", ref tempCounter);
                 break;
             }
@@ -1553,7 +1563,15 @@ public partial class IRBuilder
                 // Address-of expressions (&loc_N, &field) are already native pointers
                 // — conv.u is a no-op, preserving pointer type avoids uintptr_t→T* casts
                 if (convUEntry.IsAddressOf) break;
-                EmitConversion(block, stack, "uintptr_t", ref tempCounter);
+                // Pointer values: convert to void* instead of uintptr_t.
+                // In .NET, UIntPtr and void* are interchangeable (native int = pointer).
+                // Using void* preserves pointer semantics so typed casts at call sites work.
+                // uintptr_t is an integer type — MSVC rejects implicit uintptr_t→T* casts (C2664).
+                // Bitwise ops already handle void* operands (cast to uintptr_t internally).
+                if (convUEntry.IsPointer)
+                    EmitConversion(block, stack, "void*", ref tempCounter);
+                else
+                    EmitConversion(block, stack, "uintptr_t", ref tempCounter);
                 break;
             }
             case Code.Conv_R4:  EmitConversion(block, stack, "float", ref tempCounter); break;

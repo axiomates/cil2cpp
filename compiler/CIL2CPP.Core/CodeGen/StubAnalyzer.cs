@@ -400,9 +400,17 @@ public class StubAnalyzer
         {
             sb.AppendLine("━━━ Rendered Error Impact ━━━");
             sb.AppendLine();
-            foreach (var (error, count) in result.RenderedErrorCounts)
+            // Group RE stubs by detail to show affected method names
+            var reStubsByDetail = _stubs
+                .Where(s => s.RootCause == StubRootCause.RenderedBodyError)
+                .GroupBy(s => s.Detail)
+                .OrderByDescending(g => g.Count())
+                .ToList();
+            foreach (var group in reStubsByDetail)
             {
-                sb.AppendLine($"  {count,6}  {error}");
+                sb.AppendLine($"  {group.Count(),6}  {group.Key}");
+                foreach (var stub in group)
+                    sb.AppendLine($"           → {stub.TypeName}::{stub.MethodName}");
             }
             sb.AppendLine();
         }

@@ -293,7 +293,8 @@ public partial class IRBuilder
     {
         // Fixpoint loop: processing a specialization body may discover new transitive
         // generic method instantiations (e.g., GetNameInlined<Byte> calls FindDefinedIndex<Byte>).
-        var processed = new HashSet<string>();
+        // Uses class-level _processedMethodSpecKeys so this method can be safely re-called
+        // (e.g., from Pass 3.6 re-discovery) without reprocessing already-created methods.
         bool changed = true;
         while (changed)
         {
@@ -302,8 +303,8 @@ public partial class IRBuilder
             var snapshot = _genericMethodInstantiations.ToList();
             foreach (var (key, info) in snapshot)
             {
-                if (processed.Contains(key)) continue;
-                processed.Add(key);
+                if (_processedMethodSpecKeys.Contains(key)) continue;
+                _processedMethodSpecKeys.Add(key);
                 changed = true;
                 ProcessGenericMethodSpecialization(key, info);
             }
@@ -620,8 +621,12 @@ public partial class IRBuilder
         // Second pass: resolve base types, interfaces, HasCctor for generic specializations.
         // Done after all specializations are in the cache so cross-references work
         // (e.g., SpecialWrapper<int> : Wrapper<int> needs Wrapper<int> already cached).
+        // Uses _resolvedGenericTypeKeys to skip already-resolved types on re-invocation
+        // (e.g., from Pass 3.6), preventing duplicate interface entries.
         foreach (var (key, info) in _genericInstantiations)
         {
+            if (_resolvedGenericTypeKeys.Contains(key)) continue;
+            _resolvedGenericTypeKeys.Add(key);
             if (info.CecilOpenType == null) continue;
             if (!_typeCache.TryGetValue(key, out var irType)) continue;
 

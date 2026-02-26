@@ -1627,21 +1627,22 @@ public partial class CppCodeGenerator
     /// Post-render validation: scan the fully rendered C++ body for patterns
     /// that will cause MSVC compilation errors. Used as a final safety net
     /// after all IR-level checks have passed.
+    /// Returns null if no errors, or a reason string describing the detected error.
     /// </summary>
-    private bool RenderedBodyHasErrors(string rendered, IR.IRMethod method, HashSet<string>? knownTypes = null)
+    private string? GetRenderedBodyErrorReason(string rendered, IR.IRMethod method, HashSet<string>? knownTypes = null)
     {
         // Method-level check: __this referenced in static methods
         if (method.IsStatic && rendered.Contains("__this"))
-            return true;
+            return "__this in static method";
 
         // Body-level check: gc_allocate_uninitialized_array returns void*, CompareExchange expects Array*
         if (rendered.Contains("gc_allocate_uninitialized_array") && rendered.Contains("CompareExchange"))
-            return true;
+            return "gc_allocate_uninitialized_array + CompareExchange type mismatch";
 
         // Body-level check: CIL2CPP_FINALLY without CIL2CPP_END_TRY — missing end-of-try-finally
         // causes unclosed braces (C2601 "local function definition is illegal" / C1075 "unmatched {")
         if (rendered.Contains("CIL2CPP_FINALLY") && !rendered.Contains("CIL2CPP_END_TRY"))
-            return true;
+            return "CIL2CPP_FINALLY without END_TRY";
 
         // Body-level check: field access via parameter or ldelema on forward-declared-only types.
         // The ldelema fix (StackEntry type) correctly uses -> for pointer access, but if the
@@ -1657,7 +1658,7 @@ public partial class CppCodeGenerator
                     continue;
                 // Only flag if body accesses fields on this specific parameter
                 if (rendered.Contains($"{param.Name})->f_") || rendered.Contains($"{param.Name}->f_"))
-                    return true;
+                    return $"field access on forward-declared param type '{paramType}'";
             }
             // Check ldelema result: auto __tN = (Type*)array_get_element_ptr(...); __tN->f_
             if (rendered.Contains("array_get_element_ptr"))
@@ -1686,7 +1687,7 @@ public partial class CppCodeGenerator
                         foreach (var t in undefinedTemps)
                         {
                             if (s.Contains($"{t}->f_") || s.Contains($"{t}.f_"))
-                                return true;
+                                return $"ldelema field access on undefined type via {t}";
                         }
                     }
                 }
@@ -1695,17 +1696,31 @@ public partial class CppCodeGenerator
 
         // Body-level check: undeclared Action<Object>.Invoke delegate specialization
         if (rendered.Contains("Action_1_System_Object_Invoke"))
-            return true;
+            return "undeclared Action<Object>.Invoke delegate specialization";
 
         // Body-level check: CancellationToken cast to String* in f_message assignment (BCL IL body bug)
         if (rendered.Contains("CancellationToken") && rendered.Contains("->f_message = (cil2cpp::String*)"))
-            return true;
+            return "CancellationToken cast to String* in f_message assignment";
 
-        // Body-level check: method takes ReadOnlySpan parameters but body calls compareinfo ICalls
-        // that expect String* — the ReadOnlySpan struct can't convert to String*
-        if (rendered.Contains("compareinfo_") && method.Parameters.Any(p =>
-                p.CppTypeName.Contains("ReadOnlySpan_1_")))
-            return true;
+        // Body-level check: ReadOnlySpan parameters passed to compareinfo/ordinal ICalls.
+        // The ICalls expect cil2cpp::String* but ReadOnlySpan<char> is a struct value.
+        // Check if any ReadOnlySpan parameter name appears as an argument to these ICalls.
+        if (method.Parameters.Any(p => p.CppTypeName.StartsWith("System_ReadOnlySpan_1_")))
+        {
+            var spanParamNames = method.Parameters
+                .Where(p => p.CppTypeName.StartsWith("System_ReadOnlySpan_1_"))
+                .Select(p => p.CppName)
+                .ToList();
+            foreach (var ln in rendered.AsSpan().EnumerateLines())
+            {
+                var s = ln.ToString().TrimStart();
+                if (s.Contains("compareinfo_") || s.Contains("ordinal_") || s.Contains("casing_"))
+                {
+                    if (spanParamNames.Any(name => s.Contains(name)))
+                        return $"ReadOnlySpan parameter passed to globalization ICall expecting String*";
+                }
+            }
+        }
 
         // Body-level check: char16_t* pointer division — IL subtracts char16_t* pointers then
         // divides by 2, but in C++ pointer subtraction already gives element count.
@@ -1731,7 +1746,7 @@ public partial class CppCodeGenerator
                     foreach (var t in char16Temps)
                     {
                         if (s.Contains($"{t} / 2"))
-                            return true;
+                            return "char16_t* pointer division by 2";
                     }
                 }
             }
@@ -1805,7 +1820,7 @@ public partial class CppCodeGenerator
                         s.Contains("f_m_fieldType") || s.Contains("f_m_returnType") || s.Contains("f_m_parameters") ||
                         s.Contains("->f_m_declaringType");
                     if (hasAliasedCast && hasFieldAccess)
-                        return true;
+                        return "reflection aliased type field access (RuntimeFieldInfo/RuntimeMethodInfo)";
                 }
             }
         }
@@ -1816,8 +1831,9 @@ public partial class CppCodeGenerator
             var s = line.ToString().TrimStart();
             if (s.Length == 0 || s.StartsWith("//") || s.StartsWith("#")) continue;
 
-            if (RenderedLineHasError(s, knownStringTemps))
-                return true;
+            var lineReason = GetRenderedLineErrorReason(s, knownStringTemps);
+            if (lineReason != null)
+                return lineReason;
 
             // Check for references to undeclared _statics globals
             var staticsIdx = s.IndexOf("_statics.", StringComparison.Ordinal);
@@ -1829,7 +1845,7 @@ public partial class CppCodeGenerator
                     start--;
                 var typeName = s[start..staticsIdx];
                 if (typeName.Length > 0 && knownTypes != null && !knownTypes.Contains(typeName))
-                    return true;
+                    return $"undeclared _statics global for type '{typeName}'";
             }
         }
 
@@ -1862,17 +1878,17 @@ public partial class CppCodeGenerator
                             s.Contains($"array_get<") && s.Contains($"({temp},") ||
                             s.Contains($"array_set<") && s.Contains($"({temp},") ||
                             s.Contains($"array_get_element_ptr({temp},"))
-                            return true;
+                            return $"Object* byref deref {temp} used in array operation";
                         // String operations
                         if (s.Contains($"string_length({temp})"))
-                            return true;
+                            return $"Object* byref deref {temp} used in string_length";
                         // Comparison involving objectDerefTemp (on either side)
                         if (s.Contains($"== {temp}") || s.Contains($"!= {temp}") ||
                             s.Contains($"{temp} ==") || s.Contains($"{temp} !="))
-                            return true;
+                            return $"Object* byref deref {temp} in typed pointer comparison";
                         // Field access on Object* (C2039 — Object has no user fields)
                         if (s.Contains($"{temp}->f_"))
-                            return true;
+                            return $"Object* byref deref {temp} field access (C2039)";
                     }
                 }
             }
@@ -1900,7 +1916,7 @@ public partial class CppCodeGenerator
                     foreach (var temp in mdArrayTemps)
                     {
                         if (s.Contains($"{temp}->f_") || s.Contains($"{temp}.f_"))
-                            return true;
+                            return $"MdArray** temp {temp} field access (C2039)";
                     }
                 }
             }
@@ -1917,7 +1933,7 @@ public partial class CppCodeGenerator
                 // Pattern: FuncName(..., (cil2cpp::MdArray*)(void*)expr) — passing MdArray* to non-array function
                 if (s.Contains("(cil2cpp::MdArray*)(void*)") && !s.StartsWith("auto ") &&
                     !s.Contains("array_") && !s.Contains("= (cil2cpp::MdArray*)"))
-                    return true;
+                    return "MdArray* passed as typed pointer argument (C2664)";
             }
         }
 
@@ -1940,7 +1956,7 @@ public partial class CppCodeGenerator
                     // Only flag if the function signature shows an Object* parameter
                     // (mixed type comparison is the issue)
                     if (method.Parameters.Any(p => p.CppTypeName == "cil2cpp::Object*"))
-                        return true;
+                        return "comparison of unrelated pointer types (C2446)";
                 }
             }
         }
@@ -1972,22 +1988,22 @@ public partial class CppCodeGenerator
                         // __tN = expr == 0 / != 0 / != nullptr (assigns bool to Object*)
                         if (rhs.Contains("== 0") || rhs.Contains("!= 0") ||
                             rhs.Contains("!= nullptr") || rhs.Contains("== nullptr"))
-                            return true;
+                            return $"Object* var __t{v} assigned boolean expression";
                         // __tN = small_int; (assigns int literal to Object*)
                         if (rhs.Length > 0 && rhs.All(c => char.IsDigit(c) || c == '-' || c == '.'))
-                            return true;
+                            return $"Object* var __t{v} assigned int literal";
                         // __tN = expr + expr (arithmetic/bitwise — can't assign int result to Object*)
                         if (rhs.Contains(" + ") || rhs.Contains(" - ") || rhs.Contains(" * ")
                             || rhs.Contains(" / ") || rhs.Contains(" % ") || rhs.Contains(" | ")
                             || rhs.Contains(" & ") || rhs.Contains(" ^ "))
-                            return true;
+                            return $"Object* var __t{v} assigned arithmetic/bitwise result";
                         // __tN = expr < N / expr > N / expr <= N / expr >= N (comparison → bool, not Object*)
                         if (rhs.Contains(" < ") || rhs.Contains(" > ") ||
                             rhs.Contains(" <= ") || rhs.Contains(" >= "))
-                            return true;
+                            return $"Object* var __t{v} assigned comparison result";
                         // __tN = -value (negation of non-pointer value)
                         if (rhs.StartsWith("-") && !rhs.Contains("nullptr") && !rhs.Contains("("))
-                            return true;
+                            return $"Object* var __t{v} assigned negation";
                     }
                 }
             }
@@ -2027,7 +2043,7 @@ public partial class CppCodeGenerator
                         {
                             var rhs = s.Substring($"{varName} = ".Length);
                             if (rhs.StartsWith("(") && rhs.Contains("*)(void*)"))
-                                return true;
+                                return $"non-pointer var {varName} assigned pointer cast";
                         }
                     }
                 }
@@ -2060,7 +2076,7 @@ public partial class CppCodeGenerator
                 }
             }
             if (castVars.Overlaps(plainAssignVars))
-                return true;
+                return "cross-scope temp with cast and plain assignment (incompatible types)";
         }
 
         // Multi-line pattern: pointer variable accessed with dot instead of arrow
@@ -2114,8 +2130,16 @@ public partial class CppCodeGenerator
                     var s2 = line.ToString().TrimStart();
                     foreach (var v in ptrVars)
                     {
-                        if (s2.Contains($"{v}.f_"))
-                            return true;
+                        // Require word boundary: v must not be preceded by alphanumeric/underscore
+                        // to avoid false positives (e.g., "System_String_statics.f_Empty" matching "s.f_")
+                        var dotPattern = $"{v}.f_";
+                        var dotIdx = s2.IndexOf(dotPattern);
+                        if (dotIdx >= 0)
+                        {
+                            // Check that the character before v is NOT alphanumeric or underscore
+                            if (dotIdx == 0 || !char.IsLetterOrDigit(s2[dotIdx - 1]) && s2[dotIdx - 1] != '_')
+                                return $"pointer variable '{v}' accessed with dot instead of arrow";
+                        }
                     }
                 }
             }
@@ -2179,13 +2203,13 @@ public partial class CppCodeGenerator
                                     var thirdArg = argsStr[argStart..].Trim().TrimEnd(';', ')').Trim();
                                     // Flag if 3rd arg is a pointer cast like (Type*)expr
                                     if (thirdArg.Contains("*)"))
-                                        return true;
+                                        return "array_set<non-pointer> with pointer cast value (ref type as value)";
                                     // Flag if 3rd arg is a method parameter with pointer type
                                     // (reference type stored as value in array — needs pointer)
                                     var matchParam = method.Parameters.FirstOrDefault(
                                         p => p.Name == thirdArg && p.CppTypeName.EndsWith("*"));
                                     if (matchParam != null)
-                                        return true;
+                                        return "array_set<non-pointer> with pointer param value (ref type as value)";
                                 }
                             }
                         }
@@ -2201,7 +2225,7 @@ public partial class CppCodeGenerator
                     {
                         // (X*)varName — value-to-pointer cast of array_get result
                         if (s.Contains($"*){v}") && !s.Contains("array_"))
-                            return true;
+                            return $"array_get<non-pointer> result {v} cast to pointer";
                     }
                 }
             }
@@ -2224,7 +2248,7 @@ public partial class CppCodeGenerator
                     p.CppTypeName is "bool" or "void" ||
                     p.CppTypeName.EndsWith("*"));
                 if (!allPrimitive)
-                    return true;
+                    return "System.Numerics DIM with non-primitive params";
                 // Also check return type — non-scalar returns indicate complex DIM logic
                 if (!string.IsNullOrEmpty(method.ReturnTypeCpp) &&
                     method.ReturnTypeCpp != "void" && method.ReturnTypeCpp != "bool" &&
@@ -2237,7 +2261,7 @@ public partial class CppCodeGenerator
                     method.ReturnTypeCpp != "char16_t" && method.ReturnTypeCpp != "intptr_t" &&
                     method.ReturnTypeCpp != "uintptr_t")
                 {
-                    return true;
+                    return "System.Numerics DIM with non-scalar return type";
                 }
             }
         }
@@ -2249,9 +2273,9 @@ public partial class CppCodeGenerator
         if (method.DeclaringType?.ILFullName == "System.Reflection.Pointer" && rendered.Contains("f_ptr"))
         {
             if (method.ReturnTypeCpp is "intptr_t" or "uintptr_t")
-                return true;
+                return "Reflection.Pointer f_ptr void* returned as intptr_t/uintptr_t";
             if (method.Locals.Any(l => l.CppTypeName is "intptr_t" or "uintptr_t") && !rendered.Contains("(intptr_t)") && !rendered.Contains("(uintptr_t)"))
-                return true;
+                return "Reflection.Pointer f_ptr void* assigned to intptr_t/uintptr_t local without cast";
         }
 
         // Method-level: IntPtr/UIntPtr methods try to access f_value field
@@ -2259,13 +2283,13 @@ public partial class CppCodeGenerator
         if (method.DeclaringType?.ILFullName is "System.IntPtr" or "System.UIntPtr")
         {
             if (rendered.Contains("->f_value"))
-                return true;
+                return "IntPtr/UIntPtr ->f_value on scalar alias";
         }
 
         // Method-level: void* parameter assigned to typed field (Span<T> constructors)
         if (rendered.Contains("f_reference = pointer") &&
             method.Parameters.Any(p => p.CppTypeName == "void*"))
-            return true;
+            return "void* param assigned to typed Span f_reference field";
 
         // Note: void* local in intptr_t-returning method gate removed —
         // return value casting now adds (intptr_t) cast at ret instruction.
@@ -2288,7 +2312,7 @@ public partial class CppCodeGenerator
                         foreach (var param in intptrParams)
                         {
                             if (s2.Contains($", {param},") || s2.Contains($", {param})"))
-                                return true;
+                                return $"Span ctor called with intptr_t/uintptr_t param '{param}'";
                         }
                     }
                 }
@@ -2300,99 +2324,99 @@ public partial class CppCodeGenerator
 
         // Method-level: ActivityTracker Guid manipulation with pointer arithmetic type mismatch
         if (method.CppName.Contains("AddIdToGuid"))
-            return true;
+            return "ActivityTracker.AddIdToGuid pointer arithmetic type mismatch";
 
         // Method-level: Encoding GetCharsWithFallback — Span<Char> passed as ReadOnlySpan<Byte>,
         // cross-scope type mismatch between DecoderFallback* and ReadOnlySpan, etc.
         if (method.CppName.Contains("GetCharsWithFallback") &&
             (method.CppName.Contains("UTF8Encoding") || method.CppName.Contains("ASCIIEncoding")))
         {
-            return true;
+            return "Encoding.GetCharsWithFallback Span/ReadOnlySpan cross-scope type mismatch";
         }
 
         // Method-level: EventSource_WriteEventString — EventData* → intptr_t mismatch
         if (method.CppName.Contains("EventSource_WriteEventString"))
         {
-            return true;
+            return "EventSource_WriteEventString EventData* to intptr_t mismatch";
         }
 
         // Method-level: EventProvider_EncodeObject — static_cast<uint64_t>(&pointer) repeated
         if (method.CppName.Contains("EventProvider_EncodeObject"))
         {
-            return true;
+            return "EventProvider_EncodeObject static_cast<uint64_t>(&pointer)";
         }
 
         // Method-level: CancellationToken_ThrowOperationCanceledException — IL maps CancellationToken
         // struct value into f_innerException (Exception*), which is a struct→pointer C2440
         if (method.CppName.Contains("CancellationToken_ThrowOperationCanceledException"))
         {
-            return true;
+            return "CancellationToken struct mapped to Exception* f_innerException (C2440)";
         }
 
         // Method-level: RuntimeResourceSet_GetObject — assigns Dictionary<string,ResourceLocator>*
         // to f_caseInsensitiveTable which is declared as Dictionary<string,Object>*
         if (method.CppName.Contains("RuntimeResourceSet_GetObject"))
         {
-            return true;
+            return "RuntimeResourceSet_GetObject Dictionary generic type mismatch";
         }
 
         // Method-level: Thread.StartCore — references f_priority which doesn't exist on ManagedThread
         if (method.CppName.Contains("Thread_StartCore"))
         {
-            return true;
+            return "Thread.StartCore references f_priority not on ManagedThread";
         }
 
         // Method-level: RuntimeParameterInfo .ctor — references f_MemberImpl which doesn't exist
         // on ManagedParameterInfo (BCL internal field not mapped to runtime struct)
         if (method.CppName.Contains("RuntimeParameterInfo__ctor__System_Reflection_RuntimeParameterInfo_System_Reflection_MemberInfo"))
         {
-            return true;
+            return "RuntimeParameterInfo .ctor references f_MemberImpl not on ManagedParameterInfo";
         }
 
         // Method-level: RegistryKey.GetValue — calls Interop_Advapi32_RegQueryValueEx with
         // int32_t* where uint32_t* is expected (parameter 6 type mismatch)
         if (method.CppName.Contains("RegistryKey_GetValue__System_String_System_Object"))
         {
-            return true;
+            return "RegistryKey.GetValue int32_t* where uint32_t* expected (param 6)";
         }
 
         // Method-level: TraceLoggingDataCollector.AddArray — __t2 declared as pointer then
         // redefined via auto (pre-declared temp conflicts with auto declaration)
         if (method.CppName.Contains("TraceLoggingDataCollector_AddArray"))
         {
-            return true;
+            return "TraceLoggingDataCollector.AddArray pre-declared temp conflicts with auto";
         }
 
         // Method-level: ValueTuple`4<String,...>.GetHashCode — takes &f_Item1/&f_Item4 (String**)
         // and assigns to String* temp variable (address-of ref type field yields double pointer)
         if (method.CppName.Contains("ValueTuple_4_System_String_System_Int32_System_Int32_System_String_GetHashCode"))
         {
-            return true;
+            return "ValueTuple`4<String,...>.GetHashCode &f_Item yields String** assigned to String*";
         }
 
         // Method-level: Interop.Kernel32.LocalFree(void*) — calls LocalFree(IntPtr) overload
         // but void* doesn't implicitly convert to intptr_t in MSVC
         if (method.CppName == "Interop_Kernel32_LocalFree__System_Void")
         {
-            return true;
+            return "Interop.Kernel32.LocalFree void* to intptr_t mismatch";
         }
 
         // Method-level: EventPipe methods using intptr_t fields with Span ctors
         if (method.CppName.Contains("DispatchEventsToEventListeners") ||
             method.CppName.Contains("EventData_SetMetadata"))
-            return true;
+            return "EventPipe intptr_t fields with Span ctors";
 
         // Method-level: BCL's System.TypedReference methods reference internal CLR field layout
         // (_value, _type) that doesn't match our TypedReference struct.
         if (method.CppName.Contains("System_TypedReference_"))
-            return true;
+            return "TypedReference internal field layout";
 
         // Phase II.2: DBNull guard removed — DBNull compiles from BCL IL
 
         // Phase II.5: Pre-declared Thread* temp assigned from ICall returning void*/Object*
         // ExecutionContext methods use Thread.CurrentThread (ICall returns void* but var is Thread*)
         if (rendered.Contains("System_Threading_Thread* __t") && rendered.Contains("Thread_get_CurrentThread"))
-            return true;
+            return "Thread.CurrentThread pre-declared type mismatch";
 
         // Phase III.7: TimeZoneInfo cross-scope check REMOVED — all 52 methods compile fine in MSVC
         // Previously flagged DateTime temps and AdjustmentRule references, but with improved
@@ -2402,7 +2426,7 @@ public partial class CppCodeGenerator
         // Two consecutive switch blocks with auto __tN between them
         if (rendered.Contains("switch (") && rendered.Contains("auto __t") &&
             rendered.Contains("goto IL_003C") && rendered.Contains("goto IL_003E"))
-            return true;
+            return "switch goto-skips-init (C2362)";
 
         // Method-level: GuidResult pointer parameter accessed with dot instead of arrow
         // stfld on by-ref param generates result.f_X instead of result->f_X
@@ -2412,7 +2436,7 @@ public partial class CppCodeGenerator
             {
                 var s2 = line.ToString().TrimStart();
                 if (s2.StartsWith("result.f_"))
-                    return true;
+                    return "GuidResult pointer dot-access";
             }
         }
 
@@ -2443,7 +2467,7 @@ public partial class CppCodeGenerator
                     foreach (var v in primitiveVars)
                     {
                         if (s.Contains($"{v}.f_"))
-                            return true;
+                            return "primitive-typed pre-declared with dot-access";
                     }
                 }
             }
@@ -2461,7 +2485,7 @@ public partial class CppCodeGenerator
                         && !call.FunctionName.EndsWith("_ensure_cctor")
                         && call.FunctionName.Contains("__") // disambiguated name
                         && !_declaredFunctionNames.Contains(call.FunctionName))
-                        return true;
+                        return $"undeclared disambiguated function: {call.FunctionName}";
                 }
             }
         }
@@ -2497,7 +2521,7 @@ public partial class CppCodeGenerator
                         var prefix = s[..idx].Trim();
                         if (prefix.Length > 0 && prefix != "auto" && !prefix.Contains("Object*")
                             && !prefix.StartsWith("//") && !prefix.StartsWith("#"))
-                            return true;
+                            return "Object* pre-declared temp redeclared as struct (C2086)";
                     }
                 }
             }
@@ -2560,6 +2584,12 @@ public partial class CppCodeGenerator
                             // Skip Buffer_Memmove — its size parameter IS uintptr_t/size_t
                             if (s.Contains("Buffer_Memmove"))
                                 continue;
+                            // Skip to_unsigned/to_signed — integer conversion templates accept any integer type
+                            if (s.Contains("to_unsigned(") || s.Contains("to_signed("))
+                                continue;
+                            // Skip checked_conv — checked conversion templates accept any numeric type
+                            if (s.Contains("checked_conv"))
+                                continue;
                             if (s.StartsWith("auto "))
                             {
                                 // Skip simple assignments: auto __tM = (__tN); or auto __tM = __tN;
@@ -2573,32 +2603,33 @@ public partial class CppCodeGenerator
                                 // Skip static_cast — integer-to-integer conversion, not a function call
                                 if (s.Contains("static_cast<"))
                                     continue;
-                                return true; // function call result: auto __tM = func(__tN, ...);
+                                return "uintptr_t/intptr_t temp in function call";
                             }
-                            return true;
+                            return "uintptr_t/intptr_t temp passed as function arg";
                         }
                         // Assigned to void* variable
                         foreach (var v in voidPtrVars)
                         {
                             if (s == $"{v} = {t};")
-                                return true;
+                                return "uintptr_t/intptr_t assigned to void* variable";
                         }
                     }
                 }
             }
         }
 
-        return false;
+        return null;
     }
 
     /// <summary>
     /// Check a single rendered C++ line for patterns that would cause MSVC errors.
+    /// Returns null if no error, or a reason string describing the detected error.
     /// </summary>
-    private static bool RenderedLineHasError(string s, HashSet<string>? knownStringTemps = null)
+    private static string? GetRenderedLineErrorReason(string s, HashSet<string>? knownStringTemps = null)
     {
         // Pattern: &variable = (assigning to address-of, invalid l-value)
         if (s.StartsWith("&") && s.Contains(" = "))
-            return true;
+            return "&variable = (assigning to address-of, invalid l-value)";
 
         // Pattern: ->f_m_value on primitive types (System_Single = float, System_Double = double)
         // These are aliased to C++ primitives and don't have the f_m_value field.
@@ -2619,25 +2650,22 @@ public partial class CppCodeGenerator
                     || prefix.Contains("int32_t") || prefix.Contains("int64_t") || prefix.Contains("float")
                     || prefix.Contains("double") || prefix.Contains("bool") || prefix.Contains("char16_t")
                     || prefix.Contains("uint8_t") || prefix.Contains("int8_t"))
-                    return true;
+                    return "(non-primitives have valid f_m_value struct fields)";
             }
         }
 
-        // Pattern: Interop_Globalization_ calls with wrong pointer types
-        // BCL code passes typed pointers (uint32_t*, uint64_t*, struct*) where uint8_t* expected
-        // Note: Interop_GetRandomBytes REMOVED — callers now correctly cast to (uint8_t*)
-        if (s.Contains("Interop_Globalization_"))
-            return true;
+        // Interop_Globalization_ check REMOVED — CastArgumentsToParameterTypes now handles
+        // pointer type casts at call sites (originally caught Interop_GetRandomBytes mismatch).
         // Note: RuntimeHelpers.CreateSpan<T>(RuntimeFieldHandle) is now intercepted in IRBuilder
         // and produces inline span init code. Only catch unintercepted CreateSpan calls.
         // Exclude function definitions (end with '{') — the function name itself contains CreateSpan.
         if (s.Contains("RuntimeHelpers_CreateSpan") && s.Contains("(") && !s.Contains("f_reference")
             && !s.TrimEnd().EndsWith("{"))
-            return true;
+            return "and produces inline span init code. Only catch unintercepted CreateSpan calls.";
 
         // Pattern: string_length called with non-String arg (Object* from array_get)
         if (s.Contains("string_length(cil2cpp::array_get<"))
-            return true;
+            return "string_length called with non-String arg (Object* from array_get)";
 
         // Pattern: array operations on Object* — byref deref produces Object*
         // but array_length/array_get/array_set/array_get_element_ptr need Array*
@@ -2645,21 +2673,21 @@ public partial class CppCodeGenerator
             s.Contains("array_get<") && s.Contains("(*(cil2cpp::Object**)") ||
             s.Contains("array_set<") && s.Contains("(*(cil2cpp::Object**)") ||
             s.Contains("array_get_element_ptr(*(cil2cpp::Object**)"))
-            return true;
+            return "but array_length/array_get/array_set/array_get_element_ptr need Array*";
         // array_set with 0 as first arg (null array pointer)
         if (s.Contains("array_set<") && s.Contains(">(0,"))
-            return true;
+            return "array_set with 0 as first arg (null array pointer)";
 
         // Pattern: OperationCanceledException.f_cancellationToken is void* in runtime
         if (s.Contains("f_cancellationToken") && !s.Contains("(void*)") && !s.Contains("nullptr")
             && !s.Contains("//"))
-            return true;
+            return "OperationCanceledException.f_cancellationToken is void* in runtime";
 
         // Pattern: GetLocaleInfoEx — BCL code passes int32_t* where char16_t* expected
         // Only match actual calls (not function definitions which end with '{')
         if ((s.Contains("Interop_Kernel32_GetLocaleInfoEx(") || s.Contains("Interop_Kernel32_GetLocaleInfoExInt("))
             && !s.TrimEnd().EndsWith("{"))
-            return true;
+            return "GetLocaleInfoEx — BCL code passes int32_t* where char16_t* expected";
 
         // Pattern: AsyncLocal<T>.ctor called with wrong arg count (2 args for 1-arg ctor
         // mapped to no-arg ctor name). Exclude function definition lines (ending with '{').
@@ -2674,14 +2702,14 @@ public partial class CppCodeGenerator
                 var afterParen = s[(parenIdx + 1)..];
                 var closeIdx = afterParen.IndexOf(')');
                 if (closeIdx >= 0 && afterParen[..closeIdx].Contains(','))
-                    return true; // multi-arg call to no-arg ctor name — wrong overload resolution
+                    return "multi-arg call to no-arg ctor name — wrong overload resolution"; // multi-arg call to no-arg ctor name — wrong overload resolution
             }
         }
 
         // Pattern: broken type name from function pointer mishandling
         // e.g., "methodSystem_Void*" or "reinterpret_cast<void(*)"
         if (s.Contains("methodSystem_") || s.Contains("reinterpret_cast<void(*)("))
-            return true;
+            return "broken type name from function pointer mishandling";
 
         // Pattern: f_innerException = (cil2cpp::Exception*)<value_type>
         // Only flag when the cast source is a value type variable (not a pointer).
@@ -2702,7 +2730,7 @@ public partial class CppCodeGenerator
                     val.All(c => char.IsLetterOrDigit(c) || c == '_') &&
                     !val.Contains(".f_");
                 if (!isSimpleIdentifier && !val.StartsWith("("))
-                    return true;
+                    return "between pointer types. Only flag struct field access patterns.";
             }
         }
 
@@ -2721,13 +2749,13 @@ public partial class CppCodeGenerator
         // Also catches definitions — some variants call nested PInvoke helpers that may have no body
         // FIXME: fix PInvoke helper body generation for _g____PInvoke variants, then exclude definitions
         if (s.Contains("Interop_Kernel32_GetCalendarInfoEx") || s.Contains("Interop_Kernel32_GetCalendarInfoW"))
-            return true;
+            return "fix PInvoke helper body generation for _g____PInvoke variants, then exclude d...";
 
         // Pattern: enum type pointer cast where value expected
         // e.g., (System_Resources_UltimateResourceFallbackLocation*)__t5 in function args
         // These appear when ldflda/ldloca produces an address but callee expects value
         if (s.Contains("UltimateResourceFallbackLocation*)"))
-            return true;
+            return "These appear when ldflda/ldloca produces an address but callee expects value";
 
         // Phase II.1: CalendarId guard removed — CalendarId compiles as enum from IL
 
@@ -2748,9 +2776,9 @@ public partial class CppCodeGenerator
             // If identifier is followed by '*)&' or '*)<expr>' without void* → byref address-of → safe
             // If identifier is followed by ')' without '*' → function pointer param type → safe
             if (endIdx + 9 <= s.Length && s.Substring(endIdx, 9) == "*)(void*)")
-                return true; // (SpanType*)(void*) — pointer cast to Span through void*
+                return "(SpanType*)(void*) — pointer cast to Span through void*"; // (SpanType*)(void*) — pointer cast to Span through void*
             if (endIdx >= s.Length)
-                return true; // truncated line — flag as error
+                return "truncated line — flag as error"; // truncated line — flag as error
         }
 
         // Pattern: missing this pointer — function call where first arg is small int
@@ -2760,9 +2788,9 @@ public partial class CppCodeGenerator
             !s.Contains("GuidResult_SetFailure(result") &&
             !s.Contains("GuidResult_SetFailure(&") && !s.Contains("GuidResult_SetFailure(loc_") &&
             !s.Contains("GuidResult_SetFailure(__"))
-            return true;
+            return "Detect: GuidResult_SetFailure(7, or GetLocaleInfoFromLCType(4099,";
         if (s.Contains("GetLocaleInfoFromLCType(") && char.IsDigit(s[s.IndexOf("GetLocaleInfoFromLCType(") + 24]))
-            return true;
+            return "Detect: GuidResult_SetFailure(7, or GetLocaleInfoFromLCType(4099,";
         // Pattern: ValueListBuilder method called with wrong this (literal instead of pointer)
         // Skip function definition lines (ending with '{').
         if (s.Contains("ValueListBuilder_1_") && !s.TrimEnd().EndsWith("{"))
@@ -2773,14 +2801,14 @@ public partial class CppCodeGenerator
                 var afterParen = s[(fnEnd + 1)..].TrimStart();
                 // Only flag if first arg is a literal (digit or string), not a variable/param
                 if (afterParen.Length > 0 && (char.IsDigit(afterParen[0]) || afterParen[0] == '"'))
-                    return true;
+                    return "ValueListBuilder method called with wrong this (literal instead of pointer)";
             }
         }
 
         // Pattern: array_data result cast to wrong pointer depth
         // e.g., f_reference = (cil2cpp::Object*)cil2cpp::array_data(  — should be Object**
         if (s.Contains("= (cil2cpp::Object*)cil2cpp::array_data("))
-            return true;
+            return "e.g., f_reference = (cil2cpp::Object*)cil2cpp::array_data(  — should be Object**";
 
         // Pattern: Span type confusion in function argument
         // Span_1_System_Char passed where ReadOnlySpan_1_System_Byte expected
@@ -2792,18 +2820,18 @@ public partial class CppCodeGenerator
             var firstParen = s.IndexOf('(');
             if (firstParen < 0 || !(s[..firstParen].Contains("Span_1_System_Char") &&
                                      s[..firstParen].Contains("ReadOnlySpan_1_System_Byte")))
-                return true;
+                return "and lines where both types appear in the function name (before first '(')";
         }
 
         // Pattern: static_cast<uint64_t>(ptr) — pointer to uint64 needs reinterpret_cast
         // Only flag when the argument looks like a pointer variable (contains * or ->)
         // Don't flag integer widening conversions like static_cast<uint64_t>(count)
         if (s.Contains("static_cast<uint64_t>(") && (s.Contains("->") || s.Contains("*)")))
-            return true;
+            return "Don't flag integer widening conversions like static_cast<uint64_t>(count)";
 
         // Pattern: Guid* subtracted from uint8_t* (pointer arithmetic type mismatch)
         if (s.Contains("System_Guid*") && s.Contains("uint8_t*") && s.Contains("-"))
-            return true;
+            return "Guid* subtracted from uint8_t* (pointer arithmetic type mismatch)";
 
         // Pattern: interface type assignment (class* → interface*)
         // CultureInfo* → IFormatProvider*, etc.
@@ -2817,11 +2845,11 @@ public partial class CppCodeGenerator
         // (((Type*)0))->field = value; — dereferencing null pointer
         // Only flag when followed by member access (-> or .), not just passing null as arg
         if (s.Contains("*)0))->") || s.Contains("*)0))."))
-            return true;
+            return "(((Type*)0))->field = value; — dereferencing null pointer";
 
         // Pattern: void* dot access — lParam.f_X when lParam is void*
         if (s.Contains("lParam.f_"))
-            return true;
+            return "void* dot access — lParam.f_X when lParam is void*";
 
         // NOTE: volatile_write type mismatch and nullptr ambiguity checks removed —
         // runtime template uses std::type_identity_t<T> for second param, so T is deduced
@@ -2829,7 +2857,7 @@ public partial class CppCodeGenerator
 
         // Pattern: unbox_ptr/array_get_element_ptr result accessed with dot instead of arrow
         if ((s.Contains("unbox_ptr<") || s.Contains("array_get_element_ptr(")) && s.Contains(").f_"))
-            return true;
+            return "unbox_ptr/array_get_element_ptr result accessed with dot instead of arrow";
 
         // Note: Decimal/Int128/UInt128/Half operators are caught at method-level
         // by the System.Numerics interface DIM pattern in RenderedBodyHasErrors
@@ -2837,16 +2865,16 @@ public partial class CppCodeGenerator
         // Pattern: unbox/unbox_ptr with trailing underscore in type name (mangling mismatch)
         // e.g., unbox<System_ValueTuple_4_..._String_> — trailing _ before > is always wrong
         if ((s.Contains("unbox<") || s.Contains("unbox_ptr<")) && s.Contains("_>"))
-            return true;
+            return "e.g., unbox<System_ValueTuple_4_..._String_> — trailing _ before > is always ...";
 
         // Pattern: double trailing underscore from nested generic mangling (>>→__)
         // e.g., List_1_WeakReference_1_EventSource__*) — the __ before *) is wrong
         if (s.Contains("__*)") || s.Contains("__*>"))
-            return true;
+            return "e.g., List_1_WeakReference_1_EventSource__*) — the __ before *) is wrong";
 
         // Pattern: VerificationException undeclared type
         if (s.Contains("VerificationException"))
-            return true;
+            return "VerificationException undeclared type";
 
         // Pattern: GCHandle_Alloc with int first arg (should be Object*)
         // Handle disambiguated names: GCHandle_Alloc__System_Object_...(2, 1)
@@ -2859,33 +2887,33 @@ public partial class CppCodeGenerator
             {
                 var afterParen = s[(parenIdx + 1)..].TrimStart();
                 if (afterParen.Length > 0 && (char.IsDigit(afterParen[0]) || afterParen[0] == '-'))
-                    return true;
+                    return "Handle disambiguated names: GCHandle_Alloc__System_Object_...(2, 1)";
             }
         }
 
         // Pattern: DataCollector methods with wrong this pointer (args shifted)
         if (s.Contains("DataCollector_Add") && s.Contains("(loc_") && !s.Contains("DataCollector*"))
-            return true;
+            return "DataCollector methods with wrong this pointer (args shifted)";
 
         // Pattern: void* to intptr_t/uintptr_t conversion (needs reinterpret_cast)
         if ((s.Contains("loc_0 = __t") || s.Contains("return __t")) && s.Contains("ToPointer"))
-            return true;
+            return "void* to intptr_t/uintptr_t conversion (needs reinterpret_cast)";
 
         // Pattern: Calendar-derived to Calendar-base assignment without cast
         if (s.Contains("GregorianCalendar*") && s.Contains("Calendar*") && s.Contains("= __t"))
-            return true;
+            return "Calendar-derived to Calendar-base assignment without cast";
 
         // Pattern: Enum as value type in function arg (it's a reference type)
         if (s.Contains("System_Enum_GetValue(") && !s.Contains("System_Enum*"))
-            return true;
+            return "Enum as value type in function arg (it's a reference type)";
 
         // Pattern: pointer-parameter dot-access (EventSourceOptions* → options.f_X)
         if (s.Contains("options.f_") && !s.Contains("->"))
-            return true;
+            return "pointer-parameter dot-access (EventSourceOptions* → options.f_X)";
 
         // Pattern: intptr_t/uint8_t* pointer mismatch in reflection/tracing
         if (s.Contains("_GetPropertyOrFieldData(") || s.Contains("set_DataPointer("))
-            return true;
+            return "intptr_t/uint8_t* pointer mismatch in reflection/tracing";
 
         // Pattern: CustomAttributeData comparison with Object*
         // The comparison line itself may not mention the type — it just has "obj == __this"
@@ -2894,35 +2922,35 @@ public partial class CppCodeGenerator
 
         // Pattern: CancellationToken struct in OperationCanceledException ctor
         if (s.Contains("OperationCanceledException__ctor") && s.Contains("CancellationToken"))
-            return true;
+            return "CancellationToken struct in OperationCanceledException ctor";
 
         // Pattern: InformThreadNameChange with wrong first arg (String* instead of ThreadHandle)
         if (s.Contains("InformThreadNameChange(") && !s.Contains("ThreadHandle"))
-            return true;
+            return "InformThreadNameChange with wrong first arg (String* instead of ThreadHandle)";
 
         // Pattern: DBNull* comparison with Object* (unrelated pointer types)
         if (s.Contains("DBNull*") && (s.Contains("!=") || s.Contains("==")))
-            return true;
+            return "DBNull* comparison with Object* (unrelated pointer types)";
 
         // Pattern: VectorMath hardware intrinsic types (JIT intrinsic, no IL body)
         // Note: Vector128_1_ removed — Vector types now have scalar fallback struct definitions
         if (s.Contains("VectorMath_"))
-            return true;
+            return "Note: Vector128_1_ removed — Vector types now have scalar fallback struct def...";
 
         // Pattern: TypedReference passed as void* — it's a struct, not a pointer
         if (s.Contains("TypedReference") && s.Contains("GetTypeFromHandle"))
-            return true;
+            return "TypedReference passed as void* — it's a struct, not a pointer";
 
         // Pattern: FreeCoTaskMem — BCL passes raw pointers (uint8_t*, uint16_t*) where intptr_t expected
         if (s.Contains("FreeCoTaskMem(") && !s.Contains("(intptr_t)"))
-            return true;
+            return "FreeCoTaskMem — BCL passes raw pointers (uint8_t*, uint16_t*) where intptr_t ...";
 
         // Pattern: void* pointer arithmetic (void has unknown size)
         // e.g., __t3 + index where __t3 is void*
         // Note: IntPtr.ToPointer is now an ICall, but callers still produce void* values
         // that may be used in pointer arithmetic. Keep the gate for now.
         if (s.Contains("ToPointer("))
-            return true;
+            return "that may be used in pointer arithmetic. Keep the gate for now.";
 
         // Phase III.7: Span_1_System_TimeZoneInfo_AdjustmentRule check REMOVED — compiles fine in MSVC
 
@@ -2931,27 +2959,27 @@ public partial class CppCodeGenerator
         // where a value is expected. Pointer-to-pointer casts like (ResourceTypeCode*)typeCode
         // are valid when the variable is already ResourceTypeCode*.
         if (s.Contains("ResourceTypeCode*)&"))
-            return true;
+            return "are valid when the variable is already ResourceTypeCode*.";
 
         // Pattern: MethodTable field access — JIT internal structure not fully supported
         if (s.Contains("f_ComponentSize") || s.Contains("f_BaseSize") ||
             (s.Contains("f_Flags") && s.Contains("MethodTable")))
-            return true;
+            return "MethodTable field access — JIT internal structure not fully supported";
 
         // Pattern: TypeHandle/MethodTable JIT internals — bitwise ops on void* (f_m_asTAddr)
         if (s.Contains("f_m_asTAddr"))
-            return true;
+            return "TypeHandle/MethodTable JIT internals — bitwise ops on void* (f_m_asTAddr)";
         // Pattern: TypeHandle__ctor with intptr_t arg (needs void*, not intptr_t)
         if (s.Contains("TypeHandle__ctor(") || s.Contains("TypeHandle_TypeHandleOf"))
-            return true;
+            return "TypeHandle__ctor with intptr_t arg (needs void*, not intptr_t)";
 
         // Pattern: RuntimeMethodHandle_InvokeMethod — callers pass intptr_t* but it needs void**
         if (s.Contains("RuntimeMethodHandle_InvokeMethod("))
-            return true;
+            return "RuntimeMethodHandle_InvokeMethod — callers pass intptr_t* but it needs void**";
 
         // Pattern: enum pointer passed where enum value expected (InvokerStrategy)
         if (s.Contains("InvokerStrategy*)"))
-            return true;
+            return "enum pointer passed where enum value expected (InvokerStrategy)";
 
         // Pattern: string_length with array_get result (Object* not String*)
         if (s.Contains("string_length(") && !s.Contains("string_length((cil2cpp::String*)"))
@@ -2973,7 +3001,7 @@ public partial class CppCodeGenerator
                     var tempName = afterParen[..endIdx];
                     // Only flag if the temp is NOT known to be String*
                     if (knownStringTemps == null || !knownStringTemps.Contains(tempName))
-                        return true;
+                        return "Extract the variable name (__tN)";
                 }
                 // Also allow: string_length(loc_N) and string_length(paramName) — locals and
                 // params of String* type are safe
@@ -2983,18 +3011,18 @@ public partial class CppCodeGenerator
 
         // Pattern: SpanHelpers pointer alignment — bitwise AND of pointer with integer (C2296)
         if (s.Contains("SpanHelpers_UnalignedCount"))
-            return true;
+            return "SpanHelpers pointer alignment — bitwise AND of pointer with integer (C2296)";
 
         // NOTE: TimeSpanFormat_FormatG/FormatC pattern removed — the functions are declared as stubs
         // and calls to them are valid C++. The stubs themselves have wrong arg order, but callers are fine.
 
         // Pattern: EventPipeMetadataGenerator_WriteToBuffer — char16_t* → uint8_t* mismatch
         if (s.Contains("EventPipeMetadataGenerator_WriteToBuffer("))
-            return true;
+            return "EventPipeMetadataGenerator_WriteToBuffer — char16_t* → uint8_t* mismatch";
 
         // Pattern: GetThreadIOPendingFlag with wrong arg types
         if (s.Contains("GetThreadIOPendingFlag("))
-            return true;
+            return "GetThreadIOPendingFlag with wrong arg types";
 
         // Pattern: ReadUnalignedI4 — REMOVED: body compiles fine (creates ReadOnlySpan + calls BinaryPrimitives).
         // The old check caught the function's own definition line. Callers pass (int32_t*)(void*) which is valid.
@@ -3007,7 +3035,7 @@ public partial class CppCodeGenerator
             var idx = s.IndexOf("Marshal_FreeHGlobal(") + "Marshal_FreeHGlobal(".Length;
             var arg = s[idx..].TrimStart();
             if (arg.StartsWith("__t") || arg.StartsWith("loc_") || arg.StartsWith("__this"))
-                return true;
+                return "Pointer arg passed where intptr_t expected → C2664";
         }
 
         // Pattern: ValueStringBuilder — wrong this pointer (String* instead of VSB*)
@@ -3023,7 +3051,7 @@ public partial class CppCodeGenerator
                 // First arg should be a pointer expression: &loc_, __this, __tN, param name, cast
                 // Only flag if it starts with a digit (integer literal) or quote (string literal)
                 if (afterParen.Length > 0 && (char.IsDigit(afterParen[0]) || afterParen[0] == '"'))
-                    return true;
+                    return "First arg should be a pointer expression: &loc_, __this, __tN, param name, cast";
             }
         }
 
@@ -3042,20 +3070,20 @@ public partial class CppCodeGenerator
                     var arg = s[argStart..argEnd].Trim();
                     // If the argument starts with & (address-of), it's a pointer
                     if (arg.StartsWith("&"))
-                        return true;
+                        return "If the argument starts with & (address-of), it's a pointer";
                 }
             }
         }
 
         // Pattern: EventProvider_WriteEvent with pointer→intptr_t mismatch
         if (s.Contains("EventProvider_WriteEvent") && s.Contains("EventData*"))
-            return true;
+            return "EventProvider_WriteEvent with pointer→intptr_t mismatch";
 
         // Pattern: SearchValues_TryGetSingleRange — Span<Char> inline init bug: generic specialization
         // uses Span<Char> where Span<bool> is needed → bool*/char16_t* type mismatch in f_reference.
         // FIXME: fix the Span inline init type inference in IRBuilder
         if (s.Contains("SearchValues_TryGetSingleRange"))
-            return true;
+            return "fix the Span inline init type inference in IRBuilder";
 
         // Pattern: static_cast<uint64_t>(pointer_param) — pointer parameter cast to uint64
         // UnmanagedMemoryStream_Initialize has static_cast<uint64_t>(pointer) where pointer is uint8_t*
@@ -3076,56 +3104,56 @@ public partial class CppCodeGenerator
                         && !arg.StartsWith("__t") && !arg.StartsWith("loc_")
                         && (arg.Contains("ptr") || arg.Contains("Ptr") || arg.Contains("pointer")
                             || arg.Contains("buffer") || arg.Contains("Buffer")))
-                        return true;
+                        return "If the arg is a parameter name (not a number/expression), flag it";
                 }
             }
         }
 
         // Pattern: DONT_USE_InternalThread field — not part of ManagedThread struct
         if (s.Contains("f_DONT_USE_InternalThread"))
-            return true;
+            return "DONT_USE_InternalThread field — not part of ManagedThread struct";
 
         // Pattern: StringBuilder_Append ambiguous overload (char, int vs char16_t, int)
         // When first arg is 0 (int literal), MSVC can't choose between char and char16_t overloads
         if (s.Contains("StringBuilder_Append__System_Char_System_Int32") && s.Contains(", 0,"))
-            return true;
+            return "When first arg is 0 (int literal), MSVC can't choose between char and char16_...";
 
         // Dictionary generic type mismatch handled at method level (RuntimeResourceSet_GetObject)
 
         // Pattern: (void*) applied to negated primitive — boxing a negated double/float
         // e.g., (cil2cpp::Object*)(void*)-value where value is double/float → C2440
         if (s.Contains("(void*)-") && !s.Contains("(void*)->"))
-            return true;
+            return "e.g., (cil2cpp::Object*)(void*)-value where value is double/float → C2440";
 
         // Pattern: void* parameter arrow-access — lParam->f_X when lParam is void*
         // void* cannot be dereferenced (existing check only covers dot-access lParam.f_)
         if (s.Contains("lParam->f_"))
-            return true;
+            return "void* cannot be dereferenced (existing check only covers dot-access lParam.f_)";
 
         // Pattern: ReadOnlySpan passed to compareinfo ICall expecting String*
         // BCL calls compareinfo with ReadOnlySpan<char> but our ICall takes cil2cpp::String*
         if (s.Contains("ReadOnlySpan_1_System_Char") && s.Contains("compareinfo_"))
-            return true;
+            return "BCL calls compareinfo with ReadOnlySpan<char> but our ICall takes cil2cpp::St...";
 
         // Pattern: char16_t pointer division — pointer arithmetic error
         // e.g., (char16_t*) ... / 2 → C2296 pointer division is invalid
         if (s.Contains("char16_t*") && s.Contains("/ 2"))
-            return true;
+            return "e.g., (char16_t*) ... / 2 → C2296 pointer division is invalid";
 
         // Pattern: ExceptionHandlingClauseOptions_TypeInfo — undeclared reflection enum TypeInfo
         if (s.Contains("ExceptionHandlingClauseOptions_TypeInfo"))
-            return true;
+            return "ExceptionHandlingClauseOptions_TypeInfo — undeclared reflection enum TypeInfo";
 
         // Pattern: RuntimeMethodInfo/RuntimeConstructorInfo __ctor — undeclared constructor calls
         // These runtime-provided types don't have generated constructors
         if (s.Contains("RuntimeMethodInfo__ctor(") || s.Contains("RuntimeConstructorInfo__ctor("))
-            return true;
+            return "These runtime-provided types don't have generated constructors";
 
         // Pattern: Interlocked.CompareExchange<IntPtr> called with pointer argument
         // BCL IL passes conv.i (ptr→intptr_t) but codegen may pass raw pointer
         if (s.Contains("Interlocked_CompareExchange__System_IntPtr") &&
             s.Contains("overlapped", StringComparison.OrdinalIgnoreCase))
-            return true;
+            return "BCL IL passes conv.i (ptr→intptr_t) but codegen may pass raw pointer";
 
         // Pattern: delegate invoke with Object* arg where typed pointer expected (C2664).
         // NOTE: IRDelegateInvoke.ToCpp() now inserts (Type*)(void*) casts for all typed
@@ -3146,13 +3174,13 @@ public partial class CppCodeGenerator
                         var p = part.Trim();
                         if (p.EndsWith("*") && !p.Contains("cil2cpp::Object*")
                             && !p.Contains("void*"))
-                            return true;
+                            return "line contains cil2cpp::Object*";
                     }
                 }
             }
         }
 
-        return false;
+        return null;
     }
 
     /// <summary>

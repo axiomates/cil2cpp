@@ -284,6 +284,12 @@ public partial class IRBuilder
 
     // Generic method instantiation tracking
     private readonly Dictionary<string, GenericMethodInstantiationInfo> _genericMethodInstantiations = new();
+    // Keys already processed by CreateGenericMethodSpecializations — allows safe re-invocation
+    private readonly HashSet<string> _processedMethodSpecKeys = new();
+    // Keys already processed by the second pass of CreateGenericSpecializations (base types, interfaces)
+    private readonly HashSet<string> _resolvedGenericTypeKeys = new();
+    // Types already processed by DisambiguateOverloadedMethods — prevents re-disambiguation
+    private readonly HashSet<IRType> _disambiguatedTypes = new();
 
     private record GenericMethodInstantiationInfo(
         string DeclaringTypeName,
@@ -521,6 +527,52 @@ public partial class IRBuilder
 
         // Pass 3.5: Create specialized methods for each generic method instantiation
         CreateGenericMethodSpecializations();
+
+        // Pass 3.6: Re-discover generic types from Pass 3.4/3.5 body conversions.
+        // Method bodies compiled in Pass 3.4 (deferred generic type bodies) and Pass 3.5
+        // (generic method specializations) may reference generic types that were not
+        // discovered in Pass 0.5 (before those bodies existed).
+        //
+        // This pass creates type shells and method DECLARATIONS only — no body compilation.
+        // Stub bodies are generated so methods are declared in the header (reducing
+        // UndeclaredFunction stubs). Full body compilation is intentionally skipped because:
+        // 1. New bodies may reference types not yet in the module → C++ compilation errors
+        // 2. Newly discovered types need the full pass pipeline (disambiguation, vtables,
+        //    interface impls) which is expensive to re-run
+        // 3. The primary goal is reducing UF by having function declarations exist
+        {
+            var scannedTypeKeys = new HashSet<string>();
+            var scannedMethodKeys = new HashSet<string>();
+            int prevTypeCount;
+            do
+            {
+                prevTypeCount = _genericInstantiations.Count;
+
+                DiscoverTransitiveGenericTypes(scannedTypeKeys);
+                DiscoverTransitiveGenericTypesFromMethods(scannedMethodKeys);
+
+                if (_genericInstantiations.Count > prevTypeCount)
+                {
+                    CreateGenericSpecializations();
+                    // Create nested type specializations for newly discovered parent types
+                    int prevNestedCount;
+                    do
+                    {
+                        prevNestedCount = _genericInstantiations.Count;
+                        CreateNestedGenericSpecializations();
+                    } while (_genericInstantiations.Count > prevNestedCount);
+                    // Re-run disambiguation for newly created types — their methods may
+                    // have C++ name collisions (e.g., overloads with scalar vs SIMD params).
+                    DisambiguateOverloadedMethods();
+                    // Generate stub bodies instead of compiling full bodies.
+                    // This ensures method declarations exist (reducing UF stubs) without
+                    // risking undeclared type references in complex BCL method bodies.
+                    foreach (var (_, irMethod, _) in _deferredGenericBodies)
+                        GenerateStubBody(irMethod);
+                    _deferredGenericBodies.Clear();
+                }
+            } while (_genericInstantiations.Count > prevTypeCount);
+        }
 
         // Pass 4: Build vtables (needs method shells with IsVirtual)
         // Use recursive helper to ensure base types are built before derived types
