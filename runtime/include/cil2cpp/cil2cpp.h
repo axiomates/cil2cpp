@@ -37,6 +37,7 @@
 #include "waithandle.h"
 #include "io.h"
 #include "eventsource.h"
+#include "interop_stubs.h"
 
 // BCL types
 #include "bcl/System.Object.h"

@@ -1399,6 +1399,40 @@ public partial class IRBuilder
         // virtual/abstract interface members. Resolve to the constrained type's implementation.
         if (constrainedType != null && !methodRef.HasThis && mappedName == null)
         {
+            var constrainedCppType = CppNameMapper.GetCppTypeName(
+                ResolveTypeRefOperand(constrainedType));
+            bool isPrimitive = IsCppPrimitiveType(constrainedCppType);
+
+            // For primitive types, prefer intrinsic operators/properties over explicit
+            // interface impls. DIM methods (IBitwiseOperators, INumberBase, etc.) may not
+            // have compiled bodies, causing UndeclaredFunction stubs. Intrinsics are always correct.
+            if (isPrimitive)
+            {
+                var cppOp = TryGetIntrinsicOperator(methodRef.Name);
+                if (cppOp != null)
+                {
+                    if (EmitIntrinsicOperator(block, stack, args, irCall, cppOp,
+                        constrainedCppType, ref tempCounter))
+                        return;
+                }
+
+                var intrinsicVal = TryGetIntrinsicNumericProperty(methodRef.Name, constrainedCppType);
+                if (intrinsicVal != null)
+                {
+                    var tmp = $"__t{tempCounter++}";
+                    block.Instructions.Add(new IRRawCpp
+                    {
+                        Code = $"{constrainedCppType} {tmp} = {intrinsicVal};",
+                        ResultVar = tmp,
+                        ResultTypeCpp = constrainedCppType,
+                    });
+                    stack.Push(tmp);
+                    irCall.Arguments.Clear();
+                    args.Clear();
+                    return;
+                }
+            }
+
             var constrainedIrType = _typeCache.GetValueOrDefault(ResolveCacheKey(constrainedType));
             bool resolvedStaticConstraint = false;
             if (constrainedIrType != null)
@@ -1407,10 +1441,17 @@ public partial class IRBuilder
                 // The method name in IL is the interface method name (e.g., "CastFrom"),
                 // but explicit interface impls have names like "System.IUtfChar<System.Char>.CastFrom".
                 // Match by exact name OR by suffix (after the last '.').
+                // NOTE: relaxed BasicBlocks check — method body may not be compiled yet
+                // at the time of constrained call resolution. Deferred generic type bodies
+                // (Pass 3.4) and generic method specializations (Pass 3.5) may reference
+                // each other's methods before bodies are compiled.
                 var staticImpl = constrainedIrType.Methods.FirstOrDefault(m =>
                     m.IsStatic && MatchesMethodName(m.Name, methodRef.Name)
-                    && m.BasicBlocks.Count > 0
                     && ParameterTypesMatchRef(m, methodRef));
+                // Fallback for static abstract interface methods with parameter count only:
+                // when ParameterTypesMatchRef fails (e.g., unresolvable nested generic params),
+                // try matching by param count if there's exactly one candidate.
+                // This is already handled below at the "candidates" check.
                 if (staticImpl != null)
                 {
                     irCall.FunctionName = staticImpl.CppName;
@@ -1432,55 +1473,16 @@ public partial class IRBuilder
             }
 
             // Fallback: if static constrained call wasn't resolved, try operator intrinsics
-            // for primitive types. These are well-known operators from numeric interfaces
+            // for non-primitive types too. These are well-known operators from numeric interfaces
             // (IBitwiseOperators, IComparisonOperators, etc.) that map to C++ operators.
             if (!resolvedStaticConstraint)
             {
                 var cppOp = TryGetIntrinsicOperator(methodRef.Name);
-                if (cppOp != null && args.Count >= 2)
+                if (cppOp != null)
                 {
-                    var tmp = $"__t{tempCounter++}";
-                    var cppType = CppNameMapper.GetCppTypeName(
-                        ResolveTypeRefOperand(constrainedType));
-                    // For bitwise ops on float/double, operate on the integer representation
-                    bool isBitwiseOp = cppOp is "|" or "&" or "^";
-                    bool isFloat = cppType is "float" or "double";
-                    if (isBitwiseOp && isFloat)
-                    {
-                        // Use memcpy to reinterpret float<->int for bitwise ops
-                        var intType = cppType == "float" ? "uint32_t" : "uint64_t";
-                        var a = $"__bw_a{tempCounter}";
-                        var b = $"__bw_b{tempCounter}";
-                        block.Instructions.Add(new IRRawCpp
-                            { Code = $"{intType} {a}; std::memcpy(&{a}, &{args[0]}, sizeof({intType}));" });
-                        block.Instructions.Add(new IRRawCpp
-                            { Code = $"{intType} {b}; std::memcpy(&{b}, &{args[1]}, sizeof({intType}));" });
-                        block.Instructions.Add(new IRRawCpp
-                            { Code = $"{intType} __bw_r{tempCounter} = {a} {cppOp} {b};" });
-                        block.Instructions.Add(new IRRawCpp
-                            { Code = $"{cppType} {tmp}; std::memcpy(&{tmp}, &__bw_r{tempCounter}, sizeof({cppType}));", ResultVar = tmp, ResultTypeCpp = cppType });
-                    }
-                    else
-                    {
-                        block.Instructions.Add(new IRRawCpp
-                            { Code = $"{tmp} = ({cppType})({args[0]} {cppOp} {args[1]});", ResultVar = tmp, ResultTypeCpp = cppType });
-                    }
-                    stack.Push(tmp);
-                    irCall.Arguments.Clear();
-                    args.Clear();
-                    return;
-                }
-                else if (cppOp != null && args.Count == 1)
-                {
-                    var tmp = $"__t{tempCounter++}";
-                    var cppType = CppNameMapper.GetCppTypeName(
-                        ResolveTypeRefOperand(constrainedType));
-                    block.Instructions.Add(new IRRawCpp
-                        { Code = $"{tmp} = ({cppType})({cppOp}{args[0]});", ResultVar = tmp, ResultTypeCpp = cppType });
-                    stack.Push(tmp);
-                    irCall.Arguments.Clear();
-                    args.Clear();
-                    return;
+                    if (EmitIntrinsicOperator(block, stack, args, irCall, cppOp,
+                        constrainedCppType, ref tempCounter))
+                        return;
                 }
             }
         }
@@ -1819,6 +1821,34 @@ public partial class IRBuilder
         var cacheKey = ResolveCacheKey(ctorRef.DeclaringType);
         var typeCpp = GetMangledTypeNameForRef(ctorRef.DeclaringType);
         var tmp = $"__t{tempCounter++}";
+
+        // SIMD Vector<T> newobj — dead code (guarded by IsSupported/IsHardwareAccelerated == false).
+        // Same interception as EmitMethodCall's SIMD no-op (line ~714). Without this,
+        // generic type mismatches (e.g., T=Char → Vector<UInt16>) cause ctor name resolution
+        // failures and param count mismatches in the code generator's gate checks.
+        {
+            var declType = ctorRef.DeclaringType.FullName;
+            // Strip generic instance suffix for pattern matching
+            var rawDeclType = declType.Contains('`') && declType.Contains('<')
+                ? declType[..declType.IndexOf('<')] : declType;
+            if (rawDeclType.StartsWith("System.Runtime.Intrinsics.")
+                || rawDeclType == "System.Numerics.Vector"
+                || rawDeclType.StartsWith("System.Numerics.Vector`"))
+            {
+                // Pop ctor arguments from stack
+                for (int i = 0; i < ctorRef.Parameters.Count; i++)
+                    if (stack.Count > 0) stack.Pop();
+                // Push default-initialized value
+                block.Instructions.Add(new IRRawCpp
+                {
+                    Code = $"{typeCpp} {tmp} = {{}}; // SIMD Vector newobj stub",
+                    ResultVar = tmp,
+                    ResultTypeCpp = typeCpp,
+                });
+                stack.Push(new StackEntry(tmp, typeCpp));
+                return;
+            }
+        }
 
         // Detect delegate constructor: base is MulticastDelegate/Delegate, ctor(object, IntPtr)
         var isDelegateCtor = false;
@@ -2234,8 +2264,10 @@ public partial class IRBuilder
     private List<string> BuildVTableParamTypes(MethodReference methodRef)
     {
         var types = new List<string>();
-        // Use GetCppTypeForDecl to correctly map System.Object → cil2cpp::Object*, etc.
-        types.Add(CppNameMapper.GetCppTypeForDecl(methodRef.DeclaringType.FullName));
+        // Resolve the declaring type through _activeTypeParamMap for generic method contexts
+        // (e.g., IArraySortHelper`2<TKey,TValue> → IArraySortHelper`2<Byte,String>)
+        var resolvedDeclaringType = ResolveCacheKey(methodRef.DeclaringType);
+        types.Add(CppNameMapper.GetCppTypeForDecl(resolvedDeclaringType));
         foreach (var p in methodRef.Parameters)
             types.Add(CppNameMapper.GetCppTypeForDecl(
                 ResolveGenericTypeRef(p.ParameterType, methodRef.DeclaringType)));
@@ -2635,28 +2667,54 @@ public partial class IRBuilder
     private string ResolveMethodRefParamType(MethodReference methodRef, int paramIndex)
     {
         var paramType = methodRef.Parameters[paramIndex].ParameterType;
+        return ResolveTypeRefForMatching(paramType, methodRef);
+    }
 
-        // Non-generic parameter — return as-is
-        if (paramType is not GenericParameter gp)
-            return paramType.FullName;
-
-        // Try resolving through declaring GenericInstanceType
-        if (methodRef.DeclaringType is GenericInstanceType git
-            && gp.Position < git.GenericArguments.Count)
+    /// <summary>
+    /// Resolve a TypeReference to a concrete IL type name for parameter matching.
+    /// Handles: GenericParameter (resolve via GIT or active map),
+    /// GenericInstanceType with unresolved args (Vector256&lt;T&gt; → Vector256&lt;Byte&gt;),
+    /// and plain types (return FullName).
+    /// </summary>
+    private string ResolveTypeRefForMatching(TypeReference typeRef, MethodReference methodRef)
+    {
+        if (typeRef is GenericParameter gp)
         {
-            var resolved = git.GenericArguments[gp.Position];
-            // If the resolved arg is ALSO a generic parameter, resolve through active map
-            if (resolved is GenericParameter gp2 && _activeTypeParamMap != null
-                && _activeTypeParamMap.TryGetValue(gp2.Name, out var mapped))
-                return mapped;
-            return resolved.FullName;
+            // Try resolving through declaring GenericInstanceType
+            if (methodRef.DeclaringType is GenericInstanceType git
+                && gp.Position < git.GenericArguments.Count)
+            {
+                var resolved = git.GenericArguments[gp.Position];
+                if (resolved is GenericParameter gp2 && _activeTypeParamMap != null
+                    && _activeTypeParamMap.TryGetValue(gp2.Name, out var mapped))
+                    return mapped;
+                return resolved.FullName;
+            }
+            // Try resolving directly through active type parameter map
+            if (_activeTypeParamMap != null && _activeTypeParamMap.TryGetValue(gp.Name, out var directMapped))
+                return directMapped;
+            return typeRef.FullName;
         }
 
-        // Try resolving directly through active type parameter map
-        if (_activeTypeParamMap != null && _activeTypeParamMap.TryGetValue(gp.Name, out var directMapped))
-            return directMapped;
+        // GenericInstanceType with potentially unresolved arguments (e.g., Vector256<T>)
+        if (typeRef is GenericInstanceType git2)
+        {
+            bool hasUnresolved = false;
+            var resolvedArgs = new List<string>();
+            foreach (var arg in git2.GenericArguments)
+            {
+                var resolvedArg = ResolveTypeRefForMatching(arg, methodRef);
+                resolvedArgs.Add(resolvedArg);
+                if (resolvedArg != arg.FullName) hasUnresolved = true;
+            }
+            if (hasUnresolved)
+            {
+                // Reconstruct the fully resolved type name
+                return $"{git2.ElementType.FullName}<{string.Join(",", resolvedArgs)}>";
+            }
+        }
 
-        return paramType.FullName;
+        return typeRef.FullName;
     }
 
     private void EmitCctorGuardIfNeeded(IRBasicBlock block, string ilTypeName, string typeCppName)
@@ -2703,6 +2761,105 @@ public partial class IRBuilder
         "op_UnaryNegation" or "op_CheckedUnaryNegation" => "-",
         _ => null
     };
+
+    /// <summary>
+    /// Returns true if a C++ type name is a known primitive type where intrinsic
+    /// operators/properties are correct (no need for explicit DIM interface impls).
+    /// </summary>
+    private static bool IsCppPrimitiveType(string cppType) => cppType is
+        "int8_t" or "uint8_t" or "int16_t" or "uint16_t" or
+        "int32_t" or "uint32_t" or "int64_t" or "uint64_t" or
+        "intptr_t" or "uintptr_t" or "float" or "double" or
+        "bool" or "char16_t";
+
+    /// <summary>
+    /// Returns the intrinsic value for INumberBase static abstract property getters
+    /// (get_Zero, get_One) on primitive types.
+    /// </summary>
+    private static string? TryGetIntrinsicNumericProperty(string methodName, string cppType) => methodName switch
+    {
+        "get_Zero" => cppType switch
+        {
+            "float" => "0.0f",
+            "double" => "0.0",
+            "bool" => "false",
+            _ => $"({cppType})0"
+        },
+        "get_One" => cppType switch
+        {
+            "float" => "1.0f",
+            "double" => "1.0",
+            "bool" => "true",
+            _ => $"({cppType})1"
+        },
+        _ => null
+    };
+
+    /// <summary>
+    /// Emits an intrinsic C++ operator for a constrained call (IBitwiseOperators, etc.).
+    /// Returns true if emitted, false if args count doesn't match.
+    /// </summary>
+    private bool EmitIntrinsicOperator(IRBasicBlock block, Stack<StackEntry> stack,
+        List<string> args, IRCall irCall, string cppOp, string cppType, ref int tempCounter)
+    {
+        if (args.Count >= 2)
+        {
+            var tmp = $"__t{tempCounter++}";
+            bool isBitwiseOp = cppOp is "|" or "&" or "^";
+            bool isFloat = cppType is "float" or "double";
+            if (isBitwiseOp && isFloat)
+            {
+                var intType = cppType == "float" ? "uint32_t" : "uint64_t";
+                var a = $"__bw_a{tempCounter}";
+                var b = $"__bw_b{tempCounter}";
+                block.Instructions.Add(new IRRawCpp
+                    { Code = $"{intType} {a}; std::memcpy(&{a}, &{args[0]}, sizeof({intType}));" });
+                block.Instructions.Add(new IRRawCpp
+                    { Code = $"{intType} {b}; std::memcpy(&{b}, &{args[1]}, sizeof({intType}));" });
+                block.Instructions.Add(new IRRawCpp
+                    { Code = $"{intType} __bw_r{tempCounter} = {a} {cppOp} {b};" });
+                block.Instructions.Add(new IRRawCpp
+                    { Code = $"{cppType} {tmp}; std::memcpy(&{tmp}, &__bw_r{tempCounter}, sizeof({cppType}));", ResultVar = tmp, ResultTypeCpp = cppType });
+            }
+            else
+            {
+                block.Instructions.Add(new IRRawCpp
+                    { Code = $"{tmp} = ({cppType})({args[0]} {cppOp} {args[1]});", ResultVar = tmp, ResultTypeCpp = cppType });
+            }
+            stack.Push(tmp);
+            irCall.Arguments.Clear();
+            args.Clear();
+            return true;
+        }
+        else if (args.Count == 1)
+        {
+            var tmp = $"__t{tempCounter++}";
+            bool isUnaryBitwise = cppOp == "~";
+            bool isFloat = cppType is "float" or "double";
+            if (isUnaryBitwise && isFloat)
+            {
+                // Bitwise NOT on float/double: reinterpret through integer type
+                var intType = cppType == "float" ? "uint32_t" : "uint64_t";
+                var a = $"__bw_a{tempCounter}";
+                block.Instructions.Add(new IRRawCpp
+                    { Code = $"{intType} {a}; std::memcpy(&{a}, &{args[0]}, sizeof({intType}));" });
+                block.Instructions.Add(new IRRawCpp
+                    { Code = $"{intType} __bw_r{tempCounter} = ~{a};" });
+                block.Instructions.Add(new IRRawCpp
+                    { Code = $"{cppType} {tmp}; std::memcpy(&{tmp}, &__bw_r{tempCounter}, sizeof({cppType}));", ResultVar = tmp, ResultTypeCpp = cppType });
+            }
+            else
+            {
+                block.Instructions.Add(new IRRawCpp
+                    { Code = $"{tmp} = ({cppType})({cppOp}{args[0]});", ResultVar = tmp, ResultTypeCpp = cppType });
+            }
+            stack.Push(tmp);
+            irCall.Arguments.Clear();
+            args.Clear();
+            return true;
+        }
+        return false;
+    }
 
     private static string GetArrayElementType(Code code) => code switch
     {

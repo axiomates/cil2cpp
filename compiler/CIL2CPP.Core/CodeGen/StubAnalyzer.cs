@@ -445,6 +445,27 @@ public class StubAnalyzer
             sb.AppendLine();
         }
 
+        // Section 4d: UnknownParameterTypes + UnknownBodyReferences detail
+        var upUbrStubs = _stubs
+            .Where(s => s.RootCause == StubRootCause.UnknownParameterTypes ||
+                        s.RootCause == StubRootCause.UnknownBodyReferences)
+            .GroupBy(s => (s.RootCause, s.Detail))
+            .OrderByDescending(g => g.Count())
+            .ToList();
+        if (upUbrStubs.Count > 0)
+        {
+            sb.AppendLine("━━━ Unknown Parameter/Body Type Detail ━━━");
+            sb.AppendLine();
+            foreach (var group in upUbrStubs)
+            {
+                var tag = group.Key.RootCause == StubRootCause.UnknownParameterTypes ? "UP" : "UBR";
+                sb.AppendLine($"  [{tag}] {group.Count(),3}  {group.Key.Detail}");
+                foreach (var stub in group)
+                    sb.AppendLine($"           → {stub.TypeName}::{stub.MethodName}");
+            }
+            sb.AppendLine();
+        }
+
         // Section 5: Unlock ranking (the most actionable section)
         if (result.UnlockRanking.Count > 0)
         {

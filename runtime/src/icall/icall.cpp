@@ -199,15 +199,6 @@ uint64_t Marvin_GenerateSeed() {
     return HashCode_GenerateGlobalSeed();
 }
 
-// ===== System.RuntimeTypeHandle =====
-
-void RuntimeTypeHandle_ctor(void* __this, intptr_t value) {
-    // RuntimeTypeHandle is aliased to intptr_t — ctor is a no-op
-    // The value is already stored by the generated struct assignment
-    (void)__this;
-    (void)value;
-}
-
 // ===== System.Runtime.InteropServices.NativeLibrary =====
 
 intptr_t NativeLibrary_GetSymbol(intptr_t handle, Object* name) {
@@ -511,6 +502,163 @@ bool ThreadPoolWorkQueue_Dispatch() {
 void ThreadPoolWorkQueue_Enqueue(void* /*__this*/, Object* callback, bool /*forceGlobal*/) {
     // TODO: delegate to cil2cpp::threadpool::queue_work if callback is IThreadPoolWorkItem
     (void)callback;
+}
+
+// ===== System.Type (reflection introspection) =====
+
+static Type* get_type_from_this(void* __this) {
+    return reinterpret_cast<Type*>(__this);
+}
+
+Object* Type_GetEnumUnderlyingType(void* __this) {
+    auto* t = get_type_from_this(__this);
+    if (!t || !t->type_info) return nullptr;
+    // HACK: return the type_info itself as the "underlying type" object.
+    // Most enums are int32-based. We can't reference generated TypeInfos from the runtime.
+    // TODO: store actual underlying type in TypeInfo for enum types.
+    return reinterpret_cast<Object*>(type_get_type_object(t->type_info));
+}
+
+Boolean Type_get_IsPublic(void* __this) {
+    // HACK: simplified — return true for all types.
+    // TODO: add visibility flags to TypeInfo.
+    (void)__this;
+    return true;
+}
+
+Boolean Type_get_IsAbstract(void* __this) {
+    auto* t = get_type_from_this(__this);
+    if (!t || !t->type_info) return false;
+    return t->type_info->flags & TypeFlags::Abstract;
+}
+
+Boolean Type_get_IsNestedPublic(void* __this) {
+    (void)__this;
+    return false; // HACK: simplified
+}
+
+Boolean Type_IsArrayImpl(void* __this) {
+    auto* t = get_type_from_this(__this);
+    if (!t || !t->type_info) return false;
+    return t->type_info->flags & TypeFlags::Array;
+}
+
+Boolean Type_IsEnumDefined(void* __this, void* /*value*/) {
+    (void)__this;
+    return false; // HACK: simplified — would need enum value table
+}
+
+Boolean Type_IsEquivalentTo(void* __this, void* other) {
+    return __this == other;
+}
+
+Int32 Type_GetTypeCodeImpl(void* __this) {
+    auto* t = get_type_from_this(__this);
+    if (!t || !t->type_info) return 0; // TypeCode.Empty
+    // HACK: return Object (1) for all types
+    // TODO: map TypeInfo to proper TypeCode values
+    return 1;
+}
+
+Int32 Type_get_GenericParameterAttributes(void* __this) {
+    (void)__this;
+    return 0; // GenericParameterAttributes.None
+}
+
+// ===== System.RuntimeTypeHandle (additional) =====
+
+Object* RuntimeTypeHandle_GetElementType(void* /*handle*/) {
+    return nullptr; // HACK: would need element type info for arrays/pointers
+}
+
+Boolean RuntimeTypeHandle_IsEquivalentTo(void* /*handle1*/) {
+    return false; // HACK: simplified
+}
+
+void* RuntimeTypeHandle_GetAssembly(void* /*handle*/) {
+    return nullptr; // HACK: no assembly object support yet
+}
+
+Boolean RuntimeTypeHandle_IsByRefLike(void* /*handle*/) {
+    return false; // HACK: no ref structs in AOT HelloWorld
+}
+
+Int32 RuntimeTypeHandle_GetToken(void* /*handle*/) {
+    return 0; // HACK: no metadata tokens
+}
+
+Boolean RuntimeTypeHandle_IsInstanceOfType(void* /*handle*/, void* /*obj*/) {
+    return false; // HACK: simplified
+}
+
+void* RuntimeTypeHandle_GetDeclaringMethod(void* /*handle*/) {
+    return nullptr; // HACK: no generic parameter method info
+}
+
+// ===== System.RuntimeType =====
+
+void* RuntimeType_CreateEnum(void* /*__this*/, Int64 /*value*/) {
+    return nullptr; // HACK: would need to box the value as enum
+}
+
+// ===== System.Reflection =====
+
+Boolean MethodBase_get_IsVirtual(void* __this) {
+    // Read flags from ManagedMethodInfo if available
+    (void)__this;
+    return false; // HACK: simplified
+}
+
+Int32 RuntimeMethodInfo_get_BindingFlags(void* __this) {
+    (void)__this;
+    return 0x14; // BindingFlags.Public | BindingFlags.Instance (simplified)
+}
+
+void* RuntimeMethodInfo_GetGenericArgumentsInternal(void* __this) {
+    (void)__this;
+    return nullptr; // HACK: return null (no generic args)
+}
+
+void* RuntimeMethodInfo_GetDeclaringTypeInternal(void* __this) {
+    (void)__this;
+    return nullptr; // HACK: simplified
+}
+
+Int32 RuntimeConstructorInfo_get_BindingFlags(void* __this) {
+    (void)__this;
+    return 0x14; // BindingFlags.Public | BindingFlags.Instance
+}
+
+Int32 RuntimeFieldInfo_get_BindingFlags(void* __this) {
+    (void)__this;
+    return 0x14; // BindingFlags.Public | BindingFlags.Instance
+}
+
+// ===== System.Delegate =====
+
+void* Delegate_get_Method(void* /*__this*/) {
+    return nullptr; // HACK: would need MethodInfo for delegate target
+}
+
+// ===== System.Runtime.InteropServices.GCHandle =====
+
+intptr_t GCHandle_InternalCompareExchange(intptr_t handle, cil2cpp::Object* value, cil2cpp::Object* comparand) {
+    // HACK: GCHandle is an opaque integer handle. In a real implementation this would
+    // do atomic CAS on the handle table. For now, just return the handle unchanged.
+    // TODO: implement proper GCHandle table with atomic compare-exchange
+    (void)value;
+    (void)comparand;
+    return handle;
+}
+
+// ===== System.Diagnostics =====
+
+void* StackFrameHelper_GetMethodBase(void* /*__this*/, Int32 /*index*/) {
+    return nullptr; // HACK: no method base for stack frames yet
+}
+
+void* StackFrame_GetMethod(void* /*__this*/) {
+    return nullptr; // HACK: no method info for stack frames yet
 }
 
 } // namespace icall

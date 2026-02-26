@@ -189,8 +189,7 @@ public partial class IRBuilder
             return;
 
         // Skip generic types from BCL internal namespaces
-        // Exception: Vector64/128/256/512<T> types are allowed through —
-        // they need struct definitions for BCL scalar fallback paths.
+        // Exception: Vector64/128/256/512<T> and ReflectionAllowedGenericTypes are allowed through.
         var elemNs = git.ElementType.Namespace;
         if (!string.IsNullOrEmpty(elemNs) &&
             FilteredGenericNamespaces.Any(f => elemNs.StartsWith(f)))
@@ -284,6 +283,13 @@ public partial class IRBuilder
 
         _genericMethodInstantiations[key] = new GenericMethodInstantiationInfo(
             declaringType, methodName, typeArgs, mangledName, cecilMethod);
+
+        // Also collect generic types used AS method type arguments.
+        // Example: IndexOf<Byte, DontNegate<Byte>> — DontNegate<Byte> is a GenericInstanceType
+        // passed as a type argument. Without this, nested generic types like INegator<T>,
+        // DontNegate<T>, etc. are not discovered during Pass 0 type scanning.
+        foreach (var ga in gim.GenericArguments)
+            CollectGenericType(ga);
     }
 
     /// <summary>
@@ -404,10 +410,67 @@ public partial class IRBuilder
                 }
                 else
                 {
+                    // Pre-scan: discover generic types referenced in the body that need to
+                    // exist as IRTypes before body conversion. E.g., Array.Sort<String> body
+                    // calls IArraySortHelper<String>.Sort() — the interface type must be in
+                    // _typeCache for virtual dispatch resolution in EmitMethodCall.
+                    EnsureBodyReferencedTypesExist(cecilMethod, typeParamMap);
+
                     var methodInfo = new IL.MethodInfo(cecilMethod);
                     ConvertMethodBodyWithGenerics(methodInfo, irMethod, typeParamMap);
                 }
             }
+    }
+
+    /// <summary>
+    /// Just-in-time discovery: scan a generic method body for GenericInstanceType references
+    /// and ensure they exist as IRTypes in _typeCache before body conversion.
+    /// This handles cases where a generic METHOD body references generic TYPES parameterized
+    /// by the method's own type arguments (e.g., Array.Sort&lt;String&gt; calls IArraySortHelper&lt;String&gt;.Sort()).
+    /// These types may not have been discovered in Pass 0.5 because the method's type arguments
+    /// were still unresolved generic parameters at scan time.
+    /// </summary>
+    private void EnsureBodyReferencedTypesExist(MethodDefinition cecilMethod, Dictionary<string, string> typeParamMap)
+    {
+        if (!cecilMethod.HasBody) return;
+
+        var prevCount = _genericInstantiations.Count;
+
+        foreach (var instr in cecilMethod.Body.Instructions)
+        {
+            switch (instr.Operand)
+            {
+                case MethodReference methodRef:
+                    TryCollectResolvedGenericType(methodRef.DeclaringType, typeParamMap);
+                    TryCollectResolvedGenericType(methodRef.ReturnType, typeParamMap);
+                    foreach (var p in methodRef.Parameters)
+                        TryCollectResolvedGenericType(p.ParameterType, typeParamMap);
+                    if (methodRef is GenericInstanceMethod gim)
+                        foreach (var ga in gim.GenericArguments)
+                            TryCollectResolvedGenericType(ga, typeParamMap);
+                    break;
+                case FieldReference fieldRef:
+                    TryCollectResolvedGenericType(fieldRef.DeclaringType, typeParamMap);
+                    TryCollectResolvedGenericType(fieldRef.FieldType, typeParamMap);
+                    break;
+                case TypeReference typeRef:
+                    TryCollectResolvedGenericType(typeRef, typeParamMap);
+                    break;
+            }
+        }
+
+        // If new types were discovered, create them immediately
+        if (_genericInstantiations.Count > prevCount)
+        {
+            CreateGenericSpecializations();
+            // Also create nested types (Entry, Enumerator, etc.)
+            int prevNested;
+            do
+            {
+                prevNested = _genericInstantiations.Count;
+                CreateNestedGenericSpecializations();
+            } while (_genericInstantiations.Count > prevNested);
+        }
     }
 
     /// <summary>
@@ -1006,6 +1069,16 @@ public partial class IRBuilder
     /// </summary>
     private void TryCollectResolvedGenericType(TypeReference typeRef, Dictionary<string, string> nameMap)
     {
+        // Handle GenericParameter types (e.g., !!1 from constrained calls).
+        // Resolve through nameMap to get the actual type name, then if it's a generic
+        // instantiation, parse and register it.
+        if (typeRef is Mono.Cecil.GenericParameter gp)
+        {
+            if (nameMap.TryGetValue(gp.Name, out var resolvedName))
+                TryCollectFromResolvedName(resolvedName);
+            return;
+        }
+
         if (typeRef is not GenericInstanceType git) return;
 
         // If already fully resolved (no generic params), delegate to normal collection
@@ -1063,6 +1136,96 @@ public partial class IRBuilder
 
         _genericInstantiations[instKey] = new GenericInstantiationInfo(
             openTypeName, resolvedArgs, mangledName, cecilOpenType);
+    }
+
+    /// <summary>
+    /// Try to collect a generic type from a fully resolved type name string.
+    /// Used when a GenericParameter is resolved through a nameMap to a concrete type.
+    /// Parses names like "System.SpanHelpers/DontNegate`1&lt;System.Byte&gt;" and registers them.
+    /// </summary>
+    private void TryCollectFromResolvedName(string resolvedTypeName)
+    {
+        // Only generic instantiation names contain '<'
+        if (!resolvedTypeName.Contains('<')) return;
+
+        // Parse: "Outer/Inner`1<Arg1,Arg2>" → openTypeName="Outer/Inner`1", args=["Arg1","Arg2"]
+        var ltIdx = resolvedTypeName.IndexOf('<');
+        if (ltIdx < 0) return;
+        var openTypeName = resolvedTypeName[..ltIdx];
+        var argsStr = resolvedTypeName[(ltIdx + 1)..^1]; // strip < and >
+
+        // Parse arguments respecting nested generics (< > nesting)
+        var args = new List<string>();
+        int depth = 0, start = 0;
+        for (int i = 0; i < argsStr.Length; i++)
+        {
+            if (argsStr[i] == '<') depth++;
+            else if (argsStr[i] == '>') depth--;
+            else if (argsStr[i] == ',' && depth == 0)
+            {
+                args.Add(argsStr[start..i]);
+                start = i + 1;
+            }
+        }
+        args.Add(argsStr[start..]);
+
+        // Build key and check if already known
+        var instKey = $"{openTypeName}<{string.Join(",", args)}>";
+        if (_genericInstantiations.ContainsKey(instKey)) return;
+        if (_typeCache.ContainsKey(instKey)) return;
+
+        // Apply namespace filter on the open type
+        var openNs = openTypeName.Contains('.') ? openTypeName[..openTypeName.LastIndexOf('.')] : "";
+        // Handle nested types: "System.SpanHelpers/DontNegate`1" → ns = "System"
+        if (openNs.Contains('/'))
+            openNs = openNs[..openNs.IndexOf('/')];
+        if (!string.IsNullOrEmpty(openNs) &&
+            FilteredGenericNamespaces.Any(f => openNs.StartsWith(f)))
+        {
+            if (!VectorScalarFallbackTypes.Contains(openTypeName))
+                return;
+        }
+
+        // Apply filters on type arguments
+        foreach (var argName in args)
+        {
+            var argNs = argName.Contains('.') ? argName[..argName.LastIndexOf('.')] : "";
+            if (!string.IsNullOrEmpty(argNs) &&
+                FilteredGenericNamespaces.Any(f => argNs.StartsWith(f)))
+            {
+                if (!IsVectorScalarFallbackILType(argName))
+                    return;
+            }
+            if (ClrInternalTypeNames.Contains(argName) || FilteredGenericArgTypes.Contains(argName))
+                return;
+        }
+
+        // Resolve the Cecil open type definition
+        TypeDefinition? cecilOpenType = null;
+        foreach (var asm in _assemblySet!.LoadedAssemblies.Values)
+        {
+            cecilOpenType = asm.MainModule.GetType(openTypeName.Replace('/', '+'));
+            if (cecilOpenType != null) break;
+            // Try without the nested type separator
+            cecilOpenType = asm.MainModule.GetType(openTypeName);
+            if (cecilOpenType != null) break;
+        }
+        // Also try finding it through existing _genericInstantiations that share the open type
+        if (cecilOpenType == null)
+        {
+            foreach (var (_, info) in _genericInstantiations)
+            {
+                if (info.OpenTypeName == openTypeName && info.CecilOpenType != null)
+                {
+                    cecilOpenType = info.CecilOpenType;
+                    break;
+                }
+            }
+        }
+
+        var mangledName = CppNameMapper.MangleGenericInstanceTypeName(openTypeName, args);
+        _genericInstantiations[instKey] = new GenericInstantiationInfo(
+            openTypeName, args, mangledName, cecilOpenType);
     }
 
     /// <summary>
@@ -1550,9 +1713,9 @@ public partial class IRBuilder
     }
 
     /// <summary>
-    /// Resolve mangled generic param names embedded in C++ identifiers using String.Replace.
-    /// Handles patterns like "_TKey_" → "_System_String_" that ReplaceWholeWord misses
-    /// because underscore is treated as a word character.
+    /// Resolve mangled generic param names embedded in C++ identifiers.
+    /// Uses boundary-aware replacement to avoid replacing inside other identifiers
+    /// (e.g., "_1_T" in "_1_ThreadLocalArray" should NOT match).
     /// </summary>
     private static void ResolveMangledGenericParams(IRInstruction instr, Dictionary<string, string> mangledMap)
     {
@@ -1561,7 +1724,14 @@ public partial class IRBuilder
             foreach (var (from, to) in map)
             {
                 if (text.Contains(from))
-                    text = text.Replace(from, to);
+                {
+                    // Boundary-aware: only replace when NOT followed by a letter.
+                    // This prevents _1_T matching inside _1_ThreadLocalArray.
+                    text = System.Text.RegularExpressions.Regex.Replace(
+                        text,
+                        System.Text.RegularExpressions.Regex.Escape(from) + @"(?![a-zA-Z])",
+                        to);
+                }
             }
             return text;
         }

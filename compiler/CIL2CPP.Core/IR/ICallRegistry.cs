@@ -485,9 +485,84 @@ public static class ICallRegistry
         RegisterICall("System.HashCode", "GenerateGlobalSeed", 0, "cil2cpp::icall::HashCode_GenerateGlobalSeed");
         RegisterICall("System.Marvin", "GenerateSeed", 0, "cil2cpp::icall::Marvin_GenerateSeed");
 
+        // ===== System.Diagnostics.Tracing (additional no-ops) =====
+        RegisterICall("System.Diagnostics.Tracing.EventSource", "SetCurrentThreadActivityId", 1,
+            "cil2cpp::eventsource_write_event"); // no-op
+        RegisterICall("System.Diagnostics.Tracing.ActivityTracker", "get_Instance", 0,
+            "cil2cpp::icall::ActivityTracker_get_Instance");
+
+        // ===== System.Type (reflection introspection) =====
+        RegisterICall("System.Type", "GetEnumUnderlyingType", 0, "cil2cpp::icall::Type_GetEnumUnderlyingType");
+        RegisterICall("System.Type", "get_IsPublic", 0, "cil2cpp::icall::Type_get_IsPublic");
+        RegisterICall("System.Type", "get_IsAbstract", 0, "cil2cpp::icall::Type_get_IsAbstract");
+        RegisterICall("System.Type", "get_IsNestedPublic", 0, "cil2cpp::icall::Type_get_IsNestedPublic");
+        RegisterICall("System.Type", "IsArrayImpl", 0, "cil2cpp::icall::Type_IsArrayImpl");
+        RegisterICall("System.Type", "IsEnumDefined", 1, "cil2cpp::icall::Type_IsEnumDefined");
+        RegisterICall("System.Type", "IsEquivalentTo", 1, "cil2cpp::icall::Type_IsEquivalentTo");
+        RegisterICall("System.Type", "GetTypeCodeImpl", 0, "cil2cpp::icall::Type_GetTypeCodeImpl");
+        RegisterICall("System.Type", "get_GenericParameterAttributes", 0,
+            "cil2cpp::icall::Type_get_GenericParameterAttributes");
+
         // ===== System.RuntimeTypeHandle =====
-        // .ctor stores intptr_t — trivial ICall avoids void*→intptr_t cast issues in IL body
-        RegisterICall("System.RuntimeTypeHandle", ".ctor", 1, "cil2cpp::icall::RuntimeTypeHandle_ctor");
+        // .ctor is NOT [InternalCall] — it's a regular ctor (m_type = type), compiles from IL
+        RegisterICall("System.RuntimeTypeHandle", "GetElementType", 1,
+            "cil2cpp::icall::RuntimeTypeHandle_GetElementType");
+        RegisterICall("System.RuntimeTypeHandle", "IsEquivalentTo", 1,
+            "cil2cpp::icall::RuntimeTypeHandle_IsEquivalentTo");
+        RegisterICall("System.RuntimeTypeHandle", "GetAssembly", 1,
+            "cil2cpp::icall::RuntimeTypeHandle_GetAssembly");
+        RegisterICall("System.RuntimeTypeHandle", "IsByRefLike", 1,
+            "cil2cpp::icall::RuntimeTypeHandle_IsByRefLike");
+        RegisterICall("System.RuntimeTypeHandle", "GetToken", 1,
+            "cil2cpp::icall::RuntimeTypeHandle_GetToken");
+        RegisterICall("System.RuntimeTypeHandle", "IsInstanceOfType", 2,
+            "cil2cpp::icall::RuntimeTypeHandle_IsInstanceOfType");
+        RegisterICall("System.RuntimeTypeHandle", "GetDeclaringMethod", 1,
+            "cil2cpp::icall::RuntimeTypeHandle_GetDeclaringMethod");
+
+        // ===== System.RuntimeMethodHandle =====
+        RegisterICall("System.RuntimeMethodHandle", "IsDynamicMethod", 1,
+            "cil2cpp::icall::RuntimeMethodHandle_IsDynamicMethod");
+        RegisterICall("System.RuntimeMethodHandle", "ReboxToNullable", 2,
+            "cil2cpp::icall::RuntimeMethodHandle_ReboxToNullable");
+
+        // ===== System.RuntimeType (internal helpers) =====
+        RegisterICall("System.RuntimeType", "CanValueSpecialCast", 0,
+            "cil2cpp::icall::RuntimeType_CanValueSpecialCast");
+        RegisterICall("System.RuntimeType", "_CreateEnum", 2,
+            "cil2cpp::icall::RuntimeType_CreateEnum");
+
+        // ===== System.Reflection (binding flags and introspection) =====
+        RegisterICall("System.Reflection.TypeInfo", "AsType", 0, "cil2cpp::icall::TypeInfo_AsType");
+        RegisterICall("System.Reflection.MethodBase", "get_IsVirtual", 0,
+            "cil2cpp::icall::MethodBase_get_IsVirtual");
+        RegisterICall("System.Reflection.RuntimeMethodInfo", "get_BindingFlags", 0,
+            "cil2cpp::icall::RuntimeMethodInfo_get_BindingFlags");
+        RegisterICall("System.Reflection.RuntimeMethodInfo", "GetGenericArgumentsInternal", 0,
+            "cil2cpp::icall::RuntimeMethodInfo_GetGenericArgumentsInternal");
+        RegisterICall("System.Reflection.RuntimeMethodInfo", "GetDeclaringTypeInternal", 0,
+            "cil2cpp::icall::RuntimeMethodInfo_GetDeclaringTypeInternal");
+        RegisterICall("System.Reflection.RuntimeConstructorInfo", "get_BindingFlags", 0,
+            "cil2cpp::icall::RuntimeConstructorInfo_get_BindingFlags");
+        RegisterICall("System.Reflection.RuntimeFieldInfo", "get_BindingFlags", 0,
+            "cil2cpp::icall::RuntimeFieldInfo_get_BindingFlags");
+
+        // ===== System.Delegate (reflection) =====
+        RegisterICall("System.Delegate", "get_Method", 0, "cil2cpp::icall::Delegate_get_Method");
+
+        // ===== System.Runtime.InteropServices.GCHandle =====
+        RegisterICall("System.Runtime.InteropServices.GCHandle", "InternalCompareExchange", 3,
+            "cil2cpp::icall::GCHandle_InternalCompareExchange");
+
+        // ===== System.Diagnostics (stack traces) =====
+        RegisterICall("System.Diagnostics.StackFrameHelper", "GetMethodBase", 2,
+            "cil2cpp::icall::StackFrameHelper_GetMethodBase");
+        RegisterICall("System.Diagnostics.StackFrame", "GetMethod", 0,
+            "cil2cpp::icall::StackFrame_GetMethod");
+
+        // ===== System.Runtime.Loader =====
+        RegisterICall("System.Runtime.Loader.AssemblyLoadContext", "OnTypeResolve", 1,
+            "cil2cpp::icall::AssemblyLoadContext_OnTypeResolve");
 
         // ===== System.Runtime.InteropServices.Marshal (additional) =====
         // StringToCoTaskMemUni — IL body does void* arithmetic (C++ C2036). ICall avoids this.
@@ -533,6 +608,112 @@ public static class ICallRegistry
         RegisterICall("System.ArgIterator", "GetRemainingCount", 0, "cil2cpp::argiterator_get_remaining_count");
         RegisterICall("System.ArgIterator", "GetNextArg", 0, "cil2cpp::argiterator_get_next_arg");
         RegisterICall("System.ArgIterator", "End", 0, "cil2cpp::argiterator_end");
+
+        // ===== Interop.Globalization P/Invoke stubs =====
+        // Low-level ICU P/Invoke wrappers called from CultureData, CultureInfo, CalendarData.
+        // Higher-level operations (CompareInfo, TextInfo) are handled by dedicated ICalls above.
+        // TODO: Replace stubs with full ICU implementations for locale data correctness.
+        RegisterICallWildcard("Interop/Globalization", "IndexOf", "cil2cpp::interop_globalization_return_neg");
+        RegisterICallWildcard("Interop/Globalization", "StartsWith", "cil2cpp::interop_globalization_return_zero");
+        RegisterICallWildcard("Interop/Globalization", "EndsWith", "cil2cpp::interop_globalization_return_zero");
+        RegisterICallWildcard("Interop/Globalization", "GetSortHandle", "cil2cpp::interop_globalization_return_zero");
+        RegisterICallWildcard("Interop/Globalization", "IanaIdToWindowsId", "cil2cpp::interop_globalization_return_zero");
+        RegisterICallWildcard("Interop/Globalization", "CompareString", "cil2cpp::interop_globalization_return_zero");
+        RegisterICallWildcard("Interop/Globalization", "GetLocaleName", "cil2cpp::interop_globalization_return_zero");
+        RegisterICallWildcard("Interop/Globalization", "GetLocaleInfoString", "cil2cpp::interop_globalization_return_zero");
+        RegisterICallWildcard("Interop/Globalization", "GetLocaleInfoInt", "cil2cpp::interop_globalization_return_zero");
+        RegisterICallWildcard("Interop/Globalization", "GetLocaleInfoGroupingSizes", "cil2cpp::interop_globalization_return_zero");
+        RegisterICallWildcard("Interop/Globalization", "GetLocaleTimeFormat", "cil2cpp::interop_globalization_return_zero");
+        RegisterICallWildcard("Interop/Globalization", "IsPredefinedLocale", "cil2cpp::interop_globalization_return_one");
+        RegisterICallWildcard("Interop/Globalization", "GetCalendars", "cil2cpp::interop_globalization_return_zero");
+        RegisterICallWildcard("Interop/Globalization", "GetLatestJapaneseEra", "cil2cpp::interop_globalization_return_zero");
+        RegisterICallWildcard("Interop/Globalization", "GetJapaneseEraStartDate", "cil2cpp::interop_globalization_return_zero");
+        RegisterICallWildcard("Interop/Globalization", "GetCalendarInfo", "cil2cpp::interop_globalization_return_zero");
+        RegisterICallWildcard("Interop/Globalization", "LoadICU", "cil2cpp::interop_globalization_return_one");
+        RegisterICallWildcard("Interop/Globalization", "InitICUFunctions", "cil2cpp::interop_globalization_return_one");
+
+        // ===== Internal.Win32.RegistryKey stubs =====
+        // Windows registry access — not meaningful in AOT binaries. Return failure codes.
+        RegisterICallWildcard("Internal.Win32.RegistryKey", "OpenSubKey", "cil2cpp::win32_registry_stub");
+        RegisterICallWildcard("Internal.Win32.RegistryKey", "GetValue", "cil2cpp::win32_registry_stub");
+
+        // ===== Interop.NtDll stubs =====
+        RegisterICallWildcard("Interop/NtDll", "RtlGetVersionEx", "cil2cpp::interop_ntdll_stub");
+        RegisterICallWildcard("Interop/NtDll", "NtQuerySystemInformation", "cil2cpp::interop_ntdll_stub");
+
+        // ===== Interop.User32 stubs =====
+        RegisterICallWildcard("Interop/User32", "LoadString", "cil2cpp::interop_user32_stub");
+
+        // ===== Interop.Ucrtbase stubs =====
+        RegisterICallWildcard("Interop/Ucrtbase", "malloc", "cil2cpp::interop_ucrtbase_malloc");
+        RegisterICallWildcard("Interop/Ucrtbase", "free", "cil2cpp::interop_ucrtbase_free");
+
+        // ===== Interop.BCrypt stubs =====
+        RegisterICallWildcard("Interop/BCrypt", "BCryptGenRandom", "cil2cpp::interop_bcrypt_stub");
+
+        // ===== System.Array (additional) =====
+        RegisterICallWildcard("System.Array", "InternalCreate", "cil2cpp::array_internal_create");
+
+        // ===== System.Delegate (additional) =====
+        RegisterICallWildcard("System.Delegate", "BindToMethodInfo", "cil2cpp::delegate_bind_to_method_info");
+
+        // ===== System.RuntimeTypeHandle (additional) =====
+        RegisterICall("System.RuntimeTypeHandle", "GetArrayRank", 1,
+            "cil2cpp::interop_globalization_return_one"); // default rank 1
+
+        // ===== System.Reflection.MethodBase / System.Type (additional) =====
+        RegisterICall("System.Reflection.MethodBase", "get_IsAbstract", 0,
+            "cil2cpp::interop_globalization_return_zero");
+        RegisterICall("System.Type", "get_IsNestedAssembly", 0,
+            "cil2cpp::interop_globalization_return_zero");
+        RegisterICall("System.Type", "get_IsNotPublic", 0,
+            "cil2cpp::interop_globalization_return_zero");
+
+        // ===== System.Diagnostics (additional stack trace stubs) =====
+        RegisterICallWildcard("System.Diagnostics.StackFrameHelper", "GetMethodBase",
+            "cil2cpp::stackframehelper_get_method_base");
+        RegisterICall("System.Diagnostics.StackFrame", "GetILOffset", 0,
+            "cil2cpp::stackframe_get_il_offset");
+        RegisterICall("System.Diagnostics.StackFrame", "GetFileName", 0,
+            "cil2cpp::stackframehelper_get_method_base"); // returns nullptr (void*)
+
+        // ===== Additional Interop.Globalization stubs =====
+        RegisterICallWildcard("Interop/Globalization", "LastIndexOf", "cil2cpp::interop_globalization_return_neg");
+        RegisterICallWildcard("Interop/Globalization", "CloseSortHandle", "cil2cpp::interop_globalization_return_zero");
+
+        // ===== Internal.Win32.RegistryKey additional stubs =====
+        RegisterICallWildcard("Internal.Win32.RegistryKey", "GetSubKeyNames", "cil2cpp::win32_registry_stub");
+        RegisterICallWildcard("Internal.Win32.RegistryKey", "GetValueNames", "cil2cpp::win32_registry_stub");
+
+        // ===== System.RuntimeMethodHandle (additional) =====
+        RegisterICall("System.RuntimeMethodHandle", "GetResolver", 1,
+            "cil2cpp::stackframehelper_get_method_base"); // returns nullptr
+        RegisterICall("System.RuntimeTypeHandle", "IsEquivalentTo", 2,
+            "cil2cpp::interop_globalization_return_zero"); // returns false
+
+        // ===== System.RuntimeType (additional) =====
+        RegisterICall("System.RuntimeType", "CanValueSpecialCast", 0,
+            "cil2cpp::interop_globalization_return_zero"); // returns false
+
+        // ===== System.Diagnostics.Tracing.EventSource (additional) =====
+        RegisterICallWildcard("System.Diagnostics.Tracing.EventSource", "SetCurrentThreadActivityId",
+            "cil2cpp::interop_globalization_return_zero");
+
+        // ===== System.Threading.Tasks interface stubs =====
+        RegisterICallWildcard("System.Threading.Tasks.TaskContinuation", "Run",
+            "cil2cpp::interop_globalization_return_zero");
+        RegisterICallWildcard("System.Threading.Tasks.ITaskCompletionAction", "get_InvokeMayRunArbitraryCode",
+            "cil2cpp::interop_globalization_return_one");
+
+        // ===== System.Reflection.Binder =====
+        RegisterICallWildcard("System.Reflection.Binder", "ChangeType",
+            "cil2cpp::stackframehelper_get_method_base"); // returns nullptr
+
+        // ===== System.Reflection.Emit stubs (dynamic code gen — no-op in AOT) =====
+        RegisterICallWildcard("System.Reflection.Emit.ILGenerator", "Emit",
+            "cil2cpp::interop_globalization_return_zero");
+        RegisterICallWildcard("System.Runtime.Loader.AssemblyLoadContext", "OnTypeResolve",
+            "cil2cpp::stackframehelper_get_method_base"); // returns nullptr
     }
 
     // ===== Registration methods =====

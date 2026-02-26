@@ -42,8 +42,58 @@ Object* Marshal_StringToCoTaskMemUni(Object* str);
 uint64_t HashCode_GenerateGlobalSeed();
 uint64_t Marvin_GenerateSeed();
 
+// System.Diagnostics.Tracing.ActivityTracker
+inline void* ActivityTracker_get_Instance() { return nullptr; }
+
+// System.Type (reflection introspection)
+Object* Type_GetEnumUnderlyingType(void* __this);
+Boolean Type_get_IsPublic(void* __this);
+Boolean Type_get_IsAbstract(void* __this);
+Boolean Type_get_IsNestedPublic(void* __this);
+Boolean Type_IsArrayImpl(void* __this);
+Boolean Type_IsEnumDefined(void* __this, void* value);
+Boolean Type_IsEquivalentTo(void* __this, void* other);
+Int32 Type_GetTypeCodeImpl(void* __this);
+Int32 Type_get_GenericParameterAttributes(void* __this);
+
 // System.RuntimeTypeHandle
-void RuntimeTypeHandle_ctor(void* __this, intptr_t value);
+Object* RuntimeTypeHandle_GetElementType(void* handle);
+Boolean RuntimeTypeHandle_IsEquivalentTo(void* handle1);
+void* RuntimeTypeHandle_GetAssembly(void* handle);
+Boolean RuntimeTypeHandle_IsByRefLike(void* handle);
+Int32 RuntimeTypeHandle_GetToken(void* handle);
+Boolean RuntimeTypeHandle_IsInstanceOfType(void* handle, void* obj);
+void* RuntimeTypeHandle_GetDeclaringMethod(void* handle);
+
+// System.RuntimeMethodHandle
+inline Boolean RuntimeMethodHandle_IsDynamicMethod(void*) { return false; }
+inline void* RuntimeMethodHandle_ReboxToNullable(void* src, void*) { return src; }
+
+// System.RuntimeType (internal helpers)
+inline Boolean RuntimeType_CanValueSpecialCast(void*) { return false; }
+void* RuntimeType_CreateEnum(void* __this, Int64 value);
+
+// System.Reflection
+inline void* TypeInfo_AsType(void* __this) { return __this; }
+Boolean MethodBase_get_IsVirtual(void* __this);
+Int32 RuntimeMethodInfo_get_BindingFlags(void* __this);
+void* RuntimeMethodInfo_GetGenericArgumentsInternal(void* __this);
+void* RuntimeMethodInfo_GetDeclaringTypeInternal(void* __this);
+Int32 RuntimeConstructorInfo_get_BindingFlags(void* __this);
+Int32 RuntimeFieldInfo_get_BindingFlags(void* __this);
+
+// System.Delegate
+void* Delegate_get_Method(void* __this);
+
+// System.Runtime.InteropServices.GCHandle
+intptr_t GCHandle_InternalCompareExchange(intptr_t handle, cil2cpp::Object* value, cil2cpp::Object* comparand);
+
+// System.Diagnostics (stack traces)
+void* StackFrameHelper_GetMethodBase(void* __this, Int32 index);
+void* StackFrame_GetMethod(void* __this);
+
+// System.Runtime.Loader
+inline void* AssemblyLoadContext_OnTypeResolve(void*) { return nullptr; }
 
 // System.Runtime.InteropServices.NativeLibrary
 intptr_t NativeLibrary_GetSymbol(intptr_t handle, Object* name);

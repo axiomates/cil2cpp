@@ -401,17 +401,9 @@ public partial class CppCodeGenerator
     /// </summary>
     private bool TryEmitMethodThroughGates(StringBuilder sb, IRMethod method)
     {
-        if (HasUnknownParameterTypes(method, _knownTypeNames))
-        {
-            var detail = _stubAnalyzer != null
-                ? GetUnknownTypeDetail(method) : "unknown parameter types";
-            TrackStubWithAnalysis(method, "unknown parameter types",
-                StubRootCause.UnknownParameterTypes, detail);
-            return false;
-        }
-        // Gate 2: KnownBrokenPatterns runs BEFORE HasUnknownBodyReferences.
-        // This ensures SIMD/intrinsics methods are properly categorized as "broken pattern"
-        // rather than "unknown body reference" (better diagnostics, clearer root cause).
+        // Gate 1: KnownBrokenPatterns runs FIRST.
+        // Catches SIMD intrinsics, function pointer types, DIM with unresolved generics,
+        // and other AOT-incompatible patterns BEFORE UP/UBR gates can misclassify them.
         if (HasKnownBrokenPatterns(method, _knownTypeNames))
         {
             var detail = _stubAnalyzer != null
@@ -420,6 +412,16 @@ public partial class CppCodeGenerator
                 StubRootCause.KnownBrokenPattern, detail);
             return false;
         }
+        // Gate 2: UnknownParameterTypes
+        if (HasUnknownParameterTypes(method, _knownTypeNames))
+        {
+            var detail = _stubAnalyzer != null
+                ? GetUnknownTypeDetail(method) : "unknown parameter types";
+            TrackStubWithAnalysis(method, "unknown parameter types",
+                StubRootCause.UnknownParameterTypes, detail);
+            return false;
+        }
+        // Gate 3: UnknownBodyReferences
         if (HasUnknownBodyReferences(method, _knownTypeNames))
         {
             var detail = GetUnknownBodyDetail(method);
@@ -596,8 +598,9 @@ public partial class CppCodeGenerator
             {
                 if (instr is IR.IRCall call && !string.IsNullOrEmpty(call.FunctionName))
                 {
-                    var funcName = call.FunctionName;
                     // Must match the same filters as CallsUndeclaredOrMismatchedFunctions
+                    if (call.IsInterfaceCall) continue;
+                    var funcName = call.FunctionName;
                     if (funcName.StartsWith("cil2cpp::")) continue;
                     if (funcName.EndsWith("_ensure_cctor")) continue;
                     if (funcName.Contains('('))
@@ -794,6 +797,21 @@ public partial class CppCodeGenerator
         if (method.DeclaringType?.ILFullName == "System.Globalization.CultureData" &&
             method.Name == "InitIcuCultureDataCore")
             return "CultureData Interop_Globalization P/Invoke mismatch";
+        // CalendarData/CultureData P/Invoke callback function pointers
+        if (method.DeclaringType?.ILFullName == "System.Globalization.CalendarData" &&
+            method.Name is "CallEnumCalendarInfo" or "NlsGetCalendars" or "EnumCalendarInfo")
+            return "CalendarData P/Invoke callback function pointer";
+        if (method.DeclaringType?.ILFullName == "System.Globalization.CultureData" &&
+            method.Name == "nativeEnumTimeFormats")
+            return "CultureData P/Invoke callback function pointer";
+        // DateTime.LeapSecondCache::.cctor — function pointer reference
+        if (method.DeclaringType?.ILFullName == "System.DateTime/LeapSecondCache" &&
+            method.Name == ".cctor")
+            return "LeapSecondCache function pointer reference";
+        // PosixSignalRegistration — HashSet<Token> nested type not discovered
+        if (method.DeclaringType?.ILFullName == "System.Runtime.InteropServices.PosixSignalRegistration" &&
+            method.Name == "Unregister")
+            return "PosixSignalRegistration HashSet<Token> undiscovered type";
         // HashCode/Marvin → now have ICalls (removed)
         // Marshal.StringToCoTaskMemUni → now has ICall (removed)
         // RuntimeTypeHandle .ctor → now has ICall (removed)
@@ -905,6 +923,22 @@ public partial class CppCodeGenerator
                     || code.Contains("_1_TFrom") || code.Contains("_1_TTo"))
                     return "unresolved generic type param in instruction";
             }
+        }
+
+        // Function pointer types in params/return/locals — IL function pointers produce
+        // "method..." mangled names, not valid C++ types. Covers P/Invoke callbacks,
+        // ActivatorCache, DateTime fnptr, etc.
+        foreach (var param in method.Parameters)
+        {
+            if (param.CppTypeName.StartsWith("method") || param.CppTypeName.Contains("("))
+                return $"function pointer param: {param.CppTypeName}";
+        }
+        if (method.ReturnTypeCpp.StartsWith("method") || method.ReturnTypeCpp.Contains("("))
+            return $"function pointer return: {method.ReturnTypeCpp}";
+        foreach (var local in method.Locals)
+        {
+            if (local.CppTypeName.StartsWith("method") || local.CppTypeName.Contains("("))
+                return $"function pointer local: {local.CppTypeName}";
         }
 
         return "unknown broken pattern";

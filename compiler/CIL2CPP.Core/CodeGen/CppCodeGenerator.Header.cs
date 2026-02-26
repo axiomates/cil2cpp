@@ -201,6 +201,7 @@ public partial class CppCodeGenerator
         var opaqueSpanStubs = new List<string>();
         CollectUnknownValueTypeFields(userTypes, definedTypeNames, unknownValueTypeStubs);
         CollectUnknownValueTypeLocals(userTypes, definedTypeNames, unknownValueTypeStubs);
+        CollectUnknownValueTypesFromSizeof(userTypes, definedTypeNames, unknownValueTypeStubs);
         foreach (var stubName in unknownValueTypeStubs)
         {
             // Span/ReadOnlySpan opaque stubs need f_reference + f_length for field access
@@ -594,6 +595,43 @@ public partial class CppCodeGenerator
         stubs.Add(rawType);
     }
 
+    /// <summary>
+    /// Scan method body IRRawCpp instructions for sizeof(TypeName) patterns and add those types
+    /// as opaque stubs. This catches cases where a type is used only inside sizeof() but not as
+    /// a local variable (e.g., EventSource.EventData used in WriteEvent patterns).
+    /// </summary>
+    private static void CollectUnknownValueTypesFromSizeof(
+        List<IRType> types, HashSet<string> definedTypes, HashSet<string> stubs)
+    {
+        foreach (var type in types)
+        {
+            if (type.IsEnum || type.IsDelegate) continue;
+            foreach (var method in type.Methods)
+            {
+                foreach (var block in method.BasicBlocks)
+                {
+                    foreach (var instr in block.Instructions)
+                    {
+                        if (instr is not IR.IRRawCpp rawCpp) continue;
+                        var code = rawCpp.Code;
+                        int idx = 0;
+                        while ((idx = code.IndexOf("sizeof(", idx)) >= 0)
+                        {
+                            var start = idx + 7;
+                            var end = code.IndexOf(')', start);
+                            if (end > start)
+                            {
+                                var typeName = code[start..end].Trim();
+                                TryAddValueTypeStub(typeName, definedTypes, stubs);
+                            }
+                            idx = start;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     private static void CheckFieldForStub(string fieldTypeName, HashSet<string> definedTypes, HashSet<string> stubs)
     {
         var cppType = CppNameMapper.GetCppTypeForDecl(fieldTypeName);
@@ -917,21 +955,38 @@ public partial class CppCodeGenerator
     /// </summary>
     private static bool HasUnresolvedGenericParamInCode(string code, HashSet<string> knownTypeNames)
     {
-        // Scan for cast patterns: (TypeName*) or (TypeName)
+        // Scan for C-style cast patterns: (TypeName*) or (TypeName)
+        // Must distinguish from function arguments like static_cast<X>(var) or if (var)
         int i = 0;
         while (i < code.Length)
         {
             if (code[i] == '(' && i + 1 < code.Length && char.IsUpper(code[i + 1]))
             {
-                // Found '(' followed by uppercase — could be a cast
+                // Skip if '(' is preceded by '>' (template close — static_cast<X>(...)),
+                // alphanumeric/underscore (function call — func(...)), or keywords (if/while/for)
+                if (i > 0)
+                {
+                    char prev = code[i - 1];
+                    if (prev == '>' || char.IsLetterOrDigit(prev) || prev == '_')
+                    {
+                        i++;
+                        continue;
+                    }
+                }
+
+                // Found '(' followed by uppercase — could be a C-style cast
                 int start = i + 1;
                 int end = start;
                 while (end < code.Length && (char.IsLetterOrDigit(code[end]) || code[end] == '_'))
                     end++;
-                // Strip trailing * for pointer casts
+                // Strip trailing * for pointer casts — require at least one *
+                // C-style casts of unresolved generic params are always pointer casts (T*, TKey*).
+                // Value-type casts use static_cast<> instead. Requiring * avoids false positives
+                // from parameter names in conditions: if (OperationName), sizeof(EventData), etc.
                 int nameEnd = end;
                 while (nameEnd < code.Length && code[nameEnd] == '*') nameEnd++;
-                if (nameEnd < code.Length && code[nameEnd] == ')')
+                bool hasPointerStar = nameEnd > end;
+                if (hasPointerStar && nameEnd < code.Length && code[nameEnd] == ')')
                 {
                     var typeName = code[start..end];
                     // Single-word uppercase name without underscores = likely unresolved generic param
@@ -1327,6 +1382,9 @@ public partial class CppCodeGenerator
             {
                 if (instr is IR.IRCall call && !string.IsNullOrEmpty(call.FunctionName))
                 {
+                    // Interface dispatch uses runtime vtable lookup — the FunctionName
+                    // is never emitted as a direct call, so don't check it against declarations.
+                    if (call.IsInterfaceCall) continue;
                     var funcName = call.FunctionName;
                     if (funcName.StartsWith("cil2cpp::")) continue;
                     if (funcName.EndsWith("_ensure_cctor")) continue;
@@ -1374,17 +1432,78 @@ public partial class CppCodeGenerator
         // algorithms (IntroSort, FormatCustomized, String.Concat, etc.), not JIT intrinsics.
         // JIT intrinsics are already caught by System.Runtime.Intrinsics namespace check above.
 
-        // Numerics interface DIM with non-primitive struct params (Int128, UInt128, Decimal, Half).
-        // These are INumber<T>/IComparisonOperators<T> DIM bodies that operate on large value types
-        // (128-bit integers, 128-bit decimals, 16-bit floats) which aren't supported in our
-        // flat struct model. Primitive numeric DIM (byte, int, etc.) work fine through remaining gates.
+        // Numerics interface DIM with non-primitive struct params or unresolved generic params.
+        // INumber<T>/IComparisonOperators<T> DIM bodies operate on large value types
+        // (128-bit integers, 128-bit decimals, 16-bit floats) or have unresolved generic type
+        // parameters (CreateTruncating<TOther>) which can't be AOT-compiled.
         if (method.DeclaringType?.IsInterface == true &&
             method.DeclaringType.ILFullName?.StartsWith("System.Numerics.I") == true)
         {
             if (method.Parameters.Any(p => p.ILTypeName is "System.Int128" or "System.UInt128"
                 or "System.Decimal" or "System.Half"))
                 return true;
+            // Unresolved generic type params in DIM (e.g. CreateTruncating<TOther>)
+            if (method.Parameters.Any(p => IsUnresolvedGenericParam(p.CppTypeName.TrimEnd('*').Trim())))
+                return true;
         }
+
+        // Function pointer types in parameters, return types, or locals — IL function pointers
+        // produce "method..." mangled names which are not valid C++ types. These appear in P/Invoke
+        // callback delegates (EnumCalendarInfoExEx, etc.), ActivatorCache, DateTime fnptr, etc.
+        {
+            bool hasFuncPtr = false;
+            foreach (var param in method.Parameters)
+            {
+                if (param.CppTypeName.StartsWith("method") || param.CppTypeName.Contains("("))
+                { hasFuncPtr = true; break; }
+            }
+            if (!hasFuncPtr && (method.ReturnTypeCpp.StartsWith("method") || method.ReturnTypeCpp.Contains("(")))
+                hasFuncPtr = true;
+            if (!hasFuncPtr)
+            {
+                foreach (var local in method.Locals)
+                {
+                    if (local.CppTypeName.StartsWith("method") || local.CppTypeName.Contains("("))
+                    { hasFuncPtr = true; break; }
+                }
+            }
+            // Also check body instruction ResultTypeCpp and Code for function pointer patterns
+            if (!hasFuncPtr)
+            {
+                foreach (var block in method.BasicBlocks)
+                {
+                    foreach (var instr in block.Instructions)
+                    {
+                        if (instr is IR.IRRawCpp raw)
+                        {
+                            if (raw.ResultTypeCpp?.StartsWith("method") == true ||
+                                raw.Code.Contains("method") && raw.Code.Contains("(") && raw.Code.Contains("ptr"))
+                            { hasFuncPtr = true; break; }
+                        }
+                    }
+                    if (hasFuncPtr) break;
+                }
+            }
+            if (hasFuncPtr)
+                return true;
+        }
+
+        // Globalization P/Invoke methods using callback function pointer delegates
+        // (CALINFO_ENUMPROCEXEX, TIMEFMT_ENUMPROC, etc.) that produce "method..." mangled names.
+        if (method.DeclaringType?.ILFullName == "System.Globalization.CalendarData" &&
+            method.Name is "CallEnumCalendarInfo" or "NlsGetCalendars" or "EnumCalendarInfo")
+            return true;
+        if (method.DeclaringType?.ILFullName == "System.Globalization.CultureData" &&
+            method.Name == "nativeEnumTimeFormats")
+            return true;
+        // DateTime.LeapSecondCache::.cctor — references GetSystemTimeAsFileTime function pointer
+        if (method.DeclaringType?.ILFullName == "System.DateTime/LeapSecondCache" &&
+            method.Name == ".cctor")
+            return true;
+        // PosixSignalRegistration.Unregister — references HashSet<Token> nested type not in module
+        if (method.DeclaringType?.ILFullName == "System.Runtime.InteropServices.PosixSignalRegistration" &&
+            method.Name == "Unregister")
+            return true;
 
         // VectorMath — hardware SIMD helper, same as System.Runtime.Intrinsics
         if (method.DeclaringType?.ILFullName == "System.Numerics.VectorMath")
@@ -2523,7 +2642,11 @@ public partial class CppCodeGenerator
                         // Ensure what precedes is a type name (not "auto" or "cil2cpp::Object*")
                         var prefix = s[..idx].Trim();
                         if (prefix.Length > 0 && prefix != "auto" && !prefix.Contains("Object*")
-                            && !prefix.StartsWith("//") && !prefix.StartsWith("#"))
+                            && !prefix.StartsWith("//") && !prefix.StartsWith("#")
+                            // A type name prefix must NOT contain parentheses, semicolons, or commas —
+                            // these indicate preceding code (e.g. "null_check(...); __t1 = ..."),
+                            // not a struct type redeclaration.
+                            && !prefix.Contains('(') && !prefix.Contains(';') && !prefix.Contains(','))
                             return "Object* pre-declared temp redeclared as struct (C2086)";
                     }
                 }

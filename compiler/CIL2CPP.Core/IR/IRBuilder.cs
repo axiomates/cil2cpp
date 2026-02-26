@@ -248,6 +248,38 @@ public partial class IRBuilder
         irMethod.BasicBlocks.Add(block);
     }
 
+    /// <summary>
+    /// Check if a type derives from System.Diagnostics.Tracing.EventSource.
+    /// Walks the base type chain via Cecil metadata.
+    /// </summary>
+    private static bool IsEventSourceDerived(Mono.Cecil.TypeDefinition? typeDef)
+    {
+        var current = typeDef?.BaseType;
+        while (current != null)
+        {
+            if (current.FullName == "System.Diagnostics.Tracing.EventSource")
+                return true;
+            try { current = current.Resolve()?.BaseType; }
+            catch { break; }
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Generate a no-op method body (just returns default).
+    /// Unlike GenerateStubBody, this does NOT call stub_called — the method is intentionally
+    /// a no-op (e.g., EventSource diagnostics) rather than a missing implementation.
+    /// </summary>
+    private static void GenerateNoOpBody(IRMethod irMethod)
+    {
+        var block = new IRBasicBlock { Id = 0 };
+        string? retVal = null;
+        if (irMethod.ReturnTypeCpp != "void")
+            retVal = irMethod.ReturnTypeCpp.EndsWith("*") ? "nullptr" : "{}";
+        block.Instructions.Add(new IRReturn { Value = retVal });
+        irMethod.BasicBlocks.Add(block);
+    }
+
     private readonly AssemblyReader _reader;
     private readonly IRModule _module;
     private readonly BuildConfiguration _config;
@@ -606,6 +638,17 @@ public partial class IRBuilder
             {
                 irMethod.IrStubReason = clrReason;
                 GenerateStubBody(irMethod);
+                continue;
+            }
+
+            // EventSource-derived type methods: generate no-op bodies instead of compiling IL.
+            // EventSource.IsEnabled ICall always returns false → all diagnostic write methods
+            // are dead code at runtime. Compiling them from BCL IL introduces references to
+            // EventData, WriteEventCore, ActivityTracker etc. which are in the excluded
+            // System.Diagnostics.Tracing namespace, causing UBR/UF stubs.
+            if (IsEventSourceDerived(methodDef.GetCecilMethod().DeclaringType))
+            {
+                GenerateNoOpBody(irMethod);
                 continue;
             }
 
