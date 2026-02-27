@@ -159,9 +159,14 @@ public static class CppNameMapper
             return "cil2cpp::Array*";
         }
         // Multi-dimensional arrays: T[0...,0...] or T[,] → MdArray*
-        if (ilTypeName.Contains("[") && (ilTypeName.Contains(",") || ilTypeName.Contains("...")))
+        // Must check only the LAST bracket section to avoid matching commas in generic args
+        // e.g., "SharedArrayPool`1/ThreadLocalArray`1<System.Byte>[]" has comma in generic args
+        if (ilTypeName.EndsWith("]") && ilTypeName.Contains("["))
         {
-            return "cil2cpp::MdArray*";
+            var lastBracket = ilTypeName.LastIndexOf('[');
+            var section = ilTypeName[lastBracket..];
+            if (section.Contains(',') || section.Contains("..."))
+                return "cil2cpp::MdArray*";
         }
 
         // Primitive types

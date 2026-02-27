@@ -881,6 +881,51 @@ def cmd_integration(args):
     runner.step("CMake configure + build SystemIOTest", io_cmake_and_build)
     runner.step("Run SystemIOTest and verify output", io_run_verify)
 
+    # ===== Phase 9: FileStreamTest (FileStream, StreamReader, StreamWriter via BCL IL) =====
+    header("Phase 9: FileStreamTest (FileStream, StreamReader, StreamWriter via BCL IL)")
+
+    fs_sample = TESTPROJECTS_DIR / "FileStreamTest" / "FileStreamTest.csproj"
+    fs_output = temp_dir / "filestream_output"
+
+    def fs_codegen():
+        run(["dotnet", "run", "--project", str(CLI_PROJECT), "--",
+             "codegen", "-i", str(fs_sample), "-o", str(fs_output)],
+            capture=True)
+
+    def fs_files_exist():
+        for f in ["FileStreamTest.h", "FileStreamTest_data.cpp", "FileStreamTest_stubs.cpp",
+                   "main.cpp", "CMakeLists.txt"]:
+            if not (fs_output / f).exists():
+                raise RuntimeError(f"Missing: {f}")
+
+    def fs_cmake_and_build():
+        fs_build = fs_output / "build"
+        run(["cmake", "-B", str(fs_build), "-S", str(fs_output),
+             "-G", generator, *cmake_arch,
+             f"-DCMAKE_PREFIX_PATH={runtime_prefix}"], capture=True)
+        run(["cmake", "--build", str(fs_build), "--config", config], capture=True)
+
+    def fs_run_verify():
+        fs_build = fs_output / "build"
+        exe = _exe_path(fs_build, config, "FileStreamTest")
+        r = subprocess.run([str(exe)], capture_output=True, text=True, check=False, timeout=30)
+        if r.returncode != 0:
+            raise RuntimeError(f"FileStreamTest exited with code {r.returncode}\n{r.stdout}\n{r.stderr}")
+        out = r.stdout
+        if "=== Done ===" not in out:
+            raise RuntimeError(f"FileStreamTest output missing '=== Done ==='\n{out}")
+        if "FileStream Write: OK" not in out:
+            raise RuntimeError(f"FileStreamTest: FileStream Write failed\n{out}")
+        if "FileStream Read: OK" not in out:
+            raise RuntimeError(f"FileStreamTest: FileStream Read failed\n{out}")
+        if "StreamWriter: OK" not in out:
+            raise RuntimeError(f"FileStreamTest: StreamWriter failed\n{out}")
+
+    runner.step("Codegen FileStreamTest", fs_codegen)
+    runner.step("Generated files exist", fs_files_exist)
+    runner.step("CMake configure + build FileStreamTest", fs_cmake_and_build)
+    runner.step("Run FileStreamTest and verify output", fs_run_verify)
+
     # ===== Cleanup =====
     header("Cleanup")
 

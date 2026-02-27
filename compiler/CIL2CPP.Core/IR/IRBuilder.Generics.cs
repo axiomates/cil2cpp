@@ -955,8 +955,24 @@ public partial class IRBuilder
             for (int i = 0; i < openType.GenericParameters.Count && i < info.TypeArguments.Count; i++)
                 nameMap[openType.GenericParameters[i].Name] = info.TypeArguments[i];
 
+            // Scan method signatures for type discovery (all methods, no reachability gate).
+            // This catches types like ArraySegment<T> referenced in signatures of methods
+            // that may be called from compiled generic specialization bodies.
+            // shallowOnly: skip types with nested generic arguments (e.g., ArraySegment<KVP<X,Y>>)
+            // to avoid MangleTypeName/MangleTypeNameClean naming inconsistency.
+            foreach (var method in openType.Methods)
+            {
+                if (!method.IsAbstract)
+                {
+                    TryCollectResolvedGenericType(method.ReturnType, nameMap, shallowOnly: true);
+                    foreach (var p in method.Parameters)
+                        TryCollectResolvedGenericType(p.ParameterType, nameMap, shallowOnly: true);
+                }
+            }
+
             // Scan method bodies for generic type references with unresolved params.
-            // Only scan methods that are likely to compile: reachable, non-abstract, has body.
+            // Body scanning is gated on reachability to avoid pulling in deep reflection
+            // type cascades from unreachable BCL methods.
             foreach (var method in openType.Methods)
             {
                 if (!method.HasBody || method.IsAbstract) continue;
@@ -1076,7 +1092,8 @@ public partial class IRBuilder
     /// Attempt to resolve a GenericInstanceType's generic parameters using a name map
     /// and register the fully resolved type as a generic instantiation.
     /// </summary>
-    private void TryCollectResolvedGenericType(TypeReference typeRef, Dictionary<string, string> nameMap)
+    private void TryCollectResolvedGenericType(TypeReference typeRef, Dictionary<string, string> nameMap,
+        bool shallowOnly = false)
     {
         // Handle GenericParameter types (e.g., !!1 from constrained calls).
         // Resolve through nameMap to get the actual type name, then if it's a generic
@@ -1084,7 +1101,13 @@ public partial class IRBuilder
         if (typeRef is Mono.Cecil.GenericParameter gp)
         {
             if (nameMap.TryGetValue(gp.Name, out var resolvedName))
+            {
+                // In shallow mode, skip types with nested generic arguments to avoid
+                // MangleTypeName/MangleTypeNameClean naming inconsistency
+                if (shallowOnly && resolvedName.Contains('<'))
+                    return;
                 TryCollectFromResolvedName(resolvedName);
+            }
             return;
         }
 
@@ -1093,6 +1116,9 @@ public partial class IRBuilder
         // If already fully resolved (no generic params), delegate to normal collection
         if (!git.GenericArguments.Any(ContainsGenericParameter))
         {
+            // In shallow mode, skip if any arg is itself a generic instance
+            if (shallowOnly && git.GenericArguments.Any(a => a is GenericInstanceType))
+                return;
             CollectGenericType(typeRef);
             return;
         }
@@ -1105,6 +1131,10 @@ public partial class IRBuilder
             if (resolved == null) return; // Can't fully resolve — skip
             resolvedArgs.Add(resolved);
         }
+
+        // In shallow mode, skip types with nested generic arguments
+        if (shallowOnly && resolvedArgs.Any(a => a.Contains('<')))
+            return;
 
         var openTypeName = git.ElementType.FullName;
         var instKey = $"{openTypeName}<{string.Join(",", resolvedArgs)}>";
