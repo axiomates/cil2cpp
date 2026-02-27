@@ -319,7 +319,10 @@ public static class ICallRegistry
         RegisterICall("System.Threading.WaitHandle", "WaitOneCore", 2, "cil2cpp::icall::WaitHandle_WaitOneCore");
 
         // ===== System.IO =====
-        // File operations — intercept at public API level, bypassing BCL FileStream chain
+        // File operations — intercept at public API level, bypassing BCL FileStream chain.
+        // HACK: B.6 partial removal attempted — File.ReadAllText works through BCL IL,
+        // but File.ReadAllBytes hangs (FileStream.Read(byte[],int,int) code path has a bug).
+        // TODO: Investigate FileStream.Read byte[] path, then remove these ICalls.
         RegisterICall("System.IO.File", "Exists", 1, "cil2cpp::icall::File_Exists");
         RegisterICall("System.IO.File", "ReadAllText", 1, "cil2cpp::icall::File_ReadAllText");
         RegisterICall("System.IO.File", "ReadAllText", 2, "cil2cpp::icall::File_ReadAllText2");

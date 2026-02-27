@@ -1,6 +1,6 @@
 # 开发路线图
 
-> 最后更新：2026-02-27
+> 最后更新：2026-02-28
 >
 > [English Version](roadmap.md)
 
@@ -89,22 +89,20 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 
 详见上方"RuntimeProvided 类型分类"章节。
 
-### Stub 分布（HelloWorld, 1,572 个 stubs，~94% 翻译率）— Phase B 进行中
+### Stub 分布（HelloWorld, 1,478 个 stubs，~95.2% 翻译率）
 
 | 类别 | 数量 | 占比 | 性质 |
 |------|------|------|------|
-| MissingBody | 699 | 44.5% | 无 IL body（abstract/extern/JIT intrinsic）— 多数合理 |
-| KnownBrokenPattern | 620 | 39.4% | SIMD 333 + line-level 体扫描 patterns + TypeHandle/MethodTable |
-| UndeclaredFunction | 120 | 7.6% | 泛型特化缺失（IRBuilder 未创建特化类型） |
-| ClrInternalType | 96 | 6.1% | QCall/MetadataImport CLR JIT 专用类型 |
-| RenderedBodyError | 37 | 2.4% | Codegen bug（MdArray、反射别名类型、PInvoke 回调） |
-
-**注**：总数从 1,537 → 1,572 (+35)，因 gate 逻辑修改（KBP Pattern 8 误判移除）暴露了之前隐藏的 stubs。实际编译能力提升——376+ 个 Span/Buffer 方法现可正确编译。
+| MissingBody | 666 | 45.1% | 无 IL body（abstract/extern/JIT intrinsic）— 多数合理 |
+| KnownBrokenPattern | 620 | 41.9% | SIMD 333 + line-level 体扫描 patterns + TypeHandle/MethodTable |
+| UndeclaredFunction | 68 | 4.6% | 泛型特化缺失（IRBuilder 未创建特化类型） |
+| ClrInternalType | 96 | 6.5% | QCall/MetadataImport CLR JIT 专用类型 |
+| RenderedBodyError | 28 | 1.9% | Codegen bug（PInvoke 回调、反射别名类型、指针转换） |
 
 **不可修复或暂缓**：SIMD (333+) 需要 intrinsics 支持或运行时回退。CLR 内部类型 (96) 永久保留。
 
-**IL 转译率**：~94%（Phase A: 2,777 → 1,537; Phase B gate 修复: 1,537 → 1,572）。
-**测试**：1,240 C# + 592 C++ + 35 集成 — 全部通过。
+**IL 转译率**：~95.2%（29,249 已编译 / 30,727 总方法）。Phase A: 2,777 → 1,537; Phase B: 1,537 → 1,478。
+**测试**：1,240 C# + 592 C++ + 39 集成 — 全部通过。
 
 ### 已实现的架构能力
 
@@ -117,12 +115,12 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 
 | 项目类型 | 预估完成度 | 阻塞项 |
 |---------|-----------|--------|
-| 简单控制台应用 | ~90% | 基本 BCL 链通畅，少量 stub |
-| 类库项目 | ~80% | 集合、泛型、异步、反射都可用 |
-| 文件 I/O 应用 | ~75% | FileStream/StreamReader BCL IL 链端到端可用（Windows），ICall bypass 仍作后备 |
+| 简单控制台应用 | ~95% | 基本 BCL 链通畅，95.2% 翻译率 |
+| 类库项目 | ~85% | 集合、泛型、异步、反射都可用 |
+| 文件 I/O 应用 | ~85% | FileStream/StreamReader BCL IL 链端到端可用（Windows ✅），Linux 待 System.Native |
 | 网络应用 | ~10% | Socket/HttpClient BCL IL 链未验证，System.Native 未集成 |
 | 生产级应用 | ~5% | 需要 TLS + JSON + DI 等完整 BCL 链 |
-| 任意 NativeAOT .csproj | ~30% | 编译器 bug（1,572 stubs）+ 原生库集成 + NativeAOT 元数据 |
+| 任意 NativeAOT .csproj | ~35% | 编译器成熟（1,478 stubs）但原生库集成 + NativeAOT 元数据待做 |
 
 ---
 
@@ -204,22 +202,23 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 > **核心思路**：不是"给每个功能写 ICall"，而是"修编译器让 BCL IL 编译通"。
 > FileStream / Socket / HttpClient / JSON 在 .NET BCL 中有完整 IL 实现，最终通过 P/Invoke 调用 OS API。P/Invoke 已可用。问题在于编译器 bug 导致中间 BCL 方法无法从 IL 翻译。
 
-### Phase A: 编译器收尾 — 修复 stubs 根因
+### Phase A: 编译器收尾 — 修复 stubs 根因 ✅
 
-**目标**：翻译率 > 92%，stubs < 2,000
+**目标**：翻译率 > 92%，stubs < 2,000 — **已达成：1,478 stubs，~95.2% 翻译率**
 
-**原理**：stubs 是 BCL IL 链中断的唯一原因。修复编译器 = 解锁所有 BCL 功能。
+**成果**：2,777 → 1,478 stubs（-1,299，-46.8%）
 
-| # | 任务 | 预估 | 说明 |
+| # | 任务 | 影响 | 状态 |
 |---|------|------|------|
-| A.1 | 修复 RenderedBodyError (90 stubs) | 中 | void* 转换、MdArray、DIM struct 等 codegen bug |
-| A.2 | EventSource 更广泛 no-op ICall | 低 | 诊断类型级联，no-op 是正确做法（NativeAOT 也这样） |
-| A.3 | 修复 UndeclaredFunction (287 stubs) | 高 | IRBuilder 泛型特化缺口 — 补发现逻辑 |
-| A.4 | 审计 KBP 残留 (611 stubs) | 中 | 333 是 SIMD（暂不动），278 需逐条审查 |
-| A.5 | 修复 UnknownBodyReferences (41) + UnknownParameterTypes (22) | 低 | 嵌套泛型 + INumberBase DIM |
+| A.1 | 修复 RenderedBodyError | RE 90→28 | ✅ |
+| A.2 | EventSource 更广泛 no-op ICall + modreq/modopt | -137 | ✅ |
+| A.3 | 修复 UndeclaredFunction（泛型发现、ICalls） | UF 287→68 | ✅ |
+| A.4 | KBP 审计 + 误判移除 | KBP 611→620（正确暴露） | ✅ |
+| A.5 | 修复 UBR + UP | UBR 41→0, UP 22→0 | ✅ |
+| A.6 | 修复 stub 重复计数（gate-failed MissingBody） | -698 MissingBody | ✅ |
+| A.7 | Callee 扫描优化（gated method skip + UF prediction） | -40 cascade | ✅ |
 
-**前置**：无
-**产出**：BCL 中间方法大面积解锁，FileStream/Socket IL 链中的 stubs 大幅减少
+**产出**：M1 里程碑达成。BCL 中间方法大面积解锁。
 
 ### Phase B: BCL 链验证 — Streaming I/O（进行中）
 
@@ -238,11 +237,11 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 | B.3 | SpanHelpers 标量搜索拦截 | 中 | ✅ | BCL SIMD 分支 → AOT 标量模板（IndexOfAny/IndexOf/LastIndexOf/IndexOfAnyExcept） |
 | B.4 | 端到端 FileStreamTest | 低 | ✅ | FileStream Write/Read、StreamWriter、StreamReader.ReadLine — 全部通过（Windows） |
 | B.5 | System.Native 原生库集成（Linux） | 中 | 待定 | 类似 BoehmGC/ICU：从 dotnet/runtime 提取 ~30 .c 文件，FetchContent 编译 |
-| B.6 | 移除 File.ReadAllText/WriteAllText ICall 绕过 | 低 | 待定 | HACK 清理：确认 FileStream IL 链稳定后删除 ICall bypass |
-| B.7 | 集成测试套件 + baselines | 低 | 待定 | 将 FileStreamTest 加入集成测试 |
+| B.6 | 移除 File.ReadAllText/WriteAllText ICall 绕过 | 低 | 阻塞 | HACK 清理：File.ReadAllText 可通过 BCL IL 工作，但 File.ReadAllBytes 挂起（FileStream.Read(byte[]) 代码路径有 bug）。需修复后再移除。 |
+| B.7 | 集成测试套件 + baselines | 低 | ✅ | FileStreamTest 加入集成测试（Phase 9，39/39 通过）+ UF/RE stub 减少（-94） |
 
-**前置**：Phase A
-**产出**：FileStream 端到端从 BCL IL 编译（Windows 先行，Linux 需 System.Native）
+**前置**：Phase A ✅
+**产出**：FileStream 端到端从 BCL IL 编译 — **Windows 已通过** ✅，Linux 待 System.Native
 
 ### Phase C: BCL 链扩展 — 网络
 
@@ -334,9 +333,9 @@ Phase III (编译器管道质量) ✅ — 4,402→2,860, -35.1%, 88.8%
 Phase IV  (可行类型→IL) 40→32 ✅
 Phase V.1 (Task 依赖分析) ✅
        ↓
-Phase A (编译器收尾 — 修 stubs 根因) ← 所有后续的前置
+Phase A (编译器收尾 — 修 stubs 根因) ✅ — 2,777→1,478, -46.8%, 95.2%
        ↓
-Phase B (FileStream BCL IL 链验证 + System.Native 集成)
+Phase B (FileStream BCL IL 链验证) — Windows ✅, B.5/B.6 待定
        ↓
 Phase C (Socket/HTTP BCL IL 链)  ←→  Phase D (NativeAOT 元数据)  [可并行]
        ↓                                  ↓
@@ -353,8 +352,8 @@ Phase C (Socket/HTTP BCL IL 链)  ←→  Phase D (NativeAOT 元数据)  [可并
 
 | 里程碑 | 达成条件 | 对应阶段 |
 |--------|---------|---------|
-| **M1: 编译器成熟** | stubs < 2,000，翻译率 > 92% | A |
-| **M2: 文件 I/O** | FileStream/StreamReader 从 BCL IL 编译并运行 | B |
+| **M1: 编译器成熟** | stubs < 2,000，翻译率 > 92% | A ✅（1,478 stubs, 95.2%） |
+| **M2: 文件 I/O** | FileStream/StreamReader 从 BCL IL 编译并运行 | B（~90%，Windows ✅） |
 | **M3: 联网应用** | HttpClient HTTP GET 从 BCL IL 编译并运行 | C |
 | **M4: 库生态** | DI + JSON (SG) + Logging 可编译 | D |
 | **M5: 生产级** | HTTPS + Compression | E |
@@ -364,10 +363,10 @@ Phase C (Socket/HTTP BCL IL 链)  ←→  Phase D (NativeAOT 元数据)  [可并
 
 | 指标 | 定义 | 当前值 | Phase A 目标 | 长期目标 |
 |------|------|--------|-------------|----------|
-| IL 转译率 | (reachable - stub) / reachable | **88.8%** (2860/25444) | >92% | >95% |
-| RuntimeProvided 数 | RuntimeProvidedTypes 条目 | **32** (was 40, -8) | ~32 | ~25（Phase F.2） |
+| IL 转译率 | (total_methods - stubs) / total_methods | **~95.2%**（1,478 stubs / 30,727 方法） | >92% ✅ | >95% ✅ |
+| RuntimeProvided 数 | RuntimeProvidedTypes 条目 | **32**（was 40, -8） | ~32 | ~25（Phase F.2） |
 | CoreRuntime 数 | 方法完全由 C++ 提供 | 22 | ~22 | ~10（Phase F.4） |
-| ICall 数 | C++ 内部调用 | ~282 | ~300 | 趋稳（功能来自 BCL IL，非 ICall） |
+| ICall 数 | C++ 内部调用 | **~396**（321+30+45） | ~400 | 趋稳（功能来自 BCL IL，非 ICall） |
 
 ---
 
