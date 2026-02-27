@@ -105,6 +105,7 @@ set(RUNTIME_SOURCES
     src/icall/math.cpp
     src/icall/throw_helper.cpp
     src/icall/unicode_utility.cpp
+    src/icall/ascii.cpp
     src/async/task.cpp
     src/async/threadpool.cpp
     src/async/cancellation.cpp

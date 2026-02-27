@@ -112,11 +112,9 @@ GCStats get_stats();
 
 /**
  * GC.SuppressFinalize — tells the GC not to run the finalizer for obj.
- * With BoehmGC, we unregister the BoehmGC destructor callback.
+ * With BoehmGC, we unregister the finalizer callback via GC_register_finalizer.
  */
-inline void gc_suppress_finalize(void* obj) {
-    (void)obj; // BoehmGC doesn't use per-object finalizer queues by default
-}
+void gc_suppress_finalize(void* obj);
 
 /**
  * GC.KeepAlive — prevents the object from being collected before this point.

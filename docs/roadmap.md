@@ -1,6 +1,6 @@
 # Development Roadmap
 
-> Last updated: 2026-02-26
+> Last updated: 2026-02-27
 >
 > [中文版 (Chinese)](roadmap.zh-CN.md)
 
@@ -89,25 +89,22 @@ IL2CPP compiles from IL: Task/async entire family, CancellationToken/Source, Wai
 
 See "RuntimeProvided Type Classification" section above.
 
-### Stub Distribution (HelloWorld, 2,860 / 25,444 total methods, 88.8% translation rate)
-
-> codegen stub count. `--analyze-stubs` additionally reports 96 ClrInternalType (QCall/MetadataImport), total 2,956.
+### Stub Distribution (HelloWorld, 1,572 stubs, ~94% translation rate) — Phase B in progress
 
 | Category | Count | % | Nature |
 |----------|-------|---|--------|
-| MissingBody | 1,713 | 59.9% | No IL body (abstract/extern/JIT intrinsic) — most are legitimate |
-| KnownBrokenPattern | 611 | 21.4% | SIMD 333 + line-level body scan patterns + TypeHandle/MethodTable |
-| UndeclaredFunction | 287 | 10.0% | Generic specialization missing (IRBuilder didn't create specialization type) + cascade |
-| RenderedBodyError | 90 | 3.1% | Actual C++ codegen bugs (void* cast, MdArray, DIM struct, etc.) |
-| UnknownBodyReferences | 41 | 1.4% | Method body references undeclared types (mostly nested generics) |
-| UnknownParameterTypes | 22 | 0.8% | Parameter types undeclared (INumberBase DIM + some Span specializations) |
+| MissingBody | 699 | 44.5% | No IL body (abstract/extern/JIT intrinsic) — most are legitimate |
+| KnownBrokenPattern | 620 | 39.4% | SIMD 333 + line-level body scan patterns + TypeHandle/MethodTable |
+| UndeclaredFunction | 120 | 7.6% | Generic specialization missing (IRBuilder didn't create specialization type) |
+| ClrInternalType | 96 | 6.1% | QCall/MetadataImport CLR JIT-specific types |
+| RenderedBodyError | 37 | 2.4% | Codegen bugs (MdArray, reflection aliased types, PInvoke callbacks) |
 
-**Fixable compiler issues**: RenderedBodyError (90) + UndeclaredFunction (287) + UnknownBodyRefs (41) = **~418 methods**. RenderedBodyError is easiest to fix (individual codegen bugs), UndeclaredFunction needs IRBuilder generic fixes.
+**Note**: Stub total increased from 1,537 → 1,572 (+35) due to gate logic changes (KBP Pattern 8 false positive removal) exposing previously hidden stubs. Actual compilation capability improved — 376+ Span/Buffer methods now compile correctly.
 
-**Unfixable or deferred**: Most MissingBody are abstract/extern/CLR intrinsic; SIMD (333+) needs intrinsics support or runtime fallback.
+**Unfixable or deferred**: SIMD (333+) needs intrinsics support or runtime fallback. CLR internal types (96) are permanently retained.
 
-**IL translation rate**: 88.8% (22,584 compiled / 25,444 total).
-**Tests**: 1,240 C# + 591 C++ + 35 integration — all passing.
+**IL translation rate**: ~94% (Phase A: 2,777 → 1,537; Phase B gate fixes: 1,537 → 1,572).
+**Tests**: 1,240 C# + 592 C++ + 35 integration — all passing.
 
 ### Implemented Architecture Capabilities
 
@@ -122,10 +119,10 @@ See "RuntimeProvided Type Classification" section above.
 |-------------|----------------|----------|
 | Simple console apps | ~90% | Basic BCL chain works, few stubs |
 | Library projects | ~80% | Collections, generics, async, reflection all available |
-| File I/O apps | ~50% | FileStream BCL IL chain has stub interruptions, currently using ICall bypass (HACK) |
+| File I/O apps | ~75% | FileStream/StreamReader BCL IL chain works end-to-end (Windows), ICall bypass still present as fallback |
 | Network apps | ~10% | Socket/HttpClient BCL IL chain not verified, System.Native not integrated |
 | Production-grade apps | ~5% | Needs TLS + JSON + DI etc. complete BCL chains |
-| Arbitrary NativeAOT .csproj | ~30% | Compiler bugs (2,860 stubs) + native lib integration + NativeAOT metadata |
+| Arbitrary NativeAOT .csproj | ~30% | Compiler bugs (1,572 stubs) + native lib integration + NativeAOT metadata |
 
 ---
 
@@ -208,24 +205,25 @@ See "RuntimeProvided Type Classification" section above.
 > **Core approach**: Not "write ICall for every feature", but "fix the compiler to let BCL IL compile".
 > FileStream / Socket / HttpClient / JSON have complete IL implementations in .NET BCL, ultimately calling OS APIs via P/Invoke. P/Invoke is already available. The problem is compiler bugs preventing intermediate BCL methods from being translated from IL.
 
-### Phase A: Compiler Finalization — Fix Stub Root Causes
+### Phase A: Compiler Finalization — Fix Stub Root Causes ✅
 
-**Goal**: Translation rate > 92%, stubs < 2,000
+**Goal**: Translation rate > 92%, stubs < 2,000 — **Achieved: 1,537 stubs, ~94% translation rate**
 
-**Rationale**: Stubs are the sole reason BCL IL chains break. Fix compiler = unlock all BCL functionality.
+**Results**: 2,777 → 1,537 stubs (-1,240, -44.7%)
 
-| # | Task | Estimate | Description |
-|---|------|----------|-------------|
-| A.1 | Fix RenderedBodyError (90 stubs) | Medium | void* cast, MdArray, DIM struct etc. codegen bugs |
-| A.2 | Broader EventSource no-op ICall | Low | Diagnostic type cascade, no-op is correct approach (NativeAOT does this too) |
-| A.3 | Fix UndeclaredFunction (287 stubs) | High | IRBuilder generic specialization gaps — supplement discovery logic |
-| A.4 | Audit remaining KBP (611 stubs) | Medium | 333 are SIMD (leave alone for now), 278 need individual review |
-| A.5 | Fix UnknownBodyReferences (41) + UnknownParameterTypes (22) | Low | Nested generics + INumberBase DIM |
+| # | Task | Impact | Status |
+|---|------|--------|--------|
+| A.1 | Fix RenderedBodyError | RE 90→36 | ✅ |
+| A.2 | Broader EventSource no-op ICall + modreq/modopt | -137 | ✅ |
+| A.3 | Fix UndeclaredFunction (generic discovery, ICalls) | UF 287→66 | ✅ |
+| A.4 | KBP audit + false positive removal | KBP 611→654 (correct) | ✅ |
+| A.5 | Fix UBR + UP | UBR 41→0, UP 22→0 | ✅ |
+| A.6 | Fix stub double-counting (gate-failed MissingBody) | -698 MissingBody | ✅ |
+| A.7 | Callee scan optimization (gated method skip + UF prediction) | -40 cascade | ✅ |
 
-**Prerequisites**: None
-**Output**: Massive BCL intermediate method unlock, major stub reduction in FileStream/Socket IL chains
+**Output**: M1 milestone achieved. BCL intermediate method chains significantly unlocked.
 
-### Phase B: BCL Chain Validation — Streaming I/O
+### Phase B: BCL Chain Validation — Streaming I/O (in progress)
 
 **Goal**: `File.OpenRead(path)` / `new StreamReader(path)` compile from BCL IL and run
 
@@ -235,16 +233,18 @@ See "RuntimeProvided Type Classification" section above.
 - **Windows**: FileStream → P/Invoke to **kernel32.dll** (CreateFile/ReadFile/WriteFile) — P/Invoke already available
 - **Linux**: FileStream → P/Invoke to **System.Native** (.NET's official POSIX wrapper layer, ~30 .c files, [open source in dotnet/runtime](https://github.com/dotnet/runtime)) — needs native library integration
 
-| # | Task | Estimate | Description |
-|---|------|----------|-------------|
-| B.1 | Trace FileStream IL dependency chain | Medium | FileStream → FileStreamStrategy → SafeFileHandle → Interop.Kernel32 (Win) / System.Native (Linux) |
-| B.2 | Fix stubs found in chain | High | Analyze each method for stub reason, fix compiler |
-| B.3 | System.Native native library integration (Linux) | Medium | Like BoehmGC/ICU: extract ~30 .c files from dotnet/runtime, FetchContent compile, remove from InternalPInvokeModules |
-| B.4 | Remove File.ReadAllText/WriteAllText ICall bypass | Low | HACK cleanup: delete ICall bypass once FileStream IL chain works |
-| B.5 | End-to-end integration tests | Low | New tests/FileIOTest: read/write files, StreamReader/Writer |
+| # | Task | Estimate | Status | Description |
+|---|------|----------|--------|-------------|
+| B.1 | Trace FileStream IL dependency chain | Medium | ✅ | FileStream → FileStreamStrategy → SafeFileHandle → Interop.Kernel32 — full chain already compiled from IL |
+| B.2 | Fix stubs found in chain | High | ✅ | KBP Pattern 8 fix (-376 stubs), Buffer.Memmove sizeof fix, SafeFileHandle/ThreadPool/ASCII ICalls |
+| B.3 | SpanHelpers scalar search interception | Medium | ✅ | BCL SIMD branches → AOT scalar templates (IndexOfAny/IndexOf/LastIndexOf/IndexOfAnyExcept) |
+| B.4 | End-to-end FileStreamTest | Low | ✅ | FileStream Write/Read, StreamWriter, StreamReader.ReadLine — all pass (Windows) |
+| B.5 | System.Native native library integration (Linux) | Medium | Pending | Like BoehmGC/ICU: extract ~30 .c files from dotnet/runtime, FetchContent compile |
+| B.6 | Remove File.ReadAllText/WriteAllText ICall bypass | Low | Pending | HACK cleanup: delete ICall bypass once more testing confirms FileStream IL chain stability |
+| B.7 | Integration test suite + baselines | Low | Pending | Add FileStreamTest to integration suite |
 
-**Prerequisites**: Phase A
-**Output**: FileStream end-to-end compiled from BCL IL (Windows first, Linux needs System.Native)
+**Prerequisites**: Phase A ✅
+**Output**: FileStream end-to-end compiled from BCL IL — **Windows working** ✅, Linux needs System.Native
 
 ### Phase C: BCL Chain Extension — Networking
 
@@ -336,7 +336,7 @@ Phase III (Compiler pipeline quality) ✅ — 4,402→2,860, -35.1%, 88.8%
 Phase IV  (Viable types→IL) 40→32 ✅
 Phase V.1 (Task dependency analysis) ✅
        ↓
-Phase A (Compiler finalization — fix stub root causes) ← prerequisite for all subsequent phases
+Phase A (Compiler finalization — fix stub root causes) ✅ — 2,777→1,537, -44.7%
        ↓
 Phase B (FileStream BCL IL chain validation + System.Native integration)
        ↓
@@ -366,7 +366,7 @@ Phase C (Socket/HTTP BCL IL chain)  ←→  Phase D (NativeAOT metadata)  [paral
 
 | Metric | Definition | Current | Phase A Target | Long-term Target |
 |--------|-----------|---------|---------------|-----------------|
-| IL translation rate | (reachable - stub) / reachable | **88.8%** (2860/25444) | >92% | >95% |
+| IL translation rate | (reachable - stub) / reachable | **~94%** (1537 stubs, Phase A ✅) | >92% ✅ | >95% |
 | RuntimeProvided count | RuntimeProvidedTypes entries | **32** (was 40, -8) | ~32 | ~25 (Phase F.2) |
 | CoreRuntime count | Methods fully provided by C++ | 22 | ~22 | ~10 (Phase F.4) |
 | ICall count | C++ internal calls | ~282 | ~300 | Stabilize (features come from BCL IL, not ICall) |

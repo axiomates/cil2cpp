@@ -1,6 +1,6 @@
 # 开发路线图
 
-> 最后更新：2026-02-26
+> 最后更新：2026-02-27
 >
 > [English Version](roadmap.md)
 
@@ -89,25 +89,22 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 
 详见上方"RuntimeProvided 类型分类"章节。
 
-### Stub 分布（HelloWorld, 2,860 个 / 25,444 总方法，88.8% 翻译率）
-
-> codegen stub 数。`--analyze-stubs` 额外报告 96 个 ClrInternalType（QCall/MetadataImport），总计 2,956。
+### Stub 分布（HelloWorld, 1,572 个 stubs，~94% 翻译率）— Phase B 进行中
 
 | 类别 | 数量 | 占比 | 性质 |
 |------|------|------|------|
-| MissingBody | 1,713 | 59.9% | 无 IL body（abstract/extern/JIT intrinsic）— 多数合理 |
-| KnownBrokenPattern | 611 | 21.4% | SIMD 333 + line-level 体扫描 patterns + TypeHandle/MethodTable |
-| UndeclaredFunction | 287 | 10.0% | 泛型特化缺失（IRBuilder 未创建特化类型）+ 级联 |
-| RenderedBodyError | 90 | 3.1% | 实际 C++ codegen bug（void* cast、MdArray、DIM struct 等） |
-| UnknownBodyReferences | 41 | 1.4% | 方法体引用未声明类型（多为嵌套泛型） |
-| UnknownParameterTypes | 22 | 0.8% | 参数类型未声明（INumberBase DIM + 少量 Span 特化） |
+| MissingBody | 699 | 44.5% | 无 IL body（abstract/extern/JIT intrinsic）— 多数合理 |
+| KnownBrokenPattern | 620 | 39.4% | SIMD 333 + line-level 体扫描 patterns + TypeHandle/MethodTable |
+| UndeclaredFunction | 120 | 7.6% | 泛型特化缺失（IRBuilder 未创建特化类型） |
+| ClrInternalType | 96 | 6.1% | QCall/MetadataImport CLR JIT 专用类型 |
+| RenderedBodyError | 37 | 2.4% | Codegen bug（MdArray、反射别名类型、PInvoke 回调） |
 
-**可修复的编译器问题**：RenderedBodyError (90) + UndeclaredFunction (287) + UnknownBodyRefs (41) = **~418 个方法**。RenderedBodyError 最易修复（逐个 codegen bug），UndeclaredFunction 需 IRBuilder 泛型修复。
+**注**：总数从 1,537 → 1,572 (+35)，因 gate 逻辑修改（KBP Pattern 8 误判移除）暴露了之前隐藏的 stubs。实际编译能力提升——376+ 个 Span/Buffer 方法现可正确编译。
 
-**不可修复或暂缓**：MissingBody 中大部分是 abstract/extern/CLR intrinsic；SIMD (333+) 需要 intrinsics 支持或运行时回退。
+**不可修复或暂缓**：SIMD (333+) 需要 intrinsics 支持或运行时回退。CLR 内部类型 (96) 永久保留。
 
-**IL 转译率**：88.8%（22,584 compiled / 25,444 total）。
-**测试**：1,240 C# + 591 C++ + 35 集成 — 全部通过。
+**IL 转译率**：~94%（Phase A: 2,777 → 1,537; Phase B gate 修复: 1,537 → 1,572）。
+**测试**：1,240 C# + 592 C++ + 35 集成 — 全部通过。
 
 ### 已实现的架构能力
 
@@ -122,10 +119,10 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 |---------|-----------|--------|
 | 简单控制台应用 | ~90% | 基本 BCL 链通畅，少量 stub |
 | 类库项目 | ~80% | 集合、泛型、异步、反射都可用 |
-| 文件 I/O 应用 | ~50% | FileStream BCL IL 链有 stub 中断，当前用 ICall 绕过（HACK） |
+| 文件 I/O 应用 | ~75% | FileStream/StreamReader BCL IL 链端到端可用（Windows），ICall bypass 仍作后备 |
 | 网络应用 | ~10% | Socket/HttpClient BCL IL 链未验证，System.Native 未集成 |
 | 生产级应用 | ~5% | 需要 TLS + JSON + DI 等完整 BCL 链 |
-| 任意 NativeAOT .csproj | ~30% | 编译器 bug（2,860 stubs）+ 原生库集成 + NativeAOT 元数据 |
+| 任意 NativeAOT .csproj | ~30% | 编译器 bug（1,572 stubs）+ 原生库集成 + NativeAOT 元数据 |
 
 ---
 
@@ -196,7 +193,6 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 ## Phase V: 异步架构重构（长期，32 → 25）— 降级为 Phase F.2
 
 > **降级原因**：async/await 已能工作（true concurrency + thread pool + combinators）。Task struct 重构是内部质量优化，对"编译任意项目"几乎无贡献。
-> 详见 [phase_v1_analysis.md](phase_v1_analysis.md)
 
 **V.1 已完成** ✅：TplEventSource no-op ICall + ThreadPool ICall + Interlocked.ExchangeAdd — 66 方法从 IL 编译，65 stubbed
 **V.2-V.5 待定**：Task struct 重构 → 降级到 Phase F.2（性能优化阶段）
@@ -225,7 +221,7 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 **前置**：无
 **产出**：BCL 中间方法大面积解锁，FileStream/Socket IL 链中的 stubs 大幅减少
 
-### Phase B: BCL 链验证 — Streaming I/O
+### Phase B: BCL 链验证 — Streaming I/O（进行中）
 
 **目标**：`File.OpenRead(path)` / `new StreamReader(path)` 从 BCL IL 编译并运行
 
@@ -235,13 +231,15 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 - **Windows**：FileStream → P/Invoke to **kernel32.dll** (CreateFile/ReadFile/WriteFile) — P/Invoke 已可用
 - **Linux**：FileStream → P/Invoke to **System.Native** (.NET 官方 POSIX 封装层，~30 .c 文件，[dotnet/runtime 开源](https://github.com/dotnet/runtime)) — 需作为原生库集成
 
-| # | 任务 | 预估 | 说明 |
-|---|------|------|------|
-| B.1 | 追踪 FileStream IL 依赖链 | 中 | FileStream → FileStreamStrategy → SafeFileHandle → Interop.Kernel32 (Win) / System.Native (Linux) |
-| B.2 | 修复链中遇到的 stubs | 高 | 逐个方法分析为什么是 stub，修编译器 |
-| B.3 | System.Native 原生库集成（Linux） | 中 | 类似 BoehmGC/ICU：从 dotnet/runtime 提取 ~30 .c 文件，FetchContent 编译，移出 InternalPInvokeModules |
-| B.4 | 移除 File.ReadAllText/WriteAllText ICall 绕过 | 低 | HACK 清理：当 FileStream IL 链可用后，删除 ICall bypass |
-| B.5 | 端到端集成测试 | 低 | 新增 tests/FileIOTest：读写文件、StreamReader/Writer |
+| # | 任务 | 预估 | 状态 | 说明 |
+|---|------|------|------|------|
+| B.1 | 追踪 FileStream IL 依赖链 | 中 | ✅ | FileStream → FileStreamStrategy → SafeFileHandle → Interop.Kernel32 — 完整链已从 IL 编译 |
+| B.2 | 修复链中遇到的 stubs | 高 | ✅ | KBP Pattern 8 修复（-376 stubs）、Buffer.Memmove sizeof 修复、SafeFileHandle/ThreadPool/ASCII ICalls |
+| B.3 | SpanHelpers 标量搜索拦截 | 中 | ✅ | BCL SIMD 分支 → AOT 标量模板（IndexOfAny/IndexOf/LastIndexOf/IndexOfAnyExcept） |
+| B.4 | 端到端 FileStreamTest | 低 | ✅ | FileStream Write/Read、StreamWriter、StreamReader.ReadLine — 全部通过（Windows） |
+| B.5 | System.Native 原生库集成（Linux） | 中 | 待定 | 类似 BoehmGC/ICU：从 dotnet/runtime 提取 ~30 .c 文件，FetchContent 编译 |
+| B.6 | 移除 File.ReadAllText/WriteAllText ICall 绕过 | 低 | 待定 | HACK 清理：确认 FileStream IL 链稳定后删除 ICall bypass |
+| B.7 | 集成测试套件 + baselines | 低 | 待定 | 将 FileStreamTest 加入集成测试 |
 
 **前置**：Phase A
 **产出**：FileStream 端到端从 BCL IL 编译（Windows 先行，Linux 需 System.Native）

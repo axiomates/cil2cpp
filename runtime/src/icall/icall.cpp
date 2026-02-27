@@ -532,6 +532,12 @@ Boolean Type_get_IsAbstract(void* __this) {
     return t->type_info->flags & TypeFlags::Abstract;
 }
 
+Boolean Type_get_IsValueType(void* __this) {
+    auto* t = get_type_from_this(__this);
+    if (!t || !t->type_info) return false;
+    return t->type_info->flags & TypeFlags::ValueType;
+}
+
 Boolean Type_get_IsNestedPublic(void* __this) {
     (void)__this;
     return false; // HACK: simplified

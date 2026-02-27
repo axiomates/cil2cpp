@@ -180,7 +180,26 @@ public partial class CppCodeGenerator
     /// </summary>
     private static string? GetKnownStubBody(string cppName)
     {
-        return KnownStubImplementations.TryGetValue(cppName, out var body) ? body : null;
+        if (KnownStubImplementations.TryGetValue(cppName, out var body))
+            return body;
+
+        // Pattern-based matching for generic specializations:
+
+        // SpanHelpers.DontNegate<T>.NegateIfNeeded(bool) → identity (return equals)
+        // These are JIT intrinsic helper structs whose IL bodies can't compile in AOT.
+        if (cppName.Contains("_DontNegate_") && cppName.EndsWith("_NegateIfNeeded__System_Boolean"))
+            return "    return equals;";
+
+        // SpanHelpers.Negate<T>.NegateIfNeeded(bool) → negation (return !equals)
+        if (cppName.Contains("_Negate_") && !cppName.Contains("DontNegate")
+            && cppName.EndsWith("_NegateIfNeeded__System_Boolean"))
+            return "    return !equals;";
+
+        // IndexOfAnyAsciiSearcher.INegator.NegateIfNeeded(bool) — interface stub, default identity
+        if (cppName.Contains("_INegator_NegateIfNeeded__System_Boolean"))
+            return "    return result;";
+
+        return null;
     }
 
     /// <summary>

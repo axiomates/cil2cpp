@@ -252,10 +252,16 @@ public class ReachabilityAnalyzer
 
     private void MarkOverrideIfExists(TypeDefinition type, string methodName, int paramCount)
     {
-        var overrideMethod = type.Methods.FirstOrDefault(m =>
-            m.IsVirtual && m.Name == methodName && m.Parameters.Count == paramCount);
-        if (overrideMethod != null)
+        // Mark ALL matching overrides, not just the first.
+        // Multiple overloads can share (name, paramCount) with different param types
+        // (e.g. DecoderNLS.GetChars(byte[],int,int,char[],int) vs GetChars(byte*,int,char*,int,bool)).
+        // Using FirstOrDefault would only mark one, leaving the other unreachable
+        // and causing vtable fallback to the base class — potential infinite recursion.
+        foreach (var overrideMethod in type.Methods.Where(m =>
+            m.IsVirtual && m.Name == methodName && m.Parameters.Count == paramCount))
+        {
             SeedMethod(overrideMethod);
+        }
     }
 
     private bool IsUserAssembly(TypeDefinition type)
@@ -458,6 +464,28 @@ public class ReachabilityAnalyzer
         var methodDef = TryResolveMethod(methodRef);
         if (methodDef != null)
             SeedMethod(methodDef);
+
+        // Activator.CreateInstance<T>() — also seed T..ctor() for AOT.
+        // The IRBuilder replaces this with gc::alloc + .ctor call, but the ctor
+        // won't be compiled unless we discover it here. Without this, field
+        // initializers (e.g., SafeFileHandle._fileType = -1) are lost.
+        if (methodRef.DeclaringType.FullName == "System.Activator"
+            && methodRef.Name == "CreateInstance"
+            && methodRef.Parameters.Count == 0
+            && methodRef is GenericInstanceMethod gim
+            && gim.GenericArguments.Count == 1)
+        {
+            var typeArg = gim.GenericArguments[0];
+            var typeDef = TryResolve(typeArg);
+            if (typeDef != null)
+            {
+                MarkTypeReachable(typeDef);
+                var defaultCtor = typeDef.Methods
+                    .FirstOrDefault(m => m.IsConstructor && !m.IsStatic && m.Parameters.Count == 0);
+                if (defaultCtor != null)
+                    SeedMethod(defaultCtor);
+            }
+        }
     }
 
     /// <summary>

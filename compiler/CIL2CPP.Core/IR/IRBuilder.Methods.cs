@@ -276,9 +276,17 @@ public partial class IRBuilder
     /// </summary>
     private static string MangleILTypeForDisambiguation(string ilTypeName)
     {
-        // Strip pointer/ref suffixes before mangling
-        var clean = ilTypeName.TrimEnd('*', '&', ' ');
-        return CppNameMapper.MangleTypeName(clean);
+        // Preserve pointer/ref suffixes to distinguish e.g. System.Char from System.Char*
+        // This prevents name collisions like Append(Char, Int32) vs Append(Char*, Int32)
+        var suffix = "";
+        var clean = ilTypeName;
+        while (clean.EndsWith("*") || clean.EndsWith("&") || clean.EndsWith(" "))
+        {
+            if (clean.EndsWith("*")) suffix += "Ptr";
+            else if (clean.EndsWith("&")) suffix += "Ref";
+            clean = clean[..^1];
+        }
+        return CppNameMapper.MangleTypeName(clean) + suffix;
     }
 
     /// <summary>
@@ -328,6 +336,9 @@ public partial class IRBuilder
         // the linear stack simulation has stale values. We restore the saved snapshot
         // to correctly handle ternary-like IL patterns (e.g., ldarg; brtrue T; ldc X; br M; T: ldc Y; M: stind).
         var branchTargetStacks = new Dictionary<int, StackEntry[]>();
+        // Separate dictionary for merge variables created by unconditional br instructions.
+        // These carry ternary values across dead/live paths at merge points.
+        var brTernaryMerges = new Dictionary<int, StackEntry[]>();
         foreach (var instr in instructions)
         {
             if (ILInstructionCategory.IsBranch(instr.OpCode))
@@ -399,6 +410,7 @@ public partial class IRBuilder
         var stack = new Stack<StackEntry>();
         int tempCounter = 0;
         bool skipDeadCode = false; // Skip IL instructions after unconditional branch until next label
+        int? lastCondBranchStackDepth = null; // Stack depth after most recent conditional branch (for ternary merge detection)
 
         foreach (var instr in instructions)
         {
@@ -510,17 +522,45 @@ public partial class IRBuilder
                         foreach (var item in savedStack)
                             stack.Push(item);
                     }
+                    // If this is also a ternary merge target, push merge variables
+                    // (the br handler already assigned the dead-path value)
+                    if (brTernaryMerges.TryGetValue(instr.Offset, out var ternaryStack))
+                    {
+                        foreach (var item in ternaryStack)
+                            stack.Push(item);
+                    }
                 }
 
-                // Ternary merge: if an unconditional br created merge variables for this target,
-                // the fall-through path must assign its current stack values to those same variables.
-                // Merge stack at branch targets: if a conditional branch saved a merge variable
-                // for this offset, the fall-through path may have a different stack top.
-                // Insert an assignment to unify both paths (fixes dup+brtrue delegate caching pattern).
-                // IMPORTANT: Only do this if we're on a live fall-through path. If we were in dead code
-                // (after an unconditional br/ret/throw), the stack state is from the dead path and
-                // should not be used for merge assignments.
+                // Ternary merge: if an unconditional br created a merge variable for this target,
+                // the fall-through (live) path must assign its current stack top to the
+                // merge variable so both paths produce the correct value at the join point.
+                // Pattern: brtrue T; push X; br M; T: push Y; M: → at M, assign Y to merge var
                 if (!wasDeadCode
+                    && brTernaryMerges.TryGetValue(instr.Offset, out var mergeStack)
+                    && stack.Count > 0 && mergeStack.Length == 1)
+                {
+                    var mergeEntry = mergeStack[0];
+                    var currentTop = stack.Pop();
+                    if (mergeEntry.Expr != currentTop.Expr && IsValidMergeVariable(mergeEntry.Expr))
+                    {
+                        block.Instructions.Add(new IRAssign { Target = mergeEntry.Expr, Value = currentTop.Expr });
+                    }
+                    // Phase 2: refine the merge variable's type using the live path.
+                    // The br handler set a preliminary type; the live path may be more
+                    // specific (e.g., br path has literal 0, live path has void*).
+                    string? liveType = !string.IsNullOrEmpty(currentTop.CppType) ? currentTop.CppType : null;
+                    if (liveType == null && currentTop.Expr.StartsWith("__t"))
+                        liveType = InferTempVarType(currentTop.Expr, block);
+                    var mergeType = liveType ?? mergeEntry.CppType;
+                    if (!string.IsNullOrEmpty(mergeType))
+                        irMethod.TempVarTypes[mergeEntry.Expr] = mergeType;
+                    stack.Push(new StackEntry(mergeEntry.Expr, mergeType));
+                }
+                // Legacy merge: if a conditional branch saved a single merge variable
+                // for this offset (dup+brtrue delegate caching pattern), the fall-through
+                // path may have a different stack top. Insert an assignment to unify.
+                // IMPORTANT: Only do this if we're on a live fall-through path.
+                else if (!wasDeadCode
                     && branchMergeVars.TryGetValue(instr.Offset, out var mergeVar)
                     && IsValidMergeVariable(mergeVar)
                     && stack.Count > 0 && stack.Peek().Expr != mergeVar)
@@ -537,6 +577,10 @@ public partial class IRBuilder
                 }
 
                 block.Instructions.Add(new IRLabel { LabelName = $"IL_{instr.Offset:X4}" });
+
+                // Reset ternary merge tracking at labels — the conditional branch context
+                // is local to the code between a conditional branch and its merge point.
+                lastCondBranchStackDepth = null;
             }
 
             // Skip dead code after unconditional branches (br, ret, throw, rethrow)
@@ -548,7 +592,7 @@ public partial class IRBuilder
 
             try
             {
-                ConvertInstruction(instr, block, stack, irMethod, ref tempCounter, branchMergeVars, branchTargetStacks, branchTargets, tryFinallyRegions);
+                ConvertInstruction(instr, block, stack, irMethod, ref tempCounter, branchMergeVars, branchTargetStacks, branchTargets, tryFinallyRegions, ref lastCondBranchStackDepth, brTernaryMerges);
             }
             catch
             {
@@ -645,10 +689,58 @@ public partial class IRBuilder
 
 
 
+    /// <summary>
+    /// Infer the C++ type of a temp variable from the block's existing instructions.
+    /// Mirrors DetermineTempVarTypes in the code generator but runs at IR build time.
+    /// </summary>
+    private static string? InferTempVarType(string varName, IRBasicBlock block)
+    {
+        foreach (var instr in block.Instructions)
+        {
+            switch (instr)
+            {
+                case IRCall call when call.ResultVar == varName && call.ResultTypeCpp != null:
+                    return call.ResultTypeCpp;
+                case IRRawCpp raw when raw.ResultVar == varName && raw.ResultTypeCpp != null:
+                    return raw.ResultTypeCpp;
+                case IRDeclareLocal decl when decl.VarName == varName:
+                    return decl.TypeName;
+                case IRBinaryOp binOp when binOp.ResultVar == varName:
+                    return binOp.Op is "==" or "!=" or "<" or ">" or "<=" or ">=" ? "int32_t" : "intptr_t";
+                case IRConversion conv when conv.ResultVar == varName:
+                    return conv.TargetType;
+                case IRCast cast when cast.ResultVar == varName:
+                    return cast.TargetTypeCpp;
+                case IRFieldAccess fa when !fa.IsStore && fa.ResultVar == varName && fa.ResultTypeCpp != null:
+                    return fa.ResultTypeCpp;
+                case IRStaticFieldAccess sfa when !sfa.IsStore && sfa.ResultVar == varName && sfa.ResultTypeCpp != null:
+                    return sfa.ResultTypeCpp;
+                case IRBox box when box.ResultVar == varName:
+                    return "cil2cpp::Object*";
+                case IRUnbox unbox when unbox.ResultVar == varName:
+                    return unbox.IsUnboxAny ? unbox.ValueTypeCppName : unbox.ValueTypeCppName + "*";
+                case IRNewObj newObj when newObj.ResultVar == varName:
+                    return newObj.TypeCppName + "*";
+                case IRUnaryOp unOp when unOp.ResultVar == varName && unOp.ResultTypeCpp != null:
+                    return unOp.ResultTypeCpp;
+                case IRArrayAccess aa when !aa.IsStore && aa.ResultVar == varName:
+                    return aa.ElementType;
+                case IRLoadFunctionPointer lfp when lfp.ResultVar == varName:
+                    return "void*";
+                case IRDelegateCreate dc when dc.ResultVar == varName:
+                    return "cil2cpp::Delegate*";
+                case IRDelegateInvoke di when di.ResultVar == varName:
+                    return di.ReturnTypeCpp;
+            }
+        }
+        return null;
+    }
+
     private void ConvertInstruction(ILInstruction instr, IRBasicBlock block, Stack<StackEntry> stack,
         IRMethod method, ref int tempCounter, Dictionary<int, string> branchMergeVars,
         Dictionary<int, StackEntry[]> branchTargetStacks, HashSet<int> branchTargets,
-        List<(int TryStart, int TryEnd)> tryFinallyRegions)
+        List<(int TryStart, int TryEnd)> tryFinallyRegions, ref int? lastCondBranchStackDepth,
+        Dictionary<int, StackEntry[]> brTernaryMerges)
     {
         switch (instr.OpCode)
         {
@@ -984,12 +1076,44 @@ public partial class IRBuilder
                         Value = stack.Peek().Expr
                     });
                 }
-                // NOTE: Ternary patterns (ldarg; brtrue T; ldc X; br M; T: ldc Y; M: stind)
-                // lose the dead-path value (X) after goto. The stack restoration at T
-                // restores the correct address from the brtrue snapshot, preventing crashes
-                // like *(int32_t*)-1. The merge point uses the live path's value (Y) for
-                // both paths, which is a minor semantic issue but avoids type-system
-                // complications from merge variables.
+                // Ternary merge: when an unconditional br targets a merge point and
+                // exactly ONE value was pushed since the last conditional branch,
+                // create a merge variable to carry the value across both paths.
+                // Pattern 1: brtrue T; ldc X; br M; T: push Y; M: use merged value
+                // Pattern 2: brtrue T; ceq/comp; br M; T: ldc 1; M: use merged value
+                // Type is deferred to the label handler which sees the live-path type.
+                {
+                    int mergeCount = lastCondBranchStackDepth.HasValue ? stack.Count - lastCondBranchStackDepth.Value : 0;
+                    if (mergeCount == 1 && !brTernaryMerges.ContainsKey(target.Offset))
+                    {
+                        var entry = stack.Peek();
+                        // Create merge variable for single values pushed since the last
+                        // conditional branch. Skip complex expressions (casts, member access)
+                        // and value-type locals (IRDeclareLocal = SIMD/struct stubs) which
+                        // can't be pre-declared as cross-scope pointer variables.
+                        if (entry.Expr != null
+                            && !entry.Expr.Contains("(") && !entry.Expr.Contains("->"))
+                        {
+                            // Phase 1: Create the merge variable and assign the br-path value.
+                            // The type may be refined at the label handler (phase 2) once
+                            // the live-path type is also known.
+                            string? brType = !string.IsNullOrEmpty(entry.CppType) ? entry.CppType : null;
+                            if (brType == null && entry.Expr.StartsWith("__t"))
+                                brType = InferTempVarType(entry.Expr, block);
+
+                            stack.Pop();
+                            var mergeVar = $"__t{tempCounter++}";
+                            block.Instructions.Add(new IRAssign { Target = mergeVar, Value = entry.Expr });
+                            // Set a preliminary type; the label handler may upgrade it.
+                            // Use intptr_t as a safe default: it's the same width as pointers
+                            // on both 32/64-bit and handles integer/pointer ternaries.
+                            method.TempVarTypes[mergeVar] = brType ?? "intptr_t";
+                            var mergeEntry = new StackEntry(mergeVar, brType);
+                            brTernaryMerges[target.Offset] = new[] { mergeEntry };
+                            stack.Push(mergeEntry);
+                        }
+                    }
+                }
                 block.Instructions.Add(new IRBranch { TargetLabel = $"IL_{target.Offset:X4}" });
                 break;
             }
@@ -1008,6 +1132,7 @@ public partial class IRBuilder
                 // After popping the condition, the remaining stack is what the target sees.
                 if (stack.Count > 0 && !branchTargetStacks.ContainsKey(target.Offset))
                     branchTargetStacks[target.Offset] = stack.Reverse().ToArray();
+                lastCondBranchStackDepth = stack.Count;
                 block.Instructions.Add(new IRConditionalBranch
                 {
                     Condition = cond,
@@ -1029,6 +1154,7 @@ public partial class IRBuilder
                 // Save full stack snapshot for branch target (ternary pattern support)
                 if (stack.Count > 0 && !branchTargetStacks.ContainsKey(target.Offset))
                     branchTargetStacks[target.Offset] = stack.Reverse().ToArray();
+                lastCondBranchStackDepth = stack.Count;
                 block.Instructions.Add(new IRConditionalBranch
                 {
                     Condition = $"!({cond})",

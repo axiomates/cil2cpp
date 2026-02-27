@@ -114,6 +114,12 @@ public partial class CppCodeGenerator
     private List<string> _opaqueSpanStubs = new();
 
     /// <summary>
+    /// SafeHandleMarshaller ManagedToUnmanagedIn opaque stubs that need method implementations
+    /// generated in the source file (FromManaged, ToUnmanaged, Free).
+    /// </summary>
+    private List<string> _opaqueSafeHandleMarshallerStubs = new();
+
+    /// <summary>
     /// Set of type names that have full struct definitions emitted in the header.
     /// Types only forward-declared (no body) are NOT in this set.
     /// Populated during header generation, used by source generation to skip stubs

@@ -301,6 +301,12 @@ public static class ICallRegistry
 
         // ===== SafeHandle =====
         RegisterICall("System.Runtime.InteropServices.SafeHandle", ".ctor", 2, "cil2cpp::icall::SafeHandle__ctor");
+
+        // ===== SafeFileHandle =====
+        // Default ctor: initializes _fileType = -1 (field initializer) + base SafeHandle fields.
+        // BCL ctor body can't compile from IL because Activator.CreateInstance<T>() in the generic
+        // SafeHandleMarshaller prevents reachability from discovering the concrete ctor.
+        RegisterICall("Microsoft.Win32.SafeHandles.SafeFileHandle", ".ctor", 0, "cil2cpp::icall::SafeFileHandle__ctor");
         RegisterICall("System.Runtime.InteropServices.SafeHandle", "DangerousGetHandle", 0, "cil2cpp::icall::SafeHandle_DangerousGetHandle");
         RegisterICall("System.Runtime.InteropServices.SafeHandle", "SetHandle", 1, "cil2cpp::icall::SafeHandle_SetHandle");
         RegisterICall("System.Runtime.InteropServices.SafeHandle", "DangerousAddRef", 1, "cil2cpp::icall::SafeHandle_DangerousAddRef");
@@ -366,6 +372,67 @@ public static class ICallRegistry
             "cil2cpp::utf8_utility_transcode_to_utf8");
         RegisterICall("System.Text.Unicode.Utf8Utility", "GetPointerToFirstInvalidByte", 4,
             "cil2cpp::utf8_utility_get_pointer_to_first_invalid_byte");
+
+        // ===== System.Text.Ascii =====
+        // BCL uses SIMD (Vector128/SSE2/AVX2) for all ASCII processing.
+        // Scalar C++ implementations in runtime/src/icall/ascii.cpp.
+        RegisterICall("System.Text.Ascii", "AllBytesInUInt32AreAscii", 1,
+            "cil2cpp::icall::Ascii_AllBytesInUInt32AreAscii");
+        RegisterICall("System.Text.Ascii", "AllBytesInUInt64AreAscii", 1,
+            "cil2cpp::icall::Ascii_AllBytesInUInt64AreAscii");
+        RegisterICall("System.Text.Ascii", "AllCharsInUInt32AreAscii", 1,
+            "cil2cpp::icall::Ascii_AllCharsInUInt32AreAscii");
+        RegisterICall("System.Text.Ascii", "AllCharsInUInt64AreAscii", 1,
+            "cil2cpp::icall::Ascii_AllCharsInUInt64AreAscii");
+        RegisterICall("System.Text.Ascii", "FirstCharInUInt32IsAscii", 1,
+            "cil2cpp::icall::Ascii_FirstCharInUInt32IsAscii");
+        RegisterICallTyped("System.Text.Ascii", "IsValid", 1, "System.Byte",
+            "cil2cpp::icall::Ascii_IsValid_byte");
+        RegisterICallTyped("System.Text.Ascii", "IsValid", 1, "System.Char",
+            "cil2cpp::icall::Ascii_IsValid_char");
+        RegisterICall("System.Text.Ascii", "WidenAsciiToUtf16", 3,
+            "cil2cpp::icall::Ascii_WidenAsciiToUtf16");
+        RegisterICall("System.Text.Ascii", "WidenFourAsciiBytesToUtf16AndWriteToBuffer", 2,
+            "cil2cpp::icall::Ascii_WidenFourAsciiBytesToUtf16AndWriteToBuffer");
+        RegisterICall("System.Text.Ascii", "NarrowUtf16ToAscii", 3,
+            "cil2cpp::icall::Ascii_NarrowUtf16ToAscii");
+        RegisterICall("System.Text.Ascii", "NarrowFourUtf16CharsToAsciiAndWriteToBuffer", 2,
+            "cil2cpp::icall::Ascii_NarrowFourUtf16CharsToAsciiAndWriteToBuffer");
+        RegisterICall("System.Text.Ascii", "NarrowTwoUtf16CharsToAsciiAndWriteToBuffer", 2,
+            "cil2cpp::icall::Ascii_NarrowTwoUtf16CharsToAsciiAndWriteToBuffer");
+        RegisterICall("System.Text.Ascii", "CountNumberOfLeadingAsciiBytesFromUInt32WithSomeNonAsciiData", 1,
+            "cil2cpp::icall::Ascii_CountNumberOfLeadingAsciiBytesFromUInt32WithSomeNonAsciiData");
+        RegisterICall("System.Text.Ascii", "GetIndexOfFirstNonAsciiByte", 2,
+            "cil2cpp::icall::Ascii_GetIndexOfFirstNonAsciiByte");
+        RegisterICall("System.Text.Ascii", "GetIndexOfFirstNonAsciiByte_Intrinsified", 2,
+            "cil2cpp::icall::Ascii_GetIndexOfFirstNonAsciiByte");
+        RegisterICall("System.Text.Ascii", "GetIndexOfFirstNonAsciiByte_Vector", 2,
+            "cil2cpp::icall::Ascii_GetIndexOfFirstNonAsciiByte");
+        RegisterICall("System.Text.Ascii", "GetIndexOfFirstNonAsciiChar", 2,
+            "cil2cpp::icall::Ascii_GetIndexOfFirstNonAsciiChar");
+        RegisterICall("System.Text.Ascii", "GetIndexOfFirstNonAsciiChar_Intrinsified", 2,
+            "cil2cpp::icall::Ascii_GetIndexOfFirstNonAsciiChar");
+        RegisterICall("System.Text.Ascii", "GetIndexOfFirstNonAsciiChar_Vector", 2,
+            "cil2cpp::icall::Ascii_GetIndexOfFirstNonAsciiChar");
+        RegisterICall("System.Text.Ascii", "ContainsNonAsciiByte_Sse2", 1,
+            "cil2cpp::icall::Ascii_ContainsNonAsciiByte_Sse2");
+        // Narrowing _Intrinsified variants all map to the same scalar impl
+        RegisterICall("System.Text.Ascii", "NarrowUtf16ToAscii_Intrinsified", 3,
+            "cil2cpp::icall::Ascii_NarrowUtf16ToAscii");
+        RegisterICall("System.Text.Ascii", "NarrowUtf16ToAscii_Intrinsified_256", 3,
+            "cil2cpp::icall::Ascii_NarrowUtf16ToAscii");
+        RegisterICall("System.Text.Ascii", "NarrowUtf16ToAscii_Intrinsified_512", 3,
+            "cil2cpp::icall::Ascii_NarrowUtf16ToAscii");
+
+        // ===== SpanHelpers.DontNegate/Negate =====
+        // Generic structs with trivial methods used by SpanHelpers.IndexOfAny etc.
+        // Stubbed due to "undeclared TypeInfo" gate; ICalls bypass that check.
+        // DontNegate.NegateIfNeeded(bool) = identity, Negate.NegateIfNeeded(bool) = !value
+        // Using open generic type names with wildcard — covers all T specializations.
+        RegisterICallWildcard("System.SpanHelpers/DontNegate`1", "NegateIfNeeded",
+            "cil2cpp::icall::SpanHelpers_DontNegate_NegateIfNeeded");
+        RegisterICallWildcard("System.SpanHelpers/Negate`1", "NegateIfNeeded",
+            "cil2cpp::icall::SpanHelpers_Negate_NegateIfNeeded");
 
         // ===== System.Math (double) =====
         // .NET 8: Math methods are [InternalCall] with no IL body (JIT replaces with CPU instructions).
@@ -494,6 +561,7 @@ public static class ICallRegistry
         // ===== System.Type (reflection introspection) =====
         RegisterICall("System.Type", "GetEnumUnderlyingType", 0, "cil2cpp::icall::Type_GetEnumUnderlyingType");
         RegisterICall("System.Type", "get_IsPublic", 0, "cil2cpp::icall::Type_get_IsPublic");
+        RegisterICall("System.Type", "get_IsValueType", 0, "cil2cpp::icall::Type_get_IsValueType");
         RegisterICall("System.Type", "get_IsAbstract", 0, "cil2cpp::icall::Type_get_IsAbstract");
         RegisterICall("System.Type", "get_IsNestedPublic", 0, "cil2cpp::icall::Type_get_IsNestedPublic");
         RegisterICall("System.Type", "IsArrayImpl", 0, "cil2cpp::icall::Type_IsArrayImpl");
@@ -781,6 +849,15 @@ public static class ICallRegistry
         var result = Lookup(typeFullName, methodName, paramCount, firstParamType);
         if (result != null)
             return result;
+
+        // Fallback: for closed generic types (e.g., DontNegate`1<Int16>),
+        // also try the open generic type name (e.g., DontNegate`1).
+        if (methodRef.DeclaringType is Mono.Cecil.GenericInstanceType git)
+        {
+            var openResult = Lookup(git.ElementType.FullName, methodName, paramCount, firstParamType);
+            if (openResult != null)
+                return openResult;
+        }
 
         // Generic Interlocked methods (e.g., CompareExchange<T>) — resolve to _obj overload
         if (typeFullName == "System.Threading.Interlocked" && methodRef is GenericInstanceMethod gim

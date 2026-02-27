@@ -942,8 +942,8 @@ public partial class CppCodeGenerator
                     return "invalid stind (&param = &local)";
                 if (code.Contains("GCFrameRegistration__ctor"))
                     return "GCFrameRegistration void**/intptr_t* mismatch";
-                if (code.Contains("(uintptr_t)(") && (code.Contains("->f_") || code.Contains("sizeof(")))
-                    return "uintptr_t cast + member/sizeof access";
+                if (code.Contains("(uintptr_t)(") && code.Contains("->f_"))
+                    return "uintptr_t cast + member access";
                 if (code.Contains("_1_T*") || code.Contains("_1_T,") || code.Contains("_2_T*")
                     || code.Contains("_1_TKey*") || code.Contains("_1_TValue*")
                     || code.Contains("_1_TResult*")
@@ -1196,12 +1196,55 @@ public partial class CppCodeGenerator
         EmitSourceFileHeader(sb, "Stubs: fallback implementations for runtime-provided/unreachable methods");
 
         GenerateMissingMethodStubImpls(sb, _emittedMethodSignatures, _userTypes);
+        GenerateSafeHandleMarshallerImpls(sb);
 
         return new GeneratedFile
         {
             FileName = $"{_module.Name}_stubs.cpp",
             Content = sb.ToString()
         };
+    }
+
+    /// <summary>
+    /// Generate C++ implementations for SafeHandleMarshaller&lt;T&gt;.ManagedToUnmanagedIn
+    /// methods (FromManaged, ToUnmanaged, Free) for opaque marshaller stubs.
+    /// These are trivial wrappers around SafeHandle ICalls (DangerousAddRef/GetHandle/Release).
+    /// </summary>
+    private void GenerateSafeHandleMarshallerImpls(StringBuilder sb)
+    {
+        if (_opaqueSafeHandleMarshallerStubs.Count == 0) return;
+
+        sb.AppendLine();
+        sb.AppendLine("// ===== SafeHandleMarshaller ManagedToUnmanagedIn Implementations =====");
+        foreach (var typeName in _opaqueSafeHandleMarshallerStubs)
+        {
+            // Skip types that already have compiled methods from IL
+            bool hasCompiledVersion = false;
+            foreach (var sig in _emittedMethodSignatures)
+            {
+                if (sig.Contains($"{typeName}_FromManaged("))
+                { hasCompiledVersion = true; break; }
+            }
+            if (hasCompiledVersion) continue;
+
+            sb.AppendLine();
+            sb.AppendLine($"// SafeHandleMarshaller ManagedToUnmanagedIn: {typeName}");
+            // FromManaged: store handle + DangerousAddRef
+            sb.AppendLine($"void {typeName}_FromManaged({typeName}* __this, void* handle) {{");
+            sb.AppendLine($"    __this->f_handle = handle;");
+            sb.AppendLine($"    cil2cpp::icall::SafeHandle_DangerousAddRef(handle, &__this->f_addRefd);");
+            sb.AppendLine($"}}");
+            // ToUnmanaged: DangerousGetHandle → IntPtr
+            sb.AppendLine($"intptr_t {typeName}_ToUnmanaged({typeName}* __this) {{");
+            sb.AppendLine($"    return cil2cpp::icall::SafeHandle_DangerousGetHandle(__this->f_handle);");
+            sb.AppendLine($"}}");
+            // Free: DangerousRelease if addRefd
+            sb.AppendLine($"void {typeName}_Free({typeName}* __this) {{");
+            sb.AppendLine($"    if (__this->f_addRefd) {{");
+            sb.AppendLine($"        cil2cpp::icall::SafeHandle_DangerousRelease(__this->f_handle);");
+            sb.AppendLine($"    }}");
+            sb.AppendLine($"}}");
+        }
     }
 
     /// <summary>
@@ -2716,7 +2759,8 @@ public partial class CppCodeGenerator
 
             // Check parameter type compatibility with the declared extern
             var wrapperCharSet = method.PInvokeCharSet;
-            if (declaredParamTypes.TryGetValue(entryPoint, out var externParamTypes))
+            declaredParamTypes.TryGetValue(entryPoint, out var externParamTypes);
+            if (externParamTypes != null)
             {
                 if (method.Parameters.Count != externParamTypes.Count) continue;
                 bool compatible = true;
@@ -2724,7 +2768,16 @@ public partial class CppCodeGenerator
                 {
                     var methodType = GetPInvokeNativeType(method.Parameters[i].CppTypeName,
                         method.Parameters[i].ParameterType, wrapperCharSet);
-                    if (methodType != externParamTypes[i]) { compatible = false; break; }
+                    if (methodType != externParamTypes[i])
+                    {
+                        // Allow struct pointer → void* (any pointer is compatible with void*)
+                        if (externParamTypes[i] == "void*" && methodType.EndsWith("*"))
+                            continue;
+                        // Allow void* → struct pointer (reverse direction)
+                        if (methodType == "void*" && externParamTypes[i].EndsWith("*"))
+                            continue;
+                        compatible = false; break;
+                    }
                 }
                 if (!compatible) continue;
             }
@@ -2761,7 +2814,18 @@ public partial class CppCodeGenerator
                 }
                 else if (param.CppTypeName is "intptr_t" or "uintptr_t")
                 {
-                    // ECMA-335: native int → void* for native calls
+                    // ECMA-335: native int → target type for native calls
+                    // Cast to the extern's parameter type (may be void*, int32_t*, etc.)
+                    var targetType = (externParamTypes != null && i < externParamTypes.Count)
+                        ? externParamTypes[i] : "void*";
+                    sb.AppendLine($"    auto __p{i} = reinterpret_cast<{targetType}>({param.CppName});");
+                    callArgs.Add($"__p{i}");
+                }
+                else if (param.CppTypeName.EndsWith("*") && externParamTypes != null
+                         && i < externParamTypes.Count && externParamTypes[i] == "void*"
+                         && param.CppTypeName != "void*")
+                {
+                    // Struct pointer → void* (extern declaration uses void* for this param)
                     sb.AppendLine($"    auto __p{i} = reinterpret_cast<void*>({param.CppName});");
                     callArgs.Add($"__p{i}");
                 }
@@ -2870,6 +2934,16 @@ public partial class CppCodeGenerator
 
         // ECMA-335: System.Boolean marshals as Win32 BOOL (4-byte int)
         if (cppType == "bool") return "int32_t";
+
+        // Enum types are aliased to their underlying integer type (using X = int32_t;)
+        // For P/Invoke extern "C" declarations, use the underlying type directly.
+        if (paramType is { IsEnum: true, EnumUnderlyingType: not null })
+            return CppNameMapper.GetCppTypeForDecl(paramType.EnumUnderlyingType);
+
+        // Fallback: look up external BCL enum types (emitted as "using X = int32_t;" aliases).
+        // These aren't in _module.Types — they're in ExternalEnumTypes dictionary.
+        if (_module.ExternalEnumTypes.TryGetValue(cppType, out var underlyingType))
+            return underlyingType;
 
         return cppType;
     }

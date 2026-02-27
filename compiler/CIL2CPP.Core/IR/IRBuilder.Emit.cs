@@ -213,7 +213,12 @@ public partial class IRBuilder
         {
             Left = left, Right = right, Op = op, ResultVar = tmp, IsUnsigned = isUnsigned
         });
-        stack.Push(tmp);
+        // Comparison operators (ceq/cgt/clt) produce int32_t per ECMA-335 III.4.1.
+        // Track this type so ternary merge logic can safely merge comparison results
+        // across branch paths (e.g., brtrue T; ceq; br M; T: ldc.i4.1; M: call).
+        string? resultType = op is "==" or "!=" or "<" or ">" or "<=" or ">="
+            ? "int32_t" : null;
+        stack.Push(new StackEntry(tmp, resultType));
     }
 
     private void EmitComparisonBranch(IRBasicBlock block, Stack<StackEntry> stack, string op, ILInstruction instr,
@@ -751,6 +756,84 @@ public partial class IRBuilder
             return;
         }
 
+        // GC.AllocateUninitializedArray<T>(int length, bool pinned) — AOT compile-time specialization
+        // The BCL implementation uses runtime-internal allocation. For AOT, emit array_create directly.
+        // This avoids the void* return type mismatch that causes RenderedBodyError stubs.
+        if (methodRef.DeclaringType.FullName == "System.GC"
+            && methodRef.Name == "AllocateUninitializedArray"
+            && methodRef is GenericInstanceMethod gimAlloc
+            && gimAlloc.GenericArguments.Count == 1)
+        {
+            // Pop arguments: (int length, bool pinned) — pinned is ignored in our GC
+            var pinned = stack.PopExprOr("0");
+            var length = stack.PopExprOr("0");
+            var typeArg = gimAlloc.GenericArguments[0];
+            var resolvedElem = typeArg is GenericParameter gpAlloc && _activeTypeParamMap != null
+                && _activeTypeParamMap.TryGetValue(gpAlloc.Name, out var rAlloc) ? rAlloc : typeArg.FullName;
+            var elemCppType = CppNameMapper.MangleTypeNameClean(resolvedElem);
+            if (CppNameMapper.IsPrimitive(resolvedElem))
+                _module.RegisterPrimitiveTypeInfo(resolvedElem);
+            var tmp = $"__t{tempCounter++}";
+            block.Instructions.Add(new IRRawCpp
+            {
+                Code = $"auto {tmp} = cil2cpp::array_create(&{elemCppType}_TypeInfo, {length});",
+                ResultVar = tmp,
+                ResultTypeCpp = "cil2cpp::Array*",
+            });
+            stack.Push(new StackEntry(tmp, "cil2cpp::Array*"));
+            return;
+        }
+
+        // Activator.CreateInstance<T>() — AOT compile-time specialization
+        // The BCL implementation uses RuntimeType.ActivatorCache which calls into the CLR runtime.
+        // For AOT, we replace this with gc::alloc + default .ctor call.
+        // The .ctor is needed because BCL types may have field initializers compiled into it
+        // (e.g., SafeFileHandle._fileType = -1). ReachabilityAnalyzer seeds T..ctor().
+        if (methodRef.DeclaringType.FullName == "System.Activator"
+            && methodRef.Name == "CreateInstance" && methodRef.Parameters.Count == 0
+            && methodRef is GenericInstanceMethod gimActivator
+            && gimActivator.GenericArguments.Count == 1)
+        {
+            var typeArg = gimActivator.GenericArguments[0];
+            var resolvedType = typeArg is GenericParameter gpA && _activeTypeParamMap != null
+                && _activeTypeParamMap.TryGetValue(gpA.Name, out var rA) ? rA : typeArg.FullName;
+            var cppType = CppNameMapper.MangleTypeName(resolvedType);
+            var cleanType = CppNameMapper.MangleTypeNameClean(resolvedType);
+            var tmp = $"__t{tempCounter++}";
+            // Allocate with TypeInfo
+            block.Instructions.Add(new IRRawCpp
+            {
+                Code = $"auto {tmp} = ({cppType}*)cil2cpp::gc::alloc(sizeof({cppType}), &{cleanType}_TypeInfo);",
+                ResultVar = tmp,
+                ResultTypeCpp = $"{cppType}*",
+            });
+            // Call default .ctor — applies field initializers (e.g., _fileType = -1)
+            // Check ICallRegistry first: if the ctor has an ICall mapping, use the ICall
+            // function directly (the mangled ctor is likely a stub with no body).
+            var icallFunc = ICallRegistry.Lookup(resolvedType, ".ctor", 0);
+            if (icallFunc != null)
+            {
+                // ICall ctors take void* for __this
+                block.Instructions.Add(new IRCall
+                {
+                    FunctionName = icallFunc,
+                    Arguments = { $"(void*){tmp}" },
+                });
+            }
+            else
+            {
+                // Regular ctor takes typed pointer
+                var ctorFunc = CppNameMapper.MangleMethodName(cppType, ".ctor");
+                block.Instructions.Add(new IRCall
+                {
+                    FunctionName = ctorFunc,
+                    Arguments = { $"({cppType}*){tmp}" },
+                });
+            }
+            stack.Push(new StackEntry(tmp, $"{cppType}*"));
+            return;
+        }
+
         // RuntimeHelpers.GetSubArray<T>(T[], Range) — compiler intrinsic for array slicing
         if (methodRef.DeclaringType.FullName == "System.Runtime.CompilerServices.RuntimeHelpers"
             && methodRef.Name == "GetSubArray")
@@ -1048,6 +1131,62 @@ public partial class IRBuilder
             stack.Push(tmp);
             return;
         }
+
+        // JIT intrinsic: RuntimeHelpers.IsBitwiseEquatable<T>()
+        // The BCL IL throws InvalidOperationException (never meant to execute),
+        // but the JIT replaces it at compile time. We do the same for AOT.
+        if (methodRef.DeclaringType.FullName == "System.Runtime.CompilerServices.RuntimeHelpers"
+            && methodRef.Name == "IsBitwiseEquatable"
+            && methodRef is GenericInstanceMethod isBitGim && isBitGim.GenericArguments.Count == 1)
+        {
+            var typeArg = ResolveTypeRefOperand(isBitGim.GenericArguments[0]);
+            bool isBitwiseEq = IsBitwiseEquatable(typeArg);
+            var tmp = $"__t{tempCounter++}";
+            block.Instructions.Add(new IRRawCpp { Code = $"{tmp} = {(isBitwiseEq ? "true" : "false")};", ResultVar = tmp, ResultTypeCpp = "bool" });
+            stack.Push(tmp);
+            return;
+        }
+
+        // Buffer.Memmove<T>(ref T dest, ref T src, nuint elementCount)
+        // The generic version passes element count, but our ICall expects byte count.
+        // Intercept here to multiply by sizeof(T) before calling the runtime.
+        if (methodRef.DeclaringType.FullName == "System.Buffer"
+            && (methodRef.Name == "Memmove" || methodRef.Name == "__Memmove")
+            && methodRef is GenericInstanceMethod memmoveGim && memmoveGim.GenericArguments.Count == 1)
+        {
+            var typeArg = memmoveGim.GenericArguments[0];
+            var resolvedArg = typeArg is GenericParameter gpMm && _activeTypeParamMap != null
+                && _activeTypeParamMap.TryGetValue(gpMm.Name, out var rMm) ? rMm : typeArg.FullName;
+            var cppType = CppNameMapper.GetCppTypeName(resolvedArg);
+            // For reference types (pointers), sizeof should be sizeof(void*) since array
+            // elements are pointer-sized. For value types, use sizeof(StructType).
+            // Check both: the C++ type name ending with *, AND whether it's a registered
+            // value type — interfaces/classes don't end with * from GetCppTypeName but
+            // are still reference types (sizeof should be pointer-sized).
+            bool isValueType = cppType.EndsWith("*") ? false
+                : CppNameMapper.IsRegisteredValueType(resolvedArg)
+                  || CppNameMapper.IsRegisteredValueType(cppType);
+            string sizeExpr;
+            if (isValueType)
+                sizeExpr = $"sizeof({cppType})";
+            else
+                sizeExpr = "sizeof(void*)";
+            var elemCount = stack.PopExpr();
+            var src = stack.PopExpr();
+            var dest = stack.PopExpr();
+            block.Instructions.Add(new IRCall
+            {
+                FunctionName = "cil2cpp::icall::Buffer_Memmove",
+                Arguments = { $"(void*){dest}", $"(void*){src}", $"(uintptr_t)({elemCount}) * {sizeExpr}" },
+            });
+            return;
+        }
+
+        // SpanHelpers scalar search interceptions — BCL IL uses SIMD-dependent control
+        // flow (Vector512/256/128 branches, runtime type checks) that is impractical for AOT.
+        // Replace with simple scalar loops via cil2cpp::icall helpers.
+        if (TryEmitSpanHelpersSearch(block, stack, methodRef, ref tempCounter))
+            return;
 
         // Emit cctor guard for static method calls (ECMA-335 II.10.5.3.1)
         if (!methodRef.HasThis)
@@ -1822,6 +1961,30 @@ public partial class IRBuilder
             }
         }
 
+        // String..ctor(ReadOnlySpan<char>) — needs special allocation for flexible char array.
+        // Standard gc::alloc(sizeof(String)) doesn't reserve space for chars.
+        // Use string_fast_allocate(length) + memcpy instead.
+        // Defensive: null/garbage spans produce empty strings (safe fallback).
+        if (ctorRef.DeclaringType.FullName == "System.String"
+            && ctorRef.Parameters.Count == 1
+            && ctorRef.Parameters[0].ParameterType.FullName.StartsWith("System.ReadOnlySpan`1"))
+        {
+            var span = stack.PopExpr();
+            var tmp2 = $"__t{tempCounter++}";
+            block.Instructions.Add(new IRRawCpp
+            {
+                Code = $"auto {tmp2} = ({span}.f_reference && {span}.f_length > 0) " +
+                       $"? cil2cpp::string_fast_allocate({span}.f_length) " +
+                       $": cil2cpp::string_fast_allocate(0); " +
+                       $"if ({span}.f_reference && {span}.f_length > 0) " +
+                       $"std::memcpy(&{tmp2}->f_firstChar, {span}.f_reference, {span}.f_length * sizeof(char16_t));",
+                ResultVar = tmp2,
+                ResultTypeCpp = "cil2cpp::String*",
+            });
+            stack.Push(new StackEntry(tmp2, "cil2cpp::String*"));
+            return;
+        }
+
         var cacheKey = ResolveCacheKey(ctorRef.DeclaringType);
         var typeCpp = GetMangledTypeNameForRef(ctorRef.DeclaringType);
         var tmp = $"__t{tempCounter++}";
@@ -2177,6 +2340,14 @@ public partial class IRBuilder
                 // 'override' targets the most-derived slot (added last)
                 existing = irType.VTable.LastOrDefault(e => e.MethodName == method.Name
                     && (e.Method == null || ParameterTypesMatch(e.Method, method)));
+            }
+            else
+            {
+                // Even newslot methods should fill seeded placeholder slots (Method == null).
+                // System.Object's methods are newslot=true (they ARE the original declarations),
+                // but we pre-seed slots 0-2 so overrides in derived types find them.
+                // Without this, Object's methods create new slots 3-5, leaving seeds orphaned.
+                existing = irType.VTable.LastOrDefault(e => e.MethodName == method.Name && e.Method == null);
             }
 
             if (existing != null)
@@ -2887,6 +3058,140 @@ public partial class IRBuilder
     };
 
     /// <summary>
+    /// Intercept SpanHelpers scalar search methods whose BCL IL uses SIMD-dependent
+    /// control flow (Vector512/256/128 IsSupported branches, runtime typeof(T)==typeof(byte)
+    /// checks). These patterns crash when AOT compiled because the SIMD stubs are empty
+    /// and the complex branch structure confuses optimization. Replace with simple scalar
+    /// loops implemented in the C++ runtime.
+    /// </summary>
+    private bool TryEmitSpanHelpersSearch(IRBasicBlock block, Stack<StackEntry> stack,
+        MethodReference methodRef, ref int tempCounter)
+    {
+        var declType = methodRef.DeclaringType.FullName;
+        if (declType != "System.SpanHelpers") return false;
+
+        var name = methodRef.Name;
+        var paramCount = methodRef.Parameters.Count;
+
+        // IndexOfAnyValueType<T>(ref T, T, T, int) → 2-value search
+        // NonPackedIndexOfAnyValueType<TValue, TNeg>(ref T, T, T, int) → same signature, complex impl
+        if ((name == "IndexOfAnyValueType" || name == "NonPackedIndexOfAnyValueType")
+            && paramCount == 4 && methodRef is GenericInstanceMethod)
+        {
+            var length = stack.PopExpr();
+            var v1 = stack.PopExpr();
+            var v0 = stack.PopExpr();
+            var searchSpace = stack.PopExpr();
+            var tmp = $"__t{tempCounter++}";
+            block.Instructions.Add(new IRRawCpp
+            {
+                Code = $"auto {tmp} = cil2cpp::span_index_of_any2({searchSpace}, {v0}, {v1}, {length});",
+                ResultVar = tmp,
+                ResultTypeCpp = "int32_t",
+            });
+            stack.Push(new StackEntry(tmp, "int32_t"));
+            return true;
+        }
+
+        // IndexOfAnyValueType<T>(ref T, T, T, T, int) → 3-value search
+        // NonPackedIndexOfAnyValueType<TValue, TNeg>(ref T, T, T, T, int)
+        if ((name == "IndexOfAnyValueType" || name == "NonPackedIndexOfAnyValueType")
+            && paramCount == 5 && methodRef is GenericInstanceMethod)
+        {
+            var length = stack.PopExpr();
+            var v2 = stack.PopExpr();
+            var v1 = stack.PopExpr();
+            var v0 = stack.PopExpr();
+            var searchSpace = stack.PopExpr();
+            var tmp = $"__t{tempCounter++}";
+            block.Instructions.Add(new IRRawCpp
+            {
+                Code = $"auto {tmp} = cil2cpp::span_index_of_any3({searchSpace}, {v0}, {v1}, {v2}, {length});",
+                ResultVar = tmp,
+                ResultTypeCpp = "int32_t",
+            });
+            stack.Push(new StackEntry(tmp, "int32_t"));
+            return true;
+        }
+
+        // IndexOfValueType<T>(ref T, T, int) → 1-value search
+        // NonPackedIndexOfValueType<TValue, TNeg>(ref T, T, int)
+        if ((name == "IndexOfValueType" || name == "NonPackedIndexOfValueType")
+            && paramCount == 3 && methodRef is GenericInstanceMethod)
+        {
+            var length = stack.PopExpr();
+            var v0 = stack.PopExpr();
+            var searchSpace = stack.PopExpr();
+            var tmp = $"__t{tempCounter++}";
+            block.Instructions.Add(new IRRawCpp
+            {
+                Code = $"auto {tmp} = cil2cpp::span_index_of({searchSpace}, {v0}, {length});",
+                ResultVar = tmp,
+                ResultTypeCpp = "int32_t",
+            });
+            stack.Push(new StackEntry(tmp, "int32_t"));
+            return true;
+        }
+
+        // LastIndexOfAnyValueType<T>(ref T, T, T, int) → 2-value reverse search
+        if ((name == "LastIndexOfAnyValueType" || name == "NonPackedLastIndexOfAnyValueType")
+            && paramCount == 4 && methodRef is GenericInstanceMethod)
+        {
+            var length = stack.PopExpr();
+            var v1 = stack.PopExpr();
+            var v0 = stack.PopExpr();
+            var searchSpace = stack.PopExpr();
+            var tmp = $"__t{tempCounter++}";
+            block.Instructions.Add(new IRRawCpp
+            {
+                Code = $"auto {tmp} = cil2cpp::span_last_index_of_any2({searchSpace}, {v0}, {v1}, {length});",
+                ResultVar = tmp,
+                ResultTypeCpp = "int32_t",
+            });
+            stack.Push(new StackEntry(tmp, "int32_t"));
+            return true;
+        }
+
+        // IndexOfAnyExceptValueType<T>(ref T, T, int) → find first NOT equal to value
+        if ((name == "IndexOfAnyExceptValueType" || name == "NonPackedIndexOfAnyExceptValueType")
+            && paramCount == 3 && methodRef is GenericInstanceMethod)
+        {
+            var length = stack.PopExpr();
+            var v0 = stack.PopExpr();
+            var searchSpace = stack.PopExpr();
+            var tmp = $"__t{tempCounter++}";
+            block.Instructions.Add(new IRRawCpp
+            {
+                Code = $"auto {tmp} = cil2cpp::span_index_of_any_except({searchSpace}, {v0}, {length});",
+                ResultVar = tmp,
+                ResultTypeCpp = "int32_t",
+            });
+            stack.Push(new StackEntry(tmp, "int32_t"));
+            return true;
+        }
+
+        // LastIndexOfValueType<T>(ref T, T, int) → 1-value reverse search
+        if ((name == "LastIndexOfValueType" || name == "NonPackedLastIndexOfValueType")
+            && paramCount == 3 && methodRef is GenericInstanceMethod)
+        {
+            var length = stack.PopExpr();
+            var v0 = stack.PopExpr();
+            var searchSpace = stack.PopExpr();
+            var tmp = $"__t{tempCounter++}";
+            block.Instructions.Add(new IRRawCpp
+            {
+                Code = $"auto {tmp} = cil2cpp::span_last_index_of({searchSpace}, {v0}, {length});",
+                ResultVar = tmp,
+                ResultTypeCpp = "int32_t",
+            });
+            stack.Push(new StackEntry(tmp, "int32_t"));
+            return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
     /// Intercept MemoryMarshal JIT intrinsics at call sites.
     /// Their IL bodies use Unsafe.*/RuntimeHelpers.* which are also JIT intrinsics,
     /// so the IL bodies can't be compiled to C++. We emit inline C++ instead.
@@ -3070,5 +3375,28 @@ public partial class IRBuilder
 
         // Conservative default for unknown types
         return true;
+    }
+
+    /// <summary>
+    /// Compile-time evaluation of RuntimeHelpers.IsBitwiseEquatable&lt;T&gt;().
+    /// Returns true if T can be compared bitwise (primitive value types, enums).
+    /// The JIT replaces this intrinsic at compile time; the BCL IL throws InvalidOperationException.
+    /// </summary>
+    private bool IsBitwiseEquatable(string ilTypeName)
+    {
+        // Primitive types that are bitwise equatable
+        if (ilTypeName is "System.Byte" or "System.SByte" or "System.Int16" or "System.UInt16"
+            or "System.Int32" or "System.UInt32" or "System.Int64" or "System.UInt64"
+            or "System.Boolean" or "System.Char"
+            or "System.IntPtr" or "System.UIntPtr")
+            return true;
+
+        // Enums are bitwise equatable (backed by integer types)
+        if (_typeCache.TryGetValue(ilTypeName, out var irType) && irType.IsEnum)
+            return true;
+
+        // Float/double are NOT bitwise equatable (NaN != NaN, +0 == -0)
+        // Reference types and complex value types are not bitwise equatable
+        return false;
     }
 }

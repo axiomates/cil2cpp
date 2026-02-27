@@ -118,6 +118,52 @@ inline void volatile_write(T** location, std::nullptr_t) {
     *location = nullptr;
 }
 
+// ===== SpanHelpers scalar search =====
+// BCL SpanHelpers uses SIMD-dependent control flow that is impractical for AOT.
+// These simple scalar loops replace the complex BCL implementations.
+
+template<typename T>
+inline int32_t span_index_of(const T* searchSpace, T value, int32_t length) {
+    for (int32_t i = 0; i < length; i++)
+        if (searchSpace[i] == value) return i;
+    return -1;
+}
+
+template<typename T>
+inline int32_t span_index_of_any2(const T* searchSpace, T v0, T v1, int32_t length) {
+    for (int32_t i = 0; i < length; i++)
+        if (searchSpace[i] == v0 || searchSpace[i] == v1) return i;
+    return -1;
+}
+
+template<typename T>
+inline int32_t span_index_of_any3(const T* searchSpace, T v0, T v1, T v2, int32_t length) {
+    for (int32_t i = 0; i < length; i++)
+        if (searchSpace[i] == v0 || searchSpace[i] == v1 || searchSpace[i] == v2) return i;
+    return -1;
+}
+
+template<typename T>
+inline int32_t span_last_index_of(const T* searchSpace, T value, int32_t length) {
+    for (int32_t i = length - 1; i >= 0; i--)
+        if (searchSpace[i] == value) return i;
+    return -1;
+}
+
+template<typename T>
+inline int32_t span_last_index_of_any2(const T* searchSpace, T v0, T v1, int32_t length) {
+    for (int32_t i = length - 1; i >= 0; i--)
+        if (searchSpace[i] == v0 || searchSpace[i] == v1) return i;
+    return -1;
+}
+
+template<typename T>
+inline int32_t span_index_of_any_except(const T* searchSpace, T value, int32_t length) {
+    for (int32_t i = 0; i < length; i++)
+        if (searchSpace[i] != value) return i;
+    return -1;
+}
+
 /**
  * Initialize the CIL2CPP runtime.
  * Must be called before any other runtime functions.

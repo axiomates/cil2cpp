@@ -9,6 +9,8 @@
 
 #include "types.h"
 #include "object.h"
+#include "type_info.h"
+#include <cstring>
 
 namespace cil2cpp {
 
@@ -54,7 +56,7 @@ inline void SafeHandle_SetHandle(void* self, intptr_t handle) {
 
 /// SafeHandle.DangerousAddRef(ref bool success)
 /// Simplified: just set success = true (no ref counting in AOT)
-inline void SafeHandle_DangerousAddRef(void* /*self*/, bool* success) {
+inline void SafeHandle_DangerousAddRef(void* self, bool* success) {
     // TODO: Implement proper reference counting when needed
     if (success) *success = true;
 }
@@ -78,12 +80,74 @@ inline void SafeHandle_SetHandleAsInvalid(void* self) {
 }
 
 /// SafeHandle.Dispose(bool disposing)
-/// Simplified: just mark as disposed + closed
-inline void SafeHandle_Dispose(void* self, bool /*disposing*/) {
+/// Calls ReleaseHandle() via vtable lookup to close the OS handle, then marks as disposed.
+inline void SafeHandle_Dispose(void* self, bool disposing) {
     auto* sh = static_cast<SafeHandleLayout*>(self);
+    // Skip if already closed
+    if (sh->f_state & static_cast<int32_t>(SafeHandleState::Closed))
+        return;
+
+    // Call ReleaseHandle() via vtable if the handle is valid.
+    // SafeFileHandle now has an ICall .ctor that sets f_ownsHandle=true via
+    // SafeHandle__ctor. For other SafeHandle-derived types whose .ctor is still
+    // stubbed, f_ownsHandle may be false (zero-init). Skip the check for safety.
+    if (sh->f_handle != 0 && sh->f_handle != -1) {
+        auto* ti = sh->__type_info;
+        if (ti && ti->vtable) {
+            // Look up ReleaseHandle vtable slot by name from MethodInfo metadata
+            int32_t releaseSlot = -1;
+            for (UInt32 i = 0; i < ti->method_count; i++) {
+                if (ti->methods[i].name &&
+                    std::strcmp(ti->methods[i].name, "ReleaseHandle") == 0 &&
+                    ti->methods[i].vtable_slot >= 0) {
+                    releaseSlot = ti->methods[i].vtable_slot;
+                    break;
+                }
+            }
+            if (releaseSlot >= 0 &&
+                static_cast<UInt32>(releaseSlot) < ti->vtable->method_count &&
+                ti->vtable->methods[releaseSlot] != nullptr) {
+                auto releaseHandle = reinterpret_cast<bool(*)(void*)>(
+                    ti->vtable->methods[releaseSlot]);
+                releaseHandle(self);
+            }
+        }
+    }
+
     sh->f_state |= static_cast<int32_t>(SafeHandleState::Disposed) |
                     static_cast<int32_t>(SafeHandleState::Closed);
-    // TODO: Call ReleaseHandle() virtual when proper ref counting is implemented
+}
+
+/// SafeFileHandle default .ctor — initializes _fileType = -1, base fields via SafeHandle__ctor.
+/// The BCL field initializer `private volatile int _fileType = -1` is compiled into .ctor IL,
+/// but the ctor body is stubbed in AOT (generic Activator.CreateInstance<T> prevents discovery).
+/// Layout must match the generated SafeFileHandle struct (fields in Cecil metadata order).
+inline void SafeFileHandle__ctor(void* self) {
+    // Initialize base SafeHandle fields: handle=0, ownsHandle=true
+    SafeHandle__ctor(self, 0, true);
+    // Set _fileType = -1 (field initializer that triggers lazy GetFileType() call)
+    // Uses SafeHandleLayout size to offset past base fields to SafeFileHandle-specific fields.
+    // SafeFileHandle layout after SafeHandle fields:
+    //   String* f_path;
+    //   int64_t f_length;
+    //   bool f_lengthCanBeCached;
+    //   int32_t f_fileOptions;  (enum)
+    //   int32_t f_fileType;     ← this field
+    struct SafeFileHandleLayout {
+        TypeInfo* __type_info;
+        UInt32 __sync_block;
+        intptr_t f_handle;
+        int32_t f_state;
+        bool f_ownsHandle;
+        bool f_fullyInitialized;
+        void* f_path;
+        int64_t f_length;
+        bool f_lengthCanBeCached;
+        int32_t f_fileOptions;
+        int32_t f_fileType;
+    };
+    auto* sfh = static_cast<SafeFileHandleLayout*>(self);
+    sfh->f_fileType = -1;
 }
 
 } // namespace icall

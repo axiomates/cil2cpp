@@ -482,7 +482,10 @@ public partial class IRBuilder
         foreach (var (key, info) in _genericInstantiations)
         {
             // Skip types already created (e.g., by BCL proxy system or reachability)
-            if (_typeCache.ContainsKey(key)) continue;
+            if (_typeCache.ContainsKey(key))
+            {
+                continue;
+            }
 
             // Skip types we can't resolve (no Cecil definition available)
             if (info.CecilOpenType == null) continue;
@@ -651,8 +654,14 @@ public partial class IRBuilder
                     // pre-disambiguation names, leading to undeclared/mismatched function calls.
                     // Only convert reachable methods — same check as Pass 3.
                     // Unreachable methods keep BasicBlocks empty → not declared in header.
+                    // Exception: for fundamental BCL value types (Span, ReadOnlySpan) that are
+                    // used as struct locals throughout the BCL, their methods may not be in the
+                    // reachability set but are called via compiled BCL code paths. Always compile
+                    // their bodies when the specialization type is created.
+                    var isAlwaysCompile = openType.FullName.StartsWith("System.Span`1")
+                        || openType.FullName.StartsWith("System.ReadOnlySpan`1");
                     if (methodDef.HasBody && !methodDef.IsAbstract
-                        && _reachability.IsReachable(methodDef))
+                        && (isAlwaysCompile || _reachability.IsReachable(methodDef)))
                     {
                         // Skip methods with CLR-internal dependencies — generate stub instead
                         if (HasClrInternalDependencies(methodDef))

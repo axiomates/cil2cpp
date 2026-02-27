@@ -14,6 +14,7 @@
 #include <cil2cpp/exception.h>
 
 #include <gc.h>
+#include <cstdio>
 
 namespace cil2cpp {
 namespace gc {
@@ -54,6 +55,8 @@ void* alloc(size_t size, TypeInfo* type) {
             [](void* p, void*) {
                 Object* o = static_cast<Object*>(p);
                 if (o->__type_info && o->__type_info->finalizer) {
+                    fprintf(stderr, "DBG: GC finalizer running for %p type=%s\n", p,
+                        o->__type_info->name ? o->__type_info->name : "?"); fflush(stderr);
                     // Guard against exceptions escaping the finalizer.
                     // CIL2CPP uses setjmp/longjmp; an unguarded throw would
                     // longjmp through the BoehmGC callback stack (UB).
@@ -138,4 +141,12 @@ GCStats get_stats() {
 }
 
 } // namespace gc
+
+void gc_suppress_finalize(void* obj) {
+    if (obj) {
+        // Unregister any BoehmGC finalizer for this object by setting a null callback.
+        GC_register_finalizer_no_order(obj, nullptr, nullptr, nullptr, nullptr);
+    }
+}
+
 } // namespace cil2cpp

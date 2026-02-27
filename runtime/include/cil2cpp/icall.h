@@ -49,6 +49,7 @@ inline void* ActivityTracker_get_Instance() { return nullptr; }
 Object* Type_GetEnumUnderlyingType(void* __this);
 Boolean Type_get_IsPublic(void* __this);
 Boolean Type_get_IsAbstract(void* __this);
+Boolean Type_get_IsValueType(void* __this);
 Boolean Type_get_IsNestedPublic(void* __this);
 Boolean Type_IsArrayImpl(void* __this);
 Boolean Type_IsEnumDefined(void* __this, void* value);
@@ -267,6 +268,30 @@ cil2cpp::Object* ThrowHelper_GetArgumentOutOfRangeException(Int32 argument);
 cil2cpp::Object* ThrowHelper_GetInvalidOperationException(Int32 resource);
 cil2cpp::String* ThrowHelper_GetResourceString(Int32 resource);
 cil2cpp::String* ThrowHelper_GetArgumentName(Int32 argument);
+
+// System.Text.Ascii — scalar replacements for SIMD-dependent BCL methods
+bool Ascii_AllBytesInUInt32AreAscii(uint32_t value);
+bool Ascii_AllBytesInUInt64AreAscii(uint64_t value);
+bool Ascii_AllCharsInUInt32AreAscii(uint32_t value);
+bool Ascii_AllCharsInUInt64AreAscii(uint64_t value);
+bool Ascii_FirstCharInUInt32IsAscii(uint32_t value);
+bool Ascii_IsValid_byte(uint8_t value);
+bool Ascii_IsValid_char(char16_t value);
+uintptr_t Ascii_WidenAsciiToUtf16(uint8_t* pAsciiBuffer, char16_t* pUtf16Buffer, uintptr_t elementCount);
+void Ascii_WidenFourAsciiBytesToUtf16AndWriteToBuffer(char16_t* outputBuffer, uint32_t value);
+uintptr_t Ascii_NarrowUtf16ToAscii(char16_t* pUtf16Buffer, uint8_t* pAsciiBuffer, uintptr_t elementCount);
+void Ascii_NarrowFourUtf16CharsToAsciiAndWriteToBuffer(uint8_t* outputBuffer, uint64_t value);
+void Ascii_NarrowTwoUtf16CharsToAsciiAndWriteToBuffer(uint8_t* outputBuffer, uint32_t value);
+uint32_t Ascii_CountNumberOfLeadingAsciiBytesFromUInt32WithSomeNonAsciiData(uint32_t value);
+uintptr_t Ascii_GetIndexOfFirstNonAsciiByte(uint8_t* pBuffer, uintptr_t bufferLength);
+uintptr_t Ascii_GetIndexOfFirstNonAsciiChar(char16_t* pBuffer, uintptr_t bufferLength);
+bool Ascii_ContainsNonAsciiByte_Sse2(uint32_t sseMask);
+
+// SpanHelpers.DontNegate<T> / Negate<T> — generic helper structs for IndexOfAny
+// DontNegate: identity function, Negate: logical negation
+// The bool overload is used by scalar loop; Vector overloads unused (SIMD disabled).
+bool SpanHelpers_DontNegate_NegateIfNeeded(bool equals);
+bool SpanHelpers_Negate_NegateIfNeeded(bool equals);
 
 } // namespace icall
 

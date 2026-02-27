@@ -21,7 +21,7 @@ public static class CppNameMapper
         lock (_vtLock) _userValueTypes.Clear();
     }
 
-    private static bool IsRegisteredValueType(string typeName)
+    internal static bool IsRegisteredValueType(string typeName)
     {
         lock (_vtLock) return _userValueTypes.Contains(typeName);
     }

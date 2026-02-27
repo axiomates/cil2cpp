@@ -252,6 +252,7 @@ public partial class CppCodeGenerator
         // Phase 3: Emit stub structs for unknown value types referenced as fields or locals
         var unknownValueTypeStubs = new HashSet<string>();
         var opaqueSpanStubs = new List<string>();
+        var opaqueSafeHandleMarshallerStubs = new List<string>();
         CollectUnknownValueTypeFields(userTypes, definedTypeNames, unknownValueTypeStubs);
         CollectUnknownValueTypeLocals(userTypes, definedTypeNames, unknownValueTypeStubs);
         CollectUnknownValueTypesFromSizeof(userTypes, definedTypeNames, unknownValueTypeStubs);
@@ -262,6 +263,12 @@ public partial class CppCodeGenerator
             {
                 sb.AppendLine($"struct {stubName} {{ void* f_reference; int32_t f_length; }}; // opaque Span stub");
                 opaqueSpanStubs.Add(stubName);
+            }
+            // SafeHandleMarshaller ManagedToUnmanagedIn stubs need f_addRefd + f_handle for marshalling
+            else if (stubName.Contains("SafeHandleMarshaller_1_ManagedToUnmanagedIn_"))
+            {
+                sb.AppendLine($"struct {stubName} {{ bool f_addRefd; void* f_handle; }}; // SafeHandle marshaller stub");
+                opaqueSafeHandleMarshallerStubs.Add(stubName);
             }
             else
                 sb.AppendLine($"struct {stubName} {{ }}; // opaque BCL internal type");
@@ -383,6 +390,27 @@ public partial class CppCodeGenerator
                     sb.AppendLine($"{getLenSig};");
                 if (emittedMethodDecls.Add(isEmptySig))
                     sb.AppendLine($"{isEmptySig};");
+            }
+            sb.AppendLine();
+        }
+
+        // Generate SafeHandleMarshaller ManagedToUnmanagedIn method declarations.
+        // These are trivial wrappers around SafeHandle ICalls (DangerousAddRef/GetHandle/Release).
+        _opaqueSafeHandleMarshallerStubs = opaqueSafeHandleMarshallerStubs;
+        if (opaqueSafeHandleMarshallerStubs.Count > 0)
+        {
+            sb.AppendLine("// ===== SafeHandleMarshaller Stub Methods =====");
+            foreach (var shmType in opaqueSafeHandleMarshallerStubs)
+            {
+                var fromSig = $"void {shmType}_FromManaged({shmType}* __this, void* handle)";
+                var toSig = $"intptr_t {shmType}_ToUnmanaged({shmType}* __this)";
+                var freeSig = $"void {shmType}_Free({shmType}* __this)";
+                if (emittedMethodDecls.Add(fromSig))
+                    sb.AppendLine($"{fromSig};");
+                if (emittedMethodDecls.Add(toSig))
+                    sb.AppendLine($"{toSig};");
+                if (emittedMethodDecls.Add(freeSig))
+                    sb.AppendLine($"{freeSig};");
             }
             sb.AppendLine();
         }
@@ -1769,10 +1797,12 @@ public partial class CppCodeGenerator
         // NOTE: GCFrameRegistration__ctor check removed — let trial render catch actual errors.
         // GCFrameRegistration is a no-op in BoehmGC AOT, and the struct is opaque.
 
-        // Pattern 8: (uintptr_t) cast ONLY when combined with struct member access
+        // Pattern 8: (uintptr_t) cast ONLY when combined with struct member access via ->
         // Standalone (uintptr_t)(ptr) is valid C++ for pointer→int conversion (e.g., fixed/Span)
-        // Pattern 2 already catches (uintptr_t)( + .f_ — this catches additional struct patterns
-        if (code.Contains("(uintptr_t)(") && (code.Contains("->f_") || code.Contains("sizeof(")))
+        // Pattern 2 already catches (uintptr_t)( + .f_ — this catches -> patterns (arrow member access)
+        // NOTE: sizeof() was removed from this check — it's legitimate in expressions like
+        // (uintptr_t)(count) * sizeof(T) (used by Buffer.Memmove<T> interception)
+        if (code.Contains("(uintptr_t)(") && code.Contains("->f_"))
             return true;
 
         // Pattern 9: Unresolved generic type params in interface vtable casts
