@@ -3004,6 +3004,17 @@ public partial class CppCodeGenerator
             }
             if (scalarVtableResults.Count > 0)
             {
+                // Build local type lookup from IR metadata to avoid false positives:
+                // scalar→scalar (e.g. int32_t from IComparer.Compare → int32_t loc) is valid C++.
+                var localTypes = new Dictionary<string, string>();
+                var enumLocals = new HashSet<string>();
+                foreach (var local in method.Locals)
+                {
+                    localTypes[local.CppName] = local.CppTypeName;
+                    if (local.LocalType?.IsEnum == true)
+                        enumLocals.Add(local.CppName);
+                }
+
                 foreach (var line in rendered.AsSpan().EnumerateLines())
                 {
                     var s = line.ToString().TrimStart();
@@ -3013,7 +3024,14 @@ public partial class CppCodeGenerator
                         var eqIdx = s.IndexOf(" = ");
                         var rhs = s[(eqIdx + 3)..].TrimEnd(';').Trim();
                         if (scalarVtableResults.ContainsKey(rhs))
+                        {
+                            var localName = s[..eqIdx];
+                            // Scalar→scalar or scalar→enum assignment is valid C++
+                            if (localTypes.TryGetValue(localName, out var localCppType)
+                                && (IsCppPrimitiveType(localCppType) || enumLocals.Contains(localName)))
+                                continue;
                             return $"interface vtable dispatch returns scalar '{scalarVtableResults[rhs]}' assigned to struct local (C2679)";
+                        }
                     }
                 }
             }
