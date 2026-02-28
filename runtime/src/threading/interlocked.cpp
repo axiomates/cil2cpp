@@ -98,6 +98,64 @@ Int64 compare_exchange_i64(Int64* location, Int64 value, Int64 comparand) {
 #endif
 }
 
+// ===== Byte (uint8) operations =====
+// These are JIT intrinsics in CoreCLR — the BCL IL calls itself expecting the JIT to replace.
+
+uint8_t exchange_u8(uint8_t* location, uint8_t value) {
+#ifdef _MSC_VER
+    return _InterlockedExchange8(reinterpret_cast<char*>(location), static_cast<char>(value));
+#else
+    return __atomic_exchange_n(location, value, __ATOMIC_SEQ_CST);
+#endif
+}
+
+uint8_t compare_exchange_u8(uint8_t* location, uint8_t value, uint8_t comparand) {
+#ifdef _MSC_VER
+    return static_cast<uint8_t>(
+        _InterlockedCompareExchange8(reinterpret_cast<char*>(location),
+                                     static_cast<char>(value),
+                                     static_cast<char>(comparand)));
+#else
+    __atomic_compare_exchange_n(location, &comparand, value, false,
+                                __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+    return comparand;
+#endif
+}
+
+// ===== UInt16 operations =====
+
+uint16_t exchange_u16(uint16_t* location, uint16_t value) {
+#ifdef _MSC_VER
+    return _InterlockedExchange16(reinterpret_cast<short*>(location), static_cast<short>(value));
+#else
+    return __atomic_exchange_n(location, value, __ATOMIC_SEQ_CST);
+#endif
+}
+
+uint16_t compare_exchange_u16(uint16_t* location, uint16_t value, uint16_t comparand) {
+#ifdef _MSC_VER
+    return static_cast<uint16_t>(
+        _InterlockedCompareExchange16(reinterpret_cast<short*>(location),
+                                      static_cast<short>(value),
+                                      static_cast<short>(comparand)));
+#else
+    __atomic_compare_exchange_n(location, &comparand, value, false,
+                                __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+    return comparand;
+#endif
+}
+
+// ===== Memory barriers =====
+
+void read_memory_barrier() {
+#ifdef _MSC_VER
+    _ReadBarrier();
+    _mm_lfence();
+#else
+    __atomic_thread_fence(__ATOMIC_ACQUIRE);
+#endif
+}
+
 // ===== Object reference operations =====
 
 Object* exchange_obj(Object** location, Object* value) {

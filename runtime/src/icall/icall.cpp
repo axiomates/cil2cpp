@@ -269,6 +269,11 @@ Int64 Interlocked_Increment_i64(Int64* location) { return interlocked::increment
 Int64 Interlocked_Decrement_i64(Int64* location) { return interlocked::decrement_i64(location); }
 Int64 Interlocked_Exchange_i64(Int64* location, Int64 value) { return interlocked::exchange_i64(location, value); }
 Int64 Interlocked_CompareExchange_i64(Int64* location, Int64 value, Int64 comparand) { return interlocked::compare_exchange_i64(location, value, comparand); }
+uint8_t Interlocked_Exchange_u8(uint8_t* location, uint8_t value) { return interlocked::exchange_u8(location, value); }
+uint8_t Interlocked_CompareExchange_u8(uint8_t* location, uint8_t value, uint8_t comparand) { return interlocked::compare_exchange_u8(location, value, comparand); }
+uint16_t Interlocked_Exchange_u16(uint16_t* location, uint16_t value) { return interlocked::exchange_u16(location, value); }
+uint16_t Interlocked_CompareExchange_u16(uint16_t* location, uint16_t value, uint16_t comparand) { return interlocked::compare_exchange_u16(location, value, comparand); }
+
 void* Interlocked_Exchange_obj(void* location, void* value) {
     return interlocked::exchange_obj(static_cast<Object**>(location), static_cast<Object*>(value));
 }
@@ -278,6 +283,9 @@ void* Interlocked_CompareExchange_obj(void* location, void* value, void* compara
 
 void Interlocked_MemoryBarrier() {
     std::atomic_thread_fence(std::memory_order_seq_cst);
+}
+void Interlocked_ReadMemoryBarrier() {
+    interlocked::read_memory_barrier();
 }
 
 // ===== System.Threading.Thread =====

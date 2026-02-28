@@ -133,9 +133,14 @@ Int64 Interlocked_Increment_i64(Int64* location);
 Int64 Interlocked_Decrement_i64(Int64* location);
 Int64 Interlocked_Exchange_i64(Int64* location, Int64 value);
 Int64 Interlocked_CompareExchange_i64(Int64* location, Int64 value, Int64 comparand);
+uint8_t Interlocked_Exchange_u8(uint8_t* location, uint8_t value);
+uint8_t Interlocked_CompareExchange_u8(uint8_t* location, uint8_t value, uint8_t comparand);
+uint16_t Interlocked_Exchange_u16(uint16_t* location, uint16_t value);
+uint16_t Interlocked_CompareExchange_u16(uint16_t* location, uint16_t value, uint16_t comparand);
 void* Interlocked_Exchange_obj(void* location, void* value);
 void* Interlocked_CompareExchange_obj(void* location, void* value, void* comparand);
 void Interlocked_MemoryBarrier();
+void Interlocked_ReadMemoryBarrier();
 Int32 Interlocked_ExchangeAdd_i32(Int32* location, Int32 value);
 Int64 Interlocked_ExchangeAdd_i64(Int64* location, Int64 value);
 

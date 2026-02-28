@@ -411,9 +411,11 @@ public class IRUnbox : IRInstruction
     public bool IsUnboxAny { get; set; }
     /// <summary>C++ result type for cross-scope variable pre-declarations.</summary>
     public string? ResultTypeCpp { get; set; }
+    // Always cast to Object* — generated flat structs don't inherit from cil2cpp::Object,
+    // but have the same memory layout (type_info + sync_block + fields).
     public override string ToCpp() => IsUnboxAny
-        ? $"{ResultVar} = cil2cpp::unbox<{ValueTypeCppName}>({ObjectExpr});"
-        : $"{ResultVar} = cil2cpp::unbox_ptr<{ValueTypeCppName}>({ObjectExpr});";
+        ? $"{ResultVar} = cil2cpp::unbox<{ValueTypeCppName}>(reinterpret_cast<cil2cpp::Object*>({ObjectExpr}));"
+        : $"{ResultVar} = cil2cpp::unbox_ptr<{ValueTypeCppName}>(reinterpret_cast<cil2cpp::Object*>({ObjectExpr}));";
 }
 
 public class IRStaticCtorGuard : IRInstruction
@@ -526,9 +528,10 @@ public class IRDelegateInvoke : IRInstruction
         var castedArgs = new List<string>();
         for (int i = 0; i < Arguments.Count; i++)
         {
-            if (i < ParamTypes.Count && ParamTypes[i].EndsWith("*")
-                && ParamTypes[i] != "cil2cpp::Object*" && ParamTypes[i] != "void*")
+            if (i < ParamTypes.Count && ParamTypes[i].EndsWith("*") && ParamTypes[i] != "void*")
             {
+                // Cast all pointer arguments through (void*) — flat struct model has no C++ inheritance.
+                // This handles Object* params receiving Socket*/Type*/etc. derived type pointers.
                 castedArgs.Add($"({ParamTypes[i]})(void*){Arguments[i]}");
             }
             else

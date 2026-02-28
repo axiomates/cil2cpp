@@ -1537,8 +1537,11 @@ public partial class CppCodeGenerator
         // Enums and delegates skip EmitReflectionMetadata, so always use nullptr for them
         var allFields = type.Fields.Concat(type.StaticFields).ToList();
         var reflectableMethods = type.Methods.Where(m => !CppNameMapper.IsCompilerGeneratedType(m.Name)).ToList();
+        // EmitReflectionMetadata also skips types with no fields and no reflectable methods —
+        // must match here, otherwise TypeInfo references custom_attrs/fields/methods that are never emitted
         var skipReflection = type.IsEnum || type.IsDelegate || type.IsRuntimeProvided
-            || CppNameMapper.IsRuntimeExceptionType(type.ILFullName);
+            || CppNameMapper.IsRuntimeExceptionType(type.ILFullName)
+            || (allFields.Count == 0 && reflectableMethods.Count == 0);
         var fieldsExpr = (!skipReflection && allFields.Count > 0) ? $"{type.CppName}_fields" : "nullptr";
         var methodsExpr = (!skipReflection && reflectableMethods.Count > 0) ? $"{type.CppName}_methods" : "nullptr";
         if (skipReflection) { allFields = new(); reflectableMethods = new(); }
@@ -2064,10 +2067,19 @@ public partial class CppCodeGenerator
         var varName = code[..eqIdx];
         if (!crossScopePtrVars.TryGetValue(varName, out var preType)) return code;
 
-        // Already has an explicit cast — no wrapping needed
-        if (code.Contains("(void*)")) return code;
+        // Already has the correct target type cast (e.g., (String*)(void*)expr) — no wrapping needed
+        if (code.Contains($"({preType})(void*)")) return code;
 
         var rhs = code[(eqIdx + 3)..].TrimEnd(';').Trim();
+
+        // Has (void*) but missing target type — conv.u erased the type.
+        // e.g., __t5 = (void*)__t8; → __t5 = (cil2cpp::String*)(void*)__t8;
+        if (code.Contains("(void*)"))
+        {
+            if (rhs.StartsWith("(void*)"))
+                return $"{varName} = ({preType}){rhs};";
+            return code;
+        }
 
         // Don't wrap nullptr (compatible with any pointer type)
         if (rhs == "nullptr") return code;
@@ -2770,11 +2782,13 @@ public partial class CppCodeGenerator
                         method.Parameters[i].ParameterType, wrapperCharSet);
                     if (methodType != externParamTypes[i])
                     {
-                        // Allow struct pointer → void* (any pointer is compatible with void*)
-                        if (externParamTypes[i] == "void*" && methodType.EndsWith("*"))
+                        // Allow any pointer ↔ pointer mismatch — same DLL entry point,
+                        // just different managed overloads (e.g., setsockopt with int32_t* vs Linger*)
+                        if (methodType.EndsWith("*") && externParamTypes[i].EndsWith("*"))
                             continue;
-                        // Allow void* → struct pointer (reverse direction)
-                        if (methodType == "void*" && externParamTypes[i].EndsWith("*"))
+                        // Allow integer width/signedness mismatch (e.g., uint32_t vs int32_t
+                        // for WSASocketW's group/flags params) — same DLL entry, trivially castable
+                        if (IsCppPrimitiveType(methodType) && IsCppPrimitiveType(externParamTypes[i]))
                             continue;
                         compatible = false; break;
                     }
@@ -2822,17 +2836,27 @@ public partial class CppCodeGenerator
                     callArgs.Add($"__p{i}");
                 }
                 else if (param.CppTypeName.EndsWith("*") && externParamTypes != null
-                         && i < externParamTypes.Count && externParamTypes[i] == "void*"
-                         && param.CppTypeName != "void*")
+                         && i < externParamTypes.Count && externParamTypes[i].EndsWith("*")
+                         && param.CppTypeName != externParamTypes[i])
                 {
-                    // Struct pointer → void* (extern declaration uses void* for this param)
-                    sb.AppendLine($"    auto __p{i} = reinterpret_cast<void*>({param.CppName});");
+                    // Pointer type mismatch (e.g., Linger* vs int32_t* for setsockopt overloads)
+                    // Cast through void* to match the extern "C" declaration
+                    sb.AppendLine($"    auto __p{i} = reinterpret_cast<{externParamTypes[i]}>({param.CppName});");
                     callArgs.Add($"__p{i}");
                 }
                 else if (param.CppTypeName == "bool")
                 {
                     // ECMA-335: Boolean → Win32 BOOL (int32_t)
                     sb.AppendLine($"    auto __p{i} = static_cast<int32_t>({param.CppName});");
+                    callArgs.Add($"__p{i}");
+                }
+                else if (externParamTypes != null && i < externParamTypes.Count
+                         && param.CppTypeName != externParamTypes[i]
+                         && IsCppPrimitiveType(GetPInvokeNativeType(param.CppTypeName, param.ParameterType, wrapperCharSet))
+                         && IsCppPrimitiveType(externParamTypes[i]))
+                {
+                    // Integer type mismatch (e.g., uint32_t vs int32_t for WSASocketW overloads)
+                    sb.AppendLine($"    auto __p{i} = static_cast<{externParamTypes[i]}>({param.CppName});");
                     callArgs.Add($"__p{i}");
                 }
                 else

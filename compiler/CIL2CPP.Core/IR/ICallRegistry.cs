@@ -210,9 +210,13 @@ public static class ICallRegistry
         RegisterICallTyped("System.Threading.Interlocked", "Increment", 1, "System.Int64&", "cil2cpp::icall::Interlocked_Increment_i64");
         RegisterICallTyped("System.Threading.Interlocked", "Decrement", 1, "System.Int32&", "cil2cpp::icall::Interlocked_Decrement_i32");
         RegisterICallTyped("System.Threading.Interlocked", "Decrement", 1, "System.Int64&", "cil2cpp::icall::Interlocked_Decrement_i64");
+        RegisterICallTyped("System.Threading.Interlocked", "Exchange", 2, "System.Byte&", "cil2cpp::icall::Interlocked_Exchange_u8");
+        RegisterICallTyped("System.Threading.Interlocked", "Exchange", 2, "System.UInt16&", "cil2cpp::icall::Interlocked_Exchange_u16");
         RegisterICallTyped("System.Threading.Interlocked", "Exchange", 2, "System.Int32&", "cil2cpp::icall::Interlocked_Exchange_i32");
         RegisterICallTyped("System.Threading.Interlocked", "Exchange", 2, "System.Int64&", "cil2cpp::icall::Interlocked_Exchange_i64");
         RegisterICallTyped("System.Threading.Interlocked", "Exchange", 2, "System.Object&", "cil2cpp::icall::Interlocked_Exchange_obj");
+        RegisterICallTyped("System.Threading.Interlocked", "CompareExchange", 3, "System.Byte&", "cil2cpp::icall::Interlocked_CompareExchange_u8");
+        RegisterICallTyped("System.Threading.Interlocked", "CompareExchange", 3, "System.UInt16&", "cil2cpp::icall::Interlocked_CompareExchange_u16");
         RegisterICallTyped("System.Threading.Interlocked", "CompareExchange", 3, "System.Int32&", "cil2cpp::icall::Interlocked_CompareExchange_i32");
         RegisterICallTyped("System.Threading.Interlocked", "CompareExchange", 3, "System.Int64&", "cil2cpp::icall::Interlocked_CompareExchange_i64");
         RegisterICallTyped("System.Threading.Interlocked", "CompareExchange", 3, "System.Object&", "cil2cpp::icall::Interlocked_CompareExchange_obj");
@@ -220,6 +224,7 @@ public static class ICallRegistry
         RegisterICallTyped("System.Threading.Interlocked", "Add", 2, "System.Int64&", "cil2cpp::icall::Interlocked_Add_i64");
         RegisterICall("System.Threading.Interlocked", "MemoryBarrier", 0, "cil2cpp::icall::Interlocked_MemoryBarrier");
         RegisterICall("System.Threading.Interlocked", "MemoryBarrierProcessWide", 0, "cil2cpp::icall::Interlocked_MemoryBarrier");
+        RegisterICall("System.Threading.Interlocked", "ReadMemoryBarrier", 0, "cil2cpp::icall::Interlocked_ReadMemoryBarrier");
 
         // ===== System.Threading.Volatile =====
         // JIT intrinsics for volatile memory access. Implemented as template functions

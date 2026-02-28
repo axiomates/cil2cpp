@@ -370,7 +370,7 @@ public class IRInstructionTests
             ResultVar = "__t0",
             IsUnboxAny = true
         };
-        Assert.Equal("__t0 = cil2cpp::unbox<System_Int32>(obj);", instr.ToCpp());
+        Assert.Equal("__t0 = cil2cpp::unbox<System_Int32>(reinterpret_cast<cil2cpp::Object*>(obj));", instr.ToCpp());
     }
 
     [Fact]
@@ -383,7 +383,7 @@ public class IRInstructionTests
             ResultVar = "__t0",
             IsUnboxAny = false
         };
-        Assert.Equal("__t0 = cil2cpp::unbox_ptr<System_Int32>(obj);", instr.ToCpp());
+        Assert.Equal("__t0 = cil2cpp::unbox_ptr<System_Int32>(reinterpret_cast<cil2cpp::Object*>(obj));", instr.ToCpp());
     }
 
     [Fact]

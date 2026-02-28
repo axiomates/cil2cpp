@@ -111,7 +111,8 @@ public partial class IRBuilder
     /// Only filter namespaces with types that truly can't compile to C++
     /// (JIT intrinsics, COM interop, runtime internals).
     /// Removed: System.Globalization (needed for number/string formatting),
-    ///          System.IO (needed for Console BCL chain).
+    ///          System.IO (needed for Console BCL chain),
+    ///          System.Net (needed for Socket BCL IL chain — P/Invoke to ws2_32.dll).
     /// </summary>
     private static readonly HashSet<string> FilteredGenericNamespaces =
     [
@@ -123,7 +124,6 @@ public partial class IRBuilder
         "System.Diagnostics.Tracing",
         "System.Resources",
         "System.Security",
-        "System.Net",
         "System.Buffers.IndexOfAnyAsciiSearcher",  // SIMD-dependent search internals
         "Internal",
     ];

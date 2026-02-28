@@ -1697,19 +1697,12 @@ public partial class IRBuilder
             case Code.Conv_I8:  EmitConversion(block, stack, "int64_t", ref tempCounter); break;
             case Code.Conv_I:
             {
-                // Address-of expressions (&loc_N, &field) are already native pointers
-                // — conv.i is a no-op, preserving pointer type avoids intptr_t→T* casts
                 var convIEntry = stack.PeekEntry();
-                if (convIEntry.IsAddressOf) break;
-                // Pointer values: convert to void* instead of intptr_t.
-                // In .NET, IntPtr and void* are interchangeable (native int = pointer).
-                // Using void* preserves pointer semantics so typed casts at call sites work.
-                // intptr_t is an integer type — MSVC rejects implicit intptr_t→T* casts (C2664).
-                // Bitwise ops already handle void* operands (cast to uintptr_t internally).
-                if (convIEntry.IsPointer)
-                    EmitConversion(block, stack, "void*", ref tempCounter);
-                else
-                    EmitConversion(block, stack, "intptr_t", ref tempCounter);
+                // Pointer/address-of values are already native-sized — conv.i is a no-op.
+                // Preserving the typed pointer avoids void*→T* assignment mismatches
+                // in cross-scope pre-declared variables (AddAutoDeclarations).
+                if (convIEntry.IsAddressOf || convIEntry.IsPointer) break;
+                EmitConversion(block, stack, "intptr_t", ref tempCounter);
                 break;
             }
             case Code.Conv_U1:  EmitConversion(block, stack, "uint8_t", ref tempCounter); break;
@@ -1721,18 +1714,28 @@ public partial class IRBuilder
                 var convUEntry = stack.PeekEntry();
                 // If converting literal 0 → preserve as 0 (valid null pointer constant in C++)
                 if (convUEntry.Expr == "0") break;
-                // Address-of expressions (&loc_N, &field) are already native pointers
-                // — conv.u is a no-op, preserving pointer type avoids uintptr_t→T* casts
-                if (convUEntry.IsAddressOf) break;
-                // Pointer values: convert to void* instead of uintptr_t.
-                // In .NET, UIntPtr and void* are interchangeable (native int = pointer).
-                // Using void* preserves pointer semantics so typed casts at call sites work.
-                // uintptr_t is an integer type — MSVC rejects implicit uintptr_t→T* casts (C2664).
-                // Bitwise ops already handle void* operands (cast to uintptr_t internally).
-                if (convUEntry.IsPointer)
-                    EmitConversion(block, stack, "void*", ref tempCounter);
-                else
-                    EmitConversion(block, stack, "uintptr_t", ref tempCounter);
+                // Pointer/address-of values are already native-sized — conv.u is a no-op.
+                // Preserving the typed pointer avoids void*→T* assignment mismatches
+                // in cross-scope pre-declared variables (AddAutoDeclarations).
+                if (convUEntry.IsAddressOf || convUEntry.IsPointer) break;
+                // Local variables (loc_N) that are pointer types — conv.u is a no-op.
+                // CppType may be null if not tracked, but we can look up from method locals.
+                if (convUEntry.Expr.StartsWith("loc_"))
+                {
+                    if (int.TryParse(convUEntry.Expr.AsSpan(4), out var locIdx)
+                        && locIdx >= 0 && locIdx < method.Locals.Count
+                        && method.Locals[locIdx].CppTypeName.EndsWith("*"))
+                        break;
+                }
+                // Temp variables (__tN) that were result of a pointer-returning operation
+                if (convUEntry.Expr.StartsWith("__t") && convUEntry.CppType == null)
+                {
+                    // Look up type from TempVarTypes if available
+                    if (method.TempVarTypes.TryGetValue(convUEntry.Expr, out var tempType)
+                        && tempType.EndsWith("*"))
+                        break;
+                }
+                EmitConversion(block, stack, "uintptr_t", ref tempCounter);
                 break;
             }
             case Code.Conv_R4:  EmitConversion(block, stack, "float", ref tempCounter); break;
@@ -2177,7 +2180,7 @@ public partial class IRBuilder
                     {
                         Code = $"{nullableCpp} {tmp} = {{0}}; " +
                                $"if ({obj}) {{ {tmp}.f_hasValue = true; " +
-                               $"{tmp}.f_value = cil2cpp::unbox<{innerTypeCpp}>({obj}); }}",
+                               $"{tmp}.f_value = cil2cpp::unbox<{innerTypeCpp}>(reinterpret_cast<cil2cpp::Object*>({obj})); }}",
                         ResultVar = tmp,
                         ResultTypeCpp = nullableCpp,
                     });
@@ -2307,7 +2310,9 @@ public partial class IRBuilder
                 // Use GetCppTypeName so primitives map to C++ types (int32_t, not System_Int32)
                 var resolvedName = ResolveTypeRefOperand(typeRef);
                 var typeCpp = CppNameMapper.GetCppTypeName(resolvedName);
-                if (typeCpp.EndsWith("*")) typeCpp = typeCpp.TrimEnd('*');
+                // Reference types ARE pointers — sizeof(T*) = pointer size is correct
+                if (!CppNameMapper.IsValueType(resolvedName) && !typeCpp.EndsWith("*"))
+                    typeCpp += "*";
                 var tmp = $"__t{tempCounter++}";
                 block.Instructions.Add(new IRRawCpp
                 {

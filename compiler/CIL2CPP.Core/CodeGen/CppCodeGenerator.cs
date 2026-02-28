@@ -458,6 +458,12 @@ public partial class CppCodeGenerator
                         // Escape non-ASCII as universal character names for MSVC compatibility
                         sb.Append($"\\u{(int)ch:X4}");
                     }
+                    else if (ch < 32)
+                    {
+                        // Escape all control characters (0x01-0x1F) as hex.
+                        // Raw 0x1A (Ctrl+Z) is Windows EOF marker — causes C1004.
+                        sb.Append($"\\x{(int)ch:x2}");
+                    }
                     else
                     {
                         sb.Append(ch);

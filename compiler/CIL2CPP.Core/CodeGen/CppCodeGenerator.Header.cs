@@ -454,7 +454,7 @@ public partial class CppCodeGenerator
             sb.AppendLine("// Array initializer data extern declarations");
             foreach (var blob in _module.ArrayInitDataBlobs)
             {
-                sb.AppendLine($"extern const unsigned char {blob.Id}[];");
+                sb.AppendLine($"extern const unsigned char {blob.Id}[{blob.Data.Length}];");
             }
             sb.AppendLine();
         }
@@ -2100,6 +2100,23 @@ public partial class CppCodeGenerator
             }
         }
 
+        // SIMD Vector operators: methods that use binary/unary operators on Vector128/256/512
+        // struct types. These structs are opaque stubs with no operator overloads defined.
+        // Detect: assignment with C-style cast to Vector type wrapping a binary/unary expression.
+        // e.g., auto __t12 = (System_Runtime_Intrinsics_Vector512_1_...)(loc_3 | loc_4);
+        if (rendered.Contains("System_Runtime_Intrinsics_Vector"))
+        {
+            foreach (var line in rendered.AsSpan().EnumerateLines())
+            {
+                var s = line.ToString().TrimStart();
+                if (s.Length == 0 || s.StartsWith("//")) continue;
+                // Pattern: = (VectorType)(expr OP expr) — binary/unary on Vector value types
+                if (s.Contains("= (System_Runtime_Intrinsics_Vector") &&
+                    (s.Contains(")(~") || s.Contains(" | ") || s.Contains(" & ") || s.Contains(" - ")))
+                    return "SIMD Vector operator on opaque struct type (C2676/C2088)";
+            }
+        }
+
         // Check each line for known error patterns
         foreach (var line in rendered.AsSpan().EnumerateLines())
         {
@@ -2893,8 +2910,251 @@ public partial class CppCodeGenerator
             }
         }
 
+        // Undefined type used as local variable or member access target —
+        // forward-declared struct used in sizeof, field access, or variable initialization.
+        // Causes C2027/C3536.
+        if (knownTypes != null)
+        {
+            foreach (var line in rendered.AsSpan().EnumerateLines())
+            {
+                var s = line.ToString().TrimStart();
+                // Local variable declaration: TypeName loc_N = ...; or TypeName* loc_N = ...;
+                // Must be a declaration line: starts with a plausible type name, followed by
+                // a space and loc_N or __tN. Exclude assignment, function call, member access lines.
+                if (s.Length > 10 && !s.StartsWith("auto ") && !s.StartsWith("//")
+                    && !s.StartsWith("{") && !s.StartsWith("if ") && !s.StartsWith("return")
+                    && !s.StartsWith("goto") && !s.StartsWith("cil2cpp::") && !s.StartsWith("std::")
+                    && !s.Contains("->") && !s.Contains("(") // Exclude member access and function calls
+                    && !s.StartsWith("loc_") && !s.StartsWith("__t")) // Exclude plain assignments
+                {
+                    var spaceIdx = s.IndexOf(' ');
+                    if (spaceIdx > 5) // type name must be at least 6 chars
+                    {
+                        // After the space, must be loc_N or __tN (variable declaration)
+                        var afterSpace = s[(spaceIdx + 1)..];
+                        if ((afterSpace.StartsWith("loc_") || afterSpace.StartsWith("__t"))
+                            && afterSpace.Contains(" = "))
+                        {
+                            var typeName = s[..spaceIdx].TrimEnd('*');
+                            if (IsUndefinedBclType(typeName, knownTypes))
+                                return $"undefined type '{typeName}' used as local variable (C2027)";
+                        }
+                    }
+                }
+                // Member access on cast-to-undefined-type: ((TypeName*)expr)->field
+                // The type is forward-declared but has no struct definition (C2027)
+                if (s.Contains(")->f_") || s.Contains(")->get_") || s.Contains(")->set_"))
+                {
+                    // Look for "(TypeName*)" cast patterns — find the type name before "*)"
+                    var searchPos2 = 0;
+                    while (searchPos2 < s.Length)
+                    {
+                        var starIdx = s.IndexOf("*)", searchPos2);
+                        if (starIdx < 0) break;
+                        // Walk backwards from '*' to find the type name start (after '(')
+                        var typeEnd = starIdx;
+                        var typeStart = typeEnd - 1;
+                        while (typeStart >= 0 && s[typeStart] != '(') typeStart--;
+                        if (typeStart >= 0 && typeEnd > typeStart + 1)
+                        {
+                            var castType = s[(typeStart + 1)..typeEnd].Trim();
+                            if (IsUndefinedBclType(castType, knownTypes))
+                                return $"undefined type '{castType}' member access (C2027)";
+                        }
+                        searchPos2 = starIdx + 2;
+                    }
+                }
+            }
+        }
+
+        // Interface vtable dispatch returning wrong scalar type — generic IEnumerator<T>.Current
+        // returns the wrong primitive type when the type arg is a complex struct like KeyValuePair.
+        // Pattern: vtable call with scalar return cast, followed by assignment to struct local.
+        {
+            var scalarVtableResults = new Dictionary<string, string>(); // varName → scalar type
+            foreach (var line in rendered.AsSpan().EnumerateLines())
+            {
+                var s = line.ToString().TrimStart();
+                // auto __tN = ((scalarType(*)(...))(vtable...))(...);
+                // May also appear after null_check: "cil2cpp::null_check(...); auto __tN = ..."
+                var vtableChk = s;
+                if (vtableChk.Contains("; auto __t"))
+                    vtableChk = vtableChk[(vtableChk.IndexOf("; auto __t") + 2)..];
+                if (vtableChk.StartsWith("auto __t") && vtableChk.Contains("type_get_interface_vtable_checked"))
+                {
+                    // Extract return type from function pointer cast: ((retType(*)(params))
+                    var castStart = vtableChk.IndexOf("((");
+                    if (castStart >= 0)
+                    {
+                        var retEnd = vtableChk.IndexOf("(*)", castStart + 2);
+                        if (retEnd > castStart + 2)
+                        {
+                            var retType = vtableChk[(castStart + 2)..retEnd].Trim();
+                            if (retType is "bool" or "uint8_t" or "int8_t" or "int16_t" or "uint16_t"
+                                or "int32_t" or "uint32_t" or "int64_t" or "uint64_t" or "char16_t"
+                                or "float" or "double")
+                            {
+                                var varEnd = vtableChk.IndexOf(' ', 5);
+                                if (varEnd > 5)
+                                    scalarVtableResults[vtableChk[5..varEnd]] = retType;
+                            }
+                        }
+                    }
+                }
+            }
+            if (scalarVtableResults.Count > 0)
+            {
+                foreach (var line in rendered.AsSpan().EnumerateLines())
+                {
+                    var s = line.ToString().TrimStart();
+                    // loc_N = __tM; where __tM is from scalar vtable dispatch
+                    if (s.StartsWith("loc_") && s.Contains(" = "))
+                    {
+                        var eqIdx = s.IndexOf(" = ");
+                        var rhs = s[(eqIdx + 3)..].TrimEnd(';').Trim();
+                        if (scalarVtableResults.ContainsKey(rhs))
+                            return $"interface vtable dispatch returns scalar '{scalarVtableResults[rhs]}' assigned to struct local (C2679)";
+                    }
+                }
+            }
+        }
+
+        // Enum_InternalBoxEnum receives struct value instead of void* — RuntimeTypeHandle
+        // is a struct but the ICall expects void*. C2664 type mismatch.
+        if (rendered.Contains("Enum_InternalBoxEnum") || rendered.Contains("Enum_InternalGetCorElementType"))
+        {
+            foreach (var line in rendered.AsSpan().EnumerateLines())
+            {
+                var s = line.ToString().TrimStart();
+                if ((s.Contains("Enum_InternalBoxEnum(") || s.Contains("Enum_InternalGetCorElementType("))
+                    && !s.Contains("(void*)") && s.Contains("__t"))
+                {
+                    // Check if argument is a vtable call result returning a struct (RuntimeTypeHandle)
+                    return "Enum ICall receives struct value instead of void* (C2664)";
+                }
+            }
+        }
+
+        // Range struct field name mismatch — generated struct has f__Start_k__BackingField
+        // but IL code accesses f__start / f__end directly. C2039 member not found.
+        if (rendered.Contains(".f__start") || rendered.Contains(".f__end") ||
+            rendered.Contains("->f__start") || rendered.Contains("->f__end"))
+            return "Range field name mismatch (f__start/f__end vs backing field) (C2039)";
+
+        // IComparer<T>.Compare undeclared — generic interface method stubs not generated.
+        // Pattern: method body references IComparer_1_T_Compare which doesn't exist.
+        if (rendered.Contains("IComparer_1_") && rendered.Contains("_Compare"))
+            return "undeclared IComparer<T>.Compare interface method (C2065)";
+
+        // Undeclared method: DsesActivitySourceListener, other diagnostic listener methods
+        if (rendered.Contains("DsesActivitySourceListener_OnSample") ||
+            rendered.Contains("DsesActivitySourceListener_OnCreate"))
+            return "undeclared DsesActivitySourceListener method (C2065)";
+
+        // sizeof(void) — initobj on void* dereferences to void, which has no size (C2070)
+        if (rendered.Contains("sizeof(void)"))
+            return "sizeof(void) — incomplete type (C2070)";
+
+        // void* argument passed to function expecting cil2cpp::Array* — conv.u erased pointer type (C2664)
+        if (rendered.Contains("(void*)") && rendered.Contains("cil2cpp::Array*"))
+        {
+            foreach (var line in rendered.AsSpan().EnumerateLines())
+            {
+                var s = line.ToString().TrimStart();
+                // Function call with void* argument where Array* is expected
+                if (s.Contains("void*)") && !s.Contains("null_check") &&
+                    s.Contains("cil2cpp::Array*") && !s.Contains("(cil2cpp::Array*)"))
+                    return "void* passed to function expecting Array* (C2664)";
+            }
+        }
+
+        // FIXME: conv.u on pointer-typed locals produces (void*)(void*) — variable ends up void*
+        // and may be passed to functions expecting typed pointers (C2664). Need to fix conv.u to
+        // preserve pointer type when the local is already a pointer.
+        // Targeted gate: detect (void*)(void*) assignment to a temp variable, then that temp
+        // used as a bare function argument (no cast wrapper).
+        if (rendered.Contains("(void*)(void*)"))
+        {
+            var voidPtrVoidPtrVars = new HashSet<string>();
+            foreach (var line in rendered.AsSpan().EnumerateLines())
+            {
+                var s = line.ToString().TrimStart();
+                // __tN = (void*)(void*)expr;
+                if (s.StartsWith("__t") && s.Contains(" = (void*)(void*)"))
+                {
+                    var eqIdx = s.IndexOf(" = ");
+                    if (eqIdx > 0) voidPtrVoidPtrVars.Add(s[..eqIdx]);
+                }
+            }
+            if (voidPtrVoidPtrVars.Count > 0)
+            {
+                foreach (var line in rendered.AsSpan().EnumerateLines())
+                {
+                    var s = line.ToString().TrimStart();
+                    // Function call: FuncName(..., __tN, ...) where __tN is void* from double cast
+                    if (s.Contains("(") && s.Contains(", "))
+                    {
+                        foreach (var v in voidPtrVoidPtrVars)
+                        {
+                            // Check if variable appears as a bare argument (not cast)
+                            if (s.Contains($", {v},") || s.Contains($", {v})") || s.Contains($"({v},"))
+                                return $"void* variable '{v}' from conv.u passed to typed function param (C2664)";
+                        }
+                    }
+                }
+            }
+        }
+
+        // goto skips initialization of auto-declared variable — C2362
+        // Pattern: consecutive switch blocks where the first switch's gotos can skip
+        // the second switch's auto __tN declaration.
+        // Detect: two "switch (__t" blocks in the same method — the first switch's
+        // case gotos jump over the second switch's auto __tN = expr; declaration.
+        if (rendered.Contains("switch (__t"))
+        {
+            int switchCount = 0;
+            foreach (var line in rendered.AsSpan().EnumerateLines())
+            {
+                var s = line.ToString().TrimStart();
+                if (s.StartsWith("switch (__t")) switchCount++;
+            }
+            if (switchCount >= 2)
+                return "consecutive switch blocks — goto may skip auto initialization (C2362)";
+        }
+
+        // HasFlag receives pointer where value expected — Enum.HasFlag(Enum*, Enum)
+        // signature expects value type for 2nd arg, but codegen passes boxed Object*.
+        // The box result goes through a temp variable, so just check if the method
+        // contains a HasFlag call — it always fails with our flat struct model.
+        if (rendered.Contains("Enum_HasFlag("))
+            return "Enum.HasFlag — boxed enum Object* incompatible with value param (C2664)";
+
+        // Delegate invoke with Socket* / typed pointer where Object* expected — C2664
+        // Generated flat structs can't implicitly convert to Object*.
+        if (rendered.Contains("System_Net_Sockets_Socket*") || rendered.Contains("System_Net_Sockets_SocketAsyncEventArgs*"))
+        {
+            foreach (var line in rendered.AsSpan().EnumerateLines())
+            {
+                var s = line.ToString().TrimStart();
+                if (s.Contains("System_Net_Sockets_Socket*") && s.Contains("cil2cpp::Object*"))
+                    return "Socket* passed where Object* expected (C2664)";
+            }
+        }
+
         return null;
     }
+
+    /// <summary>
+    /// Returns true if the type name looks like an undefined BCL type (not in knownTypes,
+    /// not a primitive, not a cil2cpp:: runtime type).
+    /// </summary>
+    private static bool IsUndefinedBclType(string typeName, HashSet<string> knownTypes)
+        => typeName.Length > 5 && typeName.Contains('_')
+           && !typeName.StartsWith("cil2cpp") && !typeName.StartsWith("int")
+           && !typeName.StartsWith("uint") && !typeName.StartsWith("float")
+           && !typeName.StartsWith("double") && !typeName.StartsWith("bool")
+           && !typeName.StartsWith("char") && !typeName.StartsWith("auto")
+           && !knownTypes.Contains(typeName);
 
     /// <summary>
     /// Check a single rendered C++ line for patterns that would cause MSVC errors.

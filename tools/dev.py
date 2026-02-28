@@ -926,6 +926,50 @@ def cmd_integration(args):
     runner.step("CMake configure + build FileStreamTest", fs_cmake_and_build)
     runner.step("Run FileStreamTest and verify output", fs_run_verify)
 
+    # ===== Phase 10: SocketTest (System.Net.Sockets via Winsock P/Invoke) =====
+    header("Phase 10: SocketTest (System.Net.Sockets via Winsock P/Invoke)")
+
+    sk_sample = TESTPROJECTS_DIR / "SocketTest" / "SocketTest.csproj"
+    sk_output = temp_dir / "sockettest_output"
+
+    def sk_codegen():
+        run(["dotnet", "run", "--project", str(CLI_PROJECT), "--",
+             "codegen", "-i", str(sk_sample), "-o", str(sk_output),
+             "--analyze-stubs", "--stub-budget", str(TESTPROJECTS_DIR / ".." / "baselines" / "stub_budget.json")],
+            capture=True)
+
+    def sk_files_exist():
+        for f in ["SocketTest.h", "SocketTest_data.cpp", "SocketTest_stubs.cpp",
+                   "main.cpp", "CMakeLists.txt"]:
+            if not (sk_output / f).exists():
+                raise RuntimeError(f"Missing: {f}")
+
+    def sk_cmake_and_build():
+        sk_build = sk_output / "build"
+        run(["cmake", "-B", str(sk_build), "-S", str(sk_output),
+             "-G", generator, *cmake_arch,
+             f"-DCMAKE_PREFIX_PATH={runtime_prefix}"], capture=True)
+        run(["cmake", "--build", str(sk_build), "--config", config], capture=True)
+
+    def sk_run_verify():
+        sk_build = sk_output / "build"
+        exe = _exe_path(sk_build, config, "SocketTest")
+        r = subprocess.run([str(exe)], capture_output=True, text=True, check=False, timeout=30)
+        if r.returncode != 0:
+            raise RuntimeError(f"SocketTest exited with code {r.returncode}\n{r.stdout}\n{r.stderr}")
+        out = r.stdout
+        if "=== Done ===" not in out:
+            raise RuntimeError(f"SocketTest output missing '=== Done ==='\n{out}")
+        if "Socket Create: OK" not in out:
+            raise RuntimeError(f"SocketTest: Socket Create failed\n{out}")
+        if "Socket Close: OK" not in out:
+            raise RuntimeError(f"SocketTest: Socket Close failed\n{out}")
+
+    runner.step("Codegen SocketTest", sk_codegen)
+    runner.step("Generated files exist", sk_files_exist)
+    runner.step("CMake configure + build SocketTest", sk_cmake_and_build)
+    runner.step("Run SocketTest and verify output", sk_run_verify)
+
     # ===== Cleanup =====
     header("Cleanup")
 

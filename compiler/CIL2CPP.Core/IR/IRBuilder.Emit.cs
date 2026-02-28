@@ -383,7 +383,9 @@ public partial class IRBuilder
             var resolvedArg = typeArg is GenericParameter gpSz && _activeTypeParamMap != null
                 && _activeTypeParamMap.TryGetValue(gpSz.Name, out var rSz) ? rSz : typeArg.FullName;
             var cppType = CppNameMapper.GetCppTypeName(resolvedArg);
-            if (cppType.EndsWith("*")) cppType = cppType.TrimEnd('*');
+            // Reference types ARE pointers — sizeof(T*) = pointer size is correct
+            if (!CppNameMapper.IsValueType(resolvedArg) && !cppType.EndsWith("*"))
+                cppType += "*";
             var tmp = $"__t{tempCounter++}";
             block.Instructions.Add(new IRRawCpp
             {
@@ -396,6 +398,8 @@ public partial class IRBuilder
         }
 
         // Unsafe.As<TFrom,TTo>(ref TFrom) — reinterpret cast intrinsic
+        // This is a byref operation: takes ref TFrom, returns ref TTo.
+        // The result type must always be one pointer level higher than the element type.
         if (methodRef.DeclaringType.FullName == "System.Runtime.CompilerServices.Unsafe"
             && methodRef.Name == "As" && methodRef is GenericInstanceMethod gimAs
             && gimAs.GenericArguments.Count == 2)
@@ -405,7 +409,9 @@ public partial class IRBuilder
             var resolvedTo = toTypeArg is GenericParameter gpAs && _activeTypeParamMap != null
                 && _activeTypeParamMap.TryGetValue(gpAs.Name, out var rAs) ? rAs : toTypeArg.FullName;
             var cppTo = CppNameMapper.GetCppTypeForDecl(resolvedTo);
-            if (!cppTo.EndsWith("*")) cppTo += "*";
+            // Always add * — this is a byref-to-byref operation.
+            // Value type T → T*, reference type T (already T*) → T**
+            cppTo += "*";
             var tmp = $"__t{tempCounter++}";
             block.Instructions.Add(new IRRawCpp
             {
@@ -413,7 +419,7 @@ public partial class IRBuilder
                 ResultVar = tmp,
                 ResultTypeCpp = cppTo,
             });
-            stack.Push(tmp);
+            stack.Push(new StackEntry(tmp, cppTo));
             return;
         }
 
@@ -484,7 +490,9 @@ public partial class IRBuilder
             var resolvedType = typeArg is GenericParameter gpRu && _activeTypeParamMap != null
                 && _activeTypeParamMap.TryGetValue(gpRu.Name, out var rRu) ? rRu : typeArg.FullName;
             var cppType = CppNameMapper.GetCppTypeName(resolvedType);
-            if (cppType.EndsWith("*")) cppType = cppType.TrimEnd('*');
+            // Reference types ARE pointers — memcpy reads a pointer from memory
+            if (!CppNameMapper.IsValueType(resolvedType) && !cppType.EndsWith("*"))
+                cppType += "*";
             var tmp = $"__t{tempCounter++}";
             block.Instructions.Add(new IRRawCpp
             {
@@ -507,7 +515,9 @@ public partial class IRBuilder
             var resolvedType = typeArg is GenericParameter gpWu && _activeTypeParamMap != null
                 && _activeTypeParamMap.TryGetValue(gpWu.Name, out var rWu) ? rWu : typeArg.FullName;
             var cppType = CppNameMapper.GetCppTypeName(resolvedType);
-            if (cppType.EndsWith("*")) cppType = cppType.TrimEnd('*');
+            // Reference types ARE pointers — memcpy writes a pointer to memory
+            if (!CppNameMapper.IsValueType(resolvedType) && !cppType.EndsWith("*"))
+                cppType += "*";
             block.Instructions.Add(new IRRawCpp
             {
                 Code = $"{{ {cppType} __wu_val = {value}; std::memcpy((void*){dest}, &__wu_val, sizeof({cppType})); }}"

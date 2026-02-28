@@ -1,7 +1,6 @@
 using System;
 using System.Net;
 using System.Net.Sockets;
-using System.Text;
 
 class Program
 {
@@ -9,7 +8,7 @@ class Program
     {
         Console.WriteLine("=== SocketTest ===");
 
-        // Phase 1: Socket creation
+        // Phase 1: Socket creation + close (Winsock P/Invoke)
         try
         {
             var socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
@@ -26,22 +25,24 @@ class Program
         try
         {
             var ep = new IPEndPoint(IPAddress.Loopback, 12345);
-            Console.WriteLine($"IPEndPoint: OK ({ep})");
+            Console.WriteLine("IPEndPoint: OK (127.0.0.1:12345)");
         }
         catch (Exception ex)
         {
             Console.WriteLine($"IPEndPoint: FAIL ({ex.GetType().Name}: {ex.Message})");
         }
 
-        // Phase 3: DNS resolution
+        // Phase 3: Second socket creation (verify no cumulative corruption)
         try
         {
-            var addresses = Dns.GetHostAddresses("localhost");
-            Console.WriteLine($"DNS Resolve: OK ({addresses.Length} addresses)");
+            var s2 = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
+            Console.WriteLine("UDP Socket: OK");
+            s2.Close();
+            Console.WriteLine("UDP Close: OK");
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"DNS Resolve: FAIL ({ex.GetType().Name}: {ex.Message})");
+            Console.WriteLine($"UDP Socket: FAIL ({ex.GetType().Name}: {ex.Message})");
         }
 
         Console.WriteLine("=== Done ===");

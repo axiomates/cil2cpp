@@ -69,8 +69,16 @@ Int64 decrement_i64(Int64* location);
 Int64 exchange_i64(Int64* location, Int64 value);
 Int64 compare_exchange_i64(Int64* location, Int64 value, Int64 comparand);
 
+uint8_t exchange_u8(uint8_t* location, uint8_t value);
+uint8_t compare_exchange_u8(uint8_t* location, uint8_t value, uint8_t comparand);
+
+uint16_t exchange_u16(uint16_t* location, uint16_t value);
+uint16_t compare_exchange_u16(uint16_t* location, uint16_t value, uint16_t comparand);
+
 Object* exchange_obj(Object** location, Object* value);
 Object* compare_exchange_obj(Object** location, Object* value, Object* comparand);
+
+void read_memory_barrier();
 
 } // namespace interlocked
 
