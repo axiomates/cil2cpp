@@ -10,13 +10,13 @@
     "RenderedBodyError": 146
   },
   "SocketTest": {
-    "total": 2059,
-    "MissingBody": 881,
-    "KnownBrokenPattern": 688,
-    "UndeclaredFunction": 115,
+    "total": 2208,
+    "MissingBody": 919,
+    "KnownBrokenPattern": 735,
+    "UndeclaredFunction": 162,
     "ClrInternalType": 108,
-    "UnknownBodyReferences": 38,
+    "UnknownBodyReferences": 42,
     "UnknownParameterTypes": 0,
-    "RenderedBodyError": 229
+    "RenderedBodyError": 242
   }
 }

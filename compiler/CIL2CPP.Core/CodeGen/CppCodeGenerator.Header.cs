@@ -3147,17 +3147,10 @@ public partial class CppCodeGenerator
         if (rendered.Contains("Enum_HasFlag("))
             return "Enum.HasFlag — boxed enum Object* incompatible with value param (C2664)";
 
-        // Delegate invoke with Socket* / typed pointer where Object* expected — C2664
-        // Generated flat structs can't implicitly convert to Object*.
-        if (rendered.Contains("System_Net_Sockets_Socket*") || rendered.Contains("System_Net_Sockets_SocketAsyncEventArgs*"))
-        {
-            foreach (var line in rendered.AsSpan().EnumerateLines())
-            {
-                var s = line.ToString().TrimStart();
-                if (s.Contains("System_Net_Sockets_Socket*") && s.Contains("cil2cpp::Object*"))
-                    return "Socket* passed where Object* expected (C2664)";
-            }
-        }
+        // NOTE: Removed Socket*→Object* gate (was false positive).
+        // Phase III.14 added (void*) intermediate casts for all typed pointer args,
+        // and EmitMethodCall/EmitNewObj use (Type*)(void*) casts, so Socket*→Object*
+        // conversions go through void* and compile correctly in MSVC.
 
         return null;
     }

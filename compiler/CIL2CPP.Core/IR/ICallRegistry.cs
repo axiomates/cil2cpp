@@ -372,6 +372,10 @@ public static class ICallRegistry
             "cil2cpp::icall::RuntimeHelpers_EnsureSufficientExecutionStack");
         RegisterICall("System.Runtime.CompilerServices.RuntimeHelpers", "GetObjectMethodTablePointer", 1,
             "cil2cpp::icall::RuntimeHelpers_GetObjectMethodTablePointer");
+        // ObjectHasComponentSize: CLR checks MethodTable which we don't have.
+        // Our ICall checks TypeInfo flags for Array/String (both have "component size").
+        RegisterICall("System.Runtime.CompilerServices.RuntimeHelpers", "ObjectHasComponentSize", 1,
+            "cil2cpp::icall::RuntimeHelpers_ObjectHasComponentSize");
 
         // ===== System.Text.Unicode.Utf8Utility =====
         // These BCL methods use SIMD intrinsics (SSE2/AVX2) which our codegen can't compile.

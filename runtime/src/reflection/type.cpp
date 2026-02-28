@@ -13,6 +13,10 @@
 #include <unordered_map>
 #include <mutex>
 
+// Generated code defines System_RuntimeType_TypeInfo in global namespace.
+// BCL code expects all Type objects to be RuntimeType instances (object_as checks).
+extern cil2cpp::TypeInfo System_RuntimeType_TypeInfo;
+
 namespace cil2cpp {
 
 // TypeInfo for runtime-provided BCL types (needed for typeof() and GetType())
@@ -100,8 +104,10 @@ Type* type_get_type_object(TypeInfo* info) {
         return it->second;
     }
 
-    // Allocate a new Type object via GC
-    auto* type_obj = static_cast<Type*>(gc::alloc(sizeof(Type), &System_Type_TypeInfo));
+    // Allocate as RuntimeType — BCL code (Type.op_Equality etc.) expects all Type objects
+    // to be RuntimeType instances (checks via object_as(obj, &System_RuntimeType_TypeInfo)).
+    // System_RuntimeType_TypeInfo is defined in generated code with full vtable (136+ methods).
+    auto* type_obj = static_cast<Type*>(gc::alloc(sizeof(Type), &::System_RuntimeType_TypeInfo));
     type_obj->type_info = info;
 
     g_type_cache[info] = type_obj;

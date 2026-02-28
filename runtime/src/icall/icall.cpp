@@ -398,6 +398,22 @@ void* RuntimeHelpers_GetObjectMethodTablePointer(Object* obj) {
     return const_cast<TypeInfo*>(obj->__type_info);
 }
 
+Boolean RuntimeHelpers_ObjectHasComponentSize(Object* obj) {
+    // In CLR, arrays and strings have "component size" > 0 in MethodTable.
+    // We don't have MethodTable — detect arrays and strings structurally.
+    if (!obj || !obj->__type_info) return 0;
+    // Strings: __type_info points to System.String TypeInfo
+    if (obj->__type_info->full_name &&
+        std::strcmp(obj->__type_info->full_name, "System.String") == 0) return 1;
+    // Arrays: alloc_array sets both __type_info and element_type to the same
+    // element TypeInfo pointer. Check the Array struct pattern:
+    // Array { __type_info, __sync_block, element_type, length, data... }
+    // If element_type (offset 16) == __type_info (offset 0), it's an array.
+    auto* as_arr = reinterpret_cast<Array*>(obj);
+    if (as_arr->element_type == obj->__type_info && as_arr->length >= 0) return 1;
+    return 0;
+}
+
 void RuntimeHelpers_InitializeArray(Object* array, void* fieldHandle) {
     // This is typically handled by the compiler via InitializeArray intrinsic,
     // but when called as an icall, we copy the data directly.

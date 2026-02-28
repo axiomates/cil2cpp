@@ -962,8 +962,8 @@ def cmd_integration(args):
             raise RuntimeError(f"SocketTest output missing '=== Done ==='\n{out}")
         if "Socket Create: OK" not in out:
             raise RuntimeError(f"SocketTest: Socket Create failed\n{out}")
-        if "Socket Close: OK" not in out:
-            raise RuntimeError(f"SocketTest: Socket Close failed\n{out}")
+        if "Recv: Hello Socket" not in out:
+            raise RuntimeError(f"SocketTest: TCP send/recv failed\n{out}")
 
     runner.step("Codegen SocketTest", sk_codegen)
     runner.step("Generated files exist", sk_files_exist)

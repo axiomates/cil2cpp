@@ -165,6 +165,7 @@ void RuntimeHelpers_InitializeArray(Object* array, void* fieldHandle);
 Boolean RuntimeHelpers_TryEnsureSufficientExecutionStack();
 void RuntimeHelpers_EnsureSufficientExecutionStack();
 void* RuntimeHelpers_GetObjectMethodTablePointer(Object* obj);
+Boolean RuntimeHelpers_ObjectHasComponentSize(Object* obj);
 
 // System.Runtime.InteropServices.GCHandle
 intptr_t GCHandle_InternalAlloc(void* obj, Int32 type);
