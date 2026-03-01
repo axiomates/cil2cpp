@@ -1,6 +1,6 @@
 # 开发路线图
 
-> 最后更新：2026-03-01
+> 最后更新：2026-03-02
 >
 > [English Version](roadmap.md)
 
@@ -12,13 +12,62 @@
 
 以 Unity IL2CPP 为参考架构，但不盲目照搬——IL2CPP 使用 Mono BCL（依赖链远比 .NET 8 简单），且其源码来自社区反编译（可能不完整）。我们基于 .NET 8 BCL 的实际依赖链做第一性原理分析。
 
-### 四条准则
+### 六条准则
 
 1. **IL 优先**：一切可以从 BCL IL 编译的内容都应该编译——包括 FileStream、Socket、HttpClient、JSON 等。这些 BCL 类型有完整 IL 实现，最终通过 P/Invoke 调用 OS API。**提升能力的方式是修复编译器 bug 让 BCL IL 编译通，而不是用 ICall 重新实现功能。**
 2. **ICall 是桥梁**：C++ runtime 仅通过 ICall 暴露底层原语（Monitor、Thread、Interlocked、GC），BCL IL 调用这些原语。**不为高层 BCL 功能写 ICall 替代实现。**
 3. **编译器质量驱动**：提升 IL 转译率的方式是修复编译器 bug，而不是添加 RuntimeProvided 类型
 4. **第一性原理判断**：每个 RuntimeProvided 类型必须有明确技术理由（runtime 直接访问字段 / BCL IL 引用 CLR 内部类型 / 嵌入 C++ 类型）
 5. **原生库集成**：.NET BCL 通过 P/Invoke 调用平台原生库（kernel32、ws2_32、System.Native、OpenSSL 等）。CIL2CPP 集成这些库（类似 BoehmGC/ICU 的 FetchContent 模式），让 BCL P/Invoke 自然链接，而非用 ICall 绕过。
+6. **Windows 优先，跨平台就绪**：主要开发目标为 Windows (x64)。平台抽象宏和条件分支从一开始就编写以便未来跨平台支持，但 Linux/macOS/32 位推迟到核心目标完成后。
+
+### 目标分类
+
+#### 必须实现（核心 NativeAOT 兼容性，Windows x64）
+
+CIL2CPP 能声称"可编译 .NET NativeAOT 项目"之前必须完成：
+
+| 目标 | 阶段 | 说明 |
+|------|------|------|
+| 完整 HTTP GET | C.6 | `HttpClient.GetStringAsync("http://...")` 异步请求/响应链 |
+| NativeAOT 元数据 | D | `[DynamicallyAccessedMembers]`、ILLink feature switch、NuGet 包验证 |
+| JSON 序列化 (SG) | D.5 | System.Text.Json source generator 路径编译并运行 |
+| MarshalAs P/Invoke | C.7 | `[MarshalAs]`、`[Out]`/`[In]`、数组编组 — NuGet 生态需要 |
+| SChannel TLS (Windows) | E.win | 通过 `secur32.dll`/`schannel.dll` P/Invoke 实现 HTTPS（OS 自带，无需 FetchContent） |
+| 压缩 | E.2 | 通过 System.IO.Compression.Native 的 zlib |
+| RenderedBodyError → 0 | H.2 | 修复所有 codegen bug（当前 116 个 RE stubs） |
+| SIMD 标量完善 | F.1 | 消除 333 个 SIMD stubs（完整标量回退路径） |
+| 10 个 NuGet 包验证 | G.2 | 证明真实包可编译和运行 |
+
+#### 待定（必须实现完成后）
+
+仅在核心 Windows NativeAOT 兼容性达成后才开始。平台抽象代码（宏、`#ifdef`、分支脚手架）现在就写好以便后续启用。
+
+| 目标 | 阶段 | 说明 |
+|------|------|------|
+| Linux 支持 (System.Native) | B.5 | 从 dotnet/runtime 提取 ~30 .c 文件，FetchContent 编译 |
+| macOS 支持 | — | System.Native + Objective-C 桥接平台 API |
+| OpenSSL TLS (Linux) | E.linux | FetchContent + 链接 OpenSSL 实现 Linux HTTPS |
+| 32 位目标 (ARM/x86) | — | IRBuilder.Types.cs 中的指针大小假设、TypeInfo 布局 |
+| Task struct 重构 | F.2 | 降低 RuntimeProvided 32→25（内部质量，无用户可感知影响） |
+| 增量编译 | F.3 | IR/codegen 缓存（性能优化） |
+| 完整反射模型 | F.4 | QCall 替代方案评估 |
+
+#### 架构上不可能（AOT 不兼容）
+
+这些 .NET 特性与 AOT 编译根本不兼容，**永远不会**支持：
+
+| 特性 | 原因 |
+|------|------|
+| `Assembly.Load` / 动态程序集加载 | 需要 JIT 在运行时编译新 IL |
+| `Reflection.Emit` / 动态代码生成 | 在运行时创建新类型/方法 — 无 C++ 等价物 |
+| `DynamicMethod` / 表达式树编译 | 动态生成 IL，需要 JIT |
+| 分层 JIT 编译 / ReadyToRun | JIT 专用的运行时优化 |
+| `Type.MakeGenericType` + 运行时类型 | AOT 无法单态化编译时未知的类型 |
+| 动态 COM 互操作 (`IDispatch`) | 需要运行时类型发现 |
+| QCall / CLR 内部类型 | CLR JIT 专用桥接（QCallTypeHandle、MetadataImport、MethodTable）— 永久保留为 stub（96 个） |
+
+> **注意**：使用这些特性的库（gRPC 动态代理、部分 ORM 如 Dapper 的动态查询、基于 Reflection.Emit 的序列化器）无法支持。应使用 source generator 等价方案（gRPC code-first、System.Text.Json SG）替代。
 
 ---
 
@@ -111,16 +160,33 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 - **P/Invoke 完整**：声明生成 + 调用约定 + CharSet 编组，kernel32/user32 等 OS API 可直接调用
 - **100% IL 操作码覆盖**：所有 ~230 ECMA-335 操作码已实现
 
-### 距离最终目标
+### 距离最终目标（Windows x64）
 
-| 项目类型 | 预估完成度 | 阻塞项 |
-|---------|-----------|--------|
-| 简单控制台应用 | ~95% | 基本 BCL 链通畅，95.2% 翻译率 |
-| 类库项目 | ~85% | 集合、泛型、异步、反射都可用 |
-| 文件 I/O 应用 | ~85% | FileStream/StreamReader BCL IL 链端到端可用（Windows ✅），Linux 待 System.Native |
-| 网络应用 | ~40% | Socket ✅（TCP 环回）、DNS ✅、HttpClient 构造 ✅；完整 HTTP GET + Linux 待做 |
-| 生产级应用 | ~5% | 需要 TLS + JSON + DI 等完整 BCL 链 |
-| 任意 NativeAOT .csproj | ~35% | 编译器成熟（1,565 stubs）但原生库集成 + NativeAOT 元数据待做 |
+| 项目类型 | 预估完成度 | 关键阻塞项 |
+|---------|-----------|-----------|
+| 简单控制台应用 | ~92% | 反射 stub 可能导致运行时意外 |
+| 类库项目 | ~78% | `[DynamicallyAccessedMembers]` 未解析 — tree-shaking 会误删 NuGet 包需要的类型 |
+| 文件 I/O 应用 | ~80% | File.ReadAllBytes 挂起 (B.6)；File ICall 编码缺口 |
+| 网络应用 | ~30% | HTTP GET 待做 (C.6)；HTTPS 需 TLS (Phase E.win) |
+| REST 客户端 (HTTP+JSON) | ~15% | 需 C.6 + Phase D（元数据）+ JSON SG 验证 |
+| 生产级应用 | ~3% | 需 TLS + JSON + DI — 全都需要 Phase D 先行 |
+| 任意 NativeAOT .csproj | **~25%** | NuGet 包未测试、无 `[DynamicallyAccessedMembers]`、无 `[MarshalAs]`、116 个 RE codegen bug |
+
+> **Linux/macOS**：待定。以上百分比仅限 Windows。Linux 需要 System.Native 集成 (Phase B.5, 待定) + OpenSSL (Phase E.linux, 待定)。当前 Linux 支持：~5%（仅控制台，无文件 I/O 或网络）。
+
+**什么能提升百分比**（累积，Windows）：
+- **25%→40%**：Phase D.1+D.3（DynamicallyAccessedMembers + ILLink 开关）+ NuGet 包验证 — **最大单次跳跃**
+- **40%→55%**：Phase C.6（HTTP GET）+ RenderedBodyError 消减 + MarshalAs P/Invoke
+- **55%→75%**：Phase E.win（SChannel TLS）+ JSON via SG + SIMD 标量完善
+- **75%→90%**：10 个 NuGet 包验证 + 综合测试
+- **90%→95%**：边界用例修复 + 打磨
+
+**零支持缺口**（代码库审计确认）：
+- `[DynamicallyAccessedMembers]` — 编译器中零引用；ReachabilityAnalyzer 无属性感知
+- ILLink feature switches — 零引用；`IsDynamicCodeSupported` 等未替换
+- `[MarshalAs]` 属性 — CodeGen 中零引用；NuGet 原生互操作包需要
+- NuGet PackageReference — 零测试项目；解析路径完全未测试
+- Source generator 输出 — 从未用真实 SG 包（System.Text.Json）验证过
 
 ---
 
@@ -236,7 +302,7 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 | B.2 | 修复链中遇到的 stubs | 高 | ✅ | KBP Pattern 8 修复（-376 stubs）、Buffer.Memmove sizeof 修复、SafeFileHandle/ThreadPool/ASCII ICalls |
 | B.3 | SpanHelpers 标量搜索拦截 | 中 | ✅ | BCL SIMD 分支 → AOT 标量模板（IndexOfAny/IndexOf/LastIndexOf/IndexOfAnyExcept） |
 | B.4 | 端到端 FileStreamTest | 低 | ✅ | FileStream Write/Read、StreamWriter、StreamReader.ReadLine — 全部通过（Windows） |
-| B.5 | System.Native 原生库集成（Linux） | 中 | 待定 | 类似 BoehmGC/ICU：从 dotnet/runtime 提取 ~30 .c 文件，FetchContent 编译 |
+| B.5 | System.Native 原生库集成（Linux） | 中 | **待定** | 类似 BoehmGC/ICU：从 dotnet/runtime 提取 ~30 .c 文件，FetchContent 编译。*推迟到必须实现目标完成后。* |
 | B.6 | 移除 File.ReadAllText/WriteAllText ICall 绕过 | 低 | 阻塞 | HACK 清理：File.ReadAllText 可通过 BCL IL 工作，但 File.ReadAllBytes 挂起（FileStream.Read(byte[]) 代码路径有 bug）。需修复后再移除。 |
 | B.7 | 集成测试套件 + baselines | 低 | ✅ | FileStreamTest 加入集成测试（Phase 9，39/39 通过）+ UF/RE stub 减少（-94） |
 
@@ -249,9 +315,7 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 
 **策略**：同 Phase B — 追踪 BCL IL 链，修中断点。
 
-**平台差异**：
-- **Windows**：Socket → P/Invoke to **ws2_32.dll** (Winsock2)
-- **Linux**：Socket → P/Invoke to **System.Native**（Phase B.3 已集成）
+**平台**：Windows → P/Invoke to **ws2_32.dll** (Winsock2)。Linux 待定（需 System.Native，Phase B.5）。
 
 | # | 任务 | 预估 | 状态 | 说明 |
 |---|------|------|------|------|
@@ -273,47 +337,69 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 
 | # | 任务 | 优先级 | 状态 | 说明 |
 |---|------|--------|------|------|
-| H.1 | TypeCode ICall 修复 | 高 | 待定 | TypeInfo 名称映射到 TypeCode 枚举（~20 条目）。修复 `Convert.*`、`String.Format`、序列化器类型判断 |
+| H.1 | TypeCode ICall 修复 | 高 | ✅ | TypeInfo 名称映射到 TypeCode 枚举（17 种原始类型）。修复 `Convert.*`、`String.Format`、序列化器类型判断 |
 | H.2 | RenderedBodyError 消减 | 高 | 待定 | 修复 Header.cs 中 7 个 FIXME gate pattern（116 → 目标 50 RE stubs） |
 | H.3 | 移除 File ICall 绕过（B.6） | 高 | 阻塞 | 调试 `FileStream.Read(byte[])` 挂起问题，然后删除 12 个 File ICall。BCL IL 通过 StreamReader 正确处理所有编码 |
-| H.4 | 平台兼容性文档 | 中 | 待定 | 支持矩阵 + 承诺等级：完整 / 功能性 / 占位 / 未实现 |
-| H.5 | 反射状态文档 | 中 | 待定 | 全部 23 个反射 ICall 的"期望行为 vs 实际行为"表 + 完整修复的前置阶段 |
+| H.4 | 平台兼容性文档 | 中 | ✅ | 支持矩阵 + 承诺等级：完整 / 功能性 / 占位 / 未实现 |
+| H.5 | 反射状态文档 | 中 | ✅ | 全部 23 个反射 ICall 的"期望行为 vs 实际行为"表 + 完整修复的前置阶段 |
 | H.6 | Codegen bug 最小复现测试 | 低 | 待定 | 每个 FIXME gate pattern 对应一个最小 C# 测试用例（回归锚点） |
 
 **前置**：无（并行运行）
 **产出**：行为边界文档化、减少静默降级风险、RenderedBodyError 消减
 
-### Phase D: NativeAOT 元数据（可与 Phase C 并行）
+### Phase D: NativeAOT 元数据 & 生态验证（立即启动 — 与 C.6 并行）
 
-**目标**：支持修剪注解，让反射型库正常工作
+**目标**：支持修剪注解 + 验证 NuGet 生态 — **这是迈向"编译任意 NativeAOT 项目"的最大单次跳跃**
 
-| # | 任务 | 预估 | 说明 |
-|---|------|------|------|
-| D.1 | `[DynamicallyAccessedMembers]` 解析 | 中 | ReachabilityAnalyzer 读取自定义属性，保留标注成员 |
-| D.2 | rd.xml 解析器 | 低 | XML 格式保留规则 |
-| D.3 | ILLink feature switch 替换 | 中 | 编译期常量 (`IsDynamicCodeSupported = false`) |
-| D.4 | AOT 兼容性警告 | 低 | 报告 `[RequiresUnreferencedCode]` 调用链 |
+**为什么 D 现在就是关键**：没有 `[DynamicallyAccessedMembers]` 支持，ReachabilityAnalyzer 会静默 tree-shake 掉 NuGet 包运行时需要的类型。没有 ILLink feature switch，System.Text.Json source generator 路径不会激活。每个有 NuGet 依赖的项目都会遇到这些问题。D 解锁整个 NuGet 生态；C.6 仅解锁 HTTP。
 
-**前置**：无
-**产出**：DI + JSON (SG) + Logging 可编译
+| # | 任务 | 预估 | 状态 | 说明 |
+|---|------|------|------|------|
+| D.0 | NuGet 包集成测试 | 中 | 待定 | 创建带真实 PackageReference 的测试项目（Newtonsoft.Json、M.E.Logging.Abstractions）。验证 NuGet → Cecil → IR → C++ 管道。当前 NuGet 测试覆盖为零。 |
+| D.1 | `[DynamicallyAccessedMembers]` 解析 | 中 | 待定 | ReachabilityAnalyzer 读取自定义属性（Cecil CustomAttributes API），在 tree-shaking 时保留标注成员。文件：`ReachabilityAnalyzer.cs` |
+| D.2 | rd.xml 解析器 | 低 | 待定 | XML 格式保留规则 |
+| D.3 | ILLink feature switch 替换 | 中 | 待定 | 编译期常量（`IsDynamicCodeSupported = false`、`IsReflectionEnabledByDefault = false` 等 ~15-20 个已知开关）。启用 System.Text.Json SG 代码路径激活。 |
+| D.4 | AOT 兼容性警告 | 低 | 待定 | 报告 `[RequiresUnreferencedCode]` 调用链 |
+| D.5 | Source generator 验证 | 中 | 待定 | 带 `[JsonSerializable]` 属性的测试项目 — 验证 System.Text.Json SG 输出能通过 CIL2CPP 编译。当前声称可行但从未测试。 |
+
+**前置**：无（可与 C.6 并行）
+**产出**：DI + JSON (SG) + Logging 可编译；NuGet 包在 tree-shaking 下正确工作
+
+### Phase C.7: P/Invoke 编组完善（C.6 之后）
+
+**目标**：`[MarshalAs]` + `[Out]` + 数组编组，支持 NuGet 生态和 System.Native
+
+**为什么需要**：P/Invoke 已有 CharSet/CallingConvention/SetLastError，但 `[MarshalAs]` 属性完全未处理（CodeGen 中零引用）。System.Native 的 P/Invoke 声明大量使用 `[MarshalAs(UnmanagedType.LPStr)]`。许多有原生互操作的 NuGet 包也需要。这是 Phase B.5（Linux）和广泛 NuGet 兼容性的前置条件。
+
+| # | 任务 | 预估 | 状态 | 说明 |
+|---|------|------|------|------|
+| C.7.1 | `[MarshalAs]` 属性解析 | 中 | 待定 | 从 Cecil ParameterDefinition/FieldDefinition 读取 MarshalAs，生成正确的 C++ 类型转换（LPStr→char*、LPWStr→wchar_t*、Bool→int 等） |
+| C.7.2 | `[Out]`/`[In]` 参数方向 | 低 | 待定 | 区分参数方向，实现正确的回写语义 |
+| C.7.3 | 数组编组 | 中 | 待定 | struct 中固定大小数组、`[MarshalAs(UnmanagedType.LPArray)]` 带 SizeParamIndex |
+
+**前置**：Phase C ✅
+**产出**：P/Invoke 兼容 System.Native 声明和 NuGet 原生互操作包
 
 ### Phase E: 原生库集成 — TLS/zlib（仅链接，不重写）
 
 **目标**：HTTPS + Compression
 
 **注意**：.NET BCL 的 TLS/zlib 有完整 IL，通过 P/Invoke 调用 .NET 专属原生库（与 System.Native 同模式，均从 [dotnet/runtime](https://github.com/dotnet/runtime) 提取）：
-- TLS → `System.Security.Cryptography.Native.OpenSsl`（Linux）/ SChannel（Windows，kernel32 P/Invoke）
+- TLS → SChannel（Windows，`secur32.dll`/`schannel.dll` P/Invoke — **无需 FetchContent**）/ `System.Security.Cryptography.Native.OpenSsl`（Linux）
 - zlib → `System.IO.Compression.Native`（.NET 的 zlib 封装）
+
+**平台策略**：Windows TLS 使用 SChannel（OS 自带，与 kernel32/ws2_32 同模式）。Linux TLS 使用 OpenSSL（需 FetchContent）。拆分 E.win/E.linux 以更早交付 Windows HTTPS。
 
 | # | 任务 | 预估 | 说明 |
 |---|------|------|------|
-| E.1 | System.Security.Cryptography.Native 集成 | 高 | 从 dotnet/runtime 提取，链接 OpenSSL (Linux) / SChannel (Win) |
+| E.win | SChannel TLS（Windows） | 中 | SslStream → P/Invoke to `secur32.dll`/`schannel.dll`。Windows 自带 — 无需 FetchContent，与 ws2_32 同模式。 |
+| E.linux | OpenSSL TLS（Linux） | 高 | **待定。**从 dotnet/runtime 提取 `System.Security.Cryptography.Native.OpenSsl`，FetchContent + 链接 OpenSSL |
 | E.2 | System.IO.Compression.Native 集成 | 低 | 从 dotnet/runtime 提取，内嵌 zlib |
 | E.3 | 移出 InternalPInvokeModules 对应项 | 低 | 让 BCL P/Invoke 声明正常生成 |
 | E.4 | Regex 解释器 BCL IL 验证 | 中 | 非 Compiled 模式不依赖 Reflection.Emit |
 | E.5 | 端到端测试 | 低 | HTTPS GET + JSON 反序列化 |
 
-**前置**：Phase C (TLS 需要 Socket) + Phase D (JSON 需要元数据感知)
+**前置**：Phase C (TLS 需要 Socket) + Phase D (JSON 需要元数据感知) + Phase C.7 (MarshalAs 原生库 P/Invoke 需要)
 **产出**：`HttpClient.GetStringAsync("https://...")` + `JsonSerializer.Deserialize<T>()` 可用
 
 ### Phase F: 性能 & 高级
@@ -322,10 +408,10 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 
 | # | 任务 | 预估 | 说明 |
 |---|------|------|------|
-| F.1 | SIMD 标量回退路径完善 | 高 | 消除 333 SIMD stubs |
-| F.2 | Task struct 重构（原 Phase V.2-V.5） | 高 | 降低 RuntimeProvided 32→25 |
-| F.3 | 增量编译 | 中 | IR/codegen 缓存 |
-| F.4 | 反射模型评估（原 Phase VI） | 中 | 评估 QCall 替代方案 |
+| F.1 | SIMD 标量回退路径完善 | 高 | **必须实现。**消除 333 SIMD stubs — 很多 BCL 热路径依赖这些 |
+| F.2 | Task struct 重构（原 Phase V.2-V.5） | 高 | **待定。**降低 RuntimeProvided 32→25（内部质量，无用户可感知影响） |
+| F.3 | 增量编译 | 中 | **待定。**IR/codegen 缓存（性能优化） |
+| F.4 | 反射模型评估（原 Phase VI） | 中 | **待定。**评估 QCall 替代方案 |
 
 **前置**：Phase A-E 核心功能完成
 **产出**：翻译率 > 95%
@@ -345,38 +431,52 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 
 ## 依赖关系图
 
+### 必须实现（Windows x64）
+
 ```
-Phase I   (基础打通) ✅
-Phase II  (中间层解锁) ✅
-Phase III (编译器管道质量) ✅ — 4,402→2,860, -35.1%, 88.8%
-Phase IV  (可行类型→IL) 40→32 ✅
-Phase V.1 (Task 依赖分析) ✅
+Phase I-IV ✅  →  Phase A ✅  →  Phase B ✅ (Windows)
        ↓
-Phase A (编译器收尾 — 修 stubs 根因) ✅ — 2,777→1,478, -46.8%, 95.2%
-       ↓
-Phase B (FileStream BCL IL 链验证) ✅ — Windows 完成, B.5/B.6 待定
-       ↓
-Phase C (Socket/HTTP BCL IL 链) — C.1-C.5 ✅, C.6 待定  ←→  Phase D (NativeAOT 元数据)  [可并行]
-       ↓          Phase H (质量收敛) — 并行                ↓
-            Phase E (原生库链接: TLS/zlib)  [汇合]
-                 ↓
-            Phase F (性能: SIMD/Task重构/反射)
-                 ↓
-            Phase G (产品化: CI/CD/验证)
+   ┌── Phase C.6 (完整 HTTP GET) ──────────────┐
+   │      ↓                                     │ ← 并行
+   │   Phase C.7 (MarshalAs P/Invoke)          Phase D (NativeAOT 元数据 + NuGet 生态)
+   │      ↓                                     │    D.0 NuGet 验证
+   │   Phase E.win (SChannel TLS)               │    D.1 [DynamicallyAccessedMembers]
+   │      ↓                                     │    D.3 ILLink feature switch
+   │   Phase E.2 (zlib 压缩)                    │    D.5 Source generator 验证
+   │      ↓                                     │
+   └──────┴─────── 汇合 ───────────────────────┘
+                        ↓
+              Phase H.2 (RenderedBodyError → 0) — 持续进行
+              Phase F.1 (SIMD 标量完善)
+                        ↓
+              Phase G (产品化: CI/CD + 10 NuGet 包验证)
+```
+
+### 待定（必须实现完成后）
+
+```
+Phase B.5  (System.Native — Linux/macOS I/O + 网络)
+Phase E.linux (OpenSSL TLS — Linux HTTPS)
+Phase F.2  (Task struct 重构 — 内部质量)
+Phase F.3  (增量编译 — 性能)
+Phase F.4  (完整反射模型 — QCall 替代)
+32 位目标 (ARM/x86 指针大小)
+macOS 支持 (Objective-C 桥接)
 ```
 
 ---
 
 ## 里程碑
 
-| 里程碑 | 达成条件 | 对应阶段 |
-|--------|---------|---------|
-| **M1: 编译器成熟** | stubs < 2,000，翻译率 > 92% | A ✅（1,478 stubs, 95.2%） |
-| **M2: 文件 I/O** | FileStream/StreamReader 从 BCL IL 编译并运行 | B（~90%，Windows ✅） |
-| **M3: 联网应用** | HttpClient HTTP GET 从 BCL IL 编译并运行 | C（~60%：Socket+DNS+构造 ✅，完整 GET 待做） |
-| **M4: 库生态** | DI + JSON (SG) + Logging 可编译 | D |
-| **M5: 生产级** | HTTPS + Compression | E |
-| **M6: 发布** | CI/CD + 10 真实包验证 | G |
+| 里程碑 | 达成条件 | 对应阶段 | 状态 |
+|--------|---------|---------|------|
+| **M1: 编译器成熟** | stubs < 2,000，翻译率 > 92% | A | ✅（1,478 stubs, 95.2%） |
+| **M2: 文件 I/O** | FileStream/StreamReader 从 BCL IL 编译并运行 | B | ✅ Windows（~90%） |
+| **M3: 联网应用** | HttpClient HTTP GET 从 BCL IL 编译并运行 | C.6 | ~60%：Socket+DNS+构造 ✅，完整 GET 待做 |
+| **M3.5: REST 客户端** | HTTP GET + `JsonSerializer.Deserialize<T>()`（via SG）端到端 | C.6+D | 阻塞 — 需 C.6 + D.1 + D.3 + D.5 |
+| **M4: 库生态** | 3+ NuGet PackageReference 项目编译并运行 | D | 未开始 |
+| **M5: 生产级** | HTTPS + Compression | E | 未开始 |
+| **M6: 发布** | CI/CD + 10 真实 NuGet 包验证 | G | 未开始 |
 
 ## 指标定义
 

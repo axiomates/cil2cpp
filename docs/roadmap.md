@@ -1,6 +1,6 @@
 # Development Roadmap
 
-> Last updated: 2026-03-01
+> Last updated: 2026-03-02
 >
 > [中文版 (Chinese)](roadmap.zh-CN.md)
 
@@ -12,13 +12,62 @@
 
 Using Unity IL2CPP as a reference architecture, but not blindly copying — IL2CPP uses Mono BCL (with far simpler dependency chains than .NET 8), and its source comes from community decompilation (may be incomplete). We perform first-principles analysis based on .NET 8 BCL's actual dependency chains.
 
-### Five Guidelines
+### Six Guidelines
 
 1. **IL-first**: Everything that can be compiled from BCL IL should be compiled — including FileStream, Socket, HttpClient, JSON, etc. These BCL types have complete IL implementations and ultimately call OS APIs via P/Invoke. **The way to improve capability is to fix compiler bugs to let BCL IL compile, not to reimplement functionality with ICalls.**
 2. **ICall as bridge**: C++ runtime only exposes low-level primitives via ICall (Monitor, Thread, Interlocked, GC); BCL IL calls these primitives. **Don't write ICall replacements for high-level BCL functionality.**
 3. **Compiler quality-driven**: The way to improve IL translation rate is to fix compiler bugs, not add RuntimeProvided types
 4. **First-principles judgment**: Every RuntimeProvided type must have a clear technical reason (runtime directly accesses fields / BCL IL references CLR internal types / embeds C++ types)
 5. **Native library integration**: .NET BCL calls platform native libraries via P/Invoke (kernel32, ws2_32, System.Native, OpenSSL, etc.). CIL2CPP integrates these libraries (similar to BoehmGC/ICU FetchContent pattern), letting BCL P/Invoke link naturally rather than bypassing with ICalls.
+6. **Windows-first, cross-platform ready**: Primary development targets Windows (x64). Platform abstraction macros and conditional branches are written from the start to facilitate future cross-platform support, but Linux/macOS/32-bit are deferred until core goals are met.
+
+### Goal Classification
+
+#### Must-Implement (Core NativeAOT compatibility, Windows x64)
+
+These are required before CIL2CPP can claim "compiles .NET NativeAOT projects":
+
+| Goal | Phase | Description |
+|------|-------|-------------|
+| Full HTTP GET | C.6 | `HttpClient.GetStringAsync("http://...")` async request/response chain |
+| NativeAOT metadata | D | `[DynamicallyAccessedMembers]`, ILLink feature switches, NuGet package validation |
+| JSON serialization (SG) | D.5 | System.Text.Json source generator path compiles and runs |
+| MarshalAs P/Invoke | C.7 | `[MarshalAs]`, `[Out]`/`[In]`, array marshaling — needed by NuGet ecosystem |
+| SChannel TLS (Windows) | E.win | HTTPS via `secur32.dll`/`schannel.dll` P/Invoke (OS-provided, no FetchContent) |
+| Compression | E.2 | zlib via System.IO.Compression.Native |
+| RenderedBodyError → 0 | H.2 | Fix all codegen bugs (currently 116 RE stubs) |
+| SIMD scalar completion | F.1 | Eliminate 333 SIMD stubs via complete scalar fallback paths |
+| 10 NuGet package validation | G.2 | Prove real-world packages compile and run |
+
+#### Deferred (after Must-Implement is complete)
+
+Only begin after core Windows NativeAOT compatibility is achieved. Platform abstraction code (macros, `#ifdef`, branch scaffolding) is written NOW to enable these later.
+
+| Goal | Phase | Description |
+|------|-------|-------------|
+| Linux support (System.Native) | B.5 | Extract ~30 .c files from dotnet/runtime, FetchContent compile |
+| macOS support | — | System.Native + Objective-C bridge for platform APIs |
+| OpenSSL TLS (Linux) | E.linux | FetchContent + link OpenSSL for Linux HTTPS |
+| 32-bit targets (ARM/x86) | — | Pointer size assumptions in IRBuilder.Types.cs, TypeInfo layout |
+| Task struct refactoring | F.2 | Reduce RuntimeProvided 32→25 (internal quality, no user-facing impact) |
+| Incremental compilation | F.3 | IR/codegen caching (performance optimization) |
+| Full reflection model | F.4 | QCall alternatives for reflection metadata |
+
+#### Architecturally Impossible (AOT-incompatible)
+
+These .NET features are fundamentally incompatible with AOT compilation and will **never** be supported:
+
+| Feature | Reason |
+|---------|--------|
+| `Assembly.Load` / dynamic assembly loading | Requires JIT to compile new IL at runtime |
+| `Reflection.Emit` / dynamic code generation | Creates new types/methods at runtime — no C++ equivalent |
+| `DynamicMethod` / expression tree compilation | Generates IL dynamically, requires JIT |
+| Tiered JIT compilation / ReadyToRun | JIT-specific runtime optimization |
+| `Type.MakeGenericType` with runtime types | AOT cannot monomorphize types unknown at compile time |
+| Dynamic COM interop (`IDispatch`) | Requires runtime type discovery |
+| QCall / CLR internal types | CLR JIT-specific bridges (QCallTypeHandle, MetadataImport, MethodTable) — permanently retained as stubs (96 stubs) |
+
+> **Note**: Libraries that use these features (gRPC dynamic proxies, some ORMs like Dapper's dynamic queries, Reflection.Emit-based serializers) cannot be supported. Source-generator equivalents (gRPC code-first, System.Text.Json SG) should be used instead.
 
 ---
 
@@ -111,16 +160,33 @@ See "RuntimeProvided Type Classification" section above.
 - **P/Invoke complete**: Declaration generation + calling conventions + CharSet marshaling; OS APIs like kernel32/user32 can be called directly
 - **100% IL opcode coverage**: All ~230 ECMA-335 opcodes implemented
 
-### Distance to Final Goal
+### Distance to Final Goal (Windows x64)
 
-| Project Type | Est. Completion | Blockers |
-|-------------|----------------|----------|
-| Simple console apps | ~95% | Basic BCL chain works, 95.2% translation rate |
-| Library projects | ~85% | Collections, generics, async, reflection all available |
-| File I/O apps | ~85% | FileStream/StreamReader BCL IL chain end-to-end (Windows ✅), Linux pending System.Native |
-| Network apps | ~40% | Socket ✅ (TCP loopback), DNS ✅, HttpClient construction ✅; full HTTP GET + Linux pending |
-| Production-grade apps | ~5% | Needs TLS + JSON + DI etc. complete BCL chains |
-| Arbitrary NativeAOT .csproj | ~35% | Compiler mature (1,565 stubs) but native lib integration + NativeAOT metadata pending |
+| Project Type | Est. Completion | Key Blockers |
+|-------------|----------------|-------------|
+| Simple console apps | ~92% | Reflection stubs may cause runtime surprises |
+| Library projects | ~78% | `[DynamicallyAccessedMembers]` not parsed — tree-shaking breaks NuGet packages |
+| File I/O apps | ~80% | File.ReadAllBytes hangs (B.6); encoding gaps in File ICalls |
+| Network apps | ~30% | HTTP GET pending (C.6); HTTPS needs TLS (Phase E.win) |
+| REST client (HTTP+JSON) | ~15% | Needs C.6 + Phase D (metadata) + JSON SG validation |
+| Production-grade apps | ~3% | Needs TLS + JSON + DI — all require Phase D first |
+| Arbitrary NativeAOT .csproj | **~25%** | NuGet packages untested, no `[DynamicallyAccessedMembers]`, no `[MarshalAs]`, 116 RE codegen bugs |
+
+> **Linux/macOS**: Deferred. All percentages above are Windows-only. Linux requires System.Native integration (Phase B.5, deferred) + OpenSSL (Phase E.linux, deferred). Current Linux support: ~5% (console-only, no file I/O or networking).
+
+**What moves the needle** (cumulative, Windows):
+- **25%→40%**: Phase D.1+D.3 (DynamicallyAccessedMembers + ILLink switches) + NuGet package validation — **single biggest jump**
+- **40%→55%**: Phase C.6 (HTTP GET) + RenderedBodyError reduction + MarshalAs P/Invoke
+- **55%→75%**: Phase E.win (SChannel TLS) + JSON via SG + SIMD scalar completion
+- **75%→90%**: 10 NuGet package validation + comprehensive testing
+- **90%→95%**: Edge case fixes + polish
+
+**Zero support gaps** (confirmed by codebase audit):
+- `[DynamicallyAccessedMembers]` — zero references in compiler; ReachabilityAnalyzer has no attribute awareness
+- ILLink feature switches — zero references; `IsDynamicCodeSupported` etc. not substituted
+- `[MarshalAs]` attribute — zero references in CodeGen; needed by NuGet packages with native interop
+- NuGet PackageReference — zero test projects; resolution path completely untested
+- Source generator output — never validated with a real SG package (System.Text.Json)
 
 ---
 
@@ -237,7 +303,7 @@ See "RuntimeProvided Type Classification" section above.
 | B.2 | Fix stubs found in chain | High | ✅ | KBP Pattern 8 fix (-376 stubs), Buffer.Memmove sizeof fix, SafeFileHandle/ThreadPool/ASCII ICalls |
 | B.3 | SpanHelpers scalar search interception | Medium | ✅ | BCL SIMD branches → AOT scalar templates (IndexOfAny/IndexOf/LastIndexOf/IndexOfAnyExcept) |
 | B.4 | End-to-end FileStreamTest | Low | ✅ | FileStream Write/Read, StreamWriter, StreamReader.ReadLine — all pass (Windows) |
-| B.5 | System.Native native library integration (Linux) | Medium | Pending | Like BoehmGC/ICU: extract ~30 .c files from dotnet/runtime, FetchContent compile |
+| B.5 | System.Native native library integration (Linux) | Medium | **Deferred** | Like BoehmGC/ICU: extract ~30 .c files from dotnet/runtime, FetchContent compile. *Deferred until must-implement goals are complete.* |
 | B.6 | Remove File.ReadAllText/WriteAllText ICall bypass | Low | Blocked | HACK cleanup: File.ReadAllText works via BCL IL, but File.ReadAllBytes hangs (FileStream.Read(byte[]) code path bug). Need to fix before full removal. |
 | B.7 | Integration test suite + baselines | Low | ✅ | FileStreamTest added as Phase 9 (39/39 integration tests pass) + UF/RE stub reduction (-94 stubs) |
 
@@ -250,9 +316,7 @@ See "RuntimeProvided Type Classification" section above.
 
 **Strategy**: Same as Phase B — trace BCL IL chain, fix break points.
 
-**Platform differences**:
-- **Windows**: Socket → P/Invoke to **ws2_32.dll** (Winsock2)
-- **Linux**: Socket → P/Invoke to **System.Native** (already integrated in Phase B.3)
+**Platform**: Windows → P/Invoke to **ws2_32.dll** (Winsock2). Linux deferred (needs System.Native, Phase B.5).
 
 | # | Task | Estimate | Status | Description |
 |---|------|----------|--------|-------------|
@@ -274,47 +338,69 @@ See "RuntimeProvided Type Classification" section above.
 
 | # | Task | Priority | Status | Description |
 |---|------|----------|--------|-------------|
-| H.1 | TypeCode ICall fix | High | Pending | Map TypeInfo name → TypeCode enum (~20 entries). Fixes `Convert.*`, `String.Format`, serializer type switches |
+| H.1 | TypeCode ICall fix | High | ✅ | Map TypeInfo name → TypeCode enum (17 primitives). Fixes `Convert.*`, `String.Format`, serializer type switches |
 | H.2 | RenderedBodyError reduction | High | Pending | Fix 7 FIXME-gated codegen patterns in Header.cs (116 → target 50 RE stubs) |
 | H.3 | Remove File ICall bypass (B.6) | High | Blocked | Debug `FileStream.Read(byte[])` hang, then delete 12 File ICalls. BCL IL handles all encoding correctly via StreamReader |
-| H.4 | Platform compatibility docs | Medium | Pending | Support matrix with promise levels: Full / Functional / Stub / Not implemented |
-| H.5 | Reflection status docs | Medium | Pending | Expected-vs-actual table for all 23 reflection icalls + prerequisite phase for full fix |
+| H.4 | Platform compatibility docs | Medium | ✅ | Support matrix with promise levels: Full / Functional / Stub / Not implemented |
+| H.5 | Reflection status docs | Medium | ✅ | Expected-vs-actual table for all 23 reflection icalls + prerequisite phase for full fix |
 | H.6 | Codegen bug reproduction tests | Low | Pending | Minimal C# test cases for each FIXME gate pattern (regression anchors) |
 
 **Prerequisites**: None (runs in parallel)
 **Output**: Documented behavioral boundaries, reduced silent degrade risk, RenderedBodyError reduction
 
-### Phase D: NativeAOT Metadata (parallelizable with Phase C)
+### Phase D: NativeAOT Metadata & Ecosystem Validation (START IMMEDIATELY — parallel with C.6)
 
-**Goal**: Support trimming annotations for reflection-dependent libraries
+**Goal**: Support trimming annotations + validate NuGet ecosystem — **this is the single biggest jump toward "compile any NativeAOT project"**
 
-| # | Task | Estimate | Description |
-|---|------|----------|-------------|
-| D.1 | `[DynamicallyAccessedMembers]` parsing | Medium | ReachabilityAnalyzer reads custom attributes, preserves annotated members |
-| D.2 | rd.xml parser | Low | XML format preservation rules |
-| D.3 | ILLink feature switch substitution | Medium | Compile-time constants (`IsDynamicCodeSupported = false`) |
-| D.4 | AOT compatibility warnings | Low | Report `[RequiresUnreferencedCode]` call chains |
+**Why D is critical now**: Without `[DynamicallyAccessedMembers]` support, ReachabilityAnalyzer silently tree-shakes types that NuGet packages need at runtime. Without ILLink feature switches, System.Text.Json source generator paths don't activate. Every project with NuGet dependencies hits these issues. D unlocks the entire NuGet ecosystem; C.6 only unlocks HTTP.
 
-**Prerequisites**: None
-**Output**: DI + JSON (SG) + Logging compilable
+| # | Task | Estimate | Status | Description |
+|---|------|----------|--------|-------------|
+| D.0 | NuGet package integration tests | Medium | Pending | Create test projects with real PackageReferences (Newtonsoft.Json, M.E.Logging.Abstractions). Validate NuGet → Cecil → IR → C++ pipeline. Currently zero NuGet test coverage. |
+| D.1 | `[DynamicallyAccessedMembers]` parsing | Medium | Pending | ReachabilityAnalyzer reads custom attributes (Cecil CustomAttributes API), preserves annotated members during tree-shaking. File: `ReachabilityAnalyzer.cs` |
+| D.2 | rd.xml parser | Low | Pending | XML format preservation rules |
+| D.3 | ILLink feature switch substitution | Medium | Pending | Compile-time constants (`IsDynamicCodeSupported = false`, `IsReflectionEnabledByDefault = false`, ~15-20 known switches). Enables System.Text.Json SG code path activation. |
+| D.4 | AOT compatibility warnings | Low | Pending | Report `[RequiresUnreferencedCode]` call chains |
+| D.5 | Source generator validation | Medium | Pending | Test project with `[JsonSerializable]` attribute — validates System.Text.Json SG output compiles through CIL2CPP. Currently claimed but never tested. |
+
+**Prerequisites**: None (parallelizable with C.6)
+**Output**: DI + JSON (SG) + Logging compilable; NuGet packages work correctly with tree-shaking
+
+### Phase C.7: P/Invoke Marshaling Completeness (after C.6)
+
+**Goal**: `[MarshalAs]` + `[Out]` + array marshaling for NuGet ecosystem and System.Native
+
+**Why needed**: P/Invoke has CharSet/CallingConvention/SetLastError, but `[MarshalAs]` attribute is completely unhandled (zero references in CodeGen). System.Native P/Invoke declarations use `[MarshalAs(UnmanagedType.LPStr)]` extensively. Many NuGet packages with native interop also require it. This is a prerequisite for Phase B.5 (Linux) and broad NuGet compatibility.
+
+| # | Task | Estimate | Status | Description |
+|---|------|----------|--------|-------------|
+| C.7.1 | `[MarshalAs]` attribute parsing | Medium | Pending | Read MarshalAs from Cecil ParameterDefinition/FieldDefinition, generate correct C++ type conversions (LPStr→char*, LPWStr→wchar_t*, Bool→int, etc.) |
+| C.7.2 | `[Out]`/`[In]` parameter direction | Low | Pending | Distinguish parameter direction for correct copy-back semantics |
+| C.7.3 | Array marshaling | Medium | Pending | Fixed-size arrays in structs, `[MarshalAs(UnmanagedType.LPArray)]` with SizeParamIndex |
+
+**Prerequisites**: Phase C ✅
+**Output**: P/Invoke compatible with System.Native declarations and NuGet native interop packages
 
 ### Phase E: Native Library Integration — TLS/zlib (link only, don't rewrite)
 
 **Goal**: HTTPS + Compression
 
 **Note**: .NET BCL's TLS/zlib have complete IL, calling .NET-specific native libraries via P/Invoke (same pattern as System.Native, all extracted from [dotnet/runtime](https://github.com/dotnet/runtime)):
-- TLS → `System.Security.Cryptography.Native.OpenSsl` (Linux) / SChannel (Windows, kernel32 P/Invoke)
+- TLS → SChannel (Windows, `secur32.dll`/`schannel.dll` P/Invoke — **no FetchContent needed**) / `System.Security.Cryptography.Native.OpenSsl` (Linux)
 - zlib → `System.IO.Compression.Native` (.NET's zlib wrapper)
+
+**Platform strategy**: Windows TLS uses SChannel (already part of OS, same pattern as kernel32/ws2_32). Linux TLS uses OpenSSL (requires FetchContent). Split E.win vs E.linux to ship Windows HTTPS earlier.
 
 | # | Task | Estimate | Description |
 |---|------|----------|-------------|
-| E.1 | System.Security.Cryptography.Native integration | High | Extract from dotnet/runtime, link OpenSSL (Linux) / SChannel (Win) |
+| E.win | SChannel TLS (Windows) | Medium | SslStream → P/Invoke to `secur32.dll`/`schannel.dll`. Already part of Windows — no FetchContent needed, same pattern as ws2_32. |
+| E.linux | OpenSSL TLS (Linux) | High | **Deferred.** Extract `System.Security.Cryptography.Native.OpenSsl` from dotnet/runtime, FetchContent + link OpenSSL |
 | E.2 | System.IO.Compression.Native integration | Low | Extract from dotnet/runtime, embed zlib |
 | E.3 | Remove corresponding InternalPInvokeModules | Low | Let BCL P/Invoke declarations generate normally |
 | E.4 | Regex interpreter BCL IL validation | Medium | Non-Compiled mode doesn't depend on Reflection.Emit |
 | E.5 | End-to-end tests | Low | HTTPS GET + JSON deserialization |
 
-**Prerequisites**: Phase C (TLS needs Socket) + Phase D (JSON needs metadata awareness)
+**Prerequisites**: Phase C (TLS needs Socket) + Phase D (JSON needs metadata awareness) + Phase C.7 (MarshalAs needed for native lib P/Invoke)
 **Output**: `HttpClient.GetStringAsync("https://...")` + `JsonSerializer.Deserialize<T>()` available
 
 ### Phase F: Performance & Advanced
@@ -323,10 +409,10 @@ See "RuntimeProvided Type Classification" section above.
 
 | # | Task | Estimate | Description |
 |---|------|----------|-------------|
-| F.1 | SIMD scalar fallback path completion | High | Eliminate 333 SIMD stubs |
-| F.2 | Task struct refactoring (from Phase V.2-V.5) | High | Reduce RuntimeProvided 32→25 |
-| F.3 | Incremental compilation | Medium | IR/codegen caching |
-| F.4 | Reflection model evaluation (from Phase VI) | Medium | Evaluate QCall alternatives |
+| F.1 | SIMD scalar fallback path completion | High | **Must-implement.** Eliminate 333 SIMD stubs — many BCL hot paths depend on these |
+| F.2 | Task struct refactoring (from Phase V.2-V.5) | High | **Deferred.** Reduce RuntimeProvided 32→25 (internal quality, no user-facing impact) |
+| F.3 | Incremental compilation | Medium | **Deferred.** IR/codegen caching (performance optimization) |
+| F.4 | Reflection model evaluation (from Phase VI) | Medium | **Deferred.** Evaluate QCall alternatives |
 
 **Prerequisites**: Phase A-E core functionality complete
 **Output**: Translation rate > 95%
@@ -346,38 +432,52 @@ See "RuntimeProvided Type Classification" section above.
 
 ## Dependency Graph
 
+### Must-Implement (Windows x64)
+
 ```
-Phase I   (Foundation) ✅
-Phase II  (Middle layer unlock) ✅
-Phase III (Compiler pipeline quality) ✅ — 4,402→2,860, -35.1%, 88.8%
-Phase IV  (Viable types→IL) 40→32 ✅
-Phase V.1 (Task dependency analysis) ✅
+Phase I-IV ✅  →  Phase A ✅  →  Phase B ✅ (Windows)
        ↓
-Phase A (Compiler finalization — fix stub root causes) ✅ — 2,777→1,478, -46.8%, 95.2%
-       ↓
-Phase B (FileStream BCL IL chain validation) ✅ — Windows complete, B.5/B.6 pending
-       ↓
-Phase C (Socket/HTTP BCL IL chain) — C.1-C.5 ✅, C.6 pending  ←→  Phase D (NativeAOT metadata)  [parallelizable]
-       ↓          Phase H (Quality convergence) — parallel         ↓
-            Phase E (Native library linking: TLS/zlib)  [convergence]
-                 ↓
-            Phase F (Performance: SIMD/Task refactoring/Reflection)
-                 ↓
-            Phase G (Productization: CI/CD/Validation)
+   ┌── Phase C.6 (Full HTTP GET) ──────────────┐
+   │      ↓                                     │ ← parallel
+   │   Phase C.7 (MarshalAs P/Invoke)          Phase D (NativeAOT metadata + NuGet ecosystem)
+   │      ↓                                     │    D.0 NuGet validation
+   │   Phase E.win (SChannel TLS)               │    D.1 [DynamicallyAccessedMembers]
+   │      ↓                                     │    D.3 ILLink feature switches
+   │   Phase E.2 (zlib compression)             │    D.5 Source generator validation
+   │      ↓                                     │
+   └──────┴─────── convergence ─────────────────┘
+                        ↓
+              Phase H.2 (RenderedBodyError → 0) — continuous
+              Phase F.1 (SIMD scalar completion)
+                        ↓
+              Phase G (Productization: CI/CD + 10 NuGet packages)
+```
+
+### Deferred (after Must-Implement)
+
+```
+Phase B.5  (System.Native — Linux/macOS I/O + network)
+Phase E.linux (OpenSSL TLS — Linux HTTPS)
+Phase F.2  (Task struct refactoring — internal quality)
+Phase F.3  (Incremental compilation — performance)
+Phase F.4  (Full reflection model — QCall alternatives)
+32-bit targets (ARM/x86 pointer size)
+macOS support (Objective-C bridge)
 ```
 
 ---
 
 ## Milestones
 
-| Milestone | Criteria | Phase |
-|-----------|---------|-------|
-| **M1: Compiler Maturity** | stubs < 2,000, translation rate > 92% | A ✅ (1,478 stubs, 95.2%) |
-| **M2: File I/O** | FileStream/StreamReader compile from BCL IL and run | B (~90%, Windows ✅) |
-| **M3: Networked Apps** | HttpClient HTTP GET compiles from BCL IL and runs | C (~60%: Socket+DNS+constructor ✅, full GET pending) |
-| **M4: Library Ecosystem** | DI + JSON (SG) + Logging compilable | D |
-| **M5: Production-Grade** | HTTPS + Compression | E |
-| **M6: Release** | CI/CD + 10 real package validation | G |
+| Milestone | Criteria | Phase | Status |
+|-----------|---------|-------|--------|
+| **M1: Compiler Maturity** | stubs < 2,000, translation rate > 92% | A | ✅ (1,478 stubs, 95.2%) |
+| **M2: File I/O** | FileStream/StreamReader compile from BCL IL and run | B | ✅ Windows (~90%) |
+| **M3: Networked Apps** | HttpClient HTTP GET compiles from BCL IL and runs | C.6 | ~60%: Socket+DNS+constructor ✅, full GET pending |
+| **M3.5: REST Client** | HTTP GET + `JsonSerializer.Deserialize<T>()` (via SG) end-to-end | C.6+D | Blocked — needs C.6 + D.1 + D.3 + D.5 |
+| **M4: Library Ecosystem** | Project with 3+ NuGet PackageReferences compiles and runs | D | Not started |
+| **M5: Production-Grade** | HTTPS + Compression | E | Not started |
+| **M6: Release** | CI/CD + 10 real NuGet package validation | G | Not started |
 
 ## Metric Definitions
 
