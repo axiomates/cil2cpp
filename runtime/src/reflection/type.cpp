@@ -212,7 +212,9 @@ Boolean type_equals(Type* self, Object* other) {
     if (!self) throw_null_reference();
     if (!other) return false;
     // Check if other is a Type object by checking its TypeInfo
-    if (other->__type_info != &System_Type_TypeInfo) return false;
+    // Accept both System_Type_TypeInfo and System_RuntimeType_TypeInfo (RuntimeType inherits Type)
+    if (other->__type_info != &System_Type_TypeInfo &&
+        other->__type_info != &::System_RuntimeType_TypeInfo) return false;
     auto* other_type = static_cast<Type*>(other);
     return self->type_info == other_type->type_info;
 }

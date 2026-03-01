@@ -585,9 +585,29 @@ Boolean Type_IsEquivalentTo(void* __this, void* other) {
 Int32 Type_GetTypeCodeImpl(void* __this) {
     auto* t = get_type_from_this(__this);
     if (!t || !t->type_info) return 0; // TypeCode.Empty
-    // HACK: return Object (1) for all types
-    // TODO: map TypeInfo to proper TypeCode values
-    return 1;
+
+    const char* name = t->type_info->full_name;
+    if (!name) return 1; // TypeCode.Object
+
+    // Map full type name to System.TypeCode enum values
+    if (std::strcmp(name, "System.Boolean") == 0)  return 3;
+    if (std::strcmp(name, "System.Char") == 0)     return 4;
+    if (std::strcmp(name, "System.SByte") == 0)    return 5;
+    if (std::strcmp(name, "System.Byte") == 0)     return 6;
+    if (std::strcmp(name, "System.Int16") == 0)    return 7;
+    if (std::strcmp(name, "System.UInt16") == 0)   return 8;
+    if (std::strcmp(name, "System.Int32") == 0)    return 9;
+    if (std::strcmp(name, "System.UInt32") == 0)   return 10;
+    if (std::strcmp(name, "System.Int64") == 0)    return 11;
+    if (std::strcmp(name, "System.UInt64") == 0)   return 12;
+    if (std::strcmp(name, "System.Single") == 0)   return 13;
+    if (std::strcmp(name, "System.Double") == 0)   return 14;
+    if (std::strcmp(name, "System.Decimal") == 0)  return 15;
+    if (std::strcmp(name, "System.DateTime") == 0) return 16;
+    if (std::strcmp(name, "System.String") == 0)   return 18;
+    if (std::strcmp(name, "System.DBNull") == 0)   return 2;
+
+    return 1; // TypeCode.Object for all other types
 }
 
 Int32 Type_get_GenericParameterAttributes(void* __this) {

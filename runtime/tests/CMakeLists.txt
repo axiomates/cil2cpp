@@ -41,6 +41,7 @@ add_executable(cil2cpp_tests
     test_checked.cpp
     test_globalization.cpp
     test_io.cpp
+    test_stubs.cpp
 )
 
 target_link_libraries(cil2cpp_tests

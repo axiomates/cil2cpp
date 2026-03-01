@@ -226,6 +226,67 @@ System.IO uses ICall interception at the public API level, intercepting File/Pat
 | System.Net (full HTTP) | HttpClient can be constructed, full HTTP GET request/response chain pending |
 | Regex internals | Depends on CLR internal RegexCache etc. |
 | SIMD | Requires platform-specific intrinsics, currently uses scalar fallback structs |
+| 32-bit targets | Pointer size hardcoded to 8 bytes (64-bit only). ARM/x86 deferred to Phase F |
+
+---
+
+## Platform Compatibility Matrix
+
+> Compatibility levels: **Full** = identical to .NET | **Functional** = works with simplified metadata | **Stub** = returns placeholder values | **N/A** = not implemented
+
+| Feature Area | Windows x64 | Linux x64 | macOS | Notes |
+|-------------|:-----------:|:---------:|:-----:|-------|
+| Console I/O | Full | Full | Full | BCL IL compiled |
+| Math/MathF | Full | Full | Full | ~45 icalls, direct C++ stdlib |
+| String operations | Full | Full | Full | BCL IL compiled, ICU globalization |
+| Collections (List/Dict/LINQ) | Full | Full | Full | BCL IL compiled |
+| async/await | Full | Full | Full | Custom thread pool + continuations |
+| File I/O (FileStream) | Full | N/A | N/A | Windows: kernel32 P/Invoke. Linux: needs System.Native (Phase B.5) |
+| File I/O (File.ReadAllText) | Functional | N/A | N/A | HACK: bypasses BCL IL, UTF-8 only. Will be removed (Phase H.3) |
+| Socket (TCP) | Full | N/A | N/A | Windows: ws2_32 P/Invoke |
+| DNS resolution | Full | N/A | N/A | Windows: GetAddrInfoW P/Invoke |
+| HttpClient construction | Full | N/A | N/A | SocketsHttpHandler chain from BCL IL |
+| Reflection (GetType/typeof) | Full | Full | Full | TypeInfo-based |
+| Reflection (GetMethods/GetFields) | Functional | Functional | Functional | Returns correct names, simplified attributes |
+| Reflection (BindingFlags) | Stub | Stub | Stub | Returns hardcoded Public\|Instance (0x14) |
+| Reflection (TypeCode) | Stub | Stub | Stub | Returns Object for all types. Fix planned (Phase H.1) |
+| Reflection (IsPublic/visibility) | Stub | Stub | Stub | Returns true for all types |
+| Reflection (StackFrame) | Stub | Stub | Stub | Returns nullptr for method info |
+| Reflection (Assembly metadata) | Stub | Stub | Stub | No assembly objects. Needs Phase D |
+| Thread priority | Stub | Stub | Stub | No-op, returns Normal |
+| Thread managed ID | Functional | Functional | Stub | Uses OS thread ID (macOS: returns 0) |
+| P/Invoke (kernel32/ws2_32) | Full | N/A | N/A | Windows-specific |
+| DLL symbol loading | Full | N/A | N/A | Windows: GetProcAddress. Linux: dlsym pending |
+| SIMD execution | N/A | N/A | N/A | Scalar fallback structs only |
+| Encoding (non-UTF-8) | Stub | N/A | N/A | File ICalls ignore Encoding param. Fix: remove ICalls (Phase H.3) |
+
+---
+
+## Reflection ICall Status
+
+> 14 of 23 reflection icalls return simplified/placeholder values. Full reflection fidelity requires Phase D (NativeAOT metadata).
+
+| ICall | Expected (.NET) | Current (CIL2CPP) | Fix Phase |
+|-------|----------------|-------------------|-----------|
+| Type.GetTypeCode | Per-type enum (Int32→9, String→18, etc.) | Always returns Object (1) | H.1 |
+| Type.IsPublic | Actual visibility | Always true | H.1 (TypeFlags) |
+| Type.IsAbstract | Actual flag | Correct ✅ | — |
+| Type.IsValueType | Actual flag | Correct ✅ | — |
+| Type.IsArray | Actual flag | Correct ✅ | — |
+| Type.IsNestedPublic | Nested visibility | Always false | D |
+| Type.IsEnumDefined | Enum value lookup | Always false | D |
+| Type.IsEquivalentTo | Structural equiv | Pointer equality only | D |
+| RuntimeTypeHandle.GetElementType | Array/pointer element type | Returns nullptr | D |
+| RuntimeTypeHandle.GetToken | Metadata token | Returns 0 | D |
+| RuntimeTypeHandle.GetAssembly | Assembly object | Returns nullptr | D |
+| RuntimeTypeHandle.IsByRefLike | ref struct detection | Always false | D |
+| MethodBase.IsVirtual | Actual flag | Always false | D |
+| MethodInfo.BindingFlags | Actual flags | Hardcoded 0x14 | D |
+| MethodInfo.GetGenericArguments | Generic type args | Returns nullptr | D |
+| MethodInfo.GetDeclaringType | Declaring type | Returns nullptr | D |
+| Delegate.get_Method | Target MethodInfo | Returns nullptr | D |
+| StackFrame.GetMethod | Stack method info | Returns nullptr | F.4 |
+| GCHandle.CompareExchange | Atomic table op | Returns handle unchanged | F.4 |
 
 ---
 

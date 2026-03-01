@@ -266,6 +266,24 @@ See "RuntimeProvided Type Classification" section above.
 **Prerequisites**: Phase B ✅
 **Output**: Socket + DNS + HttpClient construction working (Windows). Full HTTP GET pending.
 
+### Phase H: Quality Convergence (parallel with C.6/D)
+
+**Goal**: Make existing capabilities predictable, explainable, regression-testable. Motivated by external code review identifying "compilable but behaviorally divergent" icall simplifications and undocumented limitations.
+
+**Strategy**: NOT a "stop and clean" phase. Runs in parallel with feature work (C.6/D), prioritized by user-perceivable impact.
+
+| # | Task | Priority | Status | Description |
+|---|------|----------|--------|-------------|
+| H.1 | TypeCode ICall fix | High | Pending | Map TypeInfo name → TypeCode enum (~20 entries). Fixes `Convert.*`, `String.Format`, serializer type switches |
+| H.2 | RenderedBodyError reduction | High | Pending | Fix 7 FIXME-gated codegen patterns in Header.cs (116 → target 50 RE stubs) |
+| H.3 | Remove File ICall bypass (B.6) | High | Blocked | Debug `FileStream.Read(byte[])` hang, then delete 12 File ICalls. BCL IL handles all encoding correctly via StreamReader |
+| H.4 | Platform compatibility docs | Medium | Pending | Support matrix with promise levels: Full / Functional / Stub / Not implemented |
+| H.5 | Reflection status docs | Medium | Pending | Expected-vs-actual table for all 23 reflection icalls + prerequisite phase for full fix |
+| H.6 | Codegen bug reproduction tests | Low | Pending | Minimal C# test cases for each FIXME gate pattern (regression anchors) |
+
+**Prerequisites**: None (runs in parallel)
+**Output**: Documented behavioral boundaries, reduced silent degrade risk, RenderedBodyError reduction
+
 ### Phase D: NativeAOT Metadata (parallelizable with Phase C)
 
 **Goal**: Support trimming annotations for reflection-dependent libraries
@@ -340,7 +358,7 @@ Phase A (Compiler finalization — fix stub root causes) ✅ — 2,777→1,478, 
 Phase B (FileStream BCL IL chain validation) ✅ — Windows complete, B.5/B.6 pending
        ↓
 Phase C (Socket/HTTP BCL IL chain) — C.1-C.5 ✅, C.6 pending  ←→  Phase D (NativeAOT metadata)  [parallelizable]
-       ↓                                  ↓
+       ↓          Phase H (Quality convergence) — parallel         ↓
             Phase E (Native library linking: TLS/zlib)  [convergence]
                  ↓
             Phase F (Performance: SIMD/Task refactoring/Reflection)

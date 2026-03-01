@@ -15,6 +15,9 @@
 #include <cstring>
 #include <string>
 
+// Generated code defines System_RuntimeType_TypeInfo in global namespace.
+extern cil2cpp::TypeInfo System_RuntimeType_TypeInfo;
+
 namespace cil2cpp {
 
 // ===== TypeInfo for managed reflection types =====
@@ -469,7 +472,8 @@ static Int32 FieldInfo_GetHashCode_vtable(Object* obj) {
 
 String* memberinfo_get_name(Object* obj) {
     if (!obj) throw_null_reference();
-    if (obj->__type_info == &System_Type_TypeInfo)
+    if (obj->__type_info == &System_Type_TypeInfo ||
+        obj->__type_info == &::System_RuntimeType_TypeInfo)
         return type_get_name(static_cast<Type*>(obj));
     if (obj->__type_info == &System_Reflection_MethodInfo_TypeInfo)
         return methodinfo_get_name(static_cast<ManagedMethodInfo*>(obj));

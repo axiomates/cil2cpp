@@ -7,6 +7,11 @@
 #include <gtest/gtest.h>
 #include <cil2cpp/cil2cpp.h>
 
+// Forward declare icall for TypeCode test (avoid pulling full icall.h dependencies)
+namespace cil2cpp { namespace icall {
+    Int32 Type_GetTypeCodeImpl(void* __this);
+}}
+
 using namespace cil2cpp;
 
 // ===== Test TypeInfo setup =====
@@ -86,6 +91,37 @@ static TypeInfo ReflArray = {
     .base_type = nullptr, .interfaces = nullptr, .interface_count = 0,
     .instance_size = sizeof(Object) + 8, .element_size = sizeof(Int32),
     .flags = TypeFlags::Array, .vtable = nullptr,
+    .fields = nullptr, .field_count = 0, .methods = nullptr, .method_count = 0,
+    .default_ctor = nullptr, .finalizer = nullptr,
+    .interface_vtables = nullptr, .interface_vtable_count = 0,
+};
+
+// TypeInfos for TypeCode tests (H.1)
+static TypeInfo ReflString = {
+    .name = "String", .namespace_name = "System", .full_name = "System.String",
+    .base_type = &ReflObject, .interfaces = nullptr, .interface_count = 0,
+    .instance_size = sizeof(Object) + 8, .element_size = 0,
+    .flags = TypeFlags::Sealed, .vtable = nullptr,
+    .fields = nullptr, .field_count = 0, .methods = nullptr, .method_count = 0,
+    .default_ctor = nullptr, .finalizer = nullptr,
+    .interface_vtables = nullptr, .interface_vtable_count = 0,
+};
+
+static TypeInfo ReflBoolean = {
+    .name = "Boolean", .namespace_name = "System", .full_name = "System.Boolean",
+    .base_type = nullptr, .interfaces = nullptr, .interface_count = 0,
+    .instance_size = sizeof(Boolean), .element_size = 0,
+    .flags = TypeFlags::ValueType | TypeFlags::Primitive, .vtable = nullptr,
+    .fields = nullptr, .field_count = 0, .methods = nullptr, .method_count = 0,
+    .default_ctor = nullptr, .finalizer = nullptr,
+    .interface_vtables = nullptr, .interface_vtable_count = 0,
+};
+
+static TypeInfo ReflDouble = {
+    .name = "Double", .namespace_name = "System", .full_name = "System.Double",
+    .base_type = nullptr, .interfaces = nullptr, .interface_count = 0,
+    .instance_size = sizeof(Double), .element_size = 0,
+    .flags = TypeFlags::ValueType | TypeFlags::Primitive, .vtable = nullptr,
     .fields = nullptr, .field_count = 0, .methods = nullptr, .method_count = 0,
     .default_ctor = nullptr, .finalizer = nullptr,
     .interface_vtables = nullptr, .interface_vtable_count = 0,
@@ -348,5 +384,43 @@ TEST(ReflectionTest, SystemTypeTypeInfo_Exists) {
 
 TEST(ReflectionTest, TypeObjectHasCorrectTypeInfo) {
     auto* t = type_get_type_object(&ReflDog);
-    EXPECT_EQ(t->__type_info, &System_Type_TypeInfo);
+    // type_get_type_object allocates as RuntimeType (BCL expects Type.op_Equality to work)
+    extern TypeInfo System_RuntimeType_TypeInfo;
+    EXPECT_EQ(t->__type_info, &System_RuntimeType_TypeInfo);
+}
+
+// ===== TypeCode ICall (H.1) =====
+
+TEST(ReflectionTest, TypeCode_Int32) {
+    auto* t = type_get_type_object(&ReflValueType); // System.Int32
+    EXPECT_EQ(icall::Type_GetTypeCodeImpl(t), 9);   // TypeCode.Int32
+}
+
+TEST(ReflectionTest, TypeCode_String) {
+    auto* t = type_get_type_object(&ReflString);
+    EXPECT_EQ(icall::Type_GetTypeCodeImpl(t), 18);   // TypeCode.String
+}
+
+TEST(ReflectionTest, TypeCode_Boolean) {
+    auto* t = type_get_type_object(&ReflBoolean);
+    EXPECT_EQ(icall::Type_GetTypeCodeImpl(t), 3);    // TypeCode.Boolean
+}
+
+TEST(ReflectionTest, TypeCode_Double) {
+    auto* t = type_get_type_object(&ReflDouble);
+    EXPECT_EQ(icall::Type_GetTypeCodeImpl(t), 14);   // TypeCode.Double
+}
+
+TEST(ReflectionTest, TypeCode_Object) {
+    auto* t = type_get_type_object(&ReflObject);
+    EXPECT_EQ(icall::Type_GetTypeCodeImpl(t), 1);    // TypeCode.Object
+}
+
+TEST(ReflectionTest, TypeCode_CustomType_ReturnsObject) {
+    auto* t = type_get_type_object(&ReflDog);         // Test.Dog
+    EXPECT_EQ(icall::Type_GetTypeCodeImpl(t), 1);    // TypeCode.Object for non-primitive types
+}
+
+TEST(ReflectionTest, TypeCode_Null_ReturnsEmpty) {
+    EXPECT_EQ(icall::Type_GetTypeCodeImpl(nullptr), 0); // TypeCode.Empty
 }

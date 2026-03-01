@@ -265,6 +265,24 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 **前置**：Phase B ✅
 **产出**：Socket + DNS + HttpClient 构造已通过（Windows）。完整 HTTP GET 待做。
 
+### Phase H: 质量收敛（与 C.6/D 并行）
+
+**目标**：让已有能力可预测、可解释、可回归测试。源于外部代码评审发现"可编译但行为偏差"的 icall 简化实现和未文档化的限制。
+
+**策略**：不是"停下来清理"，而是与功能开发（C.6/D）并行，按用户可感知影响排序。
+
+| # | 任务 | 优先级 | 状态 | 说明 |
+|---|------|--------|------|------|
+| H.1 | TypeCode ICall 修复 | 高 | 待定 | TypeInfo 名称映射到 TypeCode 枚举（~20 条目）。修复 `Convert.*`、`String.Format`、序列化器类型判断 |
+| H.2 | RenderedBodyError 消减 | 高 | 待定 | 修复 Header.cs 中 7 个 FIXME gate pattern（116 → 目标 50 RE stubs） |
+| H.3 | 移除 File ICall 绕过（B.6） | 高 | 阻塞 | 调试 `FileStream.Read(byte[])` 挂起问题，然后删除 12 个 File ICall。BCL IL 通过 StreamReader 正确处理所有编码 |
+| H.4 | 平台兼容性文档 | 中 | 待定 | 支持矩阵 + 承诺等级：完整 / 功能性 / 占位 / 未实现 |
+| H.5 | 反射状态文档 | 中 | 待定 | 全部 23 个反射 ICall 的"期望行为 vs 实际行为"表 + 完整修复的前置阶段 |
+| H.6 | Codegen bug 最小复现测试 | 低 | 待定 | 每个 FIXME gate pattern 对应一个最小 C# 测试用例（回归锚点） |
+
+**前置**：无（并行运行）
+**产出**：行为边界文档化、减少静默降级风险、RenderedBodyError 消减
+
 ### Phase D: NativeAOT 元数据（可与 Phase C 并行）
 
 **目标**：支持修剪注解，让反射型库正常工作
@@ -339,7 +357,7 @@ Phase A (编译器收尾 — 修 stubs 根因) ✅ — 2,777→1,478, -46.8%, 95
 Phase B (FileStream BCL IL 链验证) ✅ — Windows 完成, B.5/B.6 待定
        ↓
 Phase C (Socket/HTTP BCL IL 链) — C.1-C.5 ✅, C.6 待定  ←→  Phase D (NativeAOT 元数据)  [可并行]
-       ↓                                  ↓
+       ↓          Phase H (质量收敛) — 并行                ↓
             Phase E (原生库链接: TLS/zlib)  [汇合]
                  ↓
             Phase F (性能: SIMD/Task重构/反射)

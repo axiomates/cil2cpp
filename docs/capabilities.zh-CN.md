@@ -226,6 +226,67 @@ System.IO 采用 ICall 拦截模式，在公共 API 层拦截 File/Path/Director
 | System.Net（完整 HTTP） | HttpClient 已可构造，完整 HTTP GET 请求/响应链待做 |
 | Regex 内部 | 依赖 CLR 内部 RegexCache 等 |
 | SIMD | 需要平台特定 intrinsics，当前使用标量回退 struct |
+| 32 位目标 | 指针大小硬编码为 8 字节（仅 64 位）。ARM/x86 推迟到 Phase F |
+
+---
+
+## 平台兼容性矩阵
+
+> 兼容性等级：**完整** = 与 .NET 行为一致 | **功能性** = 可用但元数据简化 | **占位** = 返回占位值 | **未实现** = 尚不可用
+
+| 功能区域 | Windows x64 | Linux x64 | macOS | 说明 |
+|---------|:-----------:|:---------:|:-----:|------|
+| Console I/O | 完整 | 完整 | 完整 | BCL IL 编译 |
+| Math/MathF | 完整 | 完整 | 完整 | ~45 icall，直接 C++ stdlib |
+| String 操作 | 完整 | 完整 | 完整 | BCL IL 编译，ICU 全球化 |
+| 集合 (List/Dict/LINQ) | 完整 | 完整 | 完整 | BCL IL 编译 |
+| async/await | 完整 | 完整 | 完整 | 自定义线程池 + 续体 |
+| 文件 I/O (FileStream) | 完整 | 未实现 | 未实现 | Windows: kernel32 P/Invoke。Linux: 需 System.Native (Phase B.5) |
+| 文件 I/O (File.ReadAllText) | 功能性 | 未实现 | 未实现 | HACK: 绕过 BCL IL，仅 UTF-8。将被移除 (Phase H.3) |
+| Socket (TCP) | 完整 | 未实现 | 未实现 | Windows: ws2_32 P/Invoke |
+| DNS 解析 | 完整 | 未实现 | 未实现 | Windows: GetAddrInfoW P/Invoke |
+| HttpClient 构造 | 完整 | 未实现 | 未实现 | BCL IL 的 SocketsHttpHandler 链 |
+| 反射 (GetType/typeof) | 完整 | 完整 | 完整 | TypeInfo 基础 |
+| 反射 (GetMethods/GetFields) | 功能性 | 功能性 | 功能性 | 名称正确，属性简化 |
+| 反射 (BindingFlags) | 占位 | 占位 | 占位 | 返回硬编码 Public\|Instance (0x14) |
+| 反射 (TypeCode) | 占位 | 占位 | 占位 | 所有类型返回 Object。修复计划 (Phase H.1) |
+| 反射 (IsPublic/可见性) | 占位 | 占位 | 占位 | 所有类型返回 true |
+| 反射 (StackFrame) | 占位 | 占位 | 占位 | 方法信息返回 nullptr |
+| 反射 (Assembly 元数据) | 占位 | 占位 | 占位 | 无 Assembly 对象。需 Phase D |
+| 线程优先级 | 占位 | 占位 | 占位 | No-op，返回 Normal |
+| 线程 ManagedId | 功能性 | 功能性 | 占位 | 使用 OS 线程 ID（macOS: 返回 0） |
+| P/Invoke (kernel32/ws2_32) | 完整 | 未实现 | 未实现 | Windows 专用 |
+| DLL 符号加载 | 完整 | 未实现 | 未实现 | Windows: GetProcAddress。Linux: dlsym 待做 |
+| SIMD 执行 | 未实现 | 未实现 | 未实现 | 仅标量回退 struct |
+| 编码 (非 UTF-8) | 占位 | 未实现 | 未实现 | File ICall 忽略 Encoding 参数。修复: 移除 ICall (Phase H.3) |
+
+---
+
+## 反射 ICall 状态
+
+> 23 个反射 ICall 中有 14 个返回简化/占位值。完整反射保真度需要 Phase D（NativeAOT 元数据）。
+
+| ICall | 期望行为 (.NET) | 当前行为 (CIL2CPP) | 修复阶段 |
+|-------|---------------|-------------------|---------|
+| Type.GetTypeCode | 按类型返回枚举 (Int32→9, String→18 等) | 始终返回 Object (1) | H.1 |
+| Type.IsPublic | 实际可见性 | 始终返回 true | H.1 (TypeFlags) |
+| Type.IsAbstract | 实际标志位 | 正确 ✅ | — |
+| Type.IsValueType | 实际标志位 | 正确 ✅ | — |
+| Type.IsArray | 实际标志位 | 正确 ✅ | — |
+| Type.IsNestedPublic | 嵌套可见性 | 始终返回 false | D |
+| Type.IsEnumDefined | 枚举值查找 | 始终返回 false | D |
+| Type.IsEquivalentTo | 结构等价 | 仅指针比较 | D |
+| RuntimeTypeHandle.GetElementType | 数组/指针元素类型 | 返回 nullptr | D |
+| RuntimeTypeHandle.GetToken | 元数据 token | 返回 0 | D |
+| RuntimeTypeHandle.GetAssembly | Assembly 对象 | 返回 nullptr | D |
+| RuntimeTypeHandle.IsByRefLike | ref struct 检测 | 始终返回 false | D |
+| MethodBase.IsVirtual | 实际标志位 | 始终返回 false | D |
+| MethodInfo.BindingFlags | 实际标志位 | 硬编码 0x14 | D |
+| MethodInfo.GetGenericArguments | 泛型类型参数 | 返回 nullptr | D |
+| MethodInfo.GetDeclaringType | 声明类型 | 返回 nullptr | D |
+| Delegate.get_Method | 目标 MethodInfo | 返回 nullptr | D |
+| StackFrame.GetMethod | 栈方法信息 | 返回 nullptr | F.4 |
+| GCHandle.CompareExchange | 原子表操作 | 返回 handle 不变 | F.4 |
 
 ---
 
