@@ -81,6 +81,24 @@ class Program
             Console.WriteLine($"Phase3: FAIL ({ex.GetType().Name}: {ex.Message})");
         }
 
+        // Phase 4: DNS resolution
+        try
+        {
+            Console.WriteLine("Phase4: calling Dns.GetHostAddresses...");
+            var addresses = Dns.GetHostAddresses("localhost");
+            Console.WriteLine($"DNS: {addresses.Length} addresses");
+            foreach (var addr in addresses)
+            {
+                // Use AddressFamily to verify the address object is valid
+                // without calling IPAddress.ToString() which has complex formatting
+                Console.WriteLine($"  addr family={addr.AddressFamily}");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"DNS: FAIL ({ex.GetType().Name}: {ex.Message})");
+        }
+
         Console.WriteLine("=== Done ===");
     }
 }

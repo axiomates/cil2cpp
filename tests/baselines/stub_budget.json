@@ -1,13 +1,13 @@
 {
   "HelloWorld": {
-    "total": 1596,
+    "total": 1566,
     "MissingBody": 666,
     "KnownBrokenPattern": 620,
     "UndeclaredFunction": 68,
     "ClrInternalType": 96,
     "UnknownBodyReferences": 0,
     "UnknownParameterTypes": 0,
-    "RenderedBodyError": 146
+    "RenderedBodyError": 116
   },
   "SocketTest": {
     "total": 2208,

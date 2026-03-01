@@ -1764,8 +1764,28 @@ public partial class IRBuilder
             {
                 if (stack.Count > 0)
                 {
-                    var val = stack.Peek();
-                    stack.Push(val);
+                    var entry = stack.PeekEntry();
+                    // When dup'ing a local variable reference, save to a temp first.
+                    // This decouples the duplicate from the original local so that a
+                    // subsequent stloc.N (post-increment pattern like a[i++]) uses the
+                    // OLD value, not the updated one. Without this, both copies reference
+                    // "loc_N" by name and stloc.N silently invalidates the stack entry.
+                    if (entry.Expr.StartsWith("loc_") && !entry.Expr.Contains(' '))
+                    {
+                        var tmp = $"__t{tempCounter++}";
+                        block.Instructions.Add(new IRAssign { Target = tmp, Value = entry.Expr });
+                        if (entry.CppType != null)
+                            method.TempVarTypes[tmp] = entry.CppType;
+                        // Replace the bottom copy (original ldloc) with the temp;
+                        // push the original name on top (consumed by subsequent ops).
+                        stack.Pop();
+                        stack.Push(new StackEntry(tmp, entry.CppType));
+                        stack.Push(entry);
+                    }
+                    else
+                    {
+                        stack.Push(entry);
+                    }
                 }
                 break;
             }

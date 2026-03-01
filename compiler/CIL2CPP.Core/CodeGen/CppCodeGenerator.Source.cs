@@ -1742,6 +1742,16 @@ public partial class CppCodeGenerator
                     code = $"std::memset(&{decl.VarName}, 0, sizeof({decl.TypeName}));";
                 }
 
+                // IRDelegateInvoke emits "Type __tN;\n    if (...)" — strip the
+                // declaration line when __tN is already pre-declared (cross-scope).
+                if (instr is IRDelegateInvoke di && di.ResultVar != null
+                    && declaredTemps.Contains(di.ResultVar))
+                {
+                    var nlIdx = code.IndexOf('\n');
+                    if (nlIdx >= 0)
+                        code = code[(nlIdx + 1)..].TrimStart();
+                }
+
                 // For instructions that assign to temp vars, add 'auto' on first use
                 code = AddAutoDeclarations(code, declaredTemps);
 

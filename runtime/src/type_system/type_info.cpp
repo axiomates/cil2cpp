@@ -4,6 +4,7 @@
 
 #include <cil2cpp/type_info.h>
 #include <cil2cpp/object.h>
+#include <cil2cpp/array.h>
 #include <cil2cpp/gc.h>
 #include <cil2cpp/exception.h>
 
@@ -190,7 +191,38 @@ Boolean object_is_instance_of(Object* obj, TypeInfo* type) {
     if (!obj || !type) {
         return false;
     }
-    return type_is_assignable_from(type, obj->__type_info);
+    if (type_is_assignable_from(type, obj->__type_info)) {
+        return true;
+    }
+
+    // Array structural check: alloc_array sets __type_info = element_type,
+    // so arrays' __type_info doesn't have System.Array in its hierarchy.
+    // Detect arrays structurally (element_type == __type_info) and check
+    // if the target type is System.Array or one of its ancestors/interfaces.
+    auto* as_arr = reinterpret_cast<Array*>(obj);
+    if (as_arr->element_type == obj->__type_info && as_arr->length >= 0) {
+        if (type->full_name &&
+            std::strcmp(type->full_name, "System.Array") == 0) {
+            return true;
+        }
+        // Also check interfaces that System.Array implements (IList, ICollection, etc.)
+        if (type->flags & TypeFlags::Interface) {
+            // Walk the target's name to check common array interfaces
+            if (type->full_name) {
+                const char* name = type->full_name;
+                if (std::strcmp(name, "System.Collections.IList") == 0 ||
+                    std::strcmp(name, "System.Collections.ICollection") == 0 ||
+                    std::strcmp(name, "System.Collections.IEnumerable") == 0 ||
+                    std::strcmp(name, "System.Collections.IStructuralComparable") == 0 ||
+                    std::strcmp(name, "System.Collections.IStructuralEquatable") == 0 ||
+                    std::strcmp(name, "System.ICloneable") == 0) {
+                    return true;
+                }
+            }
+        }
+    }
+
+    return false;
 }
 
 Object* object_as(Object* obj, TypeInfo* type) {

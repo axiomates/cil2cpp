@@ -2935,8 +2935,11 @@ public partial class CppCodeGenerator
                         if ((afterSpace.StartsWith("loc_") || afterSpace.StartsWith("__t"))
                             && afterSpace.Contains(" = "))
                         {
-                            var typeName = s[..spaceIdx].TrimEnd('*');
-                            if (IsUndefinedBclType(typeName, knownTypes))
+                            var rawType = s[..spaceIdx];
+                            var typeName = rawType.TrimEnd('*');
+                            // Pointer locals (Type* loc_N = nullptr) only need a forward declaration —
+                            // don't flag them. Only value-type locals (Type loc_N = {}) need full struct def.
+                            if (!rawType.EndsWith("*") && IsUndefinedBclType(typeName, knownTypes))
                                 return $"undefined type '{typeName}' used as local variable (C2027)";
                         }
                     }
@@ -3074,15 +3077,34 @@ public partial class CppCodeGenerator
             return "sizeof(void) — incomplete type (C2070)";
 
         // void* argument passed to function expecting cil2cpp::Array* — conv.u erased pointer type (C2664)
+        // Exclude lines where Array* appears only as Array** (ref/out parameter) — those
+        // are pointer-to-pointer and don't require void*→Array* conversion.
         if (rendered.Contains("(void*)") && rendered.Contains("cil2cpp::Array*"))
         {
             foreach (var line in rendered.AsSpan().EnumerateLines())
             {
                 var s = line.ToString().TrimStart();
-                // Function call with void* argument where Array* is expected
                 if (s.Contains("void*)") && !s.Contains("null_check") &&
                     s.Contains("cil2cpp::Array*") && !s.Contains("(cil2cpp::Array*)"))
-                    return "void* passed to function expecting Array* (C2664)";
+                {
+                    // Check that Array* is NOT followed by another * (which would be Array**)
+                    var hasRealArrayPtr = false;
+                    var searchStart = 0;
+                    while (true)
+                    {
+                        var idx = s.IndexOf("cil2cpp::Array*", searchStart);
+                        if (idx < 0) break;
+                        var afterIdx = idx + "cil2cpp::Array*".Length;
+                        if (afterIdx >= s.Length || s[afterIdx] != '*')
+                        {
+                            hasRealArrayPtr = true;
+                            break;
+                        }
+                        searchStart = afterIdx;
+                    }
+                    if (hasRealArrayPtr)
+                        return "void* passed to function expecting Array* (C2664)";
+                }
             }
         }
 
