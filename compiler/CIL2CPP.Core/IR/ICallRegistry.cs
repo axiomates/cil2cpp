@@ -28,6 +28,11 @@ public static class ICallRegistry
         RegisterICall("System.Object", "GetType", 0, "cil2cpp::object_get_type_managed");
         RegisterICall("System.Object", "MemberwiseClone", 0, "cil2cpp::object_memberwise_clone");
 
+        // Exception.GetType() hides Object.GetType() with 'new' keyword.
+        // System.Exception is a CoreRuntimeType so its instance methods are skipped during
+        // normal emission — register as ICall to avoid stub.
+        RegisterICall("System.Exception", "GetType", 0, "cil2cpp::object_get_type_managed");
+
         // ===== System.Object (virtual methods — runtime default implementations) =====
         // These have IL bodies in BCL but are called through vtable dispatch.
         // Runtime needs default implementations for types that don't override.
@@ -546,6 +551,15 @@ public static class ICallRegistry
             "cil2cpp::icall::ThrowHelper_GetResourceString");
         RegisterICall("System.ThrowHelper", "GetArgumentName", 1,
             "cil2cpp::icall::ThrowHelper_GetArgumentName");
+
+        // ===== System.SR (resource string resolution) =====
+        // AOT: return the resource key directly instead of going through ResourceManager.
+        // The full SR.InternalGetResourceString path triggers CultureInfo initialization which
+        // creates an infinite recursion cycle (CultureNotSupported → SR.GetResourceString → CultureInfo → ...).
+        RegisterICall("System.SR", "InternalGetResourceString", 1,
+            "cil2cpp::icall::SR_GetResourceString");
+        RegisterICall("System.SR", "GetResourceString", 1,
+            "cil2cpp::icall::SR_GetResourceString");
 
         // ===== System.Diagnostics.Tracing.EventSource (no-op — ETW tracing disabled in AOT) =====
         // EventSource is excluded by ReachabilityAnalyzer (System.Diagnostics.Tracing namespace),

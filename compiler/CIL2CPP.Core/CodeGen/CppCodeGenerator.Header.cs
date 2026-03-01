@@ -1555,6 +1555,13 @@ public partial class CppCodeGenerator
                 return true;
         }
 
+        // AOT: RunClassConstructor is a no-op — all static constructors are guaranteed to run
+        // before first use via ensure_cctor(). The IL body calls GetRuntimeType() which returns null
+        // in AOT mode, causing infinite recursion through SR resource string loading.
+        if (method.DeclaringType?.ILFullName == "System.Runtime.CompilerServices.RuntimeHelpers" &&
+            method.Name == "RunClassConstructor")
+            return true;
+
         // Function pointer types in parameters, return types, or locals — IL function pointers
         // produce "method..." mangled names which are not valid C++ types. These appear in P/Invoke
         // callback delegates (EnumCalendarInfoExEx, etc.), ActivatorCache, DateTime fnptr, etc.
@@ -3173,6 +3180,37 @@ public partial class CppCodeGenerator
         // Phase III.14 added (void*) intermediate casts for all typed pointer args,
         // and EmitMethodCall/EmitNewObj use (Type*)(void*) casts, so Socket*→Object*
         // conversions go through void* and compile correctly in MSVC.
+
+        // FIXME: Utf16Char returned from interface method call — generic interface return type
+        // resolution picks wrong specialization for IEnumerator<T>.Current
+        if (rendered.Contains("System_Utf16Char") && rendered.Contains("loc_") &&
+            rendered.Contains("IEnumerator"))
+            return "Utf16Char interface return type mismatch";
+
+        // FIXME: Field type mismatch — f_lazyPublicKey declared as Array* but accessed as PublicKey*.
+        // Root cause: field type resolution maps PublicKey to Array* incorrectly.
+        if (rendered.Contains("f_lazyPublicKey") && rendered.Contains("PublicKey"))
+            return "field type mismatch: lazyPublicKey Array* vs PublicKey*";
+
+        // FIXME: Undeclared ArraySegment generic specialization — generic discovery doesn't find
+        // ArraySegment<KeyValuePair<...>> specializations transitively
+        if (rendered.Contains("unbox<") && rendered.Contains("ArraySegment_1_"))
+        {
+            if (knownTypes != null)
+            {
+                var unboxIdx = rendered.IndexOf("unbox<");
+                if (unboxIdx >= 0)
+                {
+                    var closeIdx = rendered.IndexOf('>', unboxIdx + 6);
+                    if (closeIdx > unboxIdx)
+                    {
+                        var typeName = rendered[(unboxIdx + 6)..closeIdx];
+                        if (!knownTypes.Contains(typeName))
+                            return $"unbox of undeclared ArraySegment specialization '{typeName}'";
+                    }
+                }
+            }
+        }
 
         return null;
     }

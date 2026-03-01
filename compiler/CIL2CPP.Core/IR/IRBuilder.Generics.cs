@@ -1527,6 +1527,9 @@ public partial class IRBuilder
                     // Resolve the argument through active map (handles nested generics)
                     var argResolved = ResolveTypeRefOperand(git.GenericArguments[i]);
                     localMap[paramName] = argResolved;
+                    // Also add position-based key (!0, !1, etc.) for Cecil field types
+                    // that use position syntax instead of named parameters
+                    localMap[$"!{i}"] = argResolved;
                 }
 
                 return ResolveGenericTypeName(fieldRef.FieldType, localMap);
@@ -1661,11 +1664,31 @@ public partial class IRBuilder
             var resolved = ResolveGenericParamInCppType(irMethod.TempVarTypes[key], typeParamMap);
             if (resolved != irMethod.TempVarTypes[key])
                 irMethod.TempVarTypes[key] = resolved;
-            // Also resolve mangled names in TempVarTypes
+            // Also resolve mangled names in TempVarTypes (boundary-aware to avoid
+            // _1_T matching inside _1_ThreadLocalArray)
             foreach (var (from, to) in mangledResolvedMap)
             {
                 if (irMethod.TempVarTypes[key].Contains(from))
-                    irMethod.TempVarTypes[key] = irMethod.TempVarTypes[key].Replace(from, to);
+                    irMethod.TempVarTypes[key] = System.Text.RegularExpressions.Regex.Replace(
+                        irMethod.TempVarTypes[key],
+                        System.Text.RegularExpressions.Regex.Escape(from) + @"(?![a-zA-Z])",
+                        to);
+            }
+        }
+
+        // Resolve generic params in local variable types
+        foreach (var local in irMethod.Locals)
+        {
+            var resolved = ResolveGenericParamInCppType(local.CppTypeName, typeParamMap);
+            if (resolved != local.CppTypeName)
+                local.CppTypeName = resolved;
+            foreach (var (from, to) in mangledResolvedMap)
+            {
+                if (local.CppTypeName.Contains(from))
+                    local.CppTypeName = System.Text.RegularExpressions.Regex.Replace(
+                        local.CppTypeName,
+                        System.Text.RegularExpressions.Regex.Escape(from) + @"(?![a-zA-Z])",
+                        to);
             }
         }
 

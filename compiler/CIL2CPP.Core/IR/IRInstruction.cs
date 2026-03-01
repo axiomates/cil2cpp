@@ -172,6 +172,18 @@ public class IRBinaryOp : IRInstruction
                 return $"{ResultVar} = cil2cpp::unsigned_le({Left}, {Right});";
             return $"{ResultVar} = cil2cpp::to_unsigned({Left}) {Op} cil2cpp::to_unsigned({Right});";
         }
+        // ECMA-335 III.4.1: signed comparisons (clt/cgt).
+        // CLI evaluation stack doesn't distinguish signed/unsigned — signedness comes from the
+        // instruction. Use signed_lt/gt/ge/le to ensure signed semantics even when C++ operand
+        // types are unsigned (e.g., uint64_t from ulong fields in Int128).
+        if (Op == ">")
+            return $"{ResultVar} = cil2cpp::signed_gt({Left}, {Right});";
+        if (Op == "<")
+            return $"{ResultVar} = cil2cpp::signed_lt({Left}, {Right});";
+        if (Op == ">=")
+            return $"{ResultVar} = cil2cpp::signed_ge({Left}, {Right});";
+        if (Op == "<=")
+            return $"{ResultVar} = cil2cpp::signed_le({Left}, {Right});";
         return $"{ResultVar} = {Left} {Op} {Right};";
     }
 }

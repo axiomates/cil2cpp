@@ -970,6 +970,45 @@ def cmd_integration(args):
     runner.step("CMake configure + build SocketTest", sk_cmake_and_build)
     runner.step("Run SocketTest and verify output", sk_run_verify)
 
+    # ===== Phase 11: HttpTest (HttpClient construction via BCL IL) =====
+    header("Phase 11: HttpTest (HttpClient construction via BCL IL)")
+
+    ht_sample = TESTPROJECTS_DIR / "HttpTest" / "HttpTest.csproj"
+    ht_output = temp_dir / "httptest_output"
+
+    def ht_codegen():
+        run(["dotnet", "run", "--project", str(CLI_PROJECT), "--",
+             "codegen", "-i", str(ht_sample), "-o", str(ht_output)],
+            capture=True)
+
+    def ht_files_exist():
+        for f in ["HttpTest.h", "HttpTest_data.cpp", "HttpTest_stubs.cpp",
+                   "main.cpp", "CMakeLists.txt"]:
+            if not (ht_output / f).exists():
+                raise RuntimeError(f"Missing: {f}")
+
+    def ht_cmake_and_build():
+        ht_build = ht_output / "build"
+        run(["cmake", "-B", str(ht_build), "-S", str(ht_output),
+             "-G", generator, *cmake_arch,
+             f"-DCMAKE_PREFIX_PATH={runtime_prefix}"], capture=True)
+        run(["cmake", "--build", str(ht_build), "--config", config], capture=True)
+
+    def ht_run_verify():
+        ht_build = ht_output / "build"
+        exe = _exe_path(ht_build, config, "HttpTest")
+        r = subprocess.run([str(exe)], capture_output=True, text=True, check=False, timeout=30)
+        out = r.stdout
+        if "=== Done ===" not in out:
+            raise RuntimeError(f"HttpTest output missing '=== Done ==='\n{out}\n{r.stderr}")
+        if "HttpClient: OK" not in out:
+            raise RuntimeError(f"HttpTest: HttpClient construction failed\n{out}\n{r.stderr}")
+
+    runner.step("Codegen HttpTest", ht_codegen)
+    runner.step("Generated files exist", ht_files_exist)
+    runner.step("CMake configure + build HttpTest", ht_cmake_and_build)
+    runner.step("Run HttpTest and verify output", ht_run_verify)
+
     # ===== Cleanup =====
     header("Cleanup")
 

@@ -272,6 +272,7 @@ cil2cpp::Object* ThrowHelper_GetArgumentException(Int32 resource);
 cil2cpp::Object* ThrowHelper_GetArgumentException2(Int32 resource, Int32 argument);
 cil2cpp::Object* ThrowHelper_GetArgumentOutOfRangeException(Int32 argument);
 cil2cpp::Object* ThrowHelper_GetInvalidOperationException(Int32 resource);
+cil2cpp::String* SR_GetResourceString(cil2cpp::String* key);
 cil2cpp::String* ThrowHelper_GetResourceString(Int32 resource);
 cil2cpp::String* ThrowHelper_GetArgumentName(Int32 argument);
 

@@ -402,13 +402,20 @@ public partial class CppCodeGenerator
         if (isExe)
         {
             sb.AppendLine($"    target_link_options({projectName} PRIVATE");
-            sb.AppendLine("        $<$<CONFIG:Debug>:/DEBUG>)");
+            sb.AppendLine("        $<$<CONFIG:Debug>:/DEBUG>");
+            // BCL cctor chains can be deep; use 8MB stack instead of default 1MB
+            sb.AppendLine("        /STACK:8388608)");
         }
         sb.AppendLine("else()");
         sb.AppendLine($"    target_compile_options({projectName} PRIVATE");
         sb.AppendLine("        $<$<CONFIG:Debug>:-g -O0>");
         sb.AppendLine("        $<$<CONFIG:Release>:-O2 -DNDEBUG>");
         sb.AppendLine("    )");
+        if (isExe)
+        {
+            // HACK: BCL cctor chains (e.g. HttpClient) can be very deep; default stack may overflow
+            sb.AppendLine($"    target_link_options({projectName} PRIVATE -Wl,-z,stacksize=8388608)");
+        }
         sb.AppendLine("endif()");
 
         // Copy ICU DLLs to output directory (Windows only)

@@ -94,6 +94,39 @@ inline bool unsigned_ge(T1 a, T2 b) { return to_unsigned(a) >= to_unsigned(b); }
 template<typename T1, typename T2, std::enable_if_t<!std::is_floating_point_v<T1> && !std::is_floating_point_v<T2>, int> = 0>
 inline bool unsigned_le(T1 a, T2 b) { return to_unsigned(a) <= to_unsigned(b); }
 
+// ===== Signed Comparison Helper =====
+// Used by clt / cgt IL opcodes which interpret operands as signed.
+// CLI evaluation stack doesn't distinguish signed/unsigned — signedness comes from the instruction.
+// When C++ operands are unsigned (e.g., uint64_t from ulong fields), clt must still do signed comparison.
+template<typename T, std::enable_if_t<std::is_integral_v<T> && !std::is_same_v<T, bool>, int> = 0>
+inline auto to_signed(T v) { return static_cast<std::make_signed_t<T>>(v); }
+
+inline auto to_signed(bool v) { return static_cast<int>(v); }
+
+template<typename T, std::enable_if_t<std::is_pointer_v<T>, int> = 0>
+inline auto to_signed(T v) { return reinterpret_cast<intptr_t>(v); }
+
+template<typename T, std::enable_if_t<std::is_enum_v<T>, int> = 0>
+inline auto to_signed(T v) { return static_cast<std::make_signed_t<std::underlying_type_t<T>>>(v); }
+
+// Float/double: to_signed is identity (float comparison is already signed)
+inline float to_signed(float v) { return v; }
+inline double to_signed(double v) { return v; }
+
+// ===== Signed Comparison — ECMA-335 III.4.1 =====
+// clt/cgt on integers: compare as signed.  On floats: standard ordered comparison.
+template<typename T1, typename T2>
+inline bool signed_gt(T1 a, T2 b) { return to_signed(a) > to_signed(b); }
+
+template<typename T1, typename T2>
+inline bool signed_lt(T1 a, T2 b) { return to_signed(a) < to_signed(b); }
+
+template<typename T1, typename T2>
+inline bool signed_ge(T1 a, T2 b) { return to_signed(a) >= to_signed(b); }
+
+template<typename T1, typename T2>
+inline bool signed_le(T1 a, T2 b) { return to_signed(a) <= to_signed(b); }
+
 // ===== Volatile Read/Write =====
 // System.Threading.Volatile.Read/Write — JIT intrinsics for volatile memory access.
 // Volatile.Read = acquire: load THEN fence (prevents subsequent ops from reordering before the read).

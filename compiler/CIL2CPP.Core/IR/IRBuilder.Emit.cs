@@ -264,6 +264,16 @@ public partial class IRBuilder
             condition = $"cil2cpp::unsigned_le({left}, {right})";
         else if (isUnsigned)
             condition = $"cil2cpp::to_unsigned({left}) {op} cil2cpp::to_unsigned({right})";
+        // Signed comparisons: use signed_lt/gt/ge/le to ensure signed semantics
+        // even when C++ operand types are unsigned (e.g., uint64_t from ulong fields)
+        else if (op == ">")
+            condition = $"cil2cpp::signed_gt({left}, {right})";
+        else if (op == "<")
+            condition = $"cil2cpp::signed_lt({left}, {right})";
+        else if (op == ">=")
+            condition = $"cil2cpp::signed_ge({left}, {right})";
+        else if (op == "<=")
+            condition = $"cil2cpp::signed_le({left}, {right})";
         else
             condition = $"{left} {op} {right}";
         block.Instructions.Add(new IRConditionalBranch

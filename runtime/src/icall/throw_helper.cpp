@@ -252,6 +252,12 @@ cil2cpp::Object* ThrowHelper_GetInvalidOperationException(Int32 resource) {
     return reinterpret_cast<Object*>(ex);
 }
 
+// AOT: SR.GetResourceString / SR.InternalGetResourceString — return the key directly
+// instead of going through ResourceManager which triggers CultureInfo initialization cycles.
+cil2cpp::String* SR_GetResourceString(cil2cpp::String* key) {
+    return key;
+}
+
 cil2cpp::String* ThrowHelper_GetResourceString(Int32 resource) {
     if (resource >= 0 && resource < g_resource_strings_count) {
         return string_create_utf8(g_resource_strings[resource]);

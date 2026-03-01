@@ -1465,11 +1465,11 @@ public partial class IRBuilder
                     expr = $"&{obj}->{fieldName}";
                 var fldaTypeName2 = ResolveFieldTypeRef(fieldRef);
                 var fldaTypeCpp2 = CppNameMapper.GetCppTypeForDecl(fldaTypeName2);
-                // ldflda pushes a pointer to the field
-                var fldaPtrType2 = fldaTypeCpp2.EndsWith("*") ? fldaTypeCpp2 : fldaTypeCpp2 + "*";
+                // ldflda pushes a pointer to the field — always add one level of indirection
+                var fldaPtrType2 = fldaTypeCpp2 + "*";
                 block.Instructions.Add(new IRRawCpp
                 {
-                    Code = $"{tmp3} = {expr};",
+                    Code = $"{tmp3} = ({fldaPtrType2}){expr};",
                     ResultVar = tmp3,
                     ResultTypeCpp = fldaPtrType2,
                 });
@@ -1502,7 +1502,7 @@ public partial class IRBuilder
                 var tmp = $"__t{tempCounter++}";
                 var sfaTypeName = ResolveFieldTypeRef(fieldRef);
                 var sfaTypeCpp = CppNameMapper.GetCppTypeForDecl(sfaTypeName);
-                var sfaPtrType = sfaTypeCpp.EndsWith("*") ? sfaTypeCpp : sfaTypeCpp + "*";
+                var sfaPtrType = sfaTypeCpp + "*";
                 block.Instructions.Add(new IRRawCpp
                 {
                     Code = $"auto {tmp} = &{typeCppName}_statics.{CppNameMapper.MangleFieldName(fieldRef.Name)};",
