@@ -49,7 +49,12 @@ cil2cpp/
 │   ├── HelloWorld/
 │   ├── ArrayTest/
 │   ├── FeatureTest/
-│   └── MultiAssemblyTest/
+│   ├── MultiAssemblyTest/
+│   ├── FileStreamTest/
+│   ├── SystemIOTest/
+│   ├── SocketTest/
+│   ├── HttpTest/
+│   └── MathLib/
 ├── runtime/                    # C++ runtime library (CMake)
 │   ├── CMakeLists.txt
 │   ├── cmake/                  #   CMake package config template
@@ -127,7 +132,7 @@ CIL2CPP adopts the same strategy as Unity IL2CPP: **all BCL methods with IL bodi
 ```
 Method call
   ↓
-ICallRegistry lookup (~270 mappings)
+ICallRegistry lookup (~400 mappings)
   ├─ Hit → [InternalCall] method, no IL body
   │         GC / Monitor / Interlocked / Buffer / Math / IO / Globalization etc.
   │         → Call C++ runtime implementation

@@ -1,6 +1,6 @@
 # CIL2CPP Capabilities
 
-> Last updated: 2026-02-25
+> Last updated: 2026-03-01
 >
 > This document describes what CIL2CPP **can currently do**. For development plans and progress, see [roadmap.md](roadmap.md).
 >
@@ -8,17 +8,17 @@
 
 ## Overview
 
-CIL2CPP is a C# → C++ AOT compiler (similar to Unity IL2CPP). Currently supports complete C# syntax (100% IL opcode coverage), BCL compiled from IL (Unity IL2CPP architecture), ~270 ICall entries. 1,240 C# + 591 C++ + 35 integration tests all passing.
+CIL2CPP is a C# → C++ AOT compiler (similar to Unity IL2CPP). Currently supports complete C# syntax (100% IL opcode coverage), BCL compiled from IL (Unity IL2CPP architecture), ~400 ICall entries. 1,240 C# + 592 C++ + 47 integration tests all passing.
 
 ## Key Metrics
 
 | Metric | Count |
 |--------|-------|
 | IL opcode coverage | **100%** (all ~230 ECMA-335 opcodes) |
-| ICallRegistry entries | **~270** (covering 30+ categories) |
+| ICallRegistry entries | **~400** (covering 30+ categories) |
 | C# compiler tests | **~1,240** (xUnit) |
-| C++ runtime tests | **591** (Google Test, 18 test files) |
-| End-to-end integration tests | **35** (9 stages) |
+| C++ runtime tests | **592** (Google Test, 18 test files) |
+| End-to-end integration tests | **47** (11 stages) |
 | Runtime headers | **32** |
 
 ---
@@ -109,7 +109,7 @@ CIL2CPP is a C# → C++ AOT compiler (similar to Unity IL2CPP). Currently suppor
 | yield return / IEnumerable | ✅ | Iterator state machines |
 | IAsyncEnumerable\<T\> | ✅ | await foreach |
 | System.IO (File/Path/Directory) | ✅ | 22 ICalls, C++17 filesystem |
-| System.Net | ❌ | Low-level icall not implemented |
+| System.Net (Socket/DNS) | ⚠️ | Socket TCP loopback ✅, DNS resolution ✅, HttpClient construction ✅ (Windows, via Winsock P/Invoke). Full HTTP GET pending |
 
 ### Delegates & Events
 
@@ -223,7 +223,7 @@ System.IO uses ICall interception at the public API level, intercepting File/Pat
 |-----------|-------------|
 | CLR internal type dependencies | BCL IL references QCallTypeHandle / MetadataImport etc. → method bodies auto-stubbed |
 | BCL deep dependency chains | Middle layers stubbed → upper-level methods unavailable |
-| System.Net | Network layer low-level icall not implemented |
+| System.Net (full HTTP) | HttpClient can be constructed, full HTTP GET request/response chain pending |
 | Regex internals | Depends on CLR internal RegexCache etc. |
 | SIMD | Requires platform-specific intrinsics, currently uses scalar fallback structs |
 
@@ -253,9 +253,9 @@ System.IO uses ICall interception at the public API level, intercepting File/Pat
 | Threading | 17 |
 | GC | 16 |
 | TypedReference | 11 |
-| **Total** | **591** |
+| **Total** | **592** |
 
-### End-to-End Integration Tests (35, 9 stages)
+### End-to-End Integration Tests (47, 11 stages)
 
 | Stage | Test Content | Count |
 |-------|-------------|-------|
@@ -268,4 +268,7 @@ System.IO uses ICall interception at the public API level, intercepting File/Pat
 | ArglistTest | Varargs | 5 |
 | FeatureTest | Comprehensive language features codegen-only | 3 |
 | SystemIOTest | System.IO end-to-end | 4 |
-| **Total** | | **35** |
+| FileStreamTest | FileStream BCL IL chain (write/read/streamwriter/streamreader) | 4 |
+| SocketTest | TCP loopback + DNS resolution via Winsock P/Invoke | 4 |
+| HttpTest | HttpClient construction from BCL IL | 4 |
+| **Total** | | **47** |

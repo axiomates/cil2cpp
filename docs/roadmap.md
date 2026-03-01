@@ -1,6 +1,6 @@
 # Development Roadmap
 
-> Last updated: 2026-02-28
+> Last updated: 2026-03-01
 >
 > [中文版 (Chinese)](roadmap.zh-CN.md)
 
@@ -89,20 +89,20 @@ IL2CPP compiles from IL: Task/async entire family, CancellationToken/Source, Wai
 
 See "RuntimeProvided Type Classification" section above.
 
-### Stub Distribution (HelloWorld, 1,478 stubs, ~95.2% translation rate)
+### Stub Distribution (HelloWorld, 1,565 stubs, ~95% translation rate)
 
 | Category | Count | % | Nature |
 |----------|-------|---|--------|
-| MissingBody | 666 | 45.1% | No IL body (abstract/extern/JIT intrinsic) — most are legitimate |
-| KnownBrokenPattern | 620 | 41.9% | SIMD 333 + line-level body scan patterns + TypeHandle/MethodTable |
-| UndeclaredFunction | 68 | 4.6% | Generic specialization missing (IRBuilder didn't create specialization type) |
-| ClrInternalType | 96 | 6.5% | QCall/MetadataImport CLR JIT-specific types |
-| RenderedBodyError | 28 | 1.9% | Codegen bugs (PInvoke callbacks, reflection aliases, pointer casts) |
+| MissingBody | 664 | 42.4% | No IL body (abstract/extern/JIT intrinsic) — most are legitimate |
+| KnownBrokenPattern | 621 | 39.7% | SIMD 333 + line-level body scan patterns + TypeHandle/MethodTable |
+| UndeclaredFunction | 68 | 4.3% | Generic specialization missing (IRBuilder didn't create specialization type) |
+| ClrInternalType | 96 | 6.1% | QCall/MetadataImport CLR JIT-specific types |
+| RenderedBodyError | 116 | 7.4% | Codegen bugs — increased from 28 as Phase C expanded compilation scope |
 
 **Unfixable or deferred**: SIMD (333+) needs intrinsics support or runtime fallback. CLR internal types (96) are permanently retained.
 
-**IL translation rate**: ~95.2% (29,249 compiled / 30,727 total methods). Phase A: 2,777 → 1,537; Phase B: 1,537 → 1,478.
-**Tests**: 1,240 C# + 592 C++ + 39 integration — all passing.
+**IL translation rate**: ~95%. Phase A: 2,777 → 1,537; Phase B: 1,537 → 1,478; Phase C: 1,478 → 1,565 (RenderedBodyError increase from expanded generic discovery).
+**Tests**: 1,240 C# + 592 C++ + 47 integration — all passing.
 
 ### Implemented Architecture Capabilities
 
@@ -118,9 +118,9 @@ See "RuntimeProvided Type Classification" section above.
 | Simple console apps | ~95% | Basic BCL chain works, 95.2% translation rate |
 | Library projects | ~85% | Collections, generics, async, reflection all available |
 | File I/O apps | ~85% | FileStream/StreamReader BCL IL chain end-to-end (Windows ✅), Linux pending System.Native |
-| Network apps | ~10% | Socket/HttpClient BCL IL chain not verified, System.Native not integrated |
+| Network apps | ~40% | Socket ✅ (TCP loopback), DNS ✅, HttpClient construction ✅; full HTTP GET + Linux pending |
 | Production-grade apps | ~5% | Needs TLS + JSON + DI etc. complete BCL chains |
-| Arbitrary NativeAOT .csproj | ~35% | Compiler mature (1,478 stubs) but native lib integration + NativeAOT metadata pending |
+| Arbitrary NativeAOT .csproj | ~35% | Compiler mature (1,565 stubs) but native lib integration + NativeAOT metadata pending |
 
 ---
 
@@ -221,7 +221,7 @@ See "RuntimeProvided Type Classification" section above.
 
 **Output**: M1 milestone achieved. BCL intermediate method chains significantly unlocked.
 
-### Phase B: BCL Chain Validation — Streaming I/O (in progress)
+### Phase B: BCL Chain Validation — Streaming I/O ✅ (Windows)
 
 **Goal**: `File.OpenRead(path)` / `new StreamReader(path)` compile from BCL IL and run
 
@@ -244,7 +244,7 @@ See "RuntimeProvided Type Classification" section above.
 **Prerequisites**: Phase A ✅
 **Output**: FileStream end-to-end compiled from BCL IL — **Windows working** ✅, Linux needs System.Native
 
-### Phase C: BCL Chain Extension — Networking
+### Phase C: BCL Chain Extension — Networking (in progress)
 
 **Goal**: `HttpClient.GetStringAsync("http://...")` compiles from BCL IL
 
@@ -254,16 +254,17 @@ See "RuntimeProvided Type Classification" section above.
 - **Windows**: Socket → P/Invoke to **ws2_32.dll** (Winsock2)
 - **Linux**: Socket → P/Invoke to **System.Native** (already integrated in Phase B.3)
 
-| # | Task | Estimate | Description |
-|---|------|----------|-------------|
-| C.1 | Trace Socket BCL IL chain | Medium | Socket → SafeSocketHandle → Interop.Winsock (Win) / System.Native (Linux) |
-| C.2 | Fix stubs found in chain | High | Same as B.2 |
-| C.3 | Trace HttpClient BCL IL chain | High | SocketsHttpHandler → Socket → MemoryPool → HPack |
-| C.4 | DNS P/Invoke verification | Low | getaddrinfo is P/Invoke, should work directly |
-| C.5 | End-to-end integration tests | Low | HTTP GET (plaintext) |
+| # | Task | Estimate | Status | Description |
+|---|------|----------|--------|-------------|
+| C.1 | Trace Socket BCL IL chain | Medium | ✅ | Socket → SafeSocketHandle → Interop.Winsock P/Invoke (Windows). RuntimeType fix + ObjectHasComponentSize ICall |
+| C.2 | TCP socket lifecycle | High | ✅ | Full TCP loopback: bind/listen/connect/accept/send/recv via Winsock P/Invoke. Gate patterns for pointer locals, Array ref/out, delegate cross-scope |
+| C.3 | HttpClient construction | High | ✅ | HttpClient → SocketsHttpHandler → HttpConnectionSettings → TimeSpan/Int128. 5 compiler/runtime fixes: signed comparison (`clt`/`cgt` → `signed_lt/gt`), Exception.GetType ICall, SR resource string ICall, RunClassConstructor stub, generic nested type name mangling (boundary-aware regex) |
+| C.4 | DNS resolution | Low | ✅ | `Dns.GetHostAddresses` via Winsock GetAddrInfoW P/Invoke. `dup` opcode decoupling fix for `a[i++]` patterns |
+| C.5 | Integration tests | Low | ✅ | SocketTest (TCP loopback + DNS) + HttpTest (HttpClient construction) — 47/47 integration tests pass |
+| C.6 | Full HTTP GET (plaintext) | High | Pending | `client.GetStringAsync("http://...").Result` — async HTTP request/response chain |
 
-**Prerequisites**: Phase B
-**Output**: HttpClient plaintext HTTP available
+**Prerequisites**: Phase B ✅
+**Output**: Socket + DNS + HttpClient construction working (Windows). Full HTTP GET pending.
 
 ### Phase D: NativeAOT Metadata (parallelizable with Phase C)
 
@@ -336,9 +337,9 @@ Phase V.1 (Task dependency analysis) ✅
        ↓
 Phase A (Compiler finalization — fix stub root causes) ✅ — 2,777→1,478, -46.8%, 95.2%
        ↓
-Phase B (FileStream BCL IL chain validation) — Windows ✅, B.5/B.6 pending
+Phase B (FileStream BCL IL chain validation) ✅ — Windows complete, B.5/B.6 pending
        ↓
-Phase C (Socket/HTTP BCL IL chain)  ←→  Phase D (NativeAOT metadata)  [parallelizable]
+Phase C (Socket/HTTP BCL IL chain) — C.1-C.5 ✅, C.6 pending  ←→  Phase D (NativeAOT metadata)  [parallelizable]
        ↓                                  ↓
             Phase E (Native library linking: TLS/zlib)  [convergence]
                  ↓
@@ -355,7 +356,7 @@ Phase C (Socket/HTTP BCL IL chain)  ←→  Phase D (NativeAOT metadata)  [paral
 |-----------|---------|-------|
 | **M1: Compiler Maturity** | stubs < 2,000, translation rate > 92% | A ✅ (1,478 stubs, 95.2%) |
 | **M2: File I/O** | FileStream/StreamReader compile from BCL IL and run | B (~90%, Windows ✅) |
-| **M3: Networked Apps** | HttpClient HTTP GET compiles from BCL IL and runs | C |
+| **M3: Networked Apps** | HttpClient HTTP GET compiles from BCL IL and runs | C (~60%: Socket+DNS+constructor ✅, full GET pending) |
 | **M4: Library Ecosystem** | DI + JSON (SG) + Logging compilable | D |
 | **M5: Production-Grade** | HTTPS + Compression | E |
 | **M6: Release** | CI/CD + 10 real package validation | G |
@@ -364,10 +365,10 @@ Phase C (Socket/HTTP BCL IL chain)  ←→  Phase D (NativeAOT metadata)  [paral
 
 | Metric | Definition | Current | Phase A Target | Long-term Target |
 |--------|-----------|---------|---------------|-----------------|
-| IL translation rate | (total_methods - stubs) / total_methods | **~95.2%** (1,478 stubs / 30,727 methods) | >92% ✅ | >95% ✅ |
+| IL translation rate | (total_methods - stubs) / total_methods | **~95%** (1,565 stubs / ~31k methods) | >92% ✅ | >95% |
 | RuntimeProvided count | RuntimeProvidedTypes entries | **32** (was 40, -8) | ~32 | ~25 (Phase F.2) |
 | CoreRuntime count | Methods fully provided by C++ | 22 | ~22 | ~10 (Phase F.4) |
-| ICall count | C++ internal calls | **~396** (321+30+45) | ~400 | Stabilize (features come from BCL IL, not ICall) |
+| ICall count | C++ internal calls | **~400** | ~400 | Stabilize (features come from BCL IL, not ICall) |
 
 ---
 

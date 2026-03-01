@@ -2,7 +2,7 @@
 
 An AOT compiler that compiles .NET/C# programs into native C++ code, similar to Unity IL2CPP.
 
-**Positioning**: General-purpose AOT compiler targeting .NET NativeAOT-level coverage. Uses Unity IL2CPP architecture — all BCL IL method bodies are compiled directly to C++, with only the lowest-level `[InternalCall]` C++ implementations (~270 icalls) retained.
+**Positioning**: General-purpose AOT compiler targeting .NET NativeAOT-level coverage. Uses Unity IL2CPP architecture — all BCL IL method bodies are compiled directly to C++, with only the lowest-level `[InternalCall]` C++ implementations (~400 icalls) retained.
 
 ```
 .csproj → dotnet build → .NET DLL (IL) → Mono.Cecil → IR (8 passes) → C++ source + CMakeLists.txt → native executable
@@ -111,10 +111,10 @@ void Program_Main() {
 | Metric | Count |
 |--------|-------|
 | IL opcode coverage | 100% (all ~230 ECMA-335 opcodes) |
-| ICallRegistry entries | ~270 |
+| ICallRegistry entries | ~400 |
 | C# compiler tests | ~1240 (xUnit) |
-| C++ runtime tests | 591 (Google Test) |
-| End-to-end integration tests | 35 |
+| C++ runtime tests | 592 (Google Test) |
+| End-to-end integration tests | 47 |
 
 ## Documentation
 
@@ -138,7 +138,7 @@ cil2cpp/
 ├── runtime/                    # C++ runtime (C++20, CMake)
 │   ├── include/cil2cpp/        #   Headers (32 files)
 │   ├── src/                    #   GC / type system / exception / BCL icall
-│   └── tests/                  #   Runtime tests (GTest, 591 tests)
+│   └── tests/                  #   Runtime tests (GTest, 592 tests)
 ├── tests/                      # Test C# projects
 ├── tools/dev.py                # Developer CLI
 └── docs/                       # Project documentation

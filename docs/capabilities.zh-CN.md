@@ -1,6 +1,6 @@
 # CIL2CPP 能力清单
 
-> 最后更新：2026-02-25
+> 最后更新：2026-03-01
 >
 > 本文档描述 CIL2CPP 当前**能做什么**。开发计划与进度见 [roadmap.zh-CN.md](roadmap.zh-CN.md)。
 >
@@ -8,17 +8,17 @@
 
 ## 概览
 
-CIL2CPP 是 C# → C++ AOT 编译器（类似 Unity IL2CPP）。当前支持完整 C# 语法（100% IL 操作码覆盖），BCL 从 IL 编译（Unity IL2CPP 架构），~270 个 ICall 条目。1,240 C# + 591 C++ + 35 集成测试全部通过。
+CIL2CPP 是 C# → C++ AOT 编译器（类似 Unity IL2CPP）。当前支持完整 C# 语法（100% IL 操作码覆盖），BCL 从 IL 编译（Unity IL2CPP 架构），~400 个 ICall 条目。1,240 C# + 592 C++ + 47 集成测试全部通过。
 
 ## 核心指标
 
 | 指标 | 数量 |
 |------|------|
 | IL 操作码覆盖率 | **100%**（全部 ~230 种 ECMA-335 操作码） |
-| ICallRegistry 条目 | **~270 个**（涵盖 30+ 类别） |
+| ICallRegistry 条目 | **~400 个**（涵盖 30+ 类别） |
 | C# 编译器测试 | **~1,240 个**（xUnit） |
-| C++ 运行时测试 | **591 个**（Google Test，18 个测试文件） |
-| 端到端集成测试 | **35 个**（9 个阶段） |
+| C++ 运行时测试 | **592 个**（Google Test，18 个测试文件） |
+| 端到端集成测试 | **47 个**（11 个阶段） |
 | 运行时头文件 | **32 个** |
 
 ---
@@ -109,7 +109,7 @@ CIL2CPP 是 C# → C++ AOT 编译器（类似 Unity IL2CPP）。当前支持完�
 | yield return / IEnumerable | ✅ | 迭代器状态机 |
 | IAsyncEnumerable\<T\> | ✅ | await foreach |
 | System.IO (File/Path/Directory) | ✅ | 22 个 ICall，C++17 filesystem |
-| System.Net | ❌ | 底层 icall 未实现 |
+| System.Net（Socket/DNS） | ⚠️ | Socket TCP 环回 ✅、DNS 解析 ✅、HttpClient 构造 ✅（Windows，Winsock P/Invoke）。完整 HTTP GET 待做 |
 
 ### 委托与事件
 
@@ -223,7 +223,7 @@ System.IO 采用 ICall 拦截模式，在公共 API 层拦截 File/Path/Director
 |------|------|
 | CLR 内部类型依赖 | BCL IL 引用 QCallTypeHandle / MetadataImport 等 CLR 内部类型 → 方法体自动 stub 化 |
 | BCL 深层依赖链 | 中间层被 stub 化 → 上层方法不可用 |
-| System.Net | 网络层底层 icall 未实现 |
+| System.Net（完整 HTTP） | HttpClient 已可构造，完整 HTTP GET 请求/响应链待做 |
 | Regex 内部 | 依赖 CLR 内部 RegexCache 等 |
 | SIMD | 需要平台特定 intrinsics，当前使用标量回退 struct |
 
@@ -253,9 +253,9 @@ System.IO 采用 ICall 拦截模式，在公共 API 层拦截 File/Path/Director
 | Threading | 17 |
 | GC | 16 |
 | TypedReference | 11 |
-| **合计** | **591** |
+| **合计** | **592** |
 
-### 端到端集成测试（35 个，9 个阶段）
+### 端到端集成测试（47 个，11 个阶段）
 
 | 阶段 | 测试内容 | 测试数 |
 |------|---------|--------|
@@ -268,4 +268,7 @@ System.IO 采用 ICall 拦截模式，在公共 API 层拦截 File/Path/Director
 | ArglistTest | 变长参数 | 5 |
 | FeatureTest | 综合语言特性 codegen-only | 3 |
 | SystemIOTest | System.IO 端到端 | 4 |
-| **合计** | | **35** |
+| FileStreamTest | FileStream BCL IL 链（write/read/streamwriter/streamreader） | 4 |
+| SocketTest | TCP 环回 + DNS 解析（Winsock P/Invoke） | 4 |
+| HttpTest | HttpClient 从 BCL IL 构造 | 4 |
+| **合计** | | **47** |

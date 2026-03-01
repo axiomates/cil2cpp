@@ -1,6 +1,6 @@
 # 开发路线图
 
-> 最后更新：2026-02-28
+> 最后更新：2026-03-01
 >
 > [English Version](roadmap.md)
 
@@ -89,20 +89,20 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 
 详见上方"RuntimeProvided 类型分类"章节。
 
-### Stub 分布（HelloWorld, 1,478 个 stubs，~95.2% 翻译率）
+### Stub 分布（HelloWorld, 1,565 个 stubs，~95% 翻译率）
 
 | 类别 | 数量 | 占比 | 性质 |
 |------|------|------|------|
-| MissingBody | 666 | 45.1% | 无 IL body（abstract/extern/JIT intrinsic）— 多数合理 |
-| KnownBrokenPattern | 620 | 41.9% | SIMD 333 + line-level 体扫描 patterns + TypeHandle/MethodTable |
-| UndeclaredFunction | 68 | 4.6% | 泛型特化缺失（IRBuilder 未创建特化类型） |
-| ClrInternalType | 96 | 6.5% | QCall/MetadataImport CLR JIT 专用类型 |
-| RenderedBodyError | 28 | 1.9% | Codegen bug（PInvoke 回调、反射别名类型、指针转换） |
+| MissingBody | 664 | 42.4% | 无 IL body（abstract/extern/JIT intrinsic）— 多数合理 |
+| KnownBrokenPattern | 621 | 39.7% | SIMD 333 + line-level 体扫描 patterns + TypeHandle/MethodTable |
+| UndeclaredFunction | 68 | 4.3% | 泛型特化缺失（IRBuilder 未创建特化类型） |
+| ClrInternalType | 96 | 6.1% | QCall/MetadataImport CLR JIT 专用类型 |
+| RenderedBodyError | 116 | 7.4% | Codegen bug — Phase C 扩展编译范围后增长（28→116） |
 
 **不可修复或暂缓**：SIMD (333+) 需要 intrinsics 支持或运行时回退。CLR 内部类型 (96) 永久保留。
 
-**IL 转译率**：~95.2%（29,249 已编译 / 30,727 总方法）。Phase A: 2,777 → 1,537; Phase B: 1,537 → 1,478。
-**测试**：1,240 C# + 592 C++ + 39 集成 — 全部通过。
+**IL 转译率**：~95%。Phase A: 2,777 → 1,537; Phase B: 1,537 → 1,478; Phase C: 1,478 → 1,565（泛型发现扩展导致 RenderedBodyError 增长）。
+**测试**：1,240 C# + 592 C++ + 47 集成 — 全部通过。
 
 ### 已实现的架构能力
 
@@ -118,9 +118,9 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 | 简单控制台应用 | ~95% | 基本 BCL 链通畅，95.2% 翻译率 |
 | 类库项目 | ~85% | 集合、泛型、异步、反射都可用 |
 | 文件 I/O 应用 | ~85% | FileStream/StreamReader BCL IL 链端到端可用（Windows ✅），Linux 待 System.Native |
-| 网络应用 | ~10% | Socket/HttpClient BCL IL 链未验证，System.Native 未集成 |
+| 网络应用 | ~40% | Socket ✅（TCP 环回）、DNS ✅、HttpClient 构造 ✅；完整 HTTP GET + Linux 待做 |
 | 生产级应用 | ~5% | 需要 TLS + JSON + DI 等完整 BCL 链 |
-| 任意 NativeAOT .csproj | ~35% | 编译器成熟（1,478 stubs）但原生库集成 + NativeAOT 元数据待做 |
+| 任意 NativeAOT .csproj | ~35% | 编译器成熟（1,565 stubs）但原生库集成 + NativeAOT 元数据待做 |
 
 ---
 
@@ -220,7 +220,7 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 
 **产出**：M1 里程碑达成。BCL 中间方法大面积解锁。
 
-### Phase B: BCL 链验证 — Streaming I/O（进行中）
+### Phase B: BCL 链验证 — Streaming I/O ✅（Windows）
 
 **目标**：`File.OpenRead(path)` / `new StreamReader(path)` 从 BCL IL 编译并运行
 
@@ -243,7 +243,7 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 **前置**：Phase A ✅
 **产出**：FileStream 端到端从 BCL IL 编译 — **Windows 已通过** ✅，Linux 待 System.Native
 
-### Phase C: BCL 链扩展 — 网络
+### Phase C: BCL 链扩展 — 网络（进行中）
 
 **目标**：`HttpClient.GetStringAsync("http://...")` 从 BCL IL 编译
 
@@ -253,16 +253,17 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 - **Windows**：Socket → P/Invoke to **ws2_32.dll** (Winsock2)
 - **Linux**：Socket → P/Invoke to **System.Native**（Phase B.3 已集成）
 
-| # | 任务 | 预估 | 说明 |
-|---|------|------|------|
-| C.1 | 追踪 Socket BCL IL 链 | 中 | Socket → SafeSocketHandle → Interop.Winsock (Win) / System.Native (Linux) |
-| C.2 | 修复链中遇到的 stubs | 高 | 同 B.2 |
-| C.3 | 追踪 HttpClient BCL IL 链 | 高 | SocketsHttpHandler → Socket → MemoryPool → HPack |
-| C.4 | DNS P/Invoke 验证 | 低 | getaddrinfo 是 P/Invoke，应直接可用 |
-| C.5 | 端到端集成测试 | 低 | HTTP GET (明文) |
+| # | 任务 | 预估 | 状态 | 说明 |
+|---|------|------|------|------|
+| C.1 | 追踪 Socket BCL IL 链 | 中 | ✅ | Socket → SafeSocketHandle → Interop.Winsock P/Invoke (Windows)。RuntimeType 修复 + ObjectHasComponentSize ICall |
+| C.2 | TCP socket 生命周期 | 高 | ✅ | TCP 完整环回：bind/listen/connect/accept/send/recv（Winsock P/Invoke）。gate pattern 修复（指针 local、Array ref/out、delegate 跨作用域） |
+| C.3 | HttpClient 构造 | 高 | ✅ | HttpClient → SocketsHttpHandler → HttpConnectionSettings → TimeSpan/Int128。5 个编译器/运行时修复：有符号比较（`clt`/`cgt` → `signed_lt/gt`）、Exception.GetType ICall、SR 资源字符串 ICall、RunClassConstructor stub、泛型嵌套类型名 mangling（边界感知正则） |
+| C.4 | DNS 解析 | 低 | ✅ | `Dns.GetHostAddresses` 通过 Winsock GetAddrInfoW P/Invoke。`dup` 操作码解耦修复（`a[i++]` 模式） |
+| C.5 | 集成测试 | 低 | ✅ | SocketTest（TCP 环回 + DNS）+ HttpTest（HttpClient 构造）— 47/47 集成测试通过 |
+| C.6 | 完整 HTTP GET（明文） | 高 | 待定 | `client.GetStringAsync("http://...").Result` — 异步 HTTP 请求/响应链 |
 
-**前置**：Phase B
-**产出**：HttpClient 明文 HTTP 可用
+**前置**：Phase B ✅
+**产出**：Socket + DNS + HttpClient 构造已通过（Windows）。完整 HTTP GET 待做。
 
 ### Phase D: NativeAOT 元数据（可与 Phase C 并行）
 
@@ -335,9 +336,9 @@ Phase V.1 (Task 依赖分析) ✅
        ↓
 Phase A (编译器收尾 — 修 stubs 根因) ✅ — 2,777→1,478, -46.8%, 95.2%
        ↓
-Phase B (FileStream BCL IL 链验证) — Windows ✅, B.5/B.6 待定
+Phase B (FileStream BCL IL 链验证) ✅ — Windows 完成, B.5/B.6 待定
        ↓
-Phase C (Socket/HTTP BCL IL 链)  ←→  Phase D (NativeAOT 元数据)  [可并行]
+Phase C (Socket/HTTP BCL IL 链) — C.1-C.5 ✅, C.6 待定  ←→  Phase D (NativeAOT 元数据)  [可并行]
        ↓                                  ↓
             Phase E (原生库链接: TLS/zlib)  [汇合]
                  ↓
@@ -354,7 +355,7 @@ Phase C (Socket/HTTP BCL IL 链)  ←→  Phase D (NativeAOT 元数据)  [可并
 |--------|---------|---------|
 | **M1: 编译器成熟** | stubs < 2,000，翻译率 > 92% | A ✅（1,478 stubs, 95.2%） |
 | **M2: 文件 I/O** | FileStream/StreamReader 从 BCL IL 编译并运行 | B（~90%，Windows ✅） |
-| **M3: 联网应用** | HttpClient HTTP GET 从 BCL IL 编译并运行 | C |
+| **M3: 联网应用** | HttpClient HTTP GET 从 BCL IL 编译并运行 | C（~60%：Socket+DNS+构造 ✅，完整 GET 待做） |
 | **M4: 库生态** | DI + JSON (SG) + Logging 可编译 | D |
 | **M5: 生产级** | HTTPS + Compression | E |
 | **M6: 发布** | CI/CD + 10 真实包验证 | G |
@@ -363,10 +364,10 @@ Phase C (Socket/HTTP BCL IL 链)  ←→  Phase D (NativeAOT 元数据)  [可并
 
 | 指标 | 定义 | 当前值 | Phase A 目标 | 长期目标 |
 |------|------|--------|-------------|----------|
-| IL 转译率 | (total_methods - stubs) / total_methods | **~95.2%**（1,478 stubs / 30,727 方法） | >92% ✅ | >95% ✅ |
+| IL 转译率 | (total_methods - stubs) / total_methods | **~95%**（1,565 stubs / ~31k 方法） | >92% ✅ | >95% |
 | RuntimeProvided 数 | RuntimeProvidedTypes 条目 | **32**（was 40, -8） | ~32 | ~25（Phase F.2） |
 | CoreRuntime 数 | 方法完全由 C++ 提供 | 22 | ~22 | ~10（Phase F.4） |
-| ICall 数 | C++ 内部调用 | **~396**（321+30+45） | ~400 | 趋稳（功能来自 BCL IL，非 ICall） |
+| ICall 数 | C++ 内部调用 | **~400** | ~400 | 趋稳（功能来自 BCL IL，非 ICall） |
 
 ---
 
