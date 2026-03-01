@@ -34,3 +34,58 @@ public enum PInvokeCallingConvention
     /// <summary>Fast calling convention (__fastcall)</summary>
     FastCall,
 }
+
+/// <summary>
+/// ECMA-335 II.15.5.4 — [MarshalAs] unmanaged type specifier.
+/// Overrides the default marshaling behavior for P/Invoke parameters.
+/// Values match System.Runtime.InteropServices.UnmanagedType enum.
+/// </summary>
+public enum MarshalAsType
+{
+    /// <summary>Win32 BOOL (4-byte int)</summary>
+    Bool = 2,
+    /// <summary>Signed 8-bit integer</summary>
+    I1 = 3,
+    /// <summary>Unsigned 8-bit integer</summary>
+    U1 = 4,
+    /// <summary>Signed 16-bit integer</summary>
+    I2 = 5,
+    /// <summary>Unsigned 16-bit integer</summary>
+    U2 = 6,
+    /// <summary>Signed 32-bit integer</summary>
+    I4 = 7,
+    /// <summary>Unsigned 32-bit integer</summary>
+    U4 = 8,
+    /// <summary>Signed 64-bit integer</summary>
+    I8 = 9,
+    /// <summary>Unsigned 64-bit integer</summary>
+    U8 = 10,
+    /// <summary>32-bit floating point</summary>
+    R4 = 11,
+    /// <summary>64-bit floating point</summary>
+    R8 = 12,
+    /// <summary>ANSI string (char*)</summary>
+    LPStr = 20,
+    /// <summary>Unicode string (wchar_t* / char16_t*)</summary>
+    LPWStr = 21,
+    /// <summary>Platform-dependent string</summary>
+    LPTStr = 22,
+    /// <summary>Fixed-size character array in struct</summary>
+    ByValTStr = 23,
+    /// <summary>IUnknown interface pointer</summary>
+    IUnknown = 25,
+    /// <summary>IDispatch interface pointer</summary>
+    IDispatch = 26,
+    /// <summary>Native platform integer (intptr_t)</summary>
+    SysInt = 31,
+    /// <summary>Native platform unsigned integer (uintptr_t)</summary>
+    SysUInt = 32,
+    /// <summary>C function pointer</summary>
+    FunctionPtr = 38,
+    /// <summary>Pointer to first array element</summary>
+    LPArray = 42,
+    /// <summary>Pointer to struct</summary>
+    LPStruct = 43,
+    /// <summary>UTF-8 string (char*)</summary>
+    LPUtf8Str = 48,
+}

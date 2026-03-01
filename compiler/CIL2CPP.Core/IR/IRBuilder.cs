@@ -283,6 +283,7 @@ public partial class IRBuilder
     private readonly AssemblyReader _reader;
     private readonly IRModule _module;
     private readonly BuildConfiguration _config;
+    private readonly FeatureSwitchResolver _featureSwitchResolver;
     private readonly Dictionary<string, IRType> _typeCache = new();
 
     // volatile. prefix flag — set by Code.Volatile, consumed by next field access
@@ -335,6 +336,7 @@ public partial class IRBuilder
     {
         _reader = reader;
         _config = config ?? BuildConfiguration.Release;
+        _featureSwitchResolver = new FeatureSwitchResolver(_config.FeatureSwitches);
         _module = new IRModule { Name = reader.AssemblyName };
     }
 

@@ -120,7 +120,26 @@ public partial class IRBuilder
                 irParam.ParameterType = paramType;
             }
 
+            // C.7: Parse [MarshalAs] — Cecil exposes it as ParameterDefinition.MarshalInfo
+            if (irMethod.IsPInvoke && paramDef.Index < cecilMethod.Parameters.Count)
+            {
+                var cecilParam = cecilMethod.Parameters[paramDef.Index];
+                if (cecilParam.HasMarshalInfo && cecilParam.MarshalInfo != null)
+                {
+                    irParam.MarshalAs = (MarshalAsType)(int)cecilParam.MarshalInfo.NativeType;
+                    if (cecilParam.MarshalInfo is Mono.Cecil.ArrayMarshalInfo arrayInfo)
+                        irParam.MarshalAsSizeParamIndex = arrayInfo.SizeParameterIndex;
+                }
+            }
+
             irMethod.Parameters.Add(irParam);
+        }
+
+        // C.7: Parse [MarshalAs] on return type
+        if (irMethod.IsPInvoke && cecilMethod.MethodReturnType.HasMarshalInfo
+            && cecilMethod.MethodReturnType.MarshalInfo != null)
+        {
+            irMethod.ReturnMarshalAs = (MarshalAsType)(int)cecilMethod.MethodReturnType.MarshalInfo.NativeType;
         }
 
         // Detect varargs calling convention (C# __arglist)
@@ -1349,6 +1368,22 @@ public partial class IRBuilder
             case Code.Ldsfld:
             {
                 var fieldRef = (FieldReference)instr.Operand!;
+
+                // D.3: Feature switch substitution — replace known static readonly bool fields
+                // with compile-time constants for AOT dead-code elimination
+                if (_featureSwitchResolver.TryResolve(
+                        fieldRef.DeclaringType.FullName, fieldRef.Name, out var switchValue))
+                {
+                    var fsTmp = $"__t{tempCounter++}";
+                    block.Instructions.Add(new IRRawCpp
+                    {
+                        Code = $"auto {fsTmp} = {(switchValue ? "true" : "false")};",
+                        ResultVar = fsTmp,
+                        ResultTypeCpp = "bool",
+                    });
+                    stack.Push(new StackEntry(fsTmp, "bool"));
+                    break;
+                }
 
                 // Intercept EmptyArray<T>.Value — nested in RuntimeProvidedType Array
                 if (fieldRef.Name == "Value" && fieldRef.DeclaringType is GenericInstanceType emptyGit

@@ -59,6 +59,9 @@ public class IRMethod
 
     /// <summary>Whether the runtime should capture the native error code after the P/Invoke call</summary>
     public bool PInvokeSetLastError { get; set; }
+
+    /// <summary>[MarshalAs] on the return type for P/Invoke methods</summary>
+    public MarshalAsType? ReturnMarshalAs { get; set; }
     public string? OperatorName { get; set; }
 
     /// <summary>
@@ -119,6 +122,18 @@ public class IRParameter
     public string CppTypeName { get; set; } = "";
     public string ILTypeName { get; set; } = "";
     public int Index { get; set; }
+
+    /// <summary>
+    /// [MarshalAs] unmanaged type override for P/Invoke marshaling (ECMA-335 II.15.5.4).
+    /// When set, overrides the default marshaling for this parameter.
+    /// </summary>
+    public MarshalAsType? MarshalAs { get; set; }
+
+    /// <summary>
+    /// For MarshalAs.LPArray: index of the parameter that specifies the array size.
+    /// -1 if not specified.
+    /// </summary>
+    public int MarshalAsSizeParamIndex { get; set; } = -1;
 }
 
 /// <summary>

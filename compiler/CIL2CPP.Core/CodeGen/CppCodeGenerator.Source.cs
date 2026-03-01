@@ -306,8 +306,13 @@ public partial class CppCodeGenerator
             sb.AppendLine("// ===== Opaque Span Stub Method Implementations =====");
             foreach (var spanType in _opaqueSpanStubs)
             {
-                sb.AppendLine($"int32_t {spanType}_get_Length({spanType}* __this) {{ return __this->f_length; }}");
-                sb.AppendLine($"bool {spanType}_get_IsEmpty({spanType}* __this) {{ return __this->f_length == 0; }}");
+                var lenSig = $"int32_t {spanType}_get_Length({spanType}* __this)";
+                var emptySig = $"bool {spanType}_get_IsEmpty({spanType}* __this)";
+                sb.AppendLine($"{lenSig} {{ return __this->f_length; }}");
+                sb.AppendLine($"{emptySig} {{ return __this->f_length == 0; }}");
+                // Register as emitted so stubs generator doesn't duplicate them
+                _emittedMethodSignatures.Add(lenSig);
+                _emittedMethodSignatures.Add(emptySig);
             }
             sb.AppendLine();
         }
@@ -2708,14 +2713,14 @@ public partial class CppCodeGenerator
             {
                 var entryPoint = method.PInvokeEntryPoint ?? method.Name;
                 var charSet = method.PInvokeCharSet;
-                var retType = GetPInvokeNativeType(method.ReturnTypeCpp, null, charSet);
+                var retType = GetPInvokeNativeType(method.ReturnTypeCpp, null, charSet, method.ReturnMarshalAs);
                 if (!IsValidExternCType(retType)) continue;
 
                 bool hasInvalidType = false;
                 int structPointerCount = 0;
                 foreach (var p in method.Parameters)
                 {
-                    var nt = GetPInvokeNativeType(p.CppTypeName, p.ParameterType, charSet);
+                    var nt = GetPInvokeNativeType(p.CppTypeName, p.ParameterType, charSet, p.MarshalAs);
                     if (!IsValidExternCType(nt)) { hasInvalidType = true; break; }
                     // Count struct pointers (pointer to non-primitive type)
                     if (nt.EndsWith("*"))
@@ -2739,10 +2744,10 @@ public partial class CppCodeGenerator
             foreach (var (entryPoint, (method, _)) in bestExternCandidate.OrderBy(kv => kv.Key))
             {
                 var cs = method.PInvokeCharSet;
-                var retType = GetPInvokeNativeType(method.ReturnTypeCpp, null, cs);
+                var retType = GetPInvokeNativeType(method.ReturnTypeCpp, null, cs, method.ReturnMarshalAs);
                 var nativeParamTypes = new List<string>();
                 foreach (var p in method.Parameters)
-                    nativeParamTypes.Add(GetPInvokeNativeType(p.CppTypeName, p.ParameterType, cs));
+                    nativeParamTypes.Add(GetPInvokeNativeType(p.CppTypeName, p.ParameterType, cs, p.MarshalAs));
 
                 var paramParts = new List<string>();
                 for (int i = 0; i < method.Parameters.Count; i++)
@@ -2789,7 +2794,7 @@ public partial class CppCodeGenerator
                 for (int i = 0; i < method.Parameters.Count; i++)
                 {
                     var methodType = GetPInvokeNativeType(method.Parameters[i].CppTypeName,
-                        method.Parameters[i].ParameterType, wrapperCharSet);
+                        method.Parameters[i].ParameterType, wrapperCharSet, method.Parameters[i].MarshalAs);
                     if (methodType != externParamTypes[i])
                     {
                         // Allow any pointer ↔ pointer mismatch — same DLL entry point,
@@ -2817,15 +2822,25 @@ public partial class CppCodeGenerator
                 var param = method.Parameters[i];
                 if (IsStringType(param.CppTypeName))
                 {
-                    if (wrapperCharSet == IR.PInvokeCharSet.Unicode
-                        || wrapperCharSet == IR.PInvokeCharSet.Auto)
+                    // C.7: [MarshalAs] on parameter overrides method-level CharSet
+                    bool useUnicode;
+                    if (param.MarshalAs == IR.MarshalAsType.LPWStr)
+                        useUnicode = true;
+                    else if (param.MarshalAs == IR.MarshalAsType.LPStr
+                             || param.MarshalAs == IR.MarshalAsType.LPUtf8Str)
+                        useUnicode = false;
+                    else
+                        useUnicode = wrapperCharSet == IR.PInvokeCharSet.Unicode
+                                     || wrapperCharSet == IR.PInvokeCharSet.Auto;
+
+                    if (useUnicode)
                     {
                         // Unicode: pass UTF-16 pointer directly (zero-copy)
                         sb.AppendLine($"    auto __p{i} = {param.CppName} ? cil2cpp::string_get_raw_data({param.CppName}) : (const char16_t*)nullptr;");
                     }
                     else
                     {
-                        // Ansi: convert to UTF-8
+                        // Ansi/UTF-8: convert to narrow string
                         sb.AppendLine($"    auto __p{i} = cil2cpp::string_to_utf8({param.CppName});");
                     }
                     callArgs.Add($"__p{i}");
@@ -2862,7 +2877,7 @@ public partial class CppCodeGenerator
                 }
                 else if (externParamTypes != null && i < externParamTypes.Count
                          && param.CppTypeName != externParamTypes[i]
-                         && IsCppPrimitiveType(GetPInvokeNativeType(param.CppTypeName, param.ParameterType, wrapperCharSet))
+                         && IsCppPrimitiveType(GetPInvokeNativeType(param.CppTypeName, param.ParameterType, wrapperCharSet, param.MarshalAs))
                          && IsCppPrimitiveType(externParamTypes[i]))
                 {
                     // Integer type mismatch (e.g., uint32_t vs int32_t for WSASocketW overloads)
@@ -2945,8 +2960,39 @@ public partial class CppCodeGenerator
     /// Convert C++ managed type to native P/Invoke type per ECMA-335 II.15.5.4.
     /// </summary>
     private string GetPInvokeNativeType(string cppType, IRType? paramType,
-        IR.PInvokeCharSet charSet = IR.PInvokeCharSet.Ansi)
+        IR.PInvokeCharSet charSet = IR.PInvokeCharSet.Ansi,
+        IR.MarshalAsType? marshalAs = null)
     {
+        // C.7: [MarshalAs] overrides all default marshaling behavior
+        if (marshalAs != null)
+        {
+            return marshalAs.Value switch
+            {
+                IR.MarshalAsType.LPStr => "const char*",
+                IR.MarshalAsType.LPUtf8Str => "const char*",
+                IR.MarshalAsType.LPWStr => "const char16_t*",
+                IR.MarshalAsType.LPTStr => "const char16_t*", // Windows default
+                IR.MarshalAsType.Bool => "int32_t",
+                IR.MarshalAsType.I1 => "int8_t",
+                IR.MarshalAsType.U1 => "uint8_t",
+                IR.MarshalAsType.I2 => "int16_t",
+                IR.MarshalAsType.U2 => "uint16_t",
+                IR.MarshalAsType.I4 => "int32_t",
+                IR.MarshalAsType.U4 => "uint32_t",
+                IR.MarshalAsType.I8 => "int64_t",
+                IR.MarshalAsType.U8 => "uint64_t",
+                IR.MarshalAsType.R4 => "float",
+                IR.MarshalAsType.R8 => "double",
+                IR.MarshalAsType.SysInt => "intptr_t",
+                IR.MarshalAsType.SysUInt => "uintptr_t",
+                IR.MarshalAsType.FunctionPtr => "void*",
+                IR.MarshalAsType.LPArray => cppType.TrimEnd('*') + "*",
+                IR.MarshalAsType.LPStruct => cppType.TrimEnd('*') + "*",
+                IR.MarshalAsType.IUnknown or IR.MarshalAsType.IDispatch => "void*",
+                _ => cppType, // Fallback to default
+            };
+        }
+
         // String marshaling depends on CharSet (ECMA-335 II.15.5.2)
         if (IsStringType(cppType))
         {

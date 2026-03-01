@@ -96,6 +96,35 @@ public partial class CppCodeGenerator
             foreach (var field in type.StaticFields)
                 TryForwardDeclare(sb, CppNameMapper.GetCppTypeForDecl(field.FieldTypeName), forwardDeclared, aliasedTypes, enumTypes);
         }
+        // Scan method body instructions for type names used as pointer targets.
+        // This catches interface types used as generic type arguments (e.g., IAsyncStateMachine)
+        // that don't appear in method signatures but are referenced in casts and vtable lookups.
+        var bodyTypeRefs = new HashSet<string>();
+        foreach (var type in userTypes)
+        {
+            if (type.IsDelegate) continue;
+            foreach (var method in type.Methods)
+            {
+                foreach (var block in method.BasicBlocks)
+                {
+                    foreach (var instr in block.Instructions)
+                    {
+                        CollectBodyPointerTypeRefs(instr.ToCpp(), bodyTypeRefs);
+                    }
+                }
+            }
+        }
+        foreach (var typeName in bodyTypeRefs)
+        {
+            if (forwardDeclared.Contains(typeName)) continue;
+            if (aliasedTypes.Contains(typeName)) continue;
+            if (enumTypes.Contains(typeName)) continue;
+            if (typeName.StartsWith("cil2cpp")) continue;
+            if (IsCppPrimitiveType(typeName)) continue;
+            if (!IsValidCppIdentifier(typeName)) continue;
+            sb.AppendLine($"struct {typeName};");
+            forwardDeclared.Add(typeName);
+        }
         // Using aliases for runtime-provided types (mangled name → cil2cpp:: struct)
         // These types are provided by the runtime but their mangled names may appear
         // as generic type arguments or cast targets in generated code.
@@ -487,10 +516,20 @@ public partial class CppCodeGenerator
             if (inheritedFields.Count > 0)
             {
                 sb.AppendLine($"    // Inherited fields");
+                // Detect C# field hiding (derived class `new` field shadows base field)
+                // In .NET layout both fields coexist — disambiguate with ancestor suffix
+                var emittedFieldNames = new HashSet<string>();
                 foreach (var (field, fromType) in inheritedFields)
                 {
                     var cppType = SanitizeFieldType(field.FieldTypeName, definedTypes);
-                    sb.AppendLine($"    {cppType} {field.CppName}; // from {fromType.ILFullName}");
+                    var fieldName = field.CppName;
+                    if (!emittedFieldNames.Add(fieldName))
+                    {
+                        // Name collision — C# field hiding. Suffix with declaring type
+                        var suffix = "_" + CppNameMapper.MangleTypeName(fromType.Name);
+                        fieldName = field.CppName + suffix;
+                    }
+                    sb.AppendLine($"    {cppType} {fieldName}; // from {fromType.ILFullName}");
                     inheritedFieldNames.Add(field.CppName);
                 }
             }
@@ -1229,7 +1268,7 @@ public partial class CppCodeGenerator
         "System_Threading_Tasks_Task",
         "System_Runtime_CompilerServices_TaskAwaiter",
         "System_Runtime_CompilerServices_AsyncTaskMethodBuilder",
-        "System_Runtime_CompilerServices_IAsyncStateMachine",
+        // IAsyncStateMachine: removed from runtime (Phase IV.1) — now compiled from BCL IL
         // memberinfo.h
         "System_Reflection_MemberInfo",
         "System_Reflection_MethodBase",
@@ -1902,6 +1941,49 @@ public partial class CppCodeGenerator
                 }
             }
             tiIdx += 9;
+        }
+    }
+
+    /// <summary>
+    /// Collect type names used as pointer targets in C++ code.
+    /// Scans for patterns like (TypeName*), (TypeName**), TypeName* where TypeName
+    /// is a mangled .NET type name (contains underscore, starts with uppercase).
+    /// Used to forward-declare types referenced in method bodies that aren't in signatures.
+    /// </summary>
+    private static void CollectBodyPointerTypeRefs(string code, HashSet<string> result)
+    {
+        int i = 0;
+        while (i < code.Length)
+        {
+            int starIdx = code.IndexOf('*', i);
+            if (starIdx < 0) break;
+
+            // Walk backwards past any extra '*' (double pointers)
+            int end = starIdx;
+            while (end > 0 && code[end - 1] == '*') end--;
+            // Walk backwards to find the start of the identifier
+            int start = end - 1;
+            while (start >= 0 && (char.IsLetterOrDigit(code[start]) || code[start] == '_'))
+                start--;
+            start++;
+
+            if (start < end)
+            {
+                var typeName = code[start..end];
+                // Only consider mangled .NET type names (contain underscore, start with uppercase)
+                if (typeName.Length > 3 && typeName.Contains('_') && char.IsUpper(typeName[0]))
+                {
+                    // Skip if preceded by "::" (cil2cpp:: namespace)
+                    if (start >= 2 && code[(start - 2)..start] == "::")
+                    {
+                        i = starIdx + 1;
+                        continue;
+                    }
+                    result.Add(typeName);
+                }
+            }
+
+            i = starIdx + 1;
         }
     }
 

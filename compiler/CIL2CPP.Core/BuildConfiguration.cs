@@ -20,11 +20,19 @@ public record BuildConfiguration
     /// <summary>Read debug symbols (PDB/MDB) from the input assembly.</summary>
     public bool ReadDebugSymbols { get; init; }
 
+    /// <summary>
+    /// ILLink feature switch overrides (D.3). Key format: "TypeFullName::FieldName" → value.
+    /// Overrides take precedence over built-in AOT defaults in FeatureSwitchResolver.
+    /// Not part of record equality (Dictionary uses reference equality).
+    /// </summary>
+    public Dictionary<string, bool> FeatureSwitches { get; init; } = _emptyFeatureSwitches;
+    private static readonly Dictionary<string, bool> _emptyFeatureSwitches = new();
+
     /// <summary>Configuration name for CMake (Debug or Release).</summary>
     public string ConfigurationName => IsDebug ? "Debug" : "Release";
 
-    /// <summary>Pre-configured Debug build settings.</summary>
-    public static BuildConfiguration Debug => new()
+    // Cached singleton instances — avoids allocating new objects on every access
+    private static readonly BuildConfiguration _debug = new()
     {
         IsDebug = true,
         EmitLineDirectives = true,
@@ -33,8 +41,7 @@ public record BuildConfiguration
         ReadDebugSymbols = true,
     };
 
-    /// <summary>Pre-configured Release build settings.</summary>
-    public static BuildConfiguration Release => new()
+    private static readonly BuildConfiguration _release = new()
     {
         IsDebug = false,
         EmitLineDirectives = false,
@@ -42,6 +49,12 @@ public record BuildConfiguration
         EnableStackTraces = false,
         ReadDebugSymbols = false,
     };
+
+    /// <summary>Pre-configured Debug build settings.</summary>
+    public static BuildConfiguration Debug => _debug;
+
+    /// <summary>Pre-configured Release build settings.</summary>
+    public static BuildConfiguration Release => _release;
 
     /// <summary>Create configuration from a string name.</summary>
     public static BuildConfiguration FromName(string name) => name.ToLowerInvariant() switch

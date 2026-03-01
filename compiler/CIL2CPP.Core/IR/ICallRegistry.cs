@@ -329,18 +329,12 @@ public static class ICallRegistry
         RegisterICall("System.Threading.WaitHandle", "WaitOneCore", 2, "cil2cpp::icall::WaitHandle_WaitOneCore");
 
         // ===== System.IO =====
-        // File operations — intercept at public API level, bypassing BCL FileStream chain.
-        // HACK: B.6 partial removal attempted — File.ReadAllText works through BCL IL,
-        // but File.ReadAllBytes hangs (FileStream.Read(byte[],int,int) code path has a bug).
-        // TODO: Investigate FileStream.Read byte[] path, then remove these ICalls.
-        RegisterICall("System.IO.File", "Exists", 1, "cil2cpp::icall::File_Exists");
-        RegisterICall("System.IO.File", "ReadAllText", 1, "cil2cpp::icall::File_ReadAllText");
-        RegisterICall("System.IO.File", "ReadAllText", 2, "cil2cpp::icall::File_ReadAllText2");
-        RegisterICall("System.IO.File", "WriteAllText", 2, "cil2cpp::icall::File_WriteAllText");
-        RegisterICall("System.IO.File", "WriteAllText", 3, "cil2cpp::icall::File_WriteAllText2");
+        // B.6 partial: File.ReadAllText/WriteAllText/Exists/Delete work through BCL IL chain.
+        // FileStream.Read(byte[]) works in direct FileStream usage (FileStreamTest passes).
+        // File.ReadAllBytes still hangs — different code path in File helper (uses InternalReadAllBytes).
+        // TODO: Investigate File.ReadAllBytes → InternalReadAllBytes path, then remove remaining ICalls.
         RegisterICall("System.IO.File", "ReadAllBytes", 1, "cil2cpp::icall::File_ReadAllBytes");
         RegisterICall("System.IO.File", "WriteAllBytes", 2, "cil2cpp::icall::File_WriteAllBytes");
-        RegisterICall("System.IO.File", "Delete", 1, "cil2cpp::icall::File_Delete");
         RegisterICall("System.IO.File", "Copy", 3, "cil2cpp::icall::File_Copy");
         RegisterICall("System.IO.File", "Move", 3, "cil2cpp::icall::File_Move");
         RegisterICall("System.IO.File", "ReadAllLines", 1, "cil2cpp::icall::File_ReadAllLines");

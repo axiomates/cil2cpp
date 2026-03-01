@@ -34,9 +34,21 @@ public class ReachabilityAnalyzer
     private readonly List<(string MethodName, int ParamCount, TypeDefinition DeclaringType)> _dispatchedVirtualSlots = new();
     private readonly HashSet<string> _dispatchedSlotKeys = new(); // dedup by "DeclaringType::Name/Count"
 
+    // D.2: rd.xml preservation rules
+    private List<RdXmlParser.PreservationRule>? _preservationRules;
+
     public ReachabilityAnalyzer(AssemblySet assemblySet)
     {
         _assemblySet = assemblySet;
+    }
+
+    /// <summary>
+    /// Apply rd.xml preservation rules before running analysis.
+    /// Call this before Analyze() to inject external preservation directives.
+    /// </summary>
+    public void SetPreservationRules(List<RdXmlParser.PreservationRule> rules)
+    {
+        _preservationRules = rules;
     }
 
     /// <summary>
@@ -61,6 +73,10 @@ public class ReachabilityAnalyzer
             // Library mode: seed all public types/methods
             SeedAllPublicTypes(_assemblySet.RootAssembly);
         }
+
+        // D.2: Apply rd.xml preservation rules after initial seeding
+        if (_preservationRules != null)
+            ApplyPreservationRules();
 
         // Worklist fixpoint
         while (_worklist.Count > 0)
@@ -163,6 +179,26 @@ public class ReachabilityAnalyzer
             var fieldTypeDef = TryResolve(field.FieldType);
             if (fieldTypeDef != null)
                 MarkTypeReachable(fieldTypeDef);
+        }
+
+        // D.1: [DynamicallyAccessedMembers] on the type itself — seed members per flags
+        var damFlags = GetDynamicallyAccessedMemberTypes(type.CustomAttributes);
+        if (damFlags != 0)
+            SeedDynamicallyAccessedMembers(type, damFlags);
+
+        // D.1: [DynamicallyAccessedMembers] on fields of Type — seed the field's type
+        foreach (var field in type.Fields)
+        {
+            if (field.FieldType.FullName == "System.Type")
+            {
+                var fieldDam = GetDynamicallyAccessedMemberTypes(field.CustomAttributes);
+                if (fieldDam != 0)
+                {
+                    // The actual target type is unknown statically; mark this type's members
+                    // as a conservative approximation (real flow analysis would track assignments)
+                    SeedDynamicallyAccessedMembers(type, fieldDam);
+                }
+            }
         }
 
         // All types: check for virtual method overrides that match dispatched slots
@@ -390,6 +426,10 @@ public class ReachabilityAnalyzer
         if (!_processedMethods.Add(key))
             return;
 
+        // D.1: Scan [DynamicallyAccessedMembers] on method parameters and return type.
+        // This must run even for methods without bodies (abstract, extern, etc.)
+        ProcessMethodDamAttributes(method);
+
         if (!method.HasBody)
             return;
 
@@ -547,6 +587,270 @@ public class ReachabilityAnalyzer
         var fieldTypeDef = TryResolve(fieldRef.FieldType);
         if (fieldTypeDef != null)
             MarkTypeReachable(fieldTypeDef);
+    }
+
+    // ===== D.1: [DynamicallyAccessedMembers] support =====
+
+    private const string DamAttributeName =
+        "System.Diagnostics.CodeAnalysis.DynamicallyAccessedMembersAttribute";
+
+    /// <summary>
+    /// DynamicallyAccessedMemberTypes flags (System.Diagnostics.CodeAnalysis).
+    /// </summary>
+    [Flags]
+    private enum DamFlags
+    {
+        None = 0,
+        PublicParameterlessConstructor = 1,
+        PublicConstructors = 3,
+        NonPublicConstructors = 4,
+        PublicMethods = 8,
+        NonPublicMethods = 16,
+        PublicFields = 32,
+        NonPublicFields = 64,
+        PublicNestedTypes = 128,
+        NonPublicNestedTypes = 256,
+        PublicProperties = 512,
+        NonPublicProperties = 1024,
+        PublicEvents = 2048,
+        NonPublicEvents = 4096,
+        Interfaces = 8192,
+        All = -1,
+    }
+
+    /// <summary>
+    /// Extract DynamicallyAccessedMemberTypes flags from a collection of custom attributes.
+    /// Returns 0 if the attribute is not present.
+    /// </summary>
+    private static int GetDynamicallyAccessedMemberTypes(
+        Mono.Collections.Generic.Collection<CustomAttribute>? attrs)
+    {
+        if (attrs == null || attrs.Count == 0) return 0;
+
+        foreach (var attr in attrs)
+        {
+            if (attr.AttributeType.FullName != DamAttributeName) continue;
+            if (attr.ConstructorArguments.Count > 0)
+            {
+                var arg = attr.ConstructorArguments[0];
+                if (arg.Value is int intVal) return intVal;
+                // Enum values may come as other integer types
+                try { return Convert.ToInt32(arg.Value); } catch { return -1; }
+            }
+        }
+        return 0;
+    }
+
+    /// <summary>
+    /// Scan [DynamicallyAccessedMembers] on method parameters and return type.
+    /// When DAM is found, resolve the parameter's type and seed the required members.
+    /// </summary>
+    private void ProcessMethodDamAttributes(MethodDefinition method)
+    {
+        // Check parameters
+        foreach (var param in method.Parameters)
+        {
+            if (!param.HasCustomAttributes) continue;
+            var flags = GetDynamicallyAccessedMemberTypes(param.CustomAttributes);
+            if (flags == 0) continue;
+
+            // The parameter should be of type System.Type (or derived).
+            // Resolve the type constraint statically if possible.
+            var paramTypeDef = TryResolve(param.ParameterType);
+            if (paramTypeDef != null)
+                SeedDynamicallyAccessedMembers(paramTypeDef, flags);
+        }
+
+        // Check return type
+        if (method.MethodReturnType.HasCustomAttributes)
+        {
+            var flags = GetDynamicallyAccessedMemberTypes(method.MethodReturnType.CustomAttributes);
+            if (flags != 0)
+            {
+                var retTypeDef = TryResolve(method.ReturnType);
+                if (retTypeDef != null)
+                    SeedDynamicallyAccessedMembers(retTypeDef, flags);
+            }
+        }
+
+        // Check generic parameters
+        if (method.HasGenericParameters)
+        {
+            foreach (var gp in method.GenericParameters)
+            {
+                if (!gp.HasCustomAttributes) continue;
+                var flags = GetDynamicallyAccessedMemberTypes(gp.CustomAttributes);
+                if (flags == 0) continue;
+
+                // For generic parameters, seed constraints if available
+                foreach (var constraint in gp.Constraints)
+                {
+                    var constraintDef = TryResolve(constraint.ConstraintType);
+                    if (constraintDef != null)
+                        SeedDynamicallyAccessedMembers(constraintDef, flags);
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Seed members of a type based on DynamicallyAccessedMemberTypes flags.
+    /// This prevents tree-shaking from removing members needed by reflection or serialization.
+    /// </summary>
+    private void SeedDynamicallyAccessedMembers(TypeDefinition type, int memberTypes)
+    {
+        var flags = (DamFlags)memberTypes;
+
+        // All = seed everything
+        if (flags == DamFlags.All)
+            flags = (DamFlags)0x3FFF; // all individual bits
+
+        // Constructors
+        if (flags.HasFlag(DamFlags.PublicParameterlessConstructor))
+        {
+            var ctor = type.Methods.FirstOrDefault(m =>
+                m.IsConstructor && !m.IsStatic && m.IsPublic && m.Parameters.Count == 0);
+            if (ctor != null) SeedMethod(ctor);
+        }
+        if ((flags & DamFlags.PublicConstructors) == DamFlags.PublicConstructors)
+        {
+            foreach (var m in type.Methods.Where(m => m.IsConstructor && !m.IsStatic && m.IsPublic))
+                SeedMethod(m);
+        }
+        if (flags.HasFlag(DamFlags.NonPublicConstructors))
+        {
+            foreach (var m in type.Methods.Where(m => m.IsConstructor && !m.IsStatic && !m.IsPublic))
+                SeedMethod(m);
+        }
+
+        // Methods
+        if (flags.HasFlag(DamFlags.PublicMethods))
+        {
+            foreach (var m in type.Methods.Where(m => !m.IsConstructor && m.IsPublic))
+                SeedMethod(m);
+        }
+        if (flags.HasFlag(DamFlags.NonPublicMethods))
+        {
+            foreach (var m in type.Methods.Where(m => !m.IsConstructor && !m.IsPublic))
+                SeedMethod(m);
+        }
+
+        // Fields — mark field types reachable
+        if (flags.HasFlag(DamFlags.PublicFields))
+        {
+            foreach (var f in type.Fields.Where(f => f.IsPublic))
+            {
+                var fTypeDef = TryResolve(f.FieldType);
+                if (fTypeDef != null) MarkTypeReachable(fTypeDef);
+            }
+        }
+        if (flags.HasFlag(DamFlags.NonPublicFields))
+        {
+            foreach (var f in type.Fields.Where(f => !f.IsPublic))
+            {
+                var fTypeDef = TryResolve(f.FieldType);
+                if (fTypeDef != null) MarkTypeReachable(fTypeDef);
+            }
+        }
+
+        // Nested types
+        if (flags.HasFlag(DamFlags.PublicNestedTypes))
+        {
+            foreach (var nested in type.NestedTypes.Where(t => t.IsNestedPublic))
+                MarkTypeReachable(nested);
+        }
+        if (flags.HasFlag(DamFlags.NonPublicNestedTypes))
+        {
+            foreach (var nested in type.NestedTypes.Where(t => !t.IsNestedPublic))
+                MarkTypeReachable(nested);
+        }
+
+        // Properties → seed get_/set_ accessor methods
+        if (flags.HasFlag(DamFlags.PublicProperties))
+        {
+            foreach (var prop in type.Properties.Where(p =>
+                (p.GetMethod?.IsPublic ?? false) || (p.SetMethod?.IsPublic ?? false)))
+            {
+                if (prop.GetMethod != null) SeedMethod(prop.GetMethod);
+                if (prop.SetMethod != null) SeedMethod(prop.SetMethod);
+            }
+        }
+        if (flags.HasFlag(DamFlags.NonPublicProperties))
+        {
+            foreach (var prop in type.Properties.Where(p =>
+                !(p.GetMethod?.IsPublic ?? false) && !(p.SetMethod?.IsPublic ?? false)))
+            {
+                if (prop.GetMethod != null) SeedMethod(prop.GetMethod);
+                if (prop.SetMethod != null) SeedMethod(prop.SetMethod);
+            }
+        }
+
+        // Events → seed add_/remove_ methods
+        if (flags.HasFlag(DamFlags.PublicEvents))
+        {
+            foreach (var evt in type.Events.Where(e => e.AddMethod?.IsPublic ?? false))
+            {
+                if (evt.AddMethod != null) SeedMethod(evt.AddMethod);
+                if (evt.RemoveMethod != null) SeedMethod(evt.RemoveMethod);
+            }
+        }
+        if (flags.HasFlag(DamFlags.NonPublicEvents))
+        {
+            foreach (var evt in type.Events.Where(e => !(e.AddMethod?.IsPublic ?? false)))
+            {
+                if (evt.AddMethod != null) SeedMethod(evt.AddMethod);
+                if (evt.RemoveMethod != null) SeedMethod(evt.RemoveMethod);
+            }
+        }
+
+        // Interfaces
+        if (flags.HasFlag(DamFlags.Interfaces))
+        {
+            foreach (var iface in type.Interfaces)
+            {
+                var ifaceDef = TryResolve(iface.InterfaceType);
+                if (ifaceDef != null) MarkTypeReachable(ifaceDef);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Apply rd.xml preservation rules — find matching types/methods and seed them.
+    /// Reuses the DynamicallyAccessedMembers infrastructure for member-level seeding.
+    /// </summary>
+    private void ApplyPreservationRules()
+    {
+        if (_preservationRules == null) return;
+
+        foreach (var rule in _preservationRules)
+        {
+            // Find the matching type across all loaded assemblies
+            TypeDefinition? typeDef = null;
+            foreach (var (_, asm) in _assemblySet.LoadedAssemblies)
+            {
+                if (rule.AssemblyName != null && asm.Name.Name != rule.AssemblyName)
+                    continue;
+
+                typeDef = asm.MainModule.GetType(rule.TypeName);
+                if (typeDef != null) break;
+            }
+
+            if (typeDef == null) continue;
+
+            MarkTypeReachable(typeDef);
+
+            if (rule.MethodName != null)
+            {
+                // Seed a specific method
+                foreach (var m in typeDef.Methods.Where(m => m.Name == rule.MethodName))
+                    SeedMethod(m);
+            }
+            else if (rule.MemberTypes != 0)
+            {
+                // Seed members by DAM flags
+                SeedDynamicallyAccessedMembers(typeDef, rule.MemberTypes);
+            }
+        }
     }
 
     private TypeDefinition? TryResolve(TypeReference typeRef)
