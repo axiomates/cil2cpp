@@ -448,16 +448,19 @@ Int32 Enum_InternalGetCorElementType(void* enumType) {
     if (typeInfo && typeInfo->underlying_type && typeInfo->underlying_type->cor_element_type != 0) {
         return static_cast<Int32>(typeInfo->underlying_type->cor_element_type);
     }
-    // Fallback: infer from element_size when underlying_type is not set
+    // Fallback: infer from element_size when underlying_type is not set.
+    // NOTE: size-based inference cannot distinguish signed/unsigned types
+    // (e.g., byte vs sbyte are both 1 byte). Defaults to signed per ECMA convention.
+    // The primary path above (underlying_type->cor_element_type) is always correct.
     if (typeInfo) {
         switch (typeInfo->element_size) {
-            case 1: return 0x04; // ELEMENT_TYPE_I1
-            case 2: return 0x06; // ELEMENT_TYPE_I2
-            case 4: return 0x08; // ELEMENT_TYPE_I4
-            case 8: return 0x0A; // ELEMENT_TYPE_I8
+            case 1: return cor_element_type::I1;
+            case 2: return cor_element_type::I2;
+            case 4: return cor_element_type::I4;
+            case 8: return cor_element_type::I8;
         }
     }
-    return 0x08; // fallback: ELEMENT_TYPE_I4
+    return cor_element_type::I4;
 }
 
 // ===== System.Delegate (internal) =====
@@ -589,30 +592,30 @@ Boolean Type_IsEquivalentTo(void* __this, void* other) {
 
 Int32 Type_GetTypeCodeImpl(void* __this) {
     auto* t = get_type_from_this(__this);
-    if (!t || !t->type_info) return 0; // TypeCode.Empty
+    if (!t || !t->type_info) return type_code::TC_Empty;
 
     const char* name = t->type_info->full_name;
-    if (!name) return 1; // TypeCode.Object
+    if (!name) return type_code::TC_Object;
 
-    // Map full type name to System.TypeCode enum values
-    if (std::strcmp(name, "System.Boolean") == 0)  return 3;
-    if (std::strcmp(name, "System.Char") == 0)     return 4;
-    if (std::strcmp(name, "System.SByte") == 0)    return 5;
-    if (std::strcmp(name, "System.Byte") == 0)     return 6;
-    if (std::strcmp(name, "System.Int16") == 0)    return 7;
-    if (std::strcmp(name, "System.UInt16") == 0)   return 8;
-    if (std::strcmp(name, "System.Int32") == 0)    return 9;
-    if (std::strcmp(name, "System.UInt32") == 0)   return 10;
-    if (std::strcmp(name, "System.Int64") == 0)    return 11;
-    if (std::strcmp(name, "System.UInt64") == 0)   return 12;
-    if (std::strcmp(name, "System.Single") == 0)   return 13;
-    if (std::strcmp(name, "System.Double") == 0)   return 14;
-    if (std::strcmp(name, "System.Decimal") == 0)  return 15;
-    if (std::strcmp(name, "System.DateTime") == 0) return 16;
-    if (std::strcmp(name, "System.String") == 0)   return 18;
-    if (std::strcmp(name, "System.DBNull") == 0)   return 2;
+    // Map full type name to System.TypeCode enum values (ECMA-335 II.23.1.7)
+    if (std::strcmp(name, "System.Boolean") == 0)  return type_code::TC_Boolean;
+    if (std::strcmp(name, "System.Char") == 0)     return type_code::TC_Char;
+    if (std::strcmp(name, "System.SByte") == 0)    return type_code::TC_SByte;
+    if (std::strcmp(name, "System.Byte") == 0)     return type_code::TC_Byte;
+    if (std::strcmp(name, "System.Int16") == 0)    return type_code::TC_Int16;
+    if (std::strcmp(name, "System.UInt16") == 0)   return type_code::TC_UInt16;
+    if (std::strcmp(name, "System.Int32") == 0)    return type_code::TC_Int32;
+    if (std::strcmp(name, "System.UInt32") == 0)   return type_code::TC_UInt32;
+    if (std::strcmp(name, "System.Int64") == 0)    return type_code::TC_Int64;
+    if (std::strcmp(name, "System.UInt64") == 0)   return type_code::TC_UInt64;
+    if (std::strcmp(name, "System.Single") == 0)   return type_code::TC_Single;
+    if (std::strcmp(name, "System.Double") == 0)   return type_code::TC_Double;
+    if (std::strcmp(name, "System.Decimal") == 0)  return type_code::TC_Decimal;
+    if (std::strcmp(name, "System.DateTime") == 0) return type_code::TC_DateTime;
+    if (std::strcmp(name, "System.String") == 0)   return type_code::TC_String;
+    if (std::strcmp(name, "System.DBNull") == 0)   return type_code::TC_DBNull;
 
-    return 1; // TypeCode.Object for all other types
+    return type_code::TC_Object;
 }
 
 Int32 Type_get_GenericParameterAttributes(void* __this) {

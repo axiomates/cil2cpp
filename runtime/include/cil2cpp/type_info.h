@@ -8,6 +8,61 @@
 
 namespace cil2cpp {
 
+// ECMA-335 II.23.1.16 — CorElementType constants
+namespace cor_element_type {
+    constexpr uint8_t VOID       = 0x01;
+    constexpr uint8_t BOOLEAN    = 0x02;
+    constexpr uint8_t CHAR       = 0x03;
+    constexpr uint8_t I1         = 0x04;  // SByte
+    constexpr uint8_t U1         = 0x05;  // Byte
+    constexpr uint8_t I2         = 0x06;  // Int16
+    constexpr uint8_t U2         = 0x07;  // UInt16
+    constexpr uint8_t I4         = 0x08;  // Int32
+    constexpr uint8_t U4         = 0x09;  // UInt32
+    constexpr uint8_t I8         = 0x0A;  // Int64
+    constexpr uint8_t U8         = 0x0B;  // UInt64
+    constexpr uint8_t R4         = 0x0C;  // Single
+    constexpr uint8_t R8         = 0x0D;  // Double
+    constexpr uint8_t STRING     = 0x0E;
+    constexpr uint8_t PTR        = 0x0F;
+    constexpr uint8_t BYREF      = 0x10;
+    constexpr uint8_t VALUETYPE  = 0x11;
+    constexpr uint8_t CLASS      = 0x12;
+    constexpr uint8_t VAR        = 0x13;  // generic type parameter
+    constexpr uint8_t ARRAY      = 0x14;  // multi-dimensional array
+    constexpr uint8_t GENERICINST = 0x15;
+    constexpr uint8_t TYPEDBYREF = 0x16;
+    constexpr uint8_t I          = 0x18;  // IntPtr
+    constexpr uint8_t U          = 0x19;  // UIntPtr
+    constexpr uint8_t FNPTR      = 0x1B;
+    constexpr uint8_t OBJECT     = 0x1C;
+    constexpr uint8_t SZARRAY    = 0x1D;  // single-dimensional zero-indexed array
+    constexpr uint8_t MVAR       = 0x1E;  // generic method parameter
+} // namespace cor_element_type
+
+// ECMA-335 II.23.1.7 — System.TypeCode values
+// Prefixed with TC_ to avoid name collisions with cil2cpp types (e.g., cil2cpp::String)
+namespace type_code {
+    constexpr Int32 TC_Empty    = 0;
+    constexpr Int32 TC_Object   = 1;
+    constexpr Int32 TC_DBNull   = 2;
+    constexpr Int32 TC_Boolean  = 3;
+    constexpr Int32 TC_Char     = 4;
+    constexpr Int32 TC_SByte    = 5;
+    constexpr Int32 TC_Byte     = 6;
+    constexpr Int32 TC_Int16    = 7;
+    constexpr Int32 TC_UInt16   = 8;
+    constexpr Int32 TC_Int32    = 9;
+    constexpr Int32 TC_UInt32   = 10;
+    constexpr Int32 TC_Int64    = 11;
+    constexpr Int32 TC_UInt64   = 12;
+    constexpr Int32 TC_Single   = 13;
+    constexpr Int32 TC_Double   = 14;
+    constexpr Int32 TC_Decimal  = 15;
+    constexpr Int32 TC_DateTime = 16;
+    constexpr Int32 TC_String   = 18;
+} // namespace type_code
+
 // Type flags
 enum class TypeFlags : UInt32 {
     None = 0,
@@ -194,11 +249,11 @@ struct TypeInfo {
     CustomAttributeInfo* custom_attributes;
     UInt32 custom_attribute_count;
 
+    // ECMA-335 CorElementType code — packed after UInt32 to minimize padding
+    uint8_t cor_element_type;
+
     // Enum underlying type (e.g., Int32 for most enums)
     TypeInfo* underlying_type;           // nullptr for non-enum types
-
-    // ECMA-335 CorElementType code (0x04=I1, 0x05=U1, ..., 0x1C=Object, etc.)
-    uint8_t cor_element_type;
 
     // Generic variance data (for variance-aware type assignability)
     // For generic instances: concrete argument TypeInfos + variance flags from open type

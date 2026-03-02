@@ -1733,10 +1733,30 @@ public partial class IRBuilder
             case Code.Conv_I:
             {
                 var convIEntry = stack.PeekEntry();
+                // If converting literal 0 → preserve as 0 (valid null pointer constant in C++)
+                if (convIEntry.Expr == "0") break;
                 // Pointer/address-of values are already native-sized — conv.i is a no-op.
                 // Preserving the typed pointer avoids void*→T* assignment mismatches
                 // in cross-scope pre-declared variables (AddAutoDeclarations).
                 if (convIEntry.IsAddressOf || convIEntry.IsPointer) break;
+                // Local variables (loc_N) that are pointer types — conv.i is a no-op.
+                if (convIEntry.Expr.StartsWith("loc_"))
+                {
+                    if (int.TryParse(convIEntry.Expr.AsSpan(4), out var locIdx)
+                        && locIdx >= 0 && locIdx < method.Locals.Count
+                        && method.Locals[locIdx].CppTypeName.EndsWith("*"))
+                        break;
+                }
+                // Temp variables (__tN) that were result of a pointer-returning operation
+                if (convIEntry.Expr.StartsWith("__t") && convIEntry.CppType == null)
+                {
+                    if (method.TempVarTypes.TryGetValue(convIEntry.Expr, out var tempType)
+                        && tempType.EndsWith("*"))
+                        break;
+                }
+                // CppType already tracked as pointer — conv.i is a no-op
+                if (convIEntry.CppType != null && convIEntry.CppType.EndsWith("*"))
+                    break;
                 EmitConversion(block, stack, "intptr_t", ref tempCounter);
                 break;
             }

@@ -227,6 +227,7 @@ public partial class IRBuilder
             Namespace = spec.Namespace,
             IsInterface = true,
             IsAbstract = true,
+            IsPublic = true, // BCL interfaces are always public
         };
 
         foreach (var methodSpec in spec.Methods)
@@ -253,6 +254,7 @@ public partial class IRBuilder
             Namespace = spec.Namespace,
             IsInterface = true,
             IsAbstract = true,
+            IsPublic = true, // BCL interfaces are always public
             IsGenericInstance = true,
             GenericArguments = typeArgs,
         };

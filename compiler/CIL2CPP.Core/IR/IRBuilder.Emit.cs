@@ -2686,6 +2686,7 @@ public partial class IRBuilder
             Namespace = lastDot >= 0 ? ilFullName[..lastDot] : "",
             CppName = cppName,
             IsDelegate = true,
+            IsPublic = true, // BCL delegates are always public
         };
         _typeCache[ilFullName] = bclDelegate;
         _module.Types.Add(bclDelegate);
