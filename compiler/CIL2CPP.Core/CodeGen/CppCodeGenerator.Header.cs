@@ -2736,12 +2736,8 @@ public partial class CppCodeGenerator
             return "EventProvider_EncodeObject static_cast<uint64_t>(&pointer)";
         }
 
-        // Method-level: CancellationToken_ThrowOperationCanceledException — IL maps CancellationToken
-        // struct value into f_innerException (Exception*), which is a struct→pointer C2440
-        if (method.CppName.Contains("CancellationToken_ThrowOperationCanceledException"))
-        {
-            return "CancellationToken struct mapped to Exception* f_innerException (C2440)";
-        }
+        // CancellationToken_ThrowOperationCanceledException gate removed —
+        // TryEmitExceptionNewObj now correctly handles CancellationToken params.
 
         // Method-level: RuntimeResourceSet_GetObject — assigns Dictionary<string,ResourceLocator>*
         // to f_caseInsensitiveTable which is declared as Dictionary<string,Object>*

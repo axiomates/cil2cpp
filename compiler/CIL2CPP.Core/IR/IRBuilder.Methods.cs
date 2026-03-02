@@ -2176,7 +2176,7 @@ public partial class IRBuilder
                     var innerTypeName = ResolveTypeRefOperand(git.GenericArguments[0]);
                     var innerTypeCppBox = CppNameMapper.IsPrimitive(innerTypeName)
                         ? CppNameMapper.GetCppTypeName(innerTypeName)
-                        : CppNameMapper.MangleTypeName(innerTypeName);
+                        : CppNameMapper.MangleTypeNameClean(innerTypeName);
                     var innerTypeCppInfo = CppNameMapper.MangleTypeNameClean(innerTypeName);
                     block.Instructions.Add(new IRRawCpp
                     {
@@ -2640,7 +2640,7 @@ public partial class IRBuilder
                 var typeRef = (TypeReference)instr.Operand!;
                 var ptr = stack.PopExprOr("nullptr");
                 var resolvedName = ResolveTypeRefOperand(typeRef);
-                var typeCpp = CppNameMapper.MangleTypeName(resolvedName);
+                var typeCpp = CppNameMapper.MangleTypeNameClean(resolvedName);
 
                 // Ensure TypeInfo symbol exists for primitive types
                 _module.RegisterPrimitiveTypeInfo(resolvedName);
@@ -2666,7 +2666,7 @@ public partial class IRBuilder
                 var tr = stack.PopExprOr("{}");
                 var resolvedName = ResolveTypeRefOperand(typeRef);
                 var typeCpp = CppNameMapper.GetCppTypeName(resolvedName);
-                var typeInfoCpp = CppNameMapper.MangleTypeName(resolvedName);
+                var typeInfoCpp = CppNameMapper.MangleTypeNameClean(resolvedName);
 
                 // Ensure TypeInfo symbol exists for primitive types
                 _module.RegisterPrimitiveTypeInfo(resolvedName);

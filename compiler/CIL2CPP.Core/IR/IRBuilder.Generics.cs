@@ -2113,7 +2113,9 @@ public partial class IRBuilder
             var angleBracket = ilTypeName.IndexOf('<');
             var openTypeName = ilTypeName[..angleBracket];
             var argsStr = ilTypeName[(angleBracket + 1)..^1];
-            var args = argsStr.Split(',').Select(a => a.Trim()).ToList();
+            // Use bracket-aware parser to correctly handle nested generics
+            // (simple Split(',') breaks on KeyValuePair<K,V> inner commas)
+            var args = CppNameMapper.ParseGenericArgs(argsStr);
             var key = $"{openTypeName}<{string.Join(",", args)}>";
 
             if (_typeCache.TryGetValue(key, out var genericCached))

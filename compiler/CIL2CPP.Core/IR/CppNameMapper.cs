@@ -297,7 +297,7 @@ public static class CppNameMapper
     /// Parse generic type arguments, handling nested angle brackets.
     /// E.g., "String,List`1&lt;Int32&gt;" → ["String", "List`1&lt;Int32&gt;"]
     /// </summary>
-    private static List<string> ParseGenericArgs(string argsStr)
+    internal static List<string> ParseGenericArgs(string argsStr)
     {
         var args = new List<string>();
         var depth = 0;
