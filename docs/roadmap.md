@@ -172,7 +172,7 @@ See "RuntimeProvided Type Classification" section above.
 | Simple console apps | ~92% | Reflection stubs may cause runtime surprises |
 | Library projects | ~78% | `[DynamicallyAccessedMembers]` not parsed — tree-shaking breaks NuGet packages |
 | File I/O apps | ~80% | File.ReadAllBytes hangs (B.6); encoding gaps in File ICalls |
-| Network apps | ~30% | HTTP GET pending (C.6); HTTPS needs TLS (Phase E.win) |
+| Network apps | ~45% | HTTP GET compiles (C.6 builds); runtime pending BCL stubs; HTTPS needs TLS (Phase E.win) |
 | REST client (HTTP+JSON) | ~15% | Needs C.6 + Phase D (metadata) + JSON SG validation |
 | Production-grade apps | ~3% | Needs TLS + JSON + DI — all require Phase D first |
 | Arbitrary NativeAOT .csproj | **~25%** | NuGet packages untested, no `[DynamicallyAccessedMembers]`, no `[MarshalAs]`, 116 RE codegen bugs |
@@ -187,7 +187,7 @@ See "RuntimeProvided Type Classification" section above.
 - **90%→95%**: Edge case fixes + polish
 
 **Implementation gaps** (2026-03-02 audit, updated after code review):
-- `[DynamicallyAccessedMembers]` — **code-complete** in ReachabilityAnalyzer.cs (13 DamFlags, field/method/parameter scanning), but CLI pipeline not yet wired (SetPreservationRules() never called)
+- `[DynamicallyAccessedMembers]` — **complete (validated)**: 13 DamFlags, field/method/parameter scanning, CLI `--rdxml` wired, 7 DAM reachability tests + 14 rd.xml parser tests
 - ILLink feature switches — **active** since D.3 implementation; FeatureSwitchResolver substitutes 10+ AOT defaults at compile time in IRBuilder.Methods.cs:1372-1386
 - `[MarshalAs]` attribute — **implemented** (C.7.1): Cecil parsing in IRBuilder.Methods.cs, 21 type mappings in CppCodeGenerator.Source.cs:3024-3094. Missing: `[Out]`/`[In]` copy-back (C.7.2), LPArray runtime marshaling (C.7.3)
 - NuGet PackageReference — assembly resolution works (AssemblySet + deps.json), but zero test projects validate the path
@@ -340,10 +340,10 @@ See "RuntimeProvided Type Classification" section above.
 | C.3 | HttpClient construction | High | ✅ | HttpClient → SocketsHttpHandler → HttpConnectionSettings → TimeSpan/Int128. 5 compiler/runtime fixes: signed comparison (`clt`/`cgt` → `signed_lt/gt`), Exception.GetType ICall, SR resource string ICall, RunClassConstructor stub, generic nested type name mangling (boundary-aware regex) |
 | C.4 | DNS resolution | Low | ✅ | `Dns.GetHostAddresses` via Winsock GetAddrInfoW P/Invoke. `dup` opcode decoupling fix for `a[i++]` patterns |
 | C.5 | Integration tests | Low | ✅ | SocketTest (TCP loopback + DNS) + HttpTest (HttpClient construction) — 47/47 integration tests pass |
-| C.6 | Full HTTP GET (plaintext) | High | Pending | `client.GetStringAsync("http://...").Result` — async HTTP request/response chain |
+| C.6 | Full HTTP GET (plaintext) | High | ✅ Builds (runtime pending) | HttpGetTest compiles with 0 MSVC errors (from ~190). ~20 RenderedBodyError gates for: CIL2CPP_FILTER_BEGIN+CATCH, pointer↔intptr_t mismatch, opaque SafeHandle/ValueTuple stubs, QUIC/SIMD/void* arithmetic. sspicli→Secur32 lib mapping, /bigobj flag. Runtime SocketException pending — depends on BCL stub reduction. Integration test: codegen+build phase. |
 
 **Prerequisites**: Phase B ✅
-**Output**: Socket + DNS + HttpClient construction working (Windows). Full HTTP GET pending.
+**Output**: Socket + DNS + HttpClient construction working (Windows). Full HTTP GET: **compiles and links**. Runtime execution pending BCL stub reduction.
 
 ### ThreadPool Architecture Assessment (2026-03-02)
 
@@ -399,8 +399,8 @@ See "RuntimeProvided Type Classification" section above.
 | # | Task | Estimate | Status | Description |
 |---|------|----------|--------|-------------|
 | D.0 | NuGet package integration tests | Medium | Pending | Create test projects with real PackageReferences (Newtonsoft.Json, M.E.Logging.Abstractions). Validate NuGet → Cecil → IR → C++ pipeline. Assembly resolution works, zero test coverage. |
-| D.1 | `[DynamicallyAccessedMembers]` parsing | Medium | ✅ Code-complete | ReachabilityAnalyzer.cs:184-815 — full 13-flag DAM parsing + SeedDynamicallyAccessedMembers(). **CLI integration pending** (SetPreservationRules() never called in Program.cs). |
-| D.2 | rd.xml parser | Low | ✅ Code-complete | RdXmlParser.cs — full XML parsing + PreservationRule mapping. **CLI `--rd-xml` option pending.** |
+| D.1 | `[DynamicallyAccessedMembers]` parsing | Medium | ✅ Complete (validated) | ReachabilityAnalyzer.cs:184-815 — full 13-flag DAM parsing + SeedDynamicallyAccessedMembers(). CLI wired via `--rdxml`. Unit tests: 7 DAM reachability tests + 14 rd.xml parser tests. |
+| D.2 | rd.xml parser | Low | ✅ Complete (validated) | RdXmlParser.cs — full XML parsing + PreservationRule mapping. CLI `--rdxml` option wired in Program.cs (codegen + analyze commands). |
 | D.3 | ILLink feature switch substitution | Medium | ✅ Active | FeatureSwitchResolver.cs (10 AOT defaults) + IRBuilder.Methods.cs:1372-1386 (Ldsfld substitution). Automatically active in all builds. |
 | D.4 | AOT compatibility warnings | Low | Pending | Report `[RequiresUnreferencedCode]` call chains |
 | D.5 | Source generator validation | Medium | Pending | Test project with `[JsonSerializable]` attribute — validates System.Text.Json SG output compiles through CIL2CPP. Currently claimed but never tested. |

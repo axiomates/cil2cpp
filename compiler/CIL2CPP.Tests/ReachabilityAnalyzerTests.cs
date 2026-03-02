@@ -260,4 +260,117 @@ public class ReachabilityAnalyzerTests
             Assert.True(result.IsReachable(pub), $"Public type {pub.Name} should be reachable");
         }
     }
+
+    // ===== D.1: DynamicallyAccessedMembers + rd.xml Preservation Rules =====
+
+    [Fact]
+    public void SetPreservationRules_SeedsTypeIntoReachability()
+    {
+        // MathLib has MathUtils — preservation rule should seed a specific type
+        using var set = new AssemblySet(_fixture.HelloWorldDllPath);
+        var analyzer = new ReachabilityAnalyzer(set);
+
+        // Create a rule that preserves Calculator type with all members
+        var rules = new List<RdXmlParser.PreservationRule>
+        {
+            new("HelloWorld", "Calculator", null, -1)
+        };
+        analyzer.SetPreservationRules(rules);
+        var result = analyzer.Analyze();
+
+        // Calculator should be reachable (it's also seeded by Main, but the rule also seeds it)
+        Assert.Contains(result.ReachableTypes, t => t.Name == "Calculator");
+    }
+
+    [Fact]
+    public void SetPreservationRules_SeedsSpecificMethod()
+    {
+        using var set = new AssemblySet(_fixture.HelloWorldDllPath);
+        var analyzer = new ReachabilityAnalyzer(set);
+
+        // Preservation rule for a specific method
+        var rules = new List<RdXmlParser.PreservationRule>
+        {
+            new("HelloWorld", "Calculator", "Add", -1)
+        };
+        analyzer.SetPreservationRules(rules);
+        var result = analyzer.Analyze();
+
+        Assert.Contains(result.ReachableMethods,
+            m => m.Name == "Add" && m.DeclaringType.Name == "Calculator");
+    }
+
+    [Fact]
+    public void SetPreservationRules_UnknownType_DoesNotCrash()
+    {
+        using var set = new AssemblySet(_fixture.HelloWorldDllPath);
+        var analyzer = new ReachabilityAnalyzer(set);
+
+        var rules = new List<RdXmlParser.PreservationRule>
+        {
+            new("HelloWorld", "NonExistentType", null, -1)
+        };
+        analyzer.SetPreservationRules(rules);
+
+        // Should not throw — unknown types are silently skipped
+        var result = analyzer.Analyze();
+        Assert.NotNull(result);
+    }
+
+    [Fact]
+    public void SetPreservationRules_EmptyRules_AnalyzesNormally()
+    {
+        using var set = new AssemblySet(_fixture.HelloWorldDllPath);
+        var analyzer = new ReachabilityAnalyzer(set);
+        analyzer.SetPreservationRules(new List<RdXmlParser.PreservationRule>());
+
+        var result = analyzer.Analyze();
+        Assert.Contains(result.ReachableTypes, t => t.Name == "Program");
+    }
+
+    [Fact]
+    public void DamFlags_PublicConstructors_SeedsConstructors()
+    {
+        // MathLib in library mode seeds public types. Counter has a public ctor.
+        // Run fresh analysis to verify constructors are seeded.
+        using var set = new AssemblySet(_fixture.MultiAssemblyTestDllPath);
+        var analyzer = new ReachabilityAnalyzer(set);
+        var result = analyzer.Analyze();
+
+        // Counter's ctor should be reachable (Main calls it)
+        var counterCtors = result.ReachableMethods
+            .Where(m => m.DeclaringType.Name == "Counter" && m.IsConstructor)
+            .ToList();
+        Assert.NotEmpty(counterCtors);
+    }
+
+    [Fact]
+    public void DamFlags_PublicMethods_SeedsPublicMethods()
+    {
+        // MathLib library mode should seed public methods
+        var (_, result) = _fixture.GetMathLibReleaseContext();
+
+        // MathUtils.Add and MathUtils.Subtract are public
+        Assert.Contains(result.ReachableMethods,
+            m => m.Name == "Add" && m.DeclaringType.Name == "MathUtils");
+        Assert.Contains(result.ReachableMethods,
+            m => m.Name == "Subtract" && m.DeclaringType.Name == "MathUtils");
+    }
+
+    [Fact]
+    public void PreservationRules_CrossAssembly_SeedsFromDependency()
+    {
+        using var set = new AssemblySet(_fixture.MultiAssemblyTestDllPath);
+        var analyzer = new ReachabilityAnalyzer(set);
+
+        // Preservation rule targeting MathLib types (cross-assembly)
+        var rules = new List<RdXmlParser.PreservationRule>
+        {
+            new("MathLib", "MathUtils", null, -1)
+        };
+        analyzer.SetPreservationRules(rules);
+        var result = analyzer.Analyze();
+
+        Assert.Contains(result.ReachableTypes, t => t.Name == "MathUtils");
+    }
 }

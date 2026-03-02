@@ -122,6 +122,9 @@ public partial class CppCodeGenerator
             if (typeName.StartsWith("cil2cpp")) continue;
             if (IsCppPrimitiveType(typeName)) continue;
             if (!IsValidCppIdentifier(typeName)) continue;
+            // Skip types with unresolved generic params (e.g., AsyncStateMachineBox_..._TStateMachine)
+            // These are forward-declared but never get struct definitions, causing C2027.
+            if (MangledNameContainsUnresolvedGenericParam(typeName)) continue;
             sb.AppendLine($"struct {typeName};");
             forwardDeclared.Add(typeName);
         }
@@ -612,6 +615,8 @@ public partial class CppCodeGenerator
         if (aliasedTypes.Contains(raw)) return;
         if (!IsValidCppIdentifier(raw)) return;
         if (enumTypes.Contains(raw)) return;
+        // Skip types with unresolved generic params (open generics that leaked through)
+        if (MangledNameContainsUnresolvedGenericParam(raw)) return;
         if (!forwardDeclared.Contains(raw))
         {
             sb.AppendLine($"struct {raw};");
@@ -872,6 +877,7 @@ public partial class CppCodeGenerator
             if (retTypeName.Length > 0 && !retTypeName.StartsWith("cil2cpp::") && !IsCppPrimitiveType(retTypeName))
             {
                 if (IsUnresolvedGenericParam(retTypeName)) return true;
+                if (MangledNameContainsUnresolvedGenericParam(retTypeName)) return true;
                 if (!retType.EndsWith("*") && !knownTypeNames.Contains(retTypeName))
                     return true;
             }
@@ -887,6 +893,8 @@ public partial class CppCodeGenerator
             if (typeName.StartsWith("cil2cpp::") || IsCppPrimitiveType(typeName)) continue;
             // Unresolved generic param names (TOther, TArg1, TNegator, etc.)
             if (IsUnresolvedGenericParam(typeName)) return true;
+            // Composite mangled names containing unresolved generic params (Task_1_TResult, etc.)
+            if (MangledNameContainsUnresolvedGenericParam(typeName)) return true;
             // Pointer-type params: check for bare unresolved generic param names
             if (rawType.EndsWith("*"))
             {
@@ -2010,6 +2018,13 @@ public partial class CppCodeGenerator
         if (rendered.Contains("CIL2CPP_FINALLY") && !rendered.Contains("CIL2CPP_END_TRY"))
             return "CIL2CPP_FINALLY without END_TRY";
 
+        // Body-level check: CIL2CPP_FILTER_BEGIN + CIL2CPP_CATCH in same method.
+        // FILTER_BEGIN expands to "} else {" and CATCH expands to "} else if (...) {" —
+        // when CATCH follows FILTER_BEGIN within the same TRY, the else-if has no matching if.
+        // This produces C2181 "illegal else without matching if".
+        if (rendered.Contains("CIL2CPP_FILTER_BEGIN") && rendered.Contains("CIL2CPP_CATCH"))
+            return "CIL2CPP_FILTER_BEGIN + CATCH in same method (C2181 illegal else)";
+
         // Body-level check: field access via parameter or ldelema on forward-declared-only types.
         // The ldelema fix (StackEntry type) correctly uses -> for pointer access, but if the
         // element type is only forward-declared, MSVC gives C2027 "undefined type".
@@ -2198,10 +2213,8 @@ public partial class CppCodeGenerator
             }
         }
 
-        // SIMD Vector operators: methods that use binary/unary operators on Vector128/256/512
-        // struct types. These structs are opaque stubs with no operator overloads defined.
-        // Detect: assignment with C-style cast to Vector type wrapping a binary/unary expression.
-        // e.g., auto __t12 = (System_Runtime_Intrinsics_Vector512_1_...)(loc_3 | loc_4);
+        // SIMD Vector: methods that use Vector128/256/512 struct types.
+        // These structs are opaque stubs — operators and cross-type assignments fail.
         if (rendered.Contains("System_Runtime_Intrinsics_Vector"))
         {
             foreach (var line in rendered.AsSpan().EnumerateLines())
@@ -2212,6 +2225,17 @@ public partial class CppCodeGenerator
                 if (s.Contains("= (System_Runtime_Intrinsics_Vector") &&
                     (s.Contains(")(~") || s.Contains(" | ") || s.Contains(" & ") || s.Contains(" - ")))
                     return "SIMD Vector operator on opaque struct type (C2676/C2088)";
+                // Pattern: loc_N = __tN; where __tN is a Vector type and loc_N is different type
+                // (cross-scope type mismatch from SIMD operations)
+                if (s.StartsWith("loc_") && s.Contains(" = __t") && !s.Contains("("))
+                {
+                    var eqIdx = s.IndexOf(" = ");
+                    var rhs = s[(eqIdx + 3)..].TrimEnd(';').Trim();
+                    // Check if rhs temp was declared as a Vector type earlier
+                    if (rendered.Contains($"System_Runtime_Intrinsics_Vector128_1_") &&
+                        rendered.Contains($"{rhs} = {{}}; // SIMD stub"))
+                        return "SIMD Vector stub assigned to non-Vector local (C2679)";
+                }
             }
         }
 
@@ -2224,6 +2248,34 @@ public partial class CppCodeGenerator
             var lineReason = GetRenderedLineErrorReason(s, knownStringTemps);
             if (lineReason != null)
                 return lineReason;
+
+            // Check for references to _TypeInfo globals for opaque types.
+            // Opaque stubs emit struct { }; but no TypeInfo global — references cause C2065.
+            // Note: these types MAY be in knownTypes (opaque struct IS emitted), but their
+            // TypeInfo globals are NOT generated. So we can't use knownTypes to filter.
+            if (s.Contains("_TypeInfo") && s.Contains("&"))
+            {
+                var typeInfoIdx2 = s.IndexOf("_TypeInfo", StringComparison.Ordinal);
+                while (typeInfoIdx2 > 0)
+                {
+                    var tiStart = typeInfoIdx2 - 1;
+                    while (tiStart > 0 && (char.IsLetterOrDigit(s[tiStart - 1]) || s[tiStart - 1] == '_'))
+                        tiStart--;
+                    var tiTypeName = s[tiStart..typeInfoIdx2];
+                    if (tiTypeName.Length > 5 && !tiTypeName.StartsWith("cil2cpp") && tiTypeName.Contains('_') &&
+                        (tiTypeName.Contains("ValueTuple_4_") || tiTypeName.Contains("ValueTuple_5_") ||
+                         tiTypeName.Contains("ValueTuple_6_") || tiTypeName.Contains("ValueTuple_7_") ||
+                         tiTypeName.Contains("AsyncOverSync")))
+                    {
+                        // Only flag if the type's TypeInfo is NOT found in declared function names
+                        // (which tracks extern declarations). This is a heuristic — full TypeInfos
+                        // have ensure_cctor or other methods.
+                        if (!_declaredFunctionNames.Contains($"{tiTypeName}__ctor"))
+                            return $"_TypeInfo reference for opaque type '{tiTypeName}' (C2065)";
+                    }
+                    typeInfoIdx2 = s.IndexOf("_TypeInfo", typeInfoIdx2 + 9);
+                }
+            }
 
             // Check for references to undeclared _statics globals
             var staticsIdx = s.IndexOf("_statics.", StringComparison.Ordinal);
@@ -2616,6 +2668,42 @@ public partial class CppCodeGenerator
                         // (X*)varName — value-to-pointer cast of array_get result
                         if (s.Contains($"*){v}") && !s.Contains("array_"))
                             return $"array_get<non-pointer> result {v} cast to pointer";
+                    }
+                }
+            }
+
+            // Also track array_get<Object*> results stored via deref to typed out-param.
+            // Pattern: auto __tN = array_get<Object*>(arr, idx); *result = __tN;
+            // where result is TypedPtr** — Object* can't be assigned to TypedPtr*.
+            var objectArrayGetVars = new HashSet<string>();
+            foreach (var line in rendered.AsSpan().EnumerateLines())
+            {
+                var s = line.ToString().TrimStart();
+                if (s.StartsWith("auto __t") && s.Contains("array_get<cil2cpp::Object*>"))
+                {
+                    var spIdx = s.IndexOf(' ', 5);
+                    if (spIdx > 5) objectArrayGetVars.Add(s[5..spIdx]);
+                }
+            }
+            if (objectArrayGetVars.Count > 0)
+            {
+                foreach (var line in rendered.AsSpan().EnumerateLines())
+                {
+                    var s = line.ToString().TrimStart();
+                    // *paramName = __tN; where __tN is Object* from array_get
+                    if (s.StartsWith("*") && s.Contains(" = "))
+                    {
+                        var eqIdx = s.IndexOf(" = ");
+                        var rhs = s[(eqIdx + 3)..].TrimEnd(';').Trim();
+                        if (objectArrayGetVars.Contains(rhs))
+                        {
+                            var derefParam = s[1..eqIdx].Trim();
+                            // Check if the parameter is typed (not Object**)
+                            var matchParam = method.Parameters.FirstOrDefault(p => p.Name == derefParam);
+                            if (matchParam != null && matchParam.CppTypeName.EndsWith("**") &&
+                                !matchParam.CppTypeName.Contains("Object"))
+                                return $"array_get<Object*> result stored to typed out-param '*{derefParam}' (C2440)";
+                        }
                     }
                 }
             }
@@ -3064,15 +3152,15 @@ public partial class CppCodeGenerator
             }
         }
 
-        // Interface vtable dispatch returning wrong scalar type — generic IEnumerator<T>.Current
-        // returns the wrong primitive type when the type arg is a complex struct like KeyValuePair.
-        // Pattern: vtable call with scalar return cast, followed by assignment to struct local.
+        // Interface vtable dispatch returning wrong type — generic IEnumerator<T>.Current
+        // returns the wrong type (scalar or pointer) when the type arg is a complex struct.
+        // Pattern: vtable call with wrong return cast, followed by assignment to struct local.
         {
-            var scalarVtableResults = new Dictionary<string, string>(); // varName → scalar type
+            var vtableResults = new Dictionary<string, string>(); // varName → return type
             foreach (var line in rendered.AsSpan().EnumerateLines())
             {
                 var s = line.ToString().TrimStart();
-                // auto __tN = ((scalarType(*)(...))(vtable...))(...);
+                // auto __tN = ((retType(*)(...))(vtable...))(...);
                 // May also appear after null_check: "cil2cpp::null_check(...); auto __tN = ..."
                 var vtableChk = s;
                 if (vtableChk.Contains("; auto __t"))
@@ -3087,22 +3175,16 @@ public partial class CppCodeGenerator
                         if (retEnd > castStart + 2)
                         {
                             var retType = vtableChk[(castStart + 2)..retEnd].Trim();
-                            if (retType is "bool" or "uint8_t" or "int8_t" or "int16_t" or "uint16_t"
-                                or "int32_t" or "uint32_t" or "int64_t" or "uint64_t" or "char16_t"
-                                or "float" or "double")
-                            {
-                                var varEnd = vtableChk.IndexOf(' ', 5);
-                                if (varEnd > 5)
-                                    scalarVtableResults[vtableChk[5..varEnd]] = retType;
-                            }
+                            var varEnd = vtableChk.IndexOf(' ', 5);
+                            if (varEnd > 5)
+                                vtableResults[vtableChk[5..varEnd]] = retType;
                         }
                     }
                 }
             }
-            if (scalarVtableResults.Count > 0)
+            if (vtableResults.Count > 0)
             {
-                // Build local type lookup from IR metadata to avoid false positives:
-                // scalar→scalar (e.g. int32_t from IComparer.Compare → int32_t loc) is valid C++.
+                // Build local type lookup from IR metadata to avoid false positives
                 var localTypes = new Dictionary<string, string>();
                 var enumLocals = new HashSet<string>();
                 foreach (var local in method.Locals)
@@ -3115,19 +3197,26 @@ public partial class CppCodeGenerator
                 foreach (var line in rendered.AsSpan().EnumerateLines())
                 {
                     var s = line.ToString().TrimStart();
-                    // loc_N = __tM; where __tM is from scalar vtable dispatch
+                    // loc_N = __tM; where __tM is from vtable dispatch
                     if (s.StartsWith("loc_") && s.Contains(" = "))
                     {
                         var eqIdx = s.IndexOf(" = ");
                         var rhs = s[(eqIdx + 3)..].TrimEnd(';').Trim();
-                        if (scalarVtableResults.ContainsKey(rhs))
+                        if (vtableResults.TryGetValue(rhs, out var vtableRetType))
                         {
                             var localName = s[..eqIdx];
-                            // Scalar→scalar or scalar→enum assignment is valid C++
-                            if (localTypes.TryGetValue(localName, out var localCppType)
-                                && (IsCppPrimitiveType(localCppType) || enumLocals.Contains(localName)))
+                            if (!localTypes.TryGetValue(localName, out var localCppType))
                                 continue;
-                            return $"interface vtable dispatch returns scalar '{scalarVtableResults[rhs]}' assigned to struct local (C2679)";
+                            // Same-type assignment is always valid
+                            if (localCppType == vtableRetType) continue;
+                            // Scalar→scalar or scalar→enum assignment is valid C++
+                            if (IsCppPrimitiveType(vtableRetType) &&
+                                (IsCppPrimitiveType(localCppType) || enumLocals.Contains(localName)))
+                                continue;
+                            // Pointer→pointer is valid via C-style cast
+                            if (vtableRetType.EndsWith("*") && localCppType.EndsWith("*"))
+                                continue;
+                            return $"interface vtable dispatch returns '{vtableRetType}' assigned to incompatible local '{localCppType}' (C2679)";
                         }
                     }
                 }
@@ -3166,6 +3255,24 @@ public partial class CppCodeGenerator
         if (rendered.Contains("DsesActivitySourceListener_OnSample") ||
             rendered.Contains("DsesActivitySourceListener_OnCreate"))
             return "undeclared DsesActivitySourceListener method (C2065)";
+
+        // Undeclared method: X509CertificateLoader.LoadPkcs12Collection — not included in reachability
+        if (rendered.Contains("X509CertificateLoader_LoadPkcs12Collection"))
+            return "undeclared X509CertificateLoader.LoadPkcs12Collection (C2065)";
+
+        // Method-level: QUIC/HTTP3 methods that use QUIC_HANDLE* ↔ intptr_t interchangeably.
+        // QUIC is not needed for HTTP/1.1 — these methods have complex pointer/intptr mismatches.
+        if (method.DeclaringType?.ILFullName != null)
+        {
+            var declNs = method.DeclaringType.ILFullName;
+            if (declNs.StartsWith("Microsoft.Quic.") || declNs.StartsWith("System.Net.Quic."))
+            {
+                // Only gate methods with actual type mismatches (not all QUIC methods)
+                if (rendered.Contains("QUIC_HANDLE") || rendered.Contains("box<intptr_t>") ||
+                    rendered.Contains("CIL2CPP_FILTER_BEGIN"))
+                    return "QUIC method with pointer/intptr_t or filter mismatch";
+            }
+        }
 
         // sizeof(void) — initobj on void* dereferences to void, which has no size (C2070)
         if (rendered.Contains("sizeof(void)"))
@@ -3283,6 +3390,508 @@ public partial class CppCodeGenerator
                             return $"unbox of undeclared ArraySegment specialization '{typeName}'";
                     }
                 }
+            }
+        }
+
+        // Body-level check: cast/dereference of open-generic types with unresolved params.
+        // E.g., ((AsyncStateMachineBox_1_..._TStateMachine*)x)->f_StateMachine — the type
+        // has no struct definition and never will (TStateMachine is unresolved).
+        {
+            var bodyRefs = new HashSet<string>();
+            CollectBodyPointerTypeRefs(rendered, bodyRefs);
+            foreach (var bodyRef in bodyRefs)
+            {
+                if (MangledNameContainsUnresolvedGenericParam(bodyRef))
+                    return $"dereference of open-generic type '{bodyRef}'";
+            }
+        }
+
+        // Body-level check: pointer-to-intptr_t field assignment without cast.
+        // BCL IL treats IntPtr fields (f_Pointer, f_pvBuffer, etc.) as pointer-sized ints,
+        // but codegen computes them as uint8_t*/void*/Object*. C++ requires explicit cast.
+        if (rendered.Contains("intptr_t"))
+        {
+            foreach (var ln in rendered.AsSpan().EnumerateLines())
+            {
+                var s = ln.ToString().TrimStart();
+                // Broad pattern: any ->f_XXX = <expr> where RHS is a pointer expression
+                // and the field is known to be intptr_t (via the C2440 error pattern)
+                var fieldAssignIdx = s.IndexOf("->f_");
+                if (fieldAssignIdx < 0) fieldAssignIdx = s.IndexOf(")->f_");
+                if (fieldAssignIdx >= 0)
+                {
+                    var eqIdx = s.IndexOf(" = ", fieldAssignIdx);
+                    if (eqIdx > fieldAssignIdx)
+                    {
+                        var rhs = s[(eqIdx + 3)..].TrimEnd(';').Trim();
+                        // RHS is a pointer if it's a temp var, pointer cast, or address-of
+                        if ((rhs.StartsWith("__t") || rhs.StartsWith("(uint8_t") ||
+                             rhs.StartsWith("(void*") || rhs.StartsWith("loc_") || rhs.StartsWith("&")) &&
+                            !rhs.Contains("(intptr_t)") && !rhs.Contains("(uintptr_t)"))
+                        {
+                            // Only flag for intptr_t fields — check if the field name matches
+                            // known intptr_t fields (f_Pointer, f_pointer, f_pvBuffer, f_BufferList,
+                            // f_pvOptional, f_Token, f_pAddrBuf, f_handle, etc.)
+                            var fieldStart = s.IndexOf("f_", fieldAssignIdx);
+                            var fieldEnd = eqIdx;
+                            if (fieldStart >= 0 && fieldEnd > fieldStart)
+                            {
+                                var fieldName = s[fieldStart..fieldEnd].Trim();
+                                if (fieldName is "f_Pointer" or "f_pointer" or "f_pvBuffer" or
+                                    "f_BufferList" or "f_pvOptional" or "f_pAddrBuf" or
+                                    "f_cbBuffer" or "f_handle")
+                                    return $"pointer assigned to intptr_t field ({fieldName})";
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Body-level check: pre-declared intptr_t/uintptr_t variable assigned from pointer expression.
+        // BCL IL treats IntPtr as native pointer, but C++ intptr_t is integer — incompatible assignment.
+        {
+            var intptrPreDecls = new HashSet<string>();
+            foreach (var ln in rendered.AsSpan().EnumerateLines())
+            {
+                var s = ln.ToString().TrimStart();
+                if ((s.StartsWith("intptr_t __t") || s.StartsWith("uintptr_t __t")) && s.Contains(" = "))
+                {
+                    var spIdx = s.IndexOf(' ');
+                    var eqIdx = s.IndexOf(' ', spIdx + 1);
+                    if (eqIdx > spIdx)
+                        intptrPreDecls.Add(s[(spIdx + 1)..eqIdx]);
+                }
+            }
+            if (intptrPreDecls.Count > 0)
+            {
+                foreach (var ln in rendered.AsSpan().EnumerateLines())
+                {
+                    var s = ln.ToString().TrimStart();
+                    foreach (var v in intptrPreDecls)
+                    {
+                        if (!s.StartsWith($"{v} = ")) continue;
+                        var rhs = s[($"{v} = ".Length)..].TrimEnd(';').Trim();
+                        // Skip safe intptr_t assignments (int literals, other intptr vars, cast to intptr_t)
+                        if (rhs.Contains("(intptr_t)") || rhs.Contains("(uintptr_t)")) continue;
+                        if (rhs.StartsWith("__t") && !rhs.Contains("->") && !rhs.Contains("(")) continue;
+                        if (rhs == "0" || rhs == "nullptr") continue;
+                        // RHS is a local variable — check if it's pointer-typed
+                        if (rhs.StartsWith("loc_") || rhs.StartsWith("&"))
+                            return $"intptr_t pre-declared var {v} assigned pointer-typed value";
+                    }
+                }
+            }
+        }
+
+        // Body-level check: intptr_t from f_handle assigned to struct local variable.
+        // SafeHandle.f_handle is intptr_t but BCL assigns it to CredHandle/SecHandle structs.
+        if (rendered.Contains("->f_handle") && rendered.Contains("loc_"))
+        {
+            foreach (var ln in rendered.AsSpan().EnumerateLines())
+            {
+                var s = ln.ToString().TrimStart();
+                if (s.StartsWith("loc_") && s.Contains(" = ") && !s.Contains("(") && s.EndsWith(";"))
+                {
+                    var eqIdx = s.IndexOf(" = ");
+                    var rhs = s[(eqIdx + 3)..].TrimEnd(';').Trim();
+                    if (rhs.StartsWith("__t"))
+                    {
+                        // Check if __tN was assigned from f_handle
+                        var assignLine = $"auto {rhs} = ";
+                        foreach (var ln2 in rendered.AsSpan().EnumerateLines())
+                        {
+                            var s2 = ln2.ToString().TrimStart();
+                            if (s2.StartsWith(assignLine) && s2.Contains("->f_handle"))
+                                return $"intptr_t from f_handle assigned to struct local ({s[..eqIdx]})";
+                        }
+                    }
+                }
+            }
+        }
+
+        // Body-level check: box<intptr_t>(ptr_expr) — pointer value cannot be boxed as intptr_t.
+        // QUIC_HANDLE* → box<intptr_t> pattern in BCL networking code.
+        if (rendered.Contains("box<intptr_t>("))
+        {
+            foreach (var ln in rendered.AsSpan().EnumerateLines())
+            {
+                var s = ln.ToString().TrimStart();
+                var boxIdx = s.IndexOf("box<intptr_t>(");
+                if (boxIdx < 0) continue;
+                var argStart = boxIdx + 14; // past "box<intptr_t>("
+                var commaIdx = s.IndexOf(',', argStart);
+                if (commaIdx < 0) continue;
+                var arg = s[argStart..commaIdx].Trim();
+                // If arg is a parameter/variable name that's a typed pointer (not __tN from intptr expr)
+                if (!arg.StartsWith("__t") && !arg.StartsWith("(") &&
+                    method.Parameters.Any(p => p.Name == arg && p.CppTypeName.EndsWith("*")))
+                    return $"box<intptr_t> with pointer parameter '{arg}' (C2664)";
+            }
+        }
+
+        // Body-level check: f_m_task access on runtime async types (AsyncTaskMethodBuilder, TaskAwaiter).
+        // BCL IL references _task field, but runtime structs use different field names.
+        if (rendered.Contains("->f_m_task"))
+            return "f_m_task field access on runtime async type (field not in C++ struct)";
+
+        // Body-level check: f_obj access on ValueTask types.
+        // BCL IL references _obj field, but runtime ValueTask structs use different layout.
+        if (rendered.Contains("ValueTask") && rendered.Contains("->f_obj"))
+            return "f_obj field access on runtime ValueTask type";
+
+        // Body-level check: f_value on ValueTaskAwaiter (aliased to cil2cpp::ValueTaskAwaiterVoid
+        // which has no f_value field). BCL IL has _value field but runtime struct doesn't.
+        if (rendered.Contains("f_value") &&
+            method.DeclaringType?.ILFullName == "System.Runtime.CompilerServices.ValueTaskAwaiter")
+            return "f_value access on ValueTaskAwaiter (field not in runtime struct)";
+
+        // Body-level check: field access on opaque ValueTuple stubs (f_Item1..f_Item8).
+        // ValueTuple<T1,...TN> specializations that cross into non-BCL types (QUIC, etc.) are
+        // emitted as opaque empty structs. Any f_Item access on them causes C2039.
+        // IL accesses via dot (value type) or arrow (pointer).
+        if (rendered.Contains(".f_Item") || rendered.Contains("->f_Item"))
+        {
+            if (knownTypes != null)
+            {
+                // Check if any ValueTuple types used in body or parameters are opaque
+                var bodyRefs = new HashSet<string>();
+                CollectBodyPointerTypeRefs(rendered, bodyRefs);
+                foreach (var bodyRef in bodyRefs)
+                {
+                    if (bodyRef.Contains("ValueTuple_") && !knownTypes.Contains(bodyRef))
+                        return $"f_Item field access on opaque ValueTuple stub '{bodyRef}'";
+                }
+                // Also check method parameter and return types for ValueTuple
+                if (method.ReturnTypeCpp != null && method.ReturnTypeCpp.Contains("ValueTuple_") &&
+                    !knownTypes.Contains(method.ReturnTypeCpp.TrimEnd('*')))
+                    return $"f_Item field access on opaque ValueTuple return type '{method.ReturnTypeCpp}'";
+                foreach (var param in method.Parameters)
+                {
+                    var pType = param.CppTypeName.TrimEnd('*');
+                    if (pType.Contains("ValueTuple_") && !knownTypes.Contains(pType))
+                        return $"f_Item field access on opaque ValueTuple param type '{pType}'";
+                }
+                // Check locals
+                foreach (var local in method.Locals)
+                {
+                    var lType = local.CppTypeName.TrimEnd('*');
+                    if (lType.Contains("ValueTuple_") && !knownTypes.Contains(lType))
+                        return $"f_Item field access on opaque ValueTuple local type '{lType}'";
+                }
+                // Scan rendered body for any ValueTuple type name (may appear in function calls,
+                // sizeof, memset, etc.) that's not in knownTypes
+                foreach (var ln in rendered.AsSpan().EnumerateLines())
+                {
+                    var s = ln.ToString();
+                    var vtIdx = s.IndexOf("System_ValueTuple_");
+                    while (vtIdx >= 0)
+                    {
+                        // Extract full type name (ends at non-identifier char)
+                        var end = vtIdx;
+                        while (end < s.Length && (char.IsLetterOrDigit(s[end]) || s[end] == '_'))
+                            end++;
+                        var typeName = s[vtIdx..end];
+                        if (!knownTypes.Contains(typeName) && typeName.Contains("ValueTuple_"))
+                            return $"f_Item field access on opaque ValueTuple '{typeName}' in body";
+                        vtIdx = s.IndexOf("System_ValueTuple_", end);
+                    }
+                }
+            }
+        }
+
+        // Body-level check: f_reference/f_length on ArraySegment opaque stubs.
+        // ArraySegment<T> is emitted as opaque empty struct — f_reference/f_length don't exist.
+        // IL code accesses via dot (value type) or arrow (pointer).
+        if (rendered.Contains("ArraySegment") &&
+            (rendered.Contains(".f_reference") || rendered.Contains(".f_length") ||
+             rendered.Contains("->f_reference") || rendered.Contains("->f_length")))
+            return "field access on opaque ArraySegment stub";
+
+        // Body-level check: f_handle on SafeHandle subtypes that are opaque stubs.
+        if (rendered.Contains("->f_handle") && knownTypes != null)
+        {
+            // Check body pointer type refs
+            var bodyRefs = new HashSet<string>();
+            CollectBodyPointerTypeRefs(rendered, bodyRefs);
+            foreach (var bodyRef in bodyRefs)
+            {
+                if (bodyRef.Contains("Safe") && bodyRef.Contains("Handle") && !knownTypes.Contains(bodyRef))
+                    return $"f_handle access on opaque SafeHandle stub '{bodyRef}'";
+            }
+            // Also check the declaring type itself (__this->f_handle)
+            if (rendered.Contains("__this->f_handle") && method.DeclaringType != null)
+            {
+                var declCppName = CppNameMapper.MangleTypeName(method.DeclaringType.ILFullName);
+                // SafeHandle subclasses may be opaque stubs (in knownTypes but without f_handle field)
+                // Only the base SafeHandle has f_handle in the flat struct; subclass stubs don't
+                if (declCppName.Contains("Safe") && declCppName.Contains("Handle") &&
+                    declCppName != "System_Runtime_InteropServices_SafeHandle")
+                    return $"f_handle access on opaque SafeHandle declaring type '{declCppName}'";
+            }
+        }
+
+        // Body-level check: array_get with non-Array* argument (jagged array access).
+        // Pattern: array_get<T>(object_ptr, idx) where object_ptr is Object* not Array*.
+        // IL ldelem on jagged arrays returns Object* which must be cast to Array* for next access.
+        if (rendered.Contains("array_get"))
+        {
+            foreach (var ln in rendered.AsSpan().EnumerateLines())
+            {
+                var s = ln.ToString().TrimStart();
+                // auto __tN = cil2cpp::array_get<T>(__tM, idx) where __tM came from a previous array_get<Object*>
+                var agIdx = s.IndexOf("cil2cpp::array_get<");
+                if (agIdx < 0) continue;
+                var parenIdx = s.IndexOf('(', agIdx + 19);
+                if (parenIdx < 0) continue;
+                // Check what the close of the template arg is
+                var closeAngle = s.IndexOf('>', agIdx + 19);
+                if (closeAngle < 0 || closeAngle >= parenIdx) continue;
+                var templateArg = s[(agIdx + 19)..closeAngle].Trim();
+                // If template arg is NOT Object*/Array*/void*, the array argument must be Array*
+                // But if the argument is a __tN that was previously Object*, this fails
+                if (templateArg != "cil2cpp::Object*" && templateArg != "cil2cpp::Array*" && templateArg != "void*")
+                {
+                    // Get the first function argument
+                    var argStart = parenIdx + 1;
+                    var commaIdx = s.IndexOf(',', argStart);
+                    if (commaIdx < 0) continue;
+                    var firstArg = s[argStart..commaIdx].Trim();
+                    // If the first arg is a __tN (temp from previous array_get), it's likely Object*
+                    if (firstArg.StartsWith("__t") && firstArg.Length <= 7)
+                        return "array_get on non-Array* argument (jagged array access needs cast)";
+                }
+            }
+        }
+
+        // Body-level check: void* pointer arithmetic (C2036: void* unknown size).
+        // IL pointer add on void* arrays or untyped pointers produces (void*)ptr + offset.
+        // Also detects arithmetic on void* temp variables: __tN = (void*)expr; later __tM = __tN + X;
+        {
+            var voidPtrTemps = new HashSet<string>();
+            foreach (var ln in rendered.AsSpan().EnumerateLines())
+            {
+                var s = ln.ToString().TrimStart();
+                // Track auto __tN = (void*)expr;
+                if (s.StartsWith("auto __t") && s.Contains("= (void*)"))
+                {
+                    var spIdx = s.IndexOf(' ', 5);
+                    if (spIdx > 5)
+                        voidPtrTemps.Add(s[5..spIdx]);
+                }
+            }
+            if (voidPtrTemps.Count > 0)
+            {
+                foreach (var ln in rendered.AsSpan().EnumerateLines())
+                {
+                    var s = ln.ToString().TrimStart();
+                    if (s.Contains(" + ") || s.Contains(" - "))
+                    {
+                        foreach (var v in voidPtrTemps)
+                        {
+                            // Direct: __tN + expr or expr + __tN
+                            if (s.Contains($"{v} + ") || s.Contains($"{v} - ") ||
+                                s.Contains($"+ {v}") || s.Contains($"- {v}"))
+                                return $"void* pointer arithmetic via temp {v} (C2036)";
+                        }
+                    }
+                }
+            }
+        }
+
+        // Body-level check: IBase64Encoder generic interface method called with Object* as first arg.
+        // The constrained call resolves to a direct function call, but the IL `this` is Object*
+        // while the function expects IBase64Encoder_1_Byte*.
+        if (rendered.Contains("IBase64Encoder_1_"))
+        {
+            foreach (var ln in rendered.AsSpan().EnumerateLines())
+            {
+                var s = ln.ToString().TrimStart();
+                if (s.Contains("IBase64Encoder_1_") && s.Contains("(") && !s.TrimEnd().EndsWith("{"))
+                {
+                    // Check if first arg is a cil2cpp::Object* cast
+                    if (s.Contains("((cil2cpp::Object*)") || s.Contains("(cil2cpp::Object*)(void*)"))
+                        return "IBase64Encoder generic interface called with Object* (C2664)";
+                }
+            }
+        }
+
+        // Body-level check: Deque_1_AsyncOperation EnqueueTail called with wrong arg type.
+        // Generic specialization maps T → QuicStream/WriteQueueEntry but function expects
+        // AsyncOperation_1<T>* wrapper type.
+        if (rendered.Contains("Deque_1_") && rendered.Contains("EnqueueTail"))
+        {
+            foreach (var ln in rendered.AsSpan().EnumerateLines())
+            {
+                var s = ln.ToString().TrimStart();
+                if (s.Contains("EnqueueTail(") && s.Contains("AsyncOperation_1_"))
+                {
+                    // If the line also casts to a non-AsyncOperation type, it's a mismatch
+                    if (s.Contains("(void*)") && !s.Contains("AsyncOperation_1_"))
+                        continue; // safe cast
+                    return "Deque_1 EnqueueTail arg type mismatch (C2664)";
+                }
+            }
+        }
+
+        // Body-level check: AsyncOverSyncWithIoCancellation name mismatch.
+        // Generic type args with nested ReadOnlyMemory_1<Byte> produce double underscore '__'
+        // in one context but single '_' in another, causing C2664 type mismatch between
+        // the two "identical" types with different name mangling.
+        if (rendered.Contains("AsyncOverSyncWithIoCancellation__InvokeAsync"))
+        {
+            if (rendered.Contains("ReadOnlyMemory_1_System_Byte__System_Int64"))
+                return "AsyncOverSyncWithIoCancellation name mangling mismatch (double vs single underscore)";
+        }
+
+        // Body-level check: uint8_t* pointer division.
+        // IL subtracts pointers then divides by element size, but in C++ pointer subtraction
+        // already yields ptrdiff_t. Dividing a uint8_t* result is invalid.
+        if (rendered.Contains("/ 1") || rendered.Contains("/ 2"))
+        {
+            foreach (var ln in rendered.AsSpan().EnumerateLines())
+            {
+                var s = ln.ToString().TrimStart();
+                // Pattern: auto __tN = __tM / N; where __tM was uint8_t* from pointer subtraction cast
+                if (s.StartsWith("auto ") && (s.Contains("/ 1;") || s.Contains("/ 2;")))
+                {
+                    var eqIdx = s.IndexOf(" = ");
+                    if (eqIdx > 0)
+                    {
+                        var rhs = s[(eqIdx + 3)..].TrimEnd(';').Trim();
+                        // Check if the dividend was cast to uint8_t*
+                        if (rhs.StartsWith("__t"))
+                        {
+                            var divVar = rhs.Split('/')[0].Trim();
+                            if (rendered.Contains($"auto {divVar} = (uint8_t*)"))
+                                return "uint8_t* pointer division (C2296)";
+                        }
+                    }
+                }
+            }
+        }
+
+        // Body-level check: (&pointer_local)->f_field — double-pointer dereference on value type fields.
+        // Async state machine locals should be value types but are sometimes typed as pointers.
+        // (&ptr)->field gives (ptr**)->field which is invalid.
+        if (rendered.Contains("(&loc_") && rendered.Contains(")->f_"))
+        {
+            foreach (var ln in rendered.AsSpan().EnumerateLines())
+            {
+                var s = ln.ToString().TrimStart();
+                if (s.Contains("(&loc_") && s.Contains(")->f_"))
+                {
+                    // Extract loc_N name
+                    var addrIdx = s.IndexOf("(&loc_");
+                    var closeIdx = s.IndexOf(")", addrIdx + 2);
+                    if (closeIdx > addrIdx + 2)
+                    {
+                        var localName = s[(addrIdx + 2)..closeIdx];
+                        // Check if this local is declared as pointer (wrong — should be value type)
+                        foreach (var local in method.Locals)
+                        {
+                            if (local.CppName == localName && local.CppTypeName.EndsWith("*"))
+                                return $"address-of pointer local '{localName}' used as value type ({local.CppTypeName})";
+                        }
+                    }
+                }
+            }
+        }
+
+        // Body-level check: .f_Name on intptr_t local — field access on scalar.
+        // BCL IL treats IntPtr fields as structs but C++ intptr_t is scalar.
+        if (rendered.Contains(".f_Name") || rendered.Contains(".f_Domain") || rendered.Contains(".f_User"))
+        {
+            foreach (var ln in rendered.AsSpan().EnumerateLines())
+            {
+                var s = ln.ToString().TrimStart();
+                if (s.Contains(".f_") && !s.Contains("->f_") && !s.Contains("statics.f_"))
+                {
+                    // Check if the variable before .f_ is a known scalar local
+                    var dotIdx = s.IndexOf(".f_");
+                    if (dotIdx > 0)
+                    {
+                        // Walk back to find variable name
+                        var end = dotIdx;
+                        var start = end - 1;
+                        while (start >= 0 && (char.IsLetterOrDigit(s[start]) || s[start] == '_'))
+                            start--;
+                        start++;
+                        var varName = s[start..end];
+                        if (varName.StartsWith("loc_"))
+                        {
+                            var local = method.Locals.FirstOrDefault(l => l.CppName == varName);
+                            if (local != null && (local.CppTypeName is "intptr_t" or "uintptr_t" or "int64_t"
+                                or "int32_t" or "uint64_t" or "uint32_t"))
+                                return $"field access on scalar local '{varName}' (type: {local.CppTypeName})";
+                        }
+                    }
+                }
+            }
+        }
+
+        // Body-level check: Object* → intptr_t pre-declared variable assignment.
+        // Marshal.StringToCoTaskMemUni returns Object* but pre-declared var is intptr_t.
+        if (rendered.Contains("Marshal_StringToCoTaskMem"))
+        {
+            foreach (var ln in rendered.AsSpan().EnumerateLines())
+            {
+                var s = ln.ToString().TrimStart();
+                if (s.StartsWith("__t") && s.Contains(" = ") && !s.StartsWith("__this"))
+                {
+                    var eqIdx = s.IndexOf(" = ");
+                    var rhs = s[(eqIdx + 3)..].TrimEnd(';').Trim();
+                    if (rhs.StartsWith("__t"))
+                    {
+                        // Check if rhs is from Marshal call and lhs is intptr_t pre-declared
+                        var lhs = s[..eqIdx];
+                        foreach (var ln2 in rendered.AsSpan().EnumerateLines())
+                        {
+                            var s2 = ln2.ToString().TrimStart();
+                            if (s2 == $"intptr_t {lhs} = {{}};")
+                                return "Object* from Marshal ICall assigned to intptr_t pre-declared var";
+                        }
+                    }
+                }
+            }
+        }
+
+        // Body-level check: vtable dispatch returns pointer/struct assigned to incompatible local.
+        // Dictionary.ValueCollection.Enumerator struct assigned from pointer vtable result.
+        if (rendered.Contains("Dictionary_2_ValueCollection_Enumerator_"))
+        {
+            foreach (var ln in rendered.AsSpan().EnumerateLines())
+            {
+                var s = ln.ToString().TrimStart();
+                if (s.StartsWith("loc_") && s.Contains(" = __t") && s.EndsWith(";"))
+                {
+                    var eqIdx = s.IndexOf(" = ");
+                    var localName = s[..eqIdx];
+                    var local = method.Locals.FirstOrDefault(l => l.CppName == localName);
+                    if (local != null && local.CppTypeName.Contains("Dictionary_2_ValueCollection_Enumerator_") &&
+                        !local.CppTypeName.EndsWith("*"))
+                        return "vtable dispatch result assigned to struct local (Dictionary ValueCollection Enumerator)";
+                }
+            }
+        }
+
+        // Body-level check: ValueTuple_6 with QUIC types — these are always opaque.
+        // The type name includes Microsoft_Quic types that won't have field definitions.
+        if (rendered.Contains("ValueTuple_6_Microsoft_Quic"))
+            return "ValueTuple_6 with Microsoft.Quic types (opaque, no f_Item fields)";
+
+        // HACK: Field name shadowing — C# allows derived class to declare a field with the same
+        // name as a base class field (they are separate), but our flat struct layout can only have one.
+        // When the derived method assigns a different-typed value to the shadowed field name, MSVC C2679.
+        // DoubleTableCredentialEnumerator.f_enumerator is CredentialCacheKey-typed but code assigns CredentialHostKey-typed.
+        if (rendered.Contains("f_enumerator") && method.DeclaringType != null)
+        {
+            var declName = method.DeclaringType.ILFullName;
+            if (declName.Contains("DoubleTable") || declName.Contains("CredentialEnumerator"))
+            {
+                // Check for assignment of differently-typed enumerator
+                if (rendered.Contains("CredentialHostKey") && rendered.Contains("f_enumerator"))
+                    return "field name shadowing: f_enumerator type mismatch (CredentialHostKey vs CredentialCacheKey)";
             }
         }
 

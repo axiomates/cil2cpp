@@ -75,6 +75,31 @@ public partial class CppCodeGenerator
     }
 
     /// <summary>
+    /// Check if a mangled type name contains an unresolved generic parameter segment.
+    /// E.g., "AsyncStateMachineBox_1_System_IO_Stream_TStateMachine" contains "TStateMachine".
+    /// These types are forward-declared but never get struct definitions, causing C2027.
+    /// </summary>
+    private static bool MangledNameContainsUnresolvedGenericParam(string mangledName)
+    {
+        // Split by underscore and check each segment
+        int start = 0;
+        for (int i = 0; i <= mangledName.Length; i++)
+        {
+            if (i == mangledName.Length || mangledName[i] == '_')
+            {
+                if (i > start)
+                {
+                    var segment = mangledName[start..i];
+                    if (IsUnresolvedGenericParam(segment))
+                        return true;
+                }
+                start = i + 1;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>
     /// Check if a name is a valid C++ identifier (no brackets, ampersands, parens, etc.).
     /// Used to filter out mangled names from IL types that contain array/ref/pointer syntax.
     /// </summary>
@@ -384,6 +409,13 @@ public partial class CppCodeGenerator
                     libName = libName[..^4];
                 else if (libName.EndsWith(".so", StringComparison.OrdinalIgnoreCase))
                     libName = libName[..^3];
+                // Map DLL names to their SDK import library equivalents
+                // sspicli.dll exports SSPI functions but has no .lib; use Secur32.lib instead
+                libName = libName switch
+                {
+                    "sspicli" => "Secur32",
+                    _ => libName
+                };
                 sb.AppendLine($"target_link_libraries({projectName} PRIVATE {libName})");
             }
             sb.AppendLine();
@@ -395,7 +427,7 @@ public partial class CppCodeGenerator
         sb.AppendLine();
 
         sb.AppendLine("if(MSVC)");
-        sb.AppendLine($"    target_compile_options({projectName} PRIVATE /utf-8 /MP");
+        sb.AppendLine($"    target_compile_options({projectName} PRIVATE /utf-8 /MP /bigobj");
         sb.AppendLine("        $<$<CONFIG:Debug>:/Zi /Od /RTC1>");
         sb.AppendLine("        $<$<CONFIG:Release>:/O2 /DNDEBUG>");
         sb.AppendLine("    )");

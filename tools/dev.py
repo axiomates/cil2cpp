@@ -1064,6 +1064,35 @@ def cmd_integration(args):
     runner.step("Generated files exist", jsg_files_exist)
     runner.step("Source generator types present in generated code", jsg_has_sg_types)
 
+    # ===== Phase 14: HttpGetTest (C.6 — full HTTP GET codegen + build, runtime pending) =====
+    header("Phase 14: HttpGetTest (C.6, codegen + build, full async HTTP chain)")
+
+    hgt_sample = TESTPROJECTS_DIR / "HttpGetTest" / "HttpGetTest.csproj"
+    hgt_output = temp_dir / "httpgettest_output"
+
+    def hgt_codegen():
+        run(["dotnet", "run", "--project", str(CLI_PROJECT), "--",
+             "codegen", "-i", str(hgt_sample), "-o", str(hgt_output)],
+            capture=True, timeout=1200)  # Large BCL chain
+
+    def hgt_files_exist():
+        for f in ["HttpGetTest.h", "HttpGetTest_data.cpp",
+                   "main.cpp", "CMakeLists.txt"]:
+            if not (hgt_output / f).exists():
+                raise RuntimeError(f"Missing: {f}")
+
+    def hgt_cmake_and_build():
+        hgt_build = hgt_output / "build"
+        run(["cmake", "-B", str(hgt_build), "-S", str(hgt_output),
+             "-G", generator, *cmake_arch,
+             f"-DCMAKE_PREFIX_PATH={runtime_prefix}"], capture=True)
+        run(["cmake", "--build", str(hgt_build), "--config", config], capture=True,
+            timeout=600)  # Large project, may take a while
+
+    runner.step("Codegen HttpGetTest", hgt_codegen)
+    runner.step("Generated files exist", hgt_files_exist)
+    runner.step("CMake configure + build HttpGetTest", hgt_cmake_and_build)
+
     # ===== Cleanup =====
     header("Cleanup")
 
