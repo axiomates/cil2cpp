@@ -75,8 +75,19 @@ struct AggregateException : Exception {
     void* f_innerExceptions;  // ReadOnlyCollection<Exception> — BCL: AggregateException._innerExceptions
     void* f_rocView;          // ReadOnlyCollection<Exception> — BCL: AggregateException._rocView (cached view)
 };
+
+// Forward declaration for CancellationToken (full definition in cancellation.h)
+struct CancellationTokenSource;
+
+// CancellationToken value type — defined here (not in cancellation.h) because
+// OperationCanceledException needs it as a field. cancellation.h includes exception.h,
+// so this definition is available everywhere without circular dependencies.
+struct CancellationToken {
+    CancellationTokenSource* f_source;
+};
+
 struct OperationCanceledException : Exception {
-    void* f_cancellationToken;  // System.OperationCanceledException._cancellationToken (CancellationToken value)
+    CancellationToken f_cancellationToken;  // System.OperationCanceledException._cancellationToken
 };
 struct TaskCanceledException : OperationCanceledException {
     void* f_canceledTask;  // System.Threading.Tasks.TaskCanceledException._canceledTask

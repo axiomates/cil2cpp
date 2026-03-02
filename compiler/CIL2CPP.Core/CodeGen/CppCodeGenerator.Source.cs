@@ -921,8 +921,9 @@ public partial class CppCodeGenerator
             {
                 var code = instr.ToCpp();
                 // TypeHandle/MethodTable JIT internals (matches InstructionHasBrokenPattern)
-                if (code.Contains("f_m_asTAddr") || code.Contains("TypeHandle__ctor(") ||
-                    code.Contains("TypeHandle_TypeHandleOf"))
+                // Use CompilerServices_TypeHandle prefix to avoid false-positive on RuntimeTypeHandle
+                if (code.Contains("f_m_asTAddr") || code.Contains("CompilerServices_TypeHandle__ctor(") ||
+                    code.Contains("CompilerServices_TypeHandle_TypeHandleOf"))
                     return "TypeHandle/MethodTable JIT internal";
                 if (code.Contains("f_ComponentSize") || code.Contains("f_BaseSize") ||
                     (code.Contains("f_Flags") && code.Contains("MethodTable")))
@@ -1083,14 +1084,13 @@ public partial class CppCodeGenerator
             if (s.Contains("VectorMath_")) return "VectorMath hardware intrinsic";
             if (s.Contains("methodSystem_") || s.Contains("reinterpret_cast<void(*)("))
                 return "function pointer type mangling error";
-            if (s.Contains("OperationCanceledException__ctor") && s.Contains("CancellationToken"))
-                return "CancellationToken struct in exception ctor";
-            if (s.Contains("f_cancellationToken") && !s.Contains("(void*)") && !s.Contains("nullptr"))
-                return "CancellationToken field type mismatch";
+            // f_cancellationToken is now properly typed as CancellationToken struct in exception.h
+            // (was void* — caused type mismatch). The ctor check is also removed since
+            // TryEmitExceptionNewObj now handles CancellationToken parameters correctly.
             if (s.Contains("((") && s.Contains("*)0))")) return "Unsafe.NullRef null-pointer dereference";
             if (s.Contains("GCHandle_Alloc")) return "GCHandle_Alloc arg type mismatch";
-            if (s.Contains("f_m_asTAddr") || s.Contains("TypeHandle__ctor(") ||
-                s.Contains("TypeHandle_TypeHandleOf"))
+            if (s.Contains("f_m_asTAddr") || s.Contains("CompilerServices_TypeHandle__ctor(") ||
+                s.Contains("CompilerServices_TypeHandle_TypeHandleOf"))
                 return "TypeHandle/MethodTable JIT internal";
             if (s.Contains("f_ComponentSize") || s.Contains("f_BaseSize"))
                 return "MethodTable JIT internal field";
@@ -1098,6 +1098,10 @@ public partial class CppCodeGenerator
                 return "RuntimeMethodHandle intptr_t*/void** mismatch";
             if (s.Contains("InvokerStrategy*)")) return "InvokerStrategy enum pointer cast";
             if (s.Contains("unbox<") && s.Contains("_>")) return "unbox trailing underscore mangling";
+            // FIXME: __ before *) can come from both bad nested-generic mangling (>>→__)
+            // and valid array types ([]→__). Removing this gate exposes underlying
+            // mangling inconsistencies (trailing _ mismatches). Keep gate until
+            // MangleTypeNameClean is used in all code paths.
             if (s.Contains("__*)") || s.Contains("__*>")) return "double trailing underscore mangling";
             if (s.Contains("= (System_IFormatProvider*)") && !s.Contains("(void*)"))
                 return "interface pointer cast (class* → interface*)";

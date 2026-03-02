@@ -128,18 +128,21 @@ public static class ICallRegistry
         // ===== System.Globalization.CompareInfo (ICU4C collation) =====
         // CompareInfo methods P/Invoke to System.Globalization.Native (excluded from codegen).
         // Intercept at managed API level → ICU4C ucol_strcoll / usearch.
-        RegisterICall("System.Globalization.CompareInfo", "Compare", 3,
-            "cil2cpp::globalization::compareinfo_compare_string_string");
+        // Use RegisterICallTyped for overloads that have both String and ReadOnlySpan<char>
+        // variants with the same param count. Without type disambiguation, the ReadOnlySpan
+        // overload incorrectly matches the String-expecting ICall (cascade: 1540 stubs).
+        RegisterICallTyped("System.Globalization.CompareInfo", "Compare", 3,
+            "System.String", "cil2cpp::globalization::compareinfo_compare_string_string");
         RegisterICall("System.Globalization.CompareInfo", "Compare", 2,
             "cil2cpp::globalization::compareinfo_compare_string_string_2");
         RegisterICall("System.Globalization.CompareInfo", "Compare", 7,
             "cil2cpp::globalization::compareinfo_compare_substring");
         RegisterICall("System.Globalization.CompareInfo", "IndexOf", 5,
             "cil2cpp::globalization::compareinfo_index_of");
-        RegisterICall("System.Globalization.CompareInfo", "IsPrefix", 3,
-            "cil2cpp::globalization::compareinfo_is_prefix");
-        RegisterICall("System.Globalization.CompareInfo", "IsSuffix", 3,
-            "cil2cpp::globalization::compareinfo_is_suffix");
+        RegisterICallTyped("System.Globalization.CompareInfo", "IsPrefix", 3,
+            "System.String", "cil2cpp::globalization::compareinfo_is_prefix");
+        RegisterICallTyped("System.Globalization.CompareInfo", "IsSuffix", 3,
+            "System.String", "cil2cpp::globalization::compareinfo_is_suffix");
         RegisterICall("System.Globalization.CompareInfo", "CanUseAsciiOrdinalForOptions", 1,
             "cil2cpp::globalization::compareinfo_can_use_ascii_ordinal");
         RegisterICall("System.Globalization.CompareInfo", "CheckCompareOptionsForCompare", 1,

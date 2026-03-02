@@ -1810,8 +1810,10 @@ public partial class CppCodeGenerator
         // These access CoreCLR-internal fields (m_asTAddr, ComponentSize, BaseSize) or call
         // TypeHandle constructors. Moved from RenderedLineHasError to pre-render gate for
         // accurate classification as KnownBrokenPattern instead of RenderedBodyError.
-        if (code.Contains("f_m_asTAddr") || code.Contains("TypeHandle__ctor(") ||
-            code.Contains("TypeHandle_TypeHandleOf") ||
+        // Use CompilerServices_TypeHandle prefix to avoid false-positive on RuntimeTypeHandle
+        // (System_RuntimeTypeHandle__ctor contains substring "TypeHandle__ctor" but is NOT a JIT internal)
+        if (code.Contains("f_m_asTAddr") || code.Contains("CompilerServices_TypeHandle__ctor(") ||
+            code.Contains("CompilerServices_TypeHandle_TypeHandleOf") ||
             code.Contains("f_ComponentSize") || code.Contains("f_BaseSize") ||
             (code.Contains("f_Flags") && code.Contains("MethodTable")))
             return true;
@@ -3158,10 +3160,11 @@ public partial class CppCodeGenerator
             rendered.Contains("->f__start") || rendered.Contains("->f__end"))
             return "Range field name mismatch (f__start/f__end vs backing field) (C2039)";
 
-        // IComparer<T>.Compare undeclared — generic interface method stubs not generated.
-        // Pattern: method body references IComparer_1_T_Compare which doesn't exist.
-        if (rendered.Contains("IComparer_1_") && rendered.Contains("_Compare"))
-            return "undeclared IComparer<T>.Compare interface method (C2065)";
+        // IComparer<T>.Compare gate REMOVED — was a false positive.
+        // "IComparer_1_" matched from parameter types, "_Compare" was a substring of
+        // "Generic_Comparer_1_..." (Comparer<T>.Default). Actual IComparer.Compare calls
+        // use vtable dispatch (type_get_interface_vtable_checked()->methods[0]), not
+        // direct function calls, so no undeclared identifier exists.
 
         // Undeclared method: DsesActivitySourceListener, other diagnostic listener methods
         if (rendered.Contains("DsesActivitySourceListener_OnSample") ||
@@ -3359,10 +3362,8 @@ public partial class CppCodeGenerator
         if (s.Contains("array_set<") && s.Contains(">(0,"))
             return "array_set with 0 as first arg (null array pointer)";
 
-        // OperationCanceledException.get_CancellationToken: f_cancellationToken is void* but
-        // return type is System_Threading_CancellationToken (a struct). The void*→struct return is C2440.
-        if (s.Contains("f_cancellationToken"))
-            return "OperationCanceledException f_cancellationToken void*→struct return type mismatch";
+        // f_cancellationToken is now properly typed as CancellationToken struct in exception.h
+        // (was void* — caused C2440 void*→struct return type mismatch). Check removed.
 
         // NOTE: GetLocaleInfoEx RE check removed — the Interop.Kernel32 wrapper takes void* lpLCData
         // which accepts char16_t* via implicit conversion. No type mismatch in generated C++.
@@ -3548,8 +3549,10 @@ public partial class CppCodeGenerator
         if ((s.Contains("unbox<") || s.Contains("unbox_ptr<")) && s.Contains("_>"))
             return "e.g., unbox<System_ValueTuple_4_..._String_> — trailing _ before > is always ...";
 
-        // Pattern: double trailing underscore from nested generic mangling (>>→__)
-        // e.g., List_1_WeakReference_1_EventSource__*) — the __ before *) is wrong
+        // FIXME: __ before *) can come from both bad nested-generic mangling (>>→__)
+        // and valid array types ([]→__). Removing this gate exposes underlying
+        // mangling inconsistencies (trailing _ mismatches). Keep gate until
+        // MangleTypeNameClean is used in all code paths.
         if (s.Contains("__*)") || s.Contains("__*>"))
             return "e.g., List_1_WeakReference_1_EventSource__*) — the __ before *) is wrong";
 
@@ -3647,7 +3650,7 @@ public partial class CppCodeGenerator
         if (s.Contains("f_m_asTAddr"))
             return "TypeHandle/MethodTable JIT internals — bitwise ops on void* (f_m_asTAddr)";
         // Pattern: TypeHandle__ctor with intptr_t arg (needs void*, not intptr_t)
-        if (s.Contains("TypeHandle__ctor(") || s.Contains("TypeHandle_TypeHandleOf"))
+        if (s.Contains("CompilerServices_TypeHandle__ctor(") || s.Contains("CompilerServices_TypeHandle_TypeHandleOf"))
             return "TypeHandle__ctor with intptr_t arg (needs void*, not intptr_t)";
 
         // Pattern: RuntimeMethodHandle_InvokeMethod — callers pass intptr_t* but it needs void**

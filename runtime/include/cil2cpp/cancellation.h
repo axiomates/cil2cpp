@@ -31,14 +31,8 @@ struct CancellationTokenSource {
     void* f_registrations;    // _registrations (Registrations)
 };
 
-/**
- * CancellationToken (value type, stack-allocated).
- * Wraps a nullable pointer to a CancellationTokenSource.
- * Default token (no source) is never canceled.
- */
-struct CancellationToken {
-    CancellationTokenSource* f_source;
-};
+// CancellationToken is defined in exception.h (needed by OperationCanceledException).
+// It's available here via the #include "exception.h" above.
 
 // ===== CancellationTokenSource API =====
 

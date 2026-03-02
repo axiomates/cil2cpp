@@ -2287,9 +2287,13 @@ public partial class IRBuilder
             {
                 block.Instructions.Add(new IRRawCpp { Code = $"{tmp}->f_innerException = (cil2cpp::Exception*){args[i]};" });
             }
-            // Non-String/non-Exception params (CancellationToken, SerializationInfo, etc.)
+            else if (paramTypeName == "System.Threading.CancellationToken"
+                && excTypeName is "System.OperationCanceledException" or "System.Threading.Tasks.TaskCanceledException")
+            {
+                block.Instructions.Add(new IRRawCpp { Code = $"{tmp}->f_cancellationToken = {args[i]};" });
+            }
+            // Non-String/non-Exception/non-CancellationToken params (SerializationInfo, etc.)
             // are skipped — the field won't be initialized but this avoids type-mismatch errors.
-            // TODO: handle CancellationToken → f_cancellationToken for OperationCanceledException
         }
 
         stack.Push(tmp);
