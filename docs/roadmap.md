@@ -186,11 +186,11 @@ See "RuntimeProvided Type Classification" section above.
 - **75%→90%**: 10 NuGet package validation + comprehensive testing
 - **90%→95%**: Edge case fixes + polish
 
-**Zero support gaps** (confirmed by codebase audit):
-- `[DynamicallyAccessedMembers]` — zero references in compiler; ReachabilityAnalyzer has no attribute awareness
-- ILLink feature switches — zero references; `IsDynamicCodeSupported` etc. not substituted
-- `[MarshalAs]` attribute — zero references in CodeGen; needed by NuGet packages with native interop
-- NuGet PackageReference — zero test projects; resolution path completely untested
+**Implementation gaps** (2026-03-02 audit, updated after code review):
+- `[DynamicallyAccessedMembers]` — **code-complete** in ReachabilityAnalyzer.cs (13 DamFlags, field/method/parameter scanning), but CLI pipeline not yet wired (SetPreservationRules() never called)
+- ILLink feature switches — **active** since D.3 implementation; FeatureSwitchResolver substitutes 10+ AOT defaults at compile time in IRBuilder.Methods.cs:1372-1386
+- `[MarshalAs]` attribute — **implemented** (C.7.1): Cecil parsing in IRBuilder.Methods.cs, 21 type mappings in CppCodeGenerator.Source.cs:3024-3094. Missing: `[Out]`/`[In]` copy-back (C.7.2), LPArray runtime marshaling (C.7.3)
+- NuGet PackageReference — assembly resolution works (AssemblySet + deps.json), but zero test projects validate the path
 - Source generator output — never validated with a real SG package (System.Text.Json)
 
 ---
@@ -398,10 +398,10 @@ See "RuntimeProvided Type Classification" section above.
 
 | # | Task | Estimate | Status | Description |
 |---|------|----------|--------|-------------|
-| D.0 | NuGet package integration tests | Medium | Pending | Create test projects with real PackageReferences (Newtonsoft.Json, M.E.Logging.Abstractions). Validate NuGet → Cecil → IR → C++ pipeline. Currently zero NuGet test coverage. |
-| D.1 | `[DynamicallyAccessedMembers]` parsing | Medium | Pending | ReachabilityAnalyzer reads custom attributes (Cecil CustomAttributes API), preserves annotated members during tree-shaking. File: `ReachabilityAnalyzer.cs` |
-| D.2 | rd.xml parser | Low | Pending | XML format preservation rules |
-| D.3 | ILLink feature switch substitution | Medium | Pending | Compile-time constants (`IsDynamicCodeSupported = false`, `IsReflectionEnabledByDefault = false`, ~15-20 known switches). Enables System.Text.Json SG code path activation. |
+| D.0 | NuGet package integration tests | Medium | Pending | Create test projects with real PackageReferences (Newtonsoft.Json, M.E.Logging.Abstractions). Validate NuGet → Cecil → IR → C++ pipeline. Assembly resolution works, zero test coverage. |
+| D.1 | `[DynamicallyAccessedMembers]` parsing | Medium | ✅ Code-complete | ReachabilityAnalyzer.cs:184-815 — full 13-flag DAM parsing + SeedDynamicallyAccessedMembers(). **CLI integration pending** (SetPreservationRules() never called in Program.cs). |
+| D.2 | rd.xml parser | Low | ✅ Code-complete | RdXmlParser.cs — full XML parsing + PreservationRule mapping. **CLI `--rd-xml` option pending.** |
+| D.3 | ILLink feature switch substitution | Medium | ✅ Active | FeatureSwitchResolver.cs (10 AOT defaults) + IRBuilder.Methods.cs:1372-1386 (Ldsfld substitution). Automatically active in all builds. |
 | D.4 | AOT compatibility warnings | Low | Pending | Report `[RequiresUnreferencedCode]` call chains |
 | D.5 | Source generator validation | Medium | Pending | Test project with `[JsonSerializable]` attribute — validates System.Text.Json SG output compiles through CIL2CPP. Currently claimed but never tested. |
 
@@ -412,13 +412,13 @@ See "RuntimeProvided Type Classification" section above.
 
 **Goal**: `[MarshalAs]` + `[Out]` + array marshaling for NuGet ecosystem and System.Native
 
-**Why needed**: P/Invoke has CharSet/CallingConvention/SetLastError, but `[MarshalAs]` attribute is completely unhandled (zero references in CodeGen). System.Native P/Invoke declarations use `[MarshalAs(UnmanagedType.LPStr)]` extensively. Many NuGet packages with native interop also require it. This is a prerequisite for Phase B.5 (Linux) and broad NuGet compatibility.
+**Why needed**: P/Invoke has CharSet/CallingConvention/SetLastError. `[MarshalAs]` attribute parsing and type mapping are now complete (C.7.1). Remaining: `[Out]`/`[In]` copy-back semantics and array marshaling for System.Native and NuGet native interop packages.
 
 | # | Task | Estimate | Status | Description |
 |---|------|----------|--------|-------------|
-| C.7.1 | `[MarshalAs]` attribute parsing | Medium | Pending | Read MarshalAs from Cecil ParameterDefinition/FieldDefinition, generate correct C++ type conversions (LPStr→char*, LPWStr→wchar_t*, Bool→int, etc.) |
+| C.7.1 | `[MarshalAs]` attribute parsing | Medium | ✅ Done | Cecil MarshalInfo parsing (IRBuilder.Methods.cs:123-143), 21-type MarshalAsType enum (PInvokeEnums.cs), full type mapping in GetPInvokeNativeType() (Source.cs:3024-3094). LPStr/LPWStr/Bool/integers all working. |
 | C.7.2 | `[Out]`/`[In]` parameter direction | Low | Pending | Distinguish parameter direction for correct copy-back semantics |
-| C.7.3 | Array marshaling | Medium | Pending | Fixed-size arrays in structs, `[MarshalAs(UnmanagedType.LPArray)]` with SizeParamIndex |
+| C.7.3 | Array marshaling | Medium | In progress | SizeParamIndex parsed (IRMethod.cs:136) but codegen incomplete. Fixed-size arrays in structs, `[MarshalAs(UnmanagedType.LPArray)]` runtime marshaling pending. |
 
 **Prerequisites**: Phase C ✅
 **Output**: P/Invoke compatible with System.Native declarations and NuGet native interop packages

@@ -63,7 +63,7 @@ def warn(msg):
     print(_c("33", msg))
 
 
-def run(cmd, *, cwd=None, check=True, capture=False):
+def run(cmd, *, cwd=None, check=True, capture=False, timeout=None):
     """Run a subprocess command. Returns CompletedProcess."""
     if isinstance(cmd, str):
         cmd = cmd.split()
@@ -76,6 +76,7 @@ def run(cmd, *, cwd=None, check=True, capture=False):
             text=True,
             encoding="utf-8",
             errors="replace",
+            timeout=timeout,
         )
         return result
     except subprocess.CalledProcessError as e:
@@ -1008,6 +1009,60 @@ def cmd_integration(args):
     runner.step("Generated files exist", ht_files_exist)
     runner.step("CMake configure + build HttpTest", ht_cmake_and_build)
     runner.step("Run HttpTest and verify output", ht_run_verify)
+
+    # ===== Phase 12: NuGetSimpleTest (D.0 — NuGet package integration) =====
+    header("Phase 12: NuGetSimpleTest (D.0, codegen-only, NuGet PackageReference)")
+
+    ng_sample = TESTPROJECTS_DIR / "NuGetSimpleTest" / "NuGetSimpleTest.csproj"
+    ng_output = temp_dir / "nugetsimple_output"
+
+    def ng_codegen():
+        run(["dotnet", "run", "--project", str(CLI_PROJECT), "--",
+             "codegen", "-i", str(ng_sample), "-o", str(ng_output)],
+            capture=True, timeout=1200)  # NuGet projects pull many BCL assemblies
+
+    def ng_files_exist():
+        for f in ["NuGetSimpleTest.h", "NuGetSimpleTest_data.cpp", "NuGetSimpleTest_stubs.cpp",
+                   "main.cpp", "CMakeLists.txt"]:
+            if not (ng_output / f).exists():
+                raise RuntimeError(f"Missing: {f}")
+
+    def ng_has_nuget_types():
+        # Verify Newtonsoft.Json types appear in generated code (cross-assembly resolution worked)
+        header_text = (ng_output / "NuGetSimpleTest.h").read_text(encoding="utf-8", errors="replace")
+        if "Newtonsoft" not in header_text:
+            raise RuntimeError("Newtonsoft.Json types not found in generated header — NuGet assembly resolution may have failed")
+
+    runner.step("Codegen NuGetSimpleTest", ng_codegen)
+    runner.step("Generated files exist", ng_files_exist)
+    runner.step("NuGet types present in generated code", ng_has_nuget_types)
+
+    # ===== Phase 13: JsonSGTest (D.5 — Source Generator validation) =====
+    header("Phase 13: JsonSGTest (D.5, codegen-only, System.Text.Json SG)")
+
+    jsg_sample = TESTPROJECTS_DIR / "JsonSGTest" / "JsonSGTest.csproj"
+    jsg_output = temp_dir / "jsonsg_output"
+
+    def jsg_codegen():
+        run(["dotnet", "run", "--project", str(CLI_PROJECT), "--",
+             "codegen", "-i", str(jsg_sample), "-o", str(jsg_output)],
+            capture=True, timeout=1200)  # SG projects pull many BCL assemblies
+
+    def jsg_files_exist():
+        for f in ["JsonSGTest.h", "JsonSGTest_data.cpp", "JsonSGTest_stubs.cpp",
+                   "main.cpp", "CMakeLists.txt"]:
+            if not (jsg_output / f).exists():
+                raise RuntimeError(f"Missing: {f}")
+
+    def jsg_has_sg_types():
+        # Verify source generator output types appear (AppJsonContext etc.)
+        header_text = (jsg_output / "JsonSGTest.h").read_text(encoding="utf-8", errors="replace")
+        if "AppJsonContext" not in header_text:
+            raise RuntimeError("AppJsonContext not found in generated header — SG output may not have been compiled")
+
+    runner.step("Codegen JsonSGTest", jsg_codegen)
+    runner.step("Generated files exist", jsg_files_exist)
+    runner.step("Source generator types present in generated code", jsg_has_sg_types)
 
     # ===== Cleanup =====
     header("Cleanup")

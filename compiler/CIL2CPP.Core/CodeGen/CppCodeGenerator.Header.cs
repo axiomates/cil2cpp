@@ -2062,9 +2062,16 @@ public partial class CppCodeGenerator
         if (rendered.Contains("Action_1_System_Object_Invoke"))
             return "undeclared Action<Object>.Invoke delegate specialization";
 
-        // Body-level check: CancellationToken cast to String* in f_message assignment (BCL IL body bug)
+        // Body-level check: CancellationToken cast to String* in f_message assignment (BCL IL body bug).
+        // Per-line check to avoid false positives where CancellationToken appears elsewhere in the method.
         if (rendered.Contains("CancellationToken") && rendered.Contains("->f_message = (cil2cpp::String*)"))
-            return "CancellationToken cast to String* in f_message assignment";
+        {
+            foreach (var line in rendered.Split('\n'))
+            {
+                if (line.Contains("CancellationToken") && line.Contains("->f_message = (cil2cpp::String*)"))
+                    return "CancellationToken cast to String* in f_message assignment";
+            }
+        }
 
         // Body-level check: ReadOnlySpan parameters passed to compareinfo/ordinal ICalls.
         // The ICalls expect cil2cpp::String* but ReadOnlySpan<char> is a struct value.

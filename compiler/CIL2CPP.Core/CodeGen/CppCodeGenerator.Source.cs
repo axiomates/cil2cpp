@@ -995,8 +995,15 @@ public partial class CppCodeGenerator
             return "CIL2CPP_FINALLY without CIL2CPP_END_TRY (missing brace closure)";
         if (rendered.Contains("Action_1_System_Object_Invoke"))
             return "undeclared Action<Object> delegate specialization";
+        // Per-line check to avoid false positives where CancellationToken appears elsewhere in the body.
         if (rendered.Contains("CancellationToken") && rendered.Contains("->f_message = (cil2cpp::String*)"))
-            return "CancellationToken → String* cast (BCL IL body bug)";
+        {
+            foreach (var line in rendered.Split('\n'))
+            {
+                if (line.Contains("CancellationToken") && line.Contains("->f_message = (cil2cpp::String*)"))
+                    return "CancellationToken → String* cast (BCL IL body bug)";
+            }
+        }
 
         // System.Numerics interface DIM methods
         if (method.DeclaringType?.ILFullName?.StartsWith("System.Numerics.I") == true
@@ -2940,6 +2947,14 @@ public partial class CppCodeGenerator
                     sb.AppendLine($"    auto __p{i} = static_cast<int32_t>({param.CppName});");
                     callArgs.Add($"__p{i}");
                 }
+                else if (param.MarshalAs == IR.MarshalAsType.LPArray
+                         && param.CppTypeName.Contains("Array"))
+                {
+                    // C.7.3: [MarshalAs(UnmanagedType.LPArray)] — pass raw data pointer from managed array
+                    // cil2cpp::array_data() returns void* to the contiguous element buffer
+                    sb.AppendLine($"    auto __p{i} = {param.CppName} ? cil2cpp::array_data(reinterpret_cast<cil2cpp::Array*>({param.CppName})) : nullptr;");
+                    callArgs.Add($"__p{i}");
+                }
                 else if (externParamTypes != null && i < externParamTypes.Count
                          && param.CppTypeName != externParamTypes[i]
                          && IsCppPrimitiveType(GetPInvokeNativeType(param.CppTypeName, param.ParameterType, wrapperCharSet, param.MarshalAs))
@@ -3016,6 +3031,11 @@ public partial class CppCodeGenerator
                 }
             }
 
+            // C.7.2: [Out] parameter copy-back for struct-by-ref parameters
+            // For pointer-typed params ([Out] int* / ref struct), the native function writes
+            // through the pointer directly — no explicit copy-back needed.
+            // For managed arrays with [Out], copy-back is handled in C.7.3 (LPArray marshaling).
+
             sb.AppendLine("}");
             sb.AppendLine();
         }
@@ -3051,7 +3071,9 @@ public partial class CppCodeGenerator
                 IR.MarshalAsType.SysInt => "intptr_t",
                 IR.MarshalAsType.SysUInt => "uintptr_t",
                 IR.MarshalAsType.FunctionPtr => "void*",
-                IR.MarshalAsType.LPArray => cppType.TrimEnd('*') + "*",
+                // C.7.3: LPArray → pointer to element type. For managed arrays (e.g. MdArray_1_int32_t*),
+                // the extern declaration uses a pointer to the element type (e.g. int32_t*)
+                IR.MarshalAsType.LPArray => "void*",
                 IR.MarshalAsType.LPStruct => cppType.TrimEnd('*') + "*",
                 IR.MarshalAsType.IUnknown or IR.MarshalAsType.IDispatch => "void*",
                 _ => cppType, // Fallback to default

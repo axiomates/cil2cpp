@@ -186,11 +186,11 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 - **75%→90%**：10 个 NuGet 包验证 + 综合测试
 - **90%→95%**：边界用例修复 + 打磨
 
-**零支持缺口**（代码库审计确认）：
-- `[DynamicallyAccessedMembers]` — 编译器中零引用；ReachabilityAnalyzer 无属性感知
-- ILLink feature switches — 零引用；`IsDynamicCodeSupported` 等未替换
-- `[MarshalAs]` 属性 — CodeGen 中零引用；NuGet 原生互操作包需要
-- NuGet PackageReference — 零测试项目；解析路径完全未测试
+**实现缺口**（2026-03-02 审计，代码复查后更新）：
+- `[DynamicallyAccessedMembers]` — **代码已完成**：ReachabilityAnalyzer.cs（13 种 DamFlag，字段/方法/参数扫描），但 CLI 管道未接入（SetPreservationRules() 未被调用）
+- ILLink feature switches — **已上线**：FeatureSwitchResolver 在 IRBuilder.Methods.cs:1372-1386 编译期替换 10+ AOT 默认开关
+- `[MarshalAs]` 属性 — **已实现**（C.7.1）：Cecil 解析 + 21 种类型映射 + GetPInvokeNativeType()。缺失：`[Out]`/`[In]` 回写（C.7.2）、LPArray 运行时编组（C.7.3）
+- NuGet PackageReference — 程序集解析可用（AssemblySet + deps.json），但零测试项目验证
 - Source generator 输出 — 从未用真实 SG 包（System.Text.Json）验证过
 
 ---
@@ -397,10 +397,10 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 
 | # | 任务 | 预估 | 状态 | 说明 |
 |---|------|------|------|------|
-| D.0 | NuGet 包集成测试 | 中 | 待定 | 创建带真实 PackageReference 的测试项目（Newtonsoft.Json、M.E.Logging.Abstractions）。验证 NuGet → Cecil → IR → C++ 管道。当前 NuGet 测试覆盖为零。 |
-| D.1 | `[DynamicallyAccessedMembers]` 解析 | 中 | 待定 | ReachabilityAnalyzer 读取自定义属性（Cecil CustomAttributes API），在 tree-shaking 时保留标注成员。文件：`ReachabilityAnalyzer.cs` |
-| D.2 | rd.xml 解析器 | 低 | 待定 | XML 格式保留规则 |
-| D.3 | ILLink feature switch 替换 | 中 | 待定 | 编译期常量（`IsDynamicCodeSupported = false`、`IsReflectionEnabledByDefault = false` 等 ~15-20 个已知开关）。启用 System.Text.Json SG 代码路径激活。 |
+| D.0 | NuGet 包集成测试 | 中 | 待定 | 创建带真实 PackageReference 的测试项目（Newtonsoft.Json）。验证 NuGet → Cecil → IR → C++ 管道。程序集解析可用，零测试覆盖。 |
+| D.1 | `[DynamicallyAccessedMembers]` 解析 | 中 | ✅ 代码完成 | ReachabilityAnalyzer.cs:184-815 — 完整 13 种 DamFlag 解析 + SeedDynamicallyAccessedMembers()。**CLI 集成待做**（Program.cs 中 SetPreservationRules() 未被调用）。 |
+| D.2 | rd.xml 解析器 | 低 | ✅ 代码完成 | RdXmlParser.cs — 完整 XML 解析 + PreservationRule 映射。**CLI `--rd-xml` 选项待做。** |
+| D.3 | ILLink feature switch 替换 | 中 | ✅ 已上线 | FeatureSwitchResolver.cs（10 个 AOT 默认开关）+ IRBuilder.Methods.cs:1372-1386（Ldsfld 编译期替换）。所有构建自动生效。 |
 | D.4 | AOT 兼容性警告 | 低 | 待定 | 报告 `[RequiresUnreferencedCode]` 调用链 |
 | D.5 | Source generator 验证 | 中 | 待定 | 带 `[JsonSerializable]` 属性的测试项目 — 验证 System.Text.Json SG 输出能通过 CIL2CPP 编译。当前声称可行但从未测试。 |
 
@@ -411,13 +411,13 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 
 **目标**：`[MarshalAs]` + `[Out]` + 数组编组，支持 NuGet 生态和 System.Native
 
-**为什么需要**：P/Invoke 已有 CharSet/CallingConvention/SetLastError，但 `[MarshalAs]` 属性完全未处理（CodeGen 中零引用）。System.Native 的 P/Invoke 声明大量使用 `[MarshalAs(UnmanagedType.LPStr)]`。许多有原生互操作的 NuGet 包也需要。这是 Phase B.5（Linux）和广泛 NuGet 兼容性的前置条件。
+**为什么需要**：P/Invoke 已有 CharSet/CallingConvention/SetLastError。`[MarshalAs]` 属性解析和类型映射已完成（C.7.1）。剩余：`[Out]`/`[In]` 回写语义和数组编组，供 System.Native 和 NuGet 原生互操作包使用。
 
 | # | 任务 | 预估 | 状态 | 说明 |
 |---|------|------|------|------|
-| C.7.1 | `[MarshalAs]` 属性解析 | 中 | 待定 | 从 Cecil ParameterDefinition/FieldDefinition 读取 MarshalAs，生成正确的 C++ 类型转换（LPStr→char*、LPWStr→wchar_t*、Bool→int 等） |
+| C.7.1 | `[MarshalAs]` 属性解析 | 中 | ✅ 完成 | Cecil MarshalInfo 解析（IRBuilder.Methods.cs:123-143），21 种 MarshalAsType 枚举（PInvokeEnums.cs），完整类型映射 GetPInvokeNativeType()（Source.cs:3024-3094）。LPStr/LPWStr/Bool/整数类型均可用。 |
 | C.7.2 | `[Out]`/`[In]` 参数方向 | 低 | 待定 | 区分参数方向，实现正确的回写语义 |
-| C.7.3 | 数组编组 | 中 | 待定 | struct 中固定大小数组、`[MarshalAs(UnmanagedType.LPArray)]` 带 SizeParamIndex |
+| C.7.3 | 数组编组 | 中 | 进行中 | SizeParamIndex 已解析（IRMethod.cs:136），codegen 待完善。struct 固定大小数组 + `[MarshalAs(UnmanagedType.LPArray)]` 运行时编组待做。 |
 
 **前置**：Phase C ✅
 **产出**：P/Invoke 兼容 System.Native 声明和 NuGet 原生互操作包

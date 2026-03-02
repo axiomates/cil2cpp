@@ -134,6 +134,12 @@ public class IRParameter
     /// -1 if not specified.
     /// </summary>
     public int MarshalAsSizeParamIndex { get; set; } = -1;
+
+    /// <summary>
+    /// C.7.2: P/Invoke parameter direction ([In]/[Out] attributes).
+    /// Controls copy-back semantics after native call.
+    /// </summary>
+    public PInvokeParameterDirection PInvokeDirection { get; set; } = PInvokeParameterDirection.In;
 }
 
 /// <summary>

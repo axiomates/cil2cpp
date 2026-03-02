@@ -89,3 +89,17 @@ public enum MarshalAsType
     /// <summary>UTF-8 string (char*)</summary>
     LPUtf8Str = 48,
 }
+
+/// <summary>
+/// ECMA-335 II.15.5.4 — P/Invoke parameter direction.
+/// Controls whether a parameter's value is copied back after the native call.
+/// </summary>
+public enum PInvokeParameterDirection
+{
+    /// <summary>Input only (default) — value passed to native, not copied back</summary>
+    In,
+    /// <summary>Output only — native writes result, copied back to managed</summary>
+    Out,
+    /// <summary>Bidirectional — value passed to native and copied back</summary>
+    InOut,
+}

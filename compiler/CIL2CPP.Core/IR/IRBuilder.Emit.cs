@@ -2255,14 +2255,42 @@ public partial class IRBuilder
             ResultTypeCpp = runtimeCppName + "*",
         });
 
-        // Set fields based on constructor signature
-        // .ctor() — no args
-        // .ctor(string message) — set message
-        // .ctor(string message, Exception inner) — set message + inner
-        if (paramCount >= 1)
-            block.Instructions.Add(new IRRawCpp { Code = $"{tmp}->f_message = (cil2cpp::String*){args[0]};" });
-        if (paramCount >= 2)
-            block.Instructions.Add(new IRRawCpp { Code = $"{tmp}->f_innerException = (cil2cpp::Exception*){args[1]};" });
+        // Set fields based on actual parameter types (not position).
+        // Exception constructors have varied signatures:
+        //   .ctor() — no args
+        //   .ctor(String message) — set f_message
+        //   .ctor(String message, Exception inner) — set f_message + f_innerException
+        //   .ctor(CancellationToken token) — param is NOT a String!
+        //   .ctor(String message, String paramName) — ArgumentException: f_message + f_paramName
+        bool messageSet = false;
+        var excTypeName = ctorRef.DeclaringType.FullName;
+        for (int i = 0; i < paramCount; i++)
+        {
+            var paramTypeName = ctorRef.Parameters[i].ParameterType.FullName;
+            if (paramTypeName == "System.String" && !messageSet)
+            {
+                block.Instructions.Add(new IRRawCpp { Code = $"{tmp}->f_message = (cil2cpp::String*){args[i]};" });
+                messageSet = true;
+            }
+            else if (paramTypeName == "System.String")
+            {
+                // Second String param — type-specific fields
+                if (excTypeName is "System.ArgumentException" or "System.ArgumentNullException"
+                    or "System.ArgumentOutOfRangeException")
+                    block.Instructions.Add(new IRRawCpp { Code = $"{tmp}->f_paramName = (cil2cpp::String*){args[i]};" });
+                else if (excTypeName == "System.ObjectDisposedException")
+                    block.Instructions.Add(new IRRawCpp { Code = $"{tmp}->f_objectName = (cil2cpp::String*){args[i]};" });
+                else if (excTypeName == "System.TypeInitializationException")
+                    block.Instructions.Add(new IRRawCpp { Code = $"{tmp}->f_typeName = (cil2cpp::String*){args[i]};" });
+            }
+            else if (paramTypeName == "System.Exception")
+            {
+                block.Instructions.Add(new IRRawCpp { Code = $"{tmp}->f_innerException = (cil2cpp::Exception*){args[i]};" });
+            }
+            // Non-String/non-Exception params (CancellationToken, SerializationInfo, etc.)
+            // are skipped — the field won't be initialized but this avoids type-mismatch errors.
+            // TODO: handle CancellationToken → f_cancellationToken for OperationCanceledException
+        }
 
         stack.Push(tmp);
         return true;

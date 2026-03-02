@@ -121,6 +121,7 @@ public partial class IRBuilder
             }
 
             // C.7: Parse [MarshalAs] — Cecil exposes it as ParameterDefinition.MarshalInfo
+            // C.7.2: Parse [In]/[Out] parameter direction
             if (irMethod.IsPInvoke && paramDef.Index < cecilMethod.Parameters.Count)
             {
                 var cecilParam = cecilMethod.Parameters[paramDef.Index];
@@ -130,6 +131,14 @@ public partial class IRBuilder
                     if (cecilParam.MarshalInfo is Mono.Cecil.ArrayMarshalInfo arrayInfo)
                         irParam.MarshalAsSizeParamIndex = arrayInfo.SizeParameterIndex;
                 }
+
+                // [Out] + [In] → InOut; [Out] only → Out; default → In
+                bool hasOut = cecilParam.IsOut;
+                bool hasIn = cecilParam.IsIn;
+                if (hasOut && hasIn)
+                    irParam.PInvokeDirection = PInvokeParameterDirection.InOut;
+                else if (hasOut)
+                    irParam.PInvokeDirection = PInvokeParameterDirection.Out;
             }
 
             irMethod.Parameters.Add(irParam);

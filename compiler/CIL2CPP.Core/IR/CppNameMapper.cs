@@ -191,7 +191,9 @@ public static class CppNameMapper
             var angleBracket = ilTypeName.IndexOf('<');
             var openTypeName = ilTypeName[..angleBracket];
             var argsStr = ilTypeName[(angleBracket + 1)..^1];
-            var args = argsStr.Split(',').Select(a => a.Trim()).ToList();
+            // Use ParseGenericArgs for correct handling of nested generics
+            // (Split(',') breaks on commas inside nested angle brackets)
+            var args = ParseGenericArgs(argsStr);
             return MangleGenericInstanceTypeName(openTypeName, args);
         }
 
@@ -261,7 +263,9 @@ public static class CppNameMapper
     public static string MangleGenericInstanceTypeName(string openTypeName, IReadOnlyList<string> typeArgs)
     {
         var baseName = MangleTypeName(openTypeName);
-        var argParts = string.Join("_", typeArgs.Select(MangleTypeName));
+        // Use MangleTypeNameClean for type args to handle nested generics correctly
+        // (avoids trailing underscores from '>>' → '__')
+        var argParts = string.Join("_", typeArgs.Select(MangleTypeNameClean));
         return $"{baseName}_{argParts}";
     }
 

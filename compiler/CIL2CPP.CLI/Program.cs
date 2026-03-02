@@ -37,19 +37,24 @@ class Program
             description: "CIL2CPP runtime install prefix (where find_package(cil2cpp) looks)")
         { IsRequired = false };
         runtimePrefixOption.AddAlias("-p");
+        var compileRdXmlOption = new Option<FileInfo?>(
+            name: "--rd-xml",
+            getDefaultValue: () => null,
+            description: "Path to rd.xml runtime directives file (D.2: NuGet package type preservation)");
 
         var compileCommand = new Command("compile", "Compile C# project to native executable")
         {
             inputOption,
             outputOption,
             configOption,
-            runtimePrefixOption
+            runtimePrefixOption,
+            compileRdXmlOption
         };
 
-        compileCommand.SetHandler((input, output, config, runtimePrefix) =>
+        compileCommand.SetHandler((input, output, config, runtimePrefix, rdXml) =>
         {
-            Compile(input, output, config, runtimePrefix);
-        }, inputOption, outputOption, configOption, runtimePrefixOption);
+            Compile(input, output, config, runtimePrefix, rdXml?.FullName);
+        }, inputOption, outputOption, configOption, runtimePrefixOption, compileRdXmlOption);
 
         rootCommand.AddCommand(compileCommand);
 
@@ -71,16 +76,20 @@ class Program
             name: "--stub-budget",
             getDefaultValue: () => null,
             description: "Path to stub budget JSON file for ratchet check (requires --analyze-stubs)");
+        var codegenRdXmlOption = new Option<FileInfo?>(
+            name: "--rd-xml",
+            getDefaultValue: () => null,
+            description: "Path to rd.xml runtime directives file (D.2: NuGet package type preservation)");
 
         var codegenCommand = new Command("codegen", "Generate C++ code from C# project (without compiling)")
         {
-            codegenInputOption, codegenOutputOption, codegenConfigOption, analyzeStubsOption, stubBudgetOption
+            codegenInputOption, codegenOutputOption, codegenConfigOption, analyzeStubsOption, stubBudgetOption, codegenRdXmlOption
         };
 
-        codegenCommand.SetHandler((input, output, config, analyzeStubs, stubBudget) =>
+        codegenCommand.SetHandler((input, output, config, analyzeStubs, stubBudget, rdXml) =>
         {
-            GenerateCpp(input, output, config, analyzeStubs, stubBudget);
-        }, codegenInputOption, codegenOutputOption, codegenConfigOption, analyzeStubsOption, stubBudgetOption);
+            GenerateCpp(input, output, config, analyzeStubs, stubBudget, rdXml?.FullName);
+        }, codegenInputOption, codegenOutputOption, codegenConfigOption, analyzeStubsOption, stubBudgetOption, codegenRdXmlOption);
 
         rootCommand.AddCommand(codegenCommand);
 
@@ -224,7 +233,7 @@ class Program
     }
 
     static void GenerateCpp(FileInfo input, DirectoryInfo output, string configName = "Release",
-        bool analyzeStubs = false, string? stubBudgetPath = null)
+        bool analyzeStubs = false, string? stubBudgetPath = null, string? rdXmlPath = null)
     {
         var prepared = PrepareBuild(input, output, configName);
         if (prepared is not var (assemblyFile, config)) return;
@@ -240,6 +249,13 @@ class Program
 
             Console.WriteLine("[2/4] Analyzing reachability...");
             var analyzer = new ReachabilityAnalyzer(assemblySet);
+            // D.2: Apply rd.xml preservation rules before tree-shaking
+            if (!string.IsNullOrEmpty(rdXmlPath))
+            {
+                var rules = RdXmlParser.Parse(rdXmlPath);
+                analyzer.SetPreservationRules(rules);
+                Console.WriteLine($"      rd.xml: {rules.Count} preservation rules from {rdXmlPath}");
+            }
             var reachability = analyzer.Analyze();
             Console.WriteLine($"      {reachability.ReachableTypes.Count} reachable types");
             Console.WriteLine($"      {reachability.ReachableMethods.Count} reachable methods");
@@ -302,7 +318,7 @@ class Program
     }
 
     static void Compile(FileInfo input, DirectoryInfo output, string configName = "Release",
-        string? runtimePrefix = null)
+        string? runtimePrefix = null, string? rdXmlPath = null)
     {
         var prepared = PrepareBuild(input, output, configName);
         if (prepared is not var (assemblyFile, config)) return;
@@ -317,6 +333,13 @@ class Program
 
             Console.WriteLine("[2/6] Analyzing reachability...");
             var analyzer = new ReachabilityAnalyzer(assemblySet);
+            // D.2: Apply rd.xml preservation rules before tree-shaking
+            if (!string.IsNullOrEmpty(rdXmlPath))
+            {
+                var rules = RdXmlParser.Parse(rdXmlPath);
+                analyzer.SetPreservationRules(rules);
+                Console.WriteLine($"      rd.xml: {rules.Count} preservation rules from {rdXmlPath}");
+            }
             var reachability = analyzer.Analyze();
             Console.WriteLine($"      {reachability.ReachableTypes.Count} reachable types, {reachability.ReachableMethods.Count} reachable methods");
 
