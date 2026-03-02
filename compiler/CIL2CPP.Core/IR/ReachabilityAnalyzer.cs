@@ -6,14 +6,24 @@ namespace CIL2CPP.Core.IR;
 
 /// <summary>
 /// Result of reachability analysis: the sets of reachable types and methods.
+/// RTA (Rapid Type Analysis) model: ReachableTypes need struct layout / forward declarations,
+/// ConstructedTypes are actually instantiated (newobj/newarr) and participate in virtual dispatch.
 /// </summary>
 public class ReachabilityResult
 {
     public HashSet<TypeDefinition> ReachableTypes { get; } = new();
     public HashSet<MethodDefinition> ReachableMethods { get; } = new();
 
+    /// <summary>
+    /// Types that are actually instantiated (newobj, newarr, Activator.CreateInstance, DAM).
+    /// Only constructed types participate in virtual method dispatch (RTA).
+    /// Always a subset of ReachableTypes.
+    /// </summary>
+    public HashSet<TypeDefinition> ConstructedTypes { get; } = new();
+
     public bool IsReachable(TypeDefinition type) => ReachableTypes.Contains(type);
     public bool IsReachable(MethodDefinition method) => ReachableMethods.Contains(method);
+    public bool IsConstructed(TypeDefinition type) => ConstructedTypes.Contains(type);
 }
 
 /// <summary>
@@ -85,6 +95,11 @@ public class ReachabilityAnalyzer
             SeedAllPublicTypes(_assemblySet.RootAssembly);
         }
 
+        // RTA: mark types that are implicitly constructed by the runtime.
+        // These types are created by runtime internals (string literals, boxing,
+        // array creation, exception handling) without explicit newobj in user code.
+        SeedImplicitlyConstructedTypes();
+
         // D.2: Apply rd.xml preservation rules after initial seeding
         if (_preservationRules != null)
             ApplyPreservationRules();
@@ -119,13 +134,15 @@ public class ReachabilityAnalyzer
         {
             if (type.Name == "<Module>") continue;
 
-            MarkTypeReachable(type);
+            // Root assembly types in forceLibraryMode: mark constructed
+            // (external callers may instantiate any type)
+            MarkTypeConstructed(type);
             foreach (var method in type.Methods)
                 SeedMethod(method);
 
             foreach (var nested in type.NestedTypes)
             {
-                MarkTypeReachable(nested);
+                MarkTypeConstructed(nested);
                 foreach (var method in nested.Methods)
                     SeedMethod(method);
             }
@@ -139,11 +156,57 @@ public class ReachabilityAnalyzer
             if (type.Name == "<Module>") continue;
             if (!type.IsPublic) continue;
 
-            MarkTypeReachable(type);
+            // Root assembly public types in library mode: mark constructed
+            // (external callers may instantiate public types)
+            MarkTypeConstructed(type);
             foreach (var method in type.Methods)
             {
                 if (method.IsPublic || method.IsFamily)
                     SeedMethod(method);
+            }
+        }
+    }
+
+    /// <summary>
+    /// RTA: Mark types that are implicitly constructed by runtime internals.
+    /// These types are created without explicit newobj in user/BCL IL code
+    /// (string literals, primitive boxing, array runtime, exception handling).
+    /// Without this, their virtual dispatch overrides (ToString, Equals, GetHashCode)
+    /// would not be seeded, causing UndeclaredFunction stubs.
+    /// </summary>
+    private void SeedImplicitlyConstructedTypes()
+    {
+        // Well-known BCL types created by runtime internals
+        var implicitTypes = new[]
+        {
+            "System.String", "System.Object", "System.Type", "System.RuntimeType",
+            "System.Exception", "System.NullReferenceException", "System.InvalidCastException",
+            "System.IndexOutOfRangeException", "System.ArrayTypeMismatchException",
+            "System.StackOverflowException", "System.OutOfMemoryException",
+            "System.OverflowException", "System.InvalidOperationException",
+            "System.ArgumentException", "System.ArgumentNullException",
+            "System.ArgumentOutOfRangeException", "System.NotSupportedException",
+            "System.NotImplementedException", "System.FormatException",
+            "System.TypeInitializationException", "System.PlatformNotSupportedException",
+            // Primitive types (implicitly constructed via boxing, literals, arithmetic)
+            "System.Boolean", "System.Byte", "System.SByte",
+            "System.Int16", "System.UInt16", "System.Int32", "System.UInt32",
+            "System.Int64", "System.UInt64", "System.Single", "System.Double",
+            "System.Char", "System.IntPtr", "System.UIntPtr", "System.Decimal",
+            // Commonly constructed by runtime without explicit newobj
+            "System.Text.StringBuilder",
+        };
+
+        foreach (var typeName in implicitTypes)
+        {
+            foreach (var (_, asm) in _assemblySet.LoadedAssemblies)
+            {
+                var typeDef = asm.MainModule.GetType(typeName);
+                if (typeDef != null)
+                {
+                    MarkTypeConstructed(typeDef);
+                    break;
+                }
             }
         }
     }
@@ -184,7 +247,11 @@ public class ReachabilityAnalyzer
         if (finalizer != null)
             SeedMethod(finalizer);
 
-        // Mark field types reachable (needed for struct layout)
+        // Mark field types reachable (needed for struct layout and forward declarations).
+        // All field types need their struct definitions generated — even reference types
+        // (C++ code generator needs the type definition for forward declarations).
+        // RTA note: field types are made REACHABLE (struct emitted) but NOT CONSTRUCTED
+        // (no virtual dispatch). The dispatch reduction comes from MarkTypeConstructed.
         foreach (var field in type.Fields)
         {
             var fieldTypeDef = TryResolve(field.FieldType);
@@ -215,9 +282,39 @@ public class ReachabilityAnalyzer
         // Populate subtype index: register this type under all ancestors + interfaces
         RegisterInSubtypeIndex(type);
 
-        // All types: check for virtual method overrides that match dispatched slots
-        // (user types are no longer blanket-seeded — worklist discovers reachable methods)
+        // RTA: virtual dispatch only for CONSTRUCTED types (not merely reachable).
+        // MarkDispatchedOverrides is called from MarkTypeConstructed, not here.
+        // This is the key CHA→RTA upgrade: types that are only field-type-reachable
+        // or cast-target-reachable don't get virtual dispatch overhead.
+    }
+
+    /// <summary>
+    /// Mark a type as constructed (actually instantiated via newobj/newarr/Activator/DAM).
+    /// Only constructed types participate in virtual method dispatch (RTA model).
+    /// This is the key distinction from CHA: merely reachable types don't dispatch.
+    /// Also marks base types as constructed (a Derived instance IS-A Base instance,
+    /// so Base virtual dispatch targets must include Derived overrides).
+    /// </summary>
+    private void MarkTypeConstructed(TypeDefinition type)
+    {
+        // Ensure reachable first (struct layout needed for any constructed type)
+        MarkTypeReachable(type);
+
+        if (!_result.ConstructedTypes.Add(type))
+            return;
+
+        // Only NOW dispatch virtual overrides — the core RTA distinction.
+        // Types that are merely reachable (field types, cast targets) don't dispatch.
         MarkDispatchedOverrides(type);
+
+        // Mark base types as constructed too: a Derived instance IS-A Base instance.
+        // Without this, virtual dispatch on Base references wouldn't find Derived overrides.
+        if (type.BaseType != null)
+        {
+            var baseTypeDef = TryResolve(type.BaseType);
+            if (baseTypeDef != null)
+                MarkTypeConstructed(baseTypeDef);
+        }
     }
 
     /// <summary>
@@ -281,7 +378,8 @@ public class ReachabilityAnalyzer
     }
 
     /// <summary>
-    /// Track a virtual method as dispatched and mark overrides in all reachable subtypes.
+    /// Track a virtual method as dispatched and mark overrides in CONSTRUCTED subtypes only.
+    /// RTA model: only types that are actually instantiated can be runtime dispatch targets.
     /// Uses subtype index for O(subtypes) instead of O(all reachable types).
     /// </summary>
     private void DispatchVirtualSlot(MethodDefinition method)
@@ -292,17 +390,20 @@ public class ReachabilityAnalyzer
 
         _dispatchedVirtualSlots.Add((method.Name, method.Parameters.Count, method.DeclaringType));
 
-        // Use subtype index: only check types known to inherit from/implement the declaring type
+        // RTA: only check CONSTRUCTED subtypes for virtual dispatch
         if (_subtypeIndex.TryGetValue(method.DeclaringType.FullName, out var subtypes))
         {
             foreach (var type in subtypes.ToArray())
-                MarkOverrideIfExists(type, method.Name, method.Parameters.Count);
+            {
+                if (_result.ConstructedTypes.Contains(type))
+                    MarkOverrideIfExists(type, method.Name, method.Parameters.Count);
+            }
         }
     }
 
     /// <summary>
-    /// When a type becomes reachable, check if it overrides any dispatched virtual slot.
-    /// Uses the type's ancestor chain to find only relevant slots (not all slots).
+    /// When a type becomes CONSTRUCTED, check if it overrides any dispatched virtual slot.
+    /// Called from MarkTypeConstructed — NOT from MarkTypeReachable (key RTA distinction).
     /// </summary>
     private void MarkDispatchedOverrides(TypeDefinition type)
     {
@@ -495,6 +596,25 @@ public class ReachabilityAnalyzer
         if (typeFullName.StartsWith("System.ComAwareWeakReference"))
             return true;
 
+        // Design-time infrastructure — TypeConverter, TypeDescriptor, etc.
+        // Runtime type inspection/conversion used by designers, not AOT
+        if (typeFullName.StartsWith("System.ComponentModel."))
+            return true;
+
+        // Legacy serialization — BinaryFormatter, IFormatter, DataContract
+        // Deprecated, security risk, requires runtime reflection
+        if (typeFullName.StartsWith("System.Runtime.Serialization."))
+            return true;
+
+        // Runtime code compilation — requires JIT, fundamentally AOT-incompatible
+        if (typeFullName.StartsWith("System.CodeDom"))
+            return true;
+
+        // .resx resource loading — ResourceReader/ResourceManager require assembly metadata
+        // CIL2CPP uses SR icall for resource strings instead
+        if (typeFullName.StartsWith("System.Resources."))
+            return true;
+
         return false;
     }
 
@@ -524,20 +644,50 @@ public class ReachabilityAnalyzer
         {
             switch (instr.OpCode.Code)
             {
-                // Method references
+                // Method references (non-constructing calls)
                 case Code.Call:
                 case Code.Callvirt:
-                case Code.Newobj:
                 case Code.Ldftn:
                 case Code.Ldvirtftn:
                     ProcessMethodRef(instr.Operand as MethodReference);
                     break;
 
-                // Type references
+                // RTA: newobj = object construction site → mark type as CONSTRUCTED
+                case Code.Newobj:
+                    ProcessMethodRef(instr.Operand as MethodReference);
+                    if (instr.Operand is MethodReference ctorRef)
+                    {
+                        var ctorTypeDef = TryResolve(ctorRef.DeclaringType);
+                        if (ctorTypeDef != null)
+                            MarkTypeConstructed(ctorTypeDef);
+                    }
+                    break;
+
+                // RTA: newarr = array construction site → mark element type as CONSTRUCTED
                 case Code.Newarr:
+                    ProcessTypeRef(instr.Operand as TypeReference);
+                    if (instr.Operand is TypeReference newarrElemType)
+                    {
+                        var elemDef = TryResolve(newarrElemType);
+                        if (elemDef != null)
+                            MarkTypeConstructed(elemDef);
+                    }
+                    break;
+
+                // RTA: box = creates a boxed object on the heap → mark as CONSTRUCTED
+                case Code.Box:
+                    ProcessTypeRef(instr.Operand as TypeReference);
+                    if (instr.Operand is TypeReference boxType)
+                    {
+                        var boxDef = TryResolve(boxType);
+                        if (boxDef != null)
+                            MarkTypeConstructed(boxDef);
+                    }
+                    break;
+
+                // Type references (non-constructing)
                 case Code.Castclass:
                 case Code.Isinst:
-                case Code.Box:
                 case Code.Unbox:
                 case Code.Unbox_Any:
                 case Code.Initobj:
@@ -596,6 +746,7 @@ public class ReachabilityAnalyzer
         // The IRBuilder replaces this with gc::alloc + .ctor call, but the ctor
         // won't be compiled unless we discover it here. Without this, field
         // initializers (e.g., SafeFileHandle._fileType = -1) are lost.
+        // RTA: Activator.CreateInstance = construction site → mark CONSTRUCTED.
         if (methodRef.DeclaringType.FullName == "System.Activator"
             && methodRef.Name == "CreateInstance"
             && methodRef.Parameters.Count == 0
@@ -606,7 +757,7 @@ public class ReachabilityAnalyzer
             var typeDef = TryResolve(typeArg);
             if (typeDef != null)
             {
-                MarkTypeReachable(typeDef);
+                MarkTypeConstructed(typeDef);
                 var defaultCtor = typeDef.Methods
                     .FirstOrDefault(m => m.IsConstructor && !m.IsStatic && m.Parameters.Count == 0);
                 if (defaultCtor != null)
@@ -783,6 +934,7 @@ public class ReachabilityAnalyzer
     /// <summary>
     /// Seed members of a type based on DynamicallyAccessedMemberTypes flags.
     /// This prevents tree-shaking from removing members needed by reflection or serialization.
+    /// RTA: when constructors are seeded, mark the type as constructed (reflection may instantiate).
     /// </summary>
     private void SeedDynamicallyAccessedMembers(TypeDefinition type, int memberTypes)
     {
@@ -791,6 +943,13 @@ public class ReachabilityAnalyzer
         // All = seed everything
         if (flags == DamFlags.All)
             flags = (DamFlags)0x3FFF; // all individual bits
+
+        // RTA: if DAM seeds constructors, mark type as constructed (reflection may call .ctor)
+        bool seedsConstructors = flags.HasFlag(DamFlags.PublicParameterlessConstructor)
+            || (flags & DamFlags.PublicConstructors) == DamFlags.PublicConstructors
+            || flags.HasFlag(DamFlags.NonPublicConstructors);
+        if (seedsConstructors)
+            MarkTypeConstructed(type);
 
         // Constructors
         if (flags.HasFlag(DamFlags.PublicParameterlessConstructor))

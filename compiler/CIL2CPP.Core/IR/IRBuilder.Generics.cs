@@ -302,17 +302,26 @@ public partial class IRBuilder
         // Uses class-level _processedMethodSpecKeys so this method can be safely re-called
         // (e.g., from Pass 3.6 re-discovery) without reprocessing already-created methods.
         bool changed = true;
+        int iterations = 0;
+        const int MaxPass35Iterations = 50;
         while (changed)
         {
             changed = false;
-            // Snapshot keys to avoid collection-modified-during-enumeration
-            var snapshot = _genericMethodInstantiations.ToList();
-            foreach (var (key, info) in snapshot)
+            // Snapshot KEYS only (lighter than .ToList() which copies key+value pairs)
+            var snapshotKeys = _genericMethodInstantiations.Keys.ToArray();
+            foreach (var key in snapshotKeys)
             {
                 if (_processedMethodSpecKeys.Contains(key)) continue;
                 _processedMethodSpecKeys.Add(key);
                 changed = true;
-                ProcessGenericMethodSpecialization(key, info);
+                if (_genericMethodInstantiations.TryGetValue(key, out var info))
+                    ProcessGenericMethodSpecialization(key, info);
+            }
+            iterations++;
+            if (iterations >= MaxPass35Iterations)
+            {
+                Console.Error.WriteLine($"[WARN] Pass 3.5: generic method specialization fixpoint capped at {MaxPass35Iterations} iterations ({_genericMethodInstantiations.Count} methods)");
+                break;
             }
         }
     }

@@ -261,7 +261,7 @@ class Program
                 Console.WriteLine($"      rd.xml: {rules.Count} preservation rules from {rdXmlPath}");
             }
             var reachability = analyzer.Analyze();
-            Console.WriteLine($"      {reachability.ReachableTypes.Count} reachable types");
+            Console.WriteLine($"      {reachability.ReachableTypes.Count} reachable types ({reachability.ConstructedTypes.Count} constructed)");
             Console.WriteLine($"      {reachability.ReachableMethods.Count} reachable methods");
             Console.WriteLine($"      {assemblySet.LoadedAssemblies.Count} assemblies loaded");
             Console.WriteLine($"      ({sw.Elapsed.TotalSeconds:F1}s)");
