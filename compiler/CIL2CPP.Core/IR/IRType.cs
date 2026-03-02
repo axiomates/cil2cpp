@@ -69,6 +69,8 @@ public class IRType
     /// but methods ARE compiled from BCL IL.
     /// </summary>
     public bool IsPrimitiveType { get; set; }
+    public bool IsPublic { get; set; }
+    public bool IsNestedPublic { get; set; }
 
     /// <summary>Concrete type argument names for generic instances (e.g., ["System.Int32"])</summary>
     public List<string> GenericArguments { get; set; } = new();

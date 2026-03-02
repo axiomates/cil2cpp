@@ -98,6 +98,7 @@ struct ManagedThread : Object {
     String* f_name;                  // BCL: Thread._name
     void* f_startHelper;             // BCL: Thread._startHelper (StartHelper)
     bool f_mayNeedResetForThreadPool; // BCL: Thread._mayNeedResetForThreadPool
+    bool is_background;              // Thread.IsBackground flag
 };
 
 /// Get the current managed thread for this OS thread (TLS-backed).

@@ -20,6 +20,8 @@ public partial class IRBuilder
             IsAbstract = typeDef.IsAbstract,
             IsSealed = typeDef.IsSealed,
             IsEnum = typeDef.IsEnum,
+            IsPublic = typeDef.GetCecilType().IsPublic,
+            IsNestedPublic = typeDef.GetCecilType().IsNestedPublic,
         };
 
         if (typeDef.IsEnum)

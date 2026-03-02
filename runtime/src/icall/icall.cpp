@@ -350,14 +350,14 @@ void* Thread_GetCurrentThreadNative() {
 }
 
 Boolean Thread_IsBackgroundNative(void* __this) {
-    (void)__this;
-    return 1; // HACK: all non-main threads are background by default in CIL2CPP
+    auto* t = static_cast<ManagedThread*>(__this);
+    if (!t) return 0;
+    return t->is_background ? 1 : 0;
 }
 
 void Thread_SetBackgroundNative(void* __this, Boolean isBackground) {
-    (void)__this;
-    (void)isBackground;
-    // HACK: no-op — CIL2CPP thread pool manages thread lifecycle
+    auto* t = static_cast<ManagedThread*>(__this);
+    if (t) t->is_background = (isBackground != 0);
 }
 
 Int32 Thread_GetPriorityNative(void* __this) {
@@ -372,9 +372,9 @@ void Thread_SetPriorityNative(void* __this, Int32 priority) {
 }
 
 Int32 Thread_get_ManagedThreadId(void* __this) {
-    (void)__this;
-    // HACK: return OS thread ID as managed thread ID for now
-    // TODO: implement proper managed thread ID tracking
+    auto* t = static_cast<ManagedThread*>(__this);
+    if (t) return t->managed_id;
+    // Fallback for unexpected null
     return static_cast<Int32>(Thread_GetCurrentOSThreadId() & 0x7FFFFFFF);
 }
 
@@ -444,8 +444,11 @@ Object* Enum_InternalBoxEnum(void* enumType, Int64 value) {
 
 Int32 Enum_InternalGetCorElementType(void* enumType) {
     // Returns the CorElementType for the underlying type of an enum.
-    // Maps element_size to CorElementType: 1→I1, 2→I2, 4→I4, 8→I8.
     auto* typeInfo = reinterpret_cast<TypeInfo*>(enumType);
+    if (typeInfo && typeInfo->underlying_type && typeInfo->underlying_type->cor_element_type != 0) {
+        return static_cast<Int32>(typeInfo->underlying_type->cor_element_type);
+    }
+    // Fallback: infer from element_size when underlying_type is not set
     if (typeInfo) {
         switch (typeInfo->element_size) {
             case 1: return 0x04; // ELEMENT_TYPE_I1
@@ -537,17 +540,18 @@ static Type* get_type_from_this(void* __this) {
 Object* Type_GetEnumUnderlyingType(void* __this) {
     auto* t = get_type_from_this(__this);
     if (!t || !t->type_info) return nullptr;
-    // HACK: return the type_info itself as the "underlying type" object.
-    // Most enums are int32-based. We can't reference generated TypeInfos from the runtime.
-    // TODO: store actual underlying type in TypeInfo for enum types.
-    return reinterpret_cast<Object*>(type_get_type_object(t->type_info));
+    auto* underlying = t->type_info->underlying_type;
+    if (!underlying) {
+        // Fallback for types without underlying_type set (e.g., minimal external enum stubs)
+        return reinterpret_cast<Object*>(type_get_type_object(t->type_info));
+    }
+    return reinterpret_cast<Object*>(type_get_type_object(underlying));
 }
 
 Boolean Type_get_IsPublic(void* __this) {
-    // HACK: simplified — return true for all types.
-    // TODO: add visibility flags to TypeInfo.
-    (void)__this;
-    return true;
+    auto* t = get_type_from_this(__this);
+    if (!t || !t->type_info) return false;
+    return t->type_info->flags & TypeFlags::Public;
 }
 
 Boolean Type_get_IsAbstract(void* __this) {
@@ -563,8 +567,9 @@ Boolean Type_get_IsValueType(void* __this) {
 }
 
 Boolean Type_get_IsNestedPublic(void* __this) {
-    (void)__this;
-    return false; // HACK: simplified
+    auto* t = get_type_from_this(__this);
+    if (!t || !t->type_info) return false;
+    return t->type_info->flags & TypeFlags::NestedPublic;
 }
 
 Boolean Type_IsArrayImpl(void* __this) {

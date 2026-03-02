@@ -201,8 +201,11 @@ void array_copy_impl(void* raw_src, Int32 srcIndex, void* raw_dst, Int32 dstInde
                static_cast<Array*>(raw_dst), dstIndex, length);
 }
 
-Int32 array_get_cor_element_type(void* /*arr*/) {
-    // FIXME: would need TypeInfo to carry CorElementType metadata
+Int32 array_get_cor_element_type(void* arr) {
+    auto* a = static_cast<Array*>(arr);
+    if (a && a->element_type) {
+        return static_cast<Int32>(a->element_type->cor_element_type);
+    }
     return 0; // ELEMENT_TYPE_END — indicates unknown
 }
 

@@ -122,6 +122,9 @@ public partial class CppCodeGenerator
                 sb.AppendLine($"    .interface_vtable_count = 0,");
                 sb.AppendLine($"    .custom_attributes = nullptr,");
                 sb.AppendLine($"    .custom_attribute_count = 0,");
+                sb.AppendLine($"    .underlying_type = nullptr,");
+                var primCorType = GetCorElementTypeForPrimitive(entry.ILFullName);
+                sb.AppendLine($"    .cor_element_type = 0x{primCorType:X2},");
                 sb.AppendLine($"}};");
             }
             sb.AppendLine();
@@ -1525,6 +1528,8 @@ public partial class CppCodeGenerator
         if (type.IsAbstract) flagParts.Add("cil2cpp::TypeFlags::Abstract");
         if (type.IsSealed) flagParts.Add("cil2cpp::TypeFlags::Sealed");
         if (type.IsEnum) flagParts.Add("cil2cpp::TypeFlags::Enum");
+        if (type.IsPublic) flagParts.Add("cil2cpp::TypeFlags::Public");
+        if (type.IsNestedPublic) flagParts.Add("cil2cpp::TypeFlags::NestedPublic");
         var flagsStr = flagParts.Count > 0 ? string.Join(" | ", flagParts) : "cil2cpp::TypeFlags::None";
 
         sb.AppendLine($"cil2cpp::TypeInfo {type.CppName}_TypeInfo = {{");
@@ -1564,6 +1569,17 @@ public partial class CppCodeGenerator
         var typeAttrCount = skipReflection ? 0 : type.CustomAttributes.Count;
         sb.AppendLine($"    .custom_attributes = {typeAttrsExpr},");
         sb.AppendLine($"    .custom_attribute_count = {typeAttrCount},");
+        // Enum underlying type
+        var underlyingTypeExpr = "nullptr";
+        if (type.IsEnum && type.EnumUnderlyingType != null)
+        {
+            var underlyingCpp = CppNameMapper.MangleTypeName(type.EnumUnderlyingType);
+            underlyingTypeExpr = $"&{underlyingCpp}_TypeInfo";
+        }
+        sb.AppendLine($"    .underlying_type = {underlyingTypeExpr},");
+        // CorElementType (ECMA-335 II.23.1.16)
+        var corElementType = GetCorElementType(type);
+        sb.AppendLine($"    .cor_element_type = 0x{corElementType:X2},");
         // Generic variance data (must match EmitGenericVarianceData filter)
         var typeInfoLookup = BuildTypeInfoExprLookup();
         var hasGenericArgs = type.IsGenericInstance && type.GenericArguments.Count > 0
@@ -1773,7 +1789,7 @@ public partial class CppCodeGenerator
                 // After a conditional/unconditional branch in the outer scope,
                 // open a scope to prevent goto from crossing auto declarations (C++ C2362)
                 if (hasLabels && !inLabelScope && !gotoScopeOpen
-                    && (instr is IRConditionalBranch || instr is IRBranch))
+                    && (instr is IRConditionalBranch || instr is IRBranch || instr is IRSwitch))
                 {
                     sb.AppendLine("    {");
                     gotoScopeOpen = true;
@@ -2397,6 +2413,62 @@ public partial class CppCodeGenerator
     /// Build a lookup table mapping IL type full names to TypeInfo pointer expressions.
     /// Only includes types with TypeInfo emitted in generated code (non-runtime-provided user types + primitives).
     /// </summary>
+    /// <summary>
+    /// Maps an IL full name to its ECMA-335 CorElementType code (II.23.1.16).
+    /// </summary>
+    private static byte GetCorElementTypeForPrimitive(string ilFullName)
+    {
+        return ilFullName switch
+        {
+            "System.Void"    => 0x01,
+            "System.Boolean" => 0x02,
+            "System.Char"    => 0x03,
+            "System.SByte"   => 0x04,
+            "System.Byte"    => 0x05,
+            "System.Int16"   => 0x06,
+            "System.UInt16"  => 0x07,
+            "System.Int32"   => 0x08,
+            "System.UInt32"  => 0x09,
+            "System.Int64"   => 0x0A,
+            "System.UInt64"  => 0x0B,
+            "System.Single"  => 0x0C,
+            "System.Double"  => 0x0D,
+            "System.String"  => 0x0E,
+            "System.IntPtr"  => 0x18,
+            "System.UIntPtr" => 0x19,
+            "System.Object"  => 0x1C,
+            _ => 0x00,
+        };
+    }
+
+    /// <summary>
+    /// Maps an IRType to its ECMA-335 CorElementType code (II.23.1.16).
+    /// </summary>
+    private static byte GetCorElementType(IRType type)
+    {
+        return type.ILFullName switch
+        {
+            "System.Void"    => 0x01,
+            "System.Boolean" => 0x02,
+            "System.Char"    => 0x03,
+            "System.SByte"   => 0x04, // I1
+            "System.Byte"    => 0x05, // U1
+            "System.Int16"   => 0x06, // I2
+            "System.UInt16"  => 0x07, // U2
+            "System.Int32"   => 0x08, // I4
+            "System.UInt32"  => 0x09, // U4
+            "System.Int64"   => 0x0A, // I8
+            "System.UInt64"  => 0x0B, // U8
+            "System.Single"  => 0x0C, // R4
+            "System.Double"  => 0x0D, // R8
+            "System.String"  => 0x0E,
+            "System.IntPtr"  => 0x18, // I
+            "System.UIntPtr" => 0x19, // U
+            "System.Object"  => 0x1C,
+            _ => type.IsValueType ? (byte)0x11 : (byte)0x12, // VALUETYPE or CLASS
+        };
+    }
+
     private Dictionary<string, string> BuildTypeInfoExprLookup()
     {
         var lookup = new Dictionary<string, string>();

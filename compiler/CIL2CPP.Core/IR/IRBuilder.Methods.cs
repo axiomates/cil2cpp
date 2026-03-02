@@ -1770,6 +1770,9 @@ public partial class IRBuilder
                         && tempType.EndsWith("*"))
                         break;
                 }
+                // CppType already tracked as pointer — conv.u is a no-op
+                if (convUEntry.CppType != null && convUEntry.CppType.EndsWith("*"))
+                    break;
                 EmitConversion(block, stack, "uintptr_t", ref tempCounter);
                 break;
             }

@@ -179,6 +179,7 @@ static void when_all_callback(void* raw) {
     auto* state = static_cast<WhenAllState*>(raw);
     if (state->remaining.fetch_sub(1) == 1) {
         task_complete(state->result_task);
+        delete state;
     }
 }
 
@@ -188,8 +189,8 @@ Task* task_when_all(Array* tasks) {
     }
 
     auto* result = task_create_pending();
-    // FIXME: WhenAllState is CRT-heap allocated (std::atomic not safe in GC memory).
-    // Leaked after all tasks complete. Acceptable for short-lived combinators.
+    // CRT-heap allocated because std::atomic is not safe in GC memory.
+    // Freed in when_all_callback when the last task completes.
     auto* state = new WhenAllState();
     state->result_task = result;
     state->remaining.store(tasks->length);
@@ -210,6 +211,7 @@ Task* task_when_all(Array* tasks) {
 struct WhenAnyState {
     Task* result_task;
     std::atomic<bool> completed;
+    std::atomic<Int32> remaining;  // track how many callbacks are still pending
 };
 
 static void when_any_callback(void* raw) {
@@ -217,6 +219,10 @@ static void when_any_callback(void* raw) {
     bool expected = false;
     if (state->completed.compare_exchange_strong(expected, true)) {
         task_complete(state->result_task);
+    }
+    // Free state when the last callback fires (safe: no more accesses after this)
+    if (state->remaining.fetch_sub(1) == 1) {
+        delete state;
     }
 }
 
@@ -226,11 +232,12 @@ Task* task_when_any(Array* tasks) {
     }
 
     auto* result = task_create_pending();
-    // FIXME: WhenAnyState is CRT-heap allocated (std::atomic not safe in GC memory).
-    // Leaked after any task completes. Acceptable for short-lived combinators.
+    // CRT-heap allocated because std::atomic is not safe in GC memory.
+    // Freed in when_any_callback when the last task completes.
     auto* state = new WhenAnyState();
     state->result_task = result;
     state->completed.store(false);
+    state->remaining.store(tasks->length);
 
     auto** task_ptrs = static_cast<Task**>(array_data(tasks));
     for (Int32 i = 0; i < tasks->length; i++) {

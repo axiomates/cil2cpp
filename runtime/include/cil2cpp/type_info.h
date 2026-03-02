@@ -19,6 +19,8 @@ enum class TypeFlags : UInt32 {
     Array = 1 << 5,
     Primitive = 1 << 6,
     Generic = 1 << 7,
+    Public = 1 << 8,
+    NestedPublic = 1 << 9,
 };
 
 inline TypeFlags operator|(TypeFlags a, TypeFlags b) {
@@ -191,6 +193,12 @@ struct TypeInfo {
     // Custom attributes
     CustomAttributeInfo* custom_attributes;
     UInt32 custom_attribute_count;
+
+    // Enum underlying type (e.g., Int32 for most enums)
+    TypeInfo* underlying_type;           // nullptr for non-enum types
+
+    // ECMA-335 CorElementType code (0x04=I1, 0x05=U1, ..., 0x1C=Object, etc.)
+    uint8_t cor_element_type;
 
     // Generic variance data (for variance-aware type assignability)
     // For generic instances: concrete argument TypeInfos + variance flags from open type

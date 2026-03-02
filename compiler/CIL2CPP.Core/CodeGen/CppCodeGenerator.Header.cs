@@ -3197,11 +3197,9 @@ public partial class CppCodeGenerator
             }
         }
 
-        // FIXME: conv.u on pointer-typed locals produces (void*)(void*) — variable ends up void*
-        // and may be passed to functions expecting typed pointers (C2664). Need to fix conv.u to
-        // preserve pointer type when the local is already a pointer.
-        // Targeted gate: detect (void*)(void*) assignment to a temp variable, then that temp
-        // used as a bare function argument (no cast wrapper).
+        // Safety net: conv.u on pointer-typed values used to produce (void*)(void*). Root cause
+        // fixed in IRBuilder.Methods.cs (Conv_U now skips cast when CppType is already pointer).
+        // This gate remains as a safety net for edge cases where CppType tracking is incomplete.
         if (rendered.Contains("(void*)(void*)"))
         {
             var voidPtrVoidPtrVars = new HashSet<string>();
@@ -3234,22 +3232,10 @@ public partial class CppCodeGenerator
             }
         }
 
-        // goto skips initialization of auto-declared variable — C2362
-        // Pattern: consecutive switch blocks where the first switch's gotos can skip
-        // the second switch's auto __tN declaration.
-        // Detect: two "switch (__t" blocks in the same method — the first switch's
-        // case gotos jump over the second switch's auto __tN = expr; declaration.
-        if (rendered.Contains("switch (__t"))
-        {
-            int switchCount = 0;
-            foreach (var line in rendered.AsSpan().EnumerateLines())
-            {
-                var s = line.ToString().TrimStart();
-                if (s.StartsWith("switch (__t")) switchCount++;
-            }
-            if (switchCount >= 2)
-                return "consecutive switch blocks — goto may skip auto initialization (C2362)";
-        }
+        // C2362 (goto skips auto initialization) — previously gated here for
+        // consecutive switch blocks. Now fixed at source: gotoScopeOpen in EmitMethodBody
+        // covers IRSwitch in addition to IRBranch/IRConditionalBranch, so the scoping
+        // braces prevent C2362 at the C++ level. Gate removed.
 
         // HasFlag receives pointer where value expected — Enum.HasFlag(Enum*, Enum)
         // signature expects value type for 2nd arg, but codegen passes boxed Object*.
