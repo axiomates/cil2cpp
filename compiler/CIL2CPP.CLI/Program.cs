@@ -243,9 +243,13 @@ class Program
             var suffix = analyzeStubs ? "codegen + stub analysis" : null;
             PrintBanner(assemblyFile, output, config, suffix);
 
+            var sw = Stopwatch.StartNew();
+
             Console.WriteLine("[1/4] Loading assembly set...");
             using var assemblySet = new AssemblySet(assemblyFile.FullName, config);
             Console.WriteLine($"      Root assembly: {assemblySet.RootAssemblyName}");
+            Console.WriteLine($"      ({sw.Elapsed.TotalSeconds:F1}s)");
+            sw.Restart();
 
             Console.WriteLine("[2/4] Analyzing reachability...");
             var analyzer = new ReachabilityAnalyzer(assemblySet);
@@ -260,6 +264,8 @@ class Program
             Console.WriteLine($"      {reachability.ReachableTypes.Count} reachable types");
             Console.WriteLine($"      {reachability.ReachableMethods.Count} reachable methods");
             Console.WriteLine($"      {assemblySet.LoadedAssemblies.Count} assemblies loaded");
+            Console.WriteLine($"      ({sw.Elapsed.TotalSeconds:F1}s)");
+            sw.Restart();
 
             Console.WriteLine("[3/4] Building IR...");
             using var reader = new AssemblyReader(assemblyFile.FullName, config);
@@ -270,6 +276,8 @@ class Program
                 Console.WriteLine($"      Entry point: {module.EntryPoint.DeclaringType?.ILFullName}.{module.EntryPoint.Name}");
             else
                 Console.WriteLine("      No entry point - generating static library");
+            Console.WriteLine($"      ({sw.Elapsed.TotalSeconds:F1}s)");
+            sw.Restart();
 
             Console.WriteLine("[4/4] Generating C++ code...");
             var generator = new CppCodeGenerator(module, config, analyzeStubs: analyzeStubs);

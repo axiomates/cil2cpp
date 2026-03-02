@@ -37,6 +37,17 @@ public class ReachabilityAnalyzer
     // D.2: rd.xml preservation rules
     private List<RdXmlParser.PreservationRule>? _preservationRules;
 
+    // Performance: cache InheritsFromOrImplements results to avoid repeated hierarchy walks
+    private readonly Dictionary<(string TypeName, string TargetName), bool> _inheritsCache = new();
+
+    // Performance: index from ancestor/interface FullName → subtypes.
+    // Replaces O(V×T) full scans in DispatchVirtualSlot / MarkDispatchedOverrides
+    // with O(V × subtypes(declaringType)) lookups.
+    private readonly Dictionary<string, List<TypeDefinition>> _subtypeIndex = new();
+
+    // Performance: cache TryResolve results to avoid repeated Cecil Resolve() calls
+    private readonly Dictionary<string, TypeDefinition?> _resolveCache = new();
+
     public ReachabilityAnalyzer(AssemblySet assemblySet)
     {
         _assemblySet = assemblySet;
@@ -201,14 +212,77 @@ public class ReachabilityAnalyzer
             }
         }
 
+        // Populate subtype index: register this type under all ancestors + interfaces
+        RegisterInSubtypeIndex(type);
+
         // All types: check for virtual method overrides that match dispatched slots
         // (user types are no longer blanket-seeded — worklist discovers reachable methods)
         MarkDispatchedOverrides(type);
     }
 
     /// <summary>
-    /// Track a virtual method as dispatched and mark overrides in all reachable types.
-    /// Only considers types that inherit from or implement the declaring type.
+    /// Register a type in the subtype index under all its ancestors and interfaces.
+    /// This enables O(1) lookup of subtypes when dispatching virtual slots.
+    /// </summary>
+    private void RegisterInSubtypeIndex(TypeDefinition type)
+    {
+        // Register under own FullName (a type is its own subtype for dispatch purposes)
+        AddToSubtypeIndex(type.FullName, type);
+
+        // Walk base type chain
+        var current = type.BaseType;
+        while (current != null)
+        {
+            var baseName = current is GenericInstanceType git
+                ? git.ElementType.FullName
+                : current.FullName;
+            AddToSubtypeIndex(baseName, type);
+
+            var baseDef = TryResolve(current);
+            current = baseDef?.BaseType;
+        }
+
+        // Register under all interfaces (recursive)
+        RegisterInterfacesInIndex(type, type);
+    }
+
+    private void RegisterInterfacesInIndex(TypeDefinition rootType, TypeDefinition type)
+    {
+        foreach (var iface in type.Interfaces)
+        {
+            var ifaceName = iface.InterfaceType is GenericInstanceType git
+                ? git.ElementType.FullName
+                : iface.InterfaceType.FullName;
+            AddToSubtypeIndex(ifaceName, rootType);
+
+            var ifaceDef = TryResolve(iface.InterfaceType);
+            if (ifaceDef != null)
+                RegisterInterfacesInIndex(rootType, ifaceDef);
+        }
+        // Also check base type's interfaces
+        if (type.BaseType != null)
+        {
+            var baseDef = TryResolve(type.BaseType);
+            if (baseDef != null)
+                RegisterInterfacesInIndex(rootType, baseDef);
+        }
+    }
+
+    private void AddToSubtypeIndex(string ancestorFullName, TypeDefinition subtype)
+    {
+        if (!_subtypeIndex.TryGetValue(ancestorFullName, out var list))
+        {
+            list = new List<TypeDefinition>();
+            _subtypeIndex[ancestorFullName] = list;
+        }
+        // Avoid duplicates (same type registered multiple times via different interface paths)
+        if (!list.Contains(subtype))
+            list.Add(subtype);
+    }
+
+    /// <summary>
+    /// Track a virtual method as dispatched and mark overrides in all reachable subtypes.
+    /// Uses subtype index for O(subtypes) instead of O(all reachable types).
     /// </summary>
     private void DispatchVirtualSlot(MethodDefinition method)
     {
@@ -218,17 +292,17 @@ public class ReachabilityAnalyzer
 
         _dispatchedVirtualSlots.Add((method.Name, method.Parameters.Count, method.DeclaringType));
 
-        // Check all already-reachable types for overrides of this slot
-        foreach (var type in _result.ReachableTypes.ToArray())
+        // Use subtype index: only check types known to inherit from/implement the declaring type
+        if (_subtypeIndex.TryGetValue(method.DeclaringType.FullName, out var subtypes))
         {
-            if (InheritsFromOrImplements(type, method.DeclaringType))
+            foreach (var type in subtypes.ToArray())
                 MarkOverrideIfExists(type, method.Name, method.Parameters.Count);
         }
     }
 
     /// <summary>
     /// When a type becomes reachable, check if it overrides any dispatched virtual slot.
-    /// Only matches slots whose declaring type is an ancestor/interface of this type.
+    /// Uses the type's ancestor chain to find only relevant slots (not all slots).
     /// </summary>
     private void MarkDispatchedOverrides(TypeDefinition type)
     {
@@ -236,8 +310,12 @@ public class ReachabilityAnalyzer
         var snapshot = _dispatchedVirtualSlots.ToArray();
         foreach (var (methodName, paramCount, declaringType) in snapshot)
         {
-            if (InheritsFromOrImplements(type, declaringType))
+            // Check if this type is a subtype of the declaring type via the index
+            if (_subtypeIndex.TryGetValue(declaringType.FullName, out var subtypes)
+                && subtypes.Contains(type))
+            {
                 MarkOverrideIfExists(type, methodName, paramCount);
+            }
         }
     }
 
@@ -247,18 +325,27 @@ public class ReachabilityAnalyzer
     /// </summary>
     private bool InheritsFromOrImplements(TypeDefinition type, TypeDefinition target)
     {
+        var key = (type.FullName, target.FullName);
+        if (_inheritsCache.TryGetValue(key, out var cached))
+            return cached;
+
         // Walk base type chain
         var current = type;
         while (current != null)
         {
             if (current.FullName == target.FullName)
+            {
+                _inheritsCache[key] = true;
                 return true;
+            }
             if (current.BaseType == null) break;
             current = TryResolve(current.BaseType);
         }
 
         // Check interfaces (recursive — interfaces can extend interfaces)
-        return ImplementsInterface(type, target.FullName);
+        var result = ImplementsInterface(type, target.FullName);
+        _inheritsCache[key] = result;
+        return result;
     }
 
     private bool ImplementsInterface(TypeDefinition type, string targetFullName)
@@ -891,12 +978,18 @@ public class ReachabilityAnalyzer
             if (typeRef is GenericParameter)
                 return null;
 
+            // Cache Cecil Resolve() calls — these are expensive for cross-assembly references
+            var cacheKey = typeRef.FullName;
+            if (_resolveCache.TryGetValue(cacheKey, out var cachedResult))
+                return cachedResult;
+
             var resolved = typeRef.Resolve();
             if (resolved != null)
             {
                 // Ensure the assembly is loaded in our set
                 _assemblySet.LoadAssembly(resolved.Module.Assembly.Name.Name);
             }
+            _resolveCache[cacheKey] = resolved;
             return resolved;
         }
         catch

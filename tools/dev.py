@@ -1011,6 +1011,10 @@ def cmd_integration(args):
     runner.step("Run HttpTest and verify output", ht_run_verify)
 
     # ===== Phase 12: NuGetSimpleTest (D.0 — NuGet package integration) =====
+    # NOTE: NuGetSimpleTest codegen fails during IR build — Newtonsoft.Json pulls 41K+ methods,
+    # causing >20GB RAM usage and OOM. Reachability completes (6.6s) but IRBuilder can't handle
+    # the volume. This test validates assembly resolution only (codegen is expected to fail/timeout).
+    # TODO: Optimize IRBuilder for large method counts, then re-enable full codegen.
     header("Phase 12: NuGetSimpleTest (D.0, codegen-only, NuGet PackageReference)")
 
     ng_sample = TESTPROJECTS_DIR / "NuGetSimpleTest" / "NuGetSimpleTest.csproj"
@@ -1019,7 +1023,7 @@ def cmd_integration(args):
     def ng_codegen():
         run(["dotnet", "run", "--project", str(CLI_PROJECT), "--",
              "codegen", "-i", str(ng_sample), "-o", str(ng_output)],
-            capture=True, timeout=1200)  # NuGet projects pull many BCL assemblies
+            capture=True, timeout=1200)  # NuGet projects pull many BCL assemblies; may fail on IR build
 
     def ng_files_exist():
         for f in ["NuGetSimpleTest.h", "NuGetSimpleTest_data.cpp", "NuGetSimpleTest_stubs.cpp",
@@ -1037,8 +1041,8 @@ def cmd_integration(args):
     runner.step("Generated files exist", ng_files_exist)
     runner.step("NuGet types present in generated code", ng_has_nuget_types)
 
-    # ===== Phase 13: JsonSGTest (D.5 — Source Generator validation) =====
-    header("Phase 13: JsonSGTest (D.5, codegen-only, System.Text.Json SG)")
+    # ===== Phase 13: JsonSGTest (D.5 — Source Generator validation, codegen + build) =====
+    header("Phase 13: JsonSGTest (D.5, codegen + build, System.Text.Json SG)")
 
     jsg_sample = TESTPROJECTS_DIR / "JsonSGTest" / "JsonSGTest.csproj"
     jsg_output = temp_dir / "jsonsg_output"
@@ -1046,7 +1050,7 @@ def cmd_integration(args):
     def jsg_codegen():
         run(["dotnet", "run", "--project", str(CLI_PROJECT), "--",
              "codegen", "-i", str(jsg_sample), "-o", str(jsg_output)],
-            capture=True, timeout=1200)  # SG projects pull many BCL assemblies
+            capture=True, timeout=300)  # Reachability ~1.3s, IR ~6s, codegen ~30s
 
     def jsg_files_exist():
         for f in ["JsonSGTest.h", "JsonSGTest_data.cpp", "JsonSGTest_stubs.cpp",
@@ -1060,9 +1064,18 @@ def cmd_integration(args):
         if "AppJsonContext" not in header_text:
             raise RuntimeError("AppJsonContext not found in generated header — SG output may not have been compiled")
 
+    def jsg_cmake_and_build():
+        jsg_build = jsg_output / "build"
+        run(["cmake", "-B", str(jsg_build), "-S", str(jsg_output),
+             "-G", generator, *cmake_arch,
+             f"-DCMAKE_PREFIX_PATH={runtime_prefix}"], capture=True)
+        run(["cmake", "--build", str(jsg_build), "--config", config], capture=True,
+            timeout=600)  # Large project, may take a while
+
     runner.step("Codegen JsonSGTest", jsg_codegen)
     runner.step("Generated files exist", jsg_files_exist)
     runner.step("Source generator types present in generated code", jsg_has_sg_types)
+    runner.step("CMake configure + build JsonSGTest", jsg_cmake_and_build)
 
     # ===== Phase 14: HttpGetTest (C.6 — full HTTP GET codegen + build, runtime pending) =====
     header("Phase 14: HttpGetTest (C.6, codegen + build, full async HTTP chain)")

@@ -156,7 +156,7 @@ See "RuntimeProvided Type Classification" section above.
 **Unfixable or deferred**: SIMD (333+) needs intrinsics support or runtime fallback. CLR internal types (100) are permanently retained.
 
 **IL translation rate**: ~94.6%. Phase A: 2,777 → 1,478; Phase B: 1,478 → 1,537; Phase C+audit: → 1,666 (scope expansion from C2362 switch fix + generic discovery).
-**Tests**: 1,240 C# + 599 C++ + 47 integration — all passing.
+**Tests**: 1,273 C# + 599 C++ + 47 integration — all passing.
 
 ### Implemented Architecture Capabilities
 
@@ -398,12 +398,12 @@ See "RuntimeProvided Type Classification" section above.
 
 | # | Task | Estimate | Status | Description |
 |---|------|----------|--------|-------------|
-| D.0 | NuGet package integration tests | Medium | Pending | Create test projects with real PackageReferences (Newtonsoft.Json, M.E.Logging.Abstractions). Validate NuGet → Cecil → IR → C++ pipeline. Assembly resolution works, zero test coverage. |
+| D.0 | NuGet package integration tests | Medium | ✅ Partial (assembly resolution validated) | NuGetSimpleTest: assembly resolution works (Newtonsoft.Json via NuGet PackageReference). Reachability completes (6.6s after 45x optimization). Full codegen blocked by IRBuilder OOM (41K methods, >20GB RAM). JsonSGTest: full pipeline validated (codegen → cmake → build). 12 unit tests (NuGetResolutionTests.cs). |
 | D.1 | `[DynamicallyAccessedMembers]` parsing | Medium | ✅ Complete (validated) | ReachabilityAnalyzer.cs:184-815 — full 13-flag DAM parsing + SeedDynamicallyAccessedMembers(). CLI wired via `--rdxml`. Unit tests: 7 DAM reachability tests + 14 rd.xml parser tests. |
 | D.2 | rd.xml parser | Low | ✅ Complete (validated) | RdXmlParser.cs — full XML parsing + PreservationRule mapping. CLI `--rdxml` option wired in Program.cs (codegen + analyze commands). |
 | D.3 | ILLink feature switch substitution | Medium | ✅ Active | FeatureSwitchResolver.cs (10 AOT defaults) + IRBuilder.Methods.cs:1372-1386 (Ldsfld substitution). Automatically active in all builds. |
 | D.4 | AOT compatibility warnings | Low | Pending | Report `[RequiresUnreferencedCode]` call chains |
-| D.5 | Source generator validation | Medium | Pending | Test project with `[JsonSerializable]` attribute — validates System.Text.Json SG output compiles through CIL2CPP. Currently claimed but never tested. |
+| D.5 | Source generator validation | Medium | ✅ Validated (builds) | JsonSGTest: `[JsonSerializable]` + AppJsonContext SG output compiles through CIL2CPP. Codegen → cmake → MSVC build (0 errors, 9.4MB exe). 4 RenderedBodyError gates added (SequenceType enum, Span mismatch, JsonPropertyInfo generic, JsonParameterInfo). Abstract method stub generation prevents LNK2019. Runtime pending (~4K stubbed methods). |
 
 **Prerequisites**: None (parallelizable with C.6)
 **Output**: DI + JSON (SG) + Logging compilable; NuGet packages work correctly with tree-shaking

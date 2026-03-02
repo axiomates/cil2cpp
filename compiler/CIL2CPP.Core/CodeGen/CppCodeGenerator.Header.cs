@@ -3895,6 +3895,32 @@ public partial class CppCodeGenerator
             }
         }
 
+        // ReadOnlySequence_1_SequenceType — nested enum emitted as struct; int32_t cannot
+        // convert to struct type, and struct lacks == operator.
+        // Also catch callers that use GetSequenceType() result in == comparisons.
+        if (rendered.Contains("ReadOnlySequence_1_SequenceType") ||
+            rendered.Contains("GetSequenceType("))
+            return "ReadOnlySequence_1_SequenceType nested enum struct (int32_t ↔ enum mismatch)";
+
+        // char16_t*/uint32_t* pointer mismatch in Number formatting (UInt32.TryFormat Utf8)
+        // Span<uint32_t>.f_reference assigned from Span<char16_t>.f_reference
+        if (rendered.Contains("ReadOnlySpan_1_System_UInt32") &&
+            rendered.Contains("ReadOnlySpan_1_System_Char"))
+            return "Span generic type mismatch: ReadOnlySpan<UInt32> vs ReadOnlySpan<Char>";
+
+        // Generic derived → non-generic base pointer mismatch in flat struct model:
+        // JsonPropertyInfo_1_Person* → JsonPropertyInfo* (no C++ inheritance)
+        if (rendered.Contains("JsonPropertyInfo_1_") &&
+            rendered.Contains("f__MatchingProperty"))
+            return "Generic JsonPropertyInfo<T> assigned to non-generic JsonPropertyInfo base field";
+
+        // Generic parameter type mismatch: user type* → cil2cpp::Object* field assignment
+        // in JsonParameterInfo initialization (EffectiveDefaultValue is Object* in base)
+        if (rendered.Contains("f__EffectiveDefaultValue") &&
+            method.DeclaringType != null &&
+            method.DeclaringType.ILFullName.Contains("JsonParameterInfo"))
+            return "JsonParameterInfo EffectiveDefaultValue: generic T* → cil2cpp::Object* mismatch";
+
         return null;
     }
 

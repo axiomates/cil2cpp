@@ -82,6 +82,17 @@ public class ReachabilityFixture
         => TestProjectBuilder.MathLibReachability.Value;
 }
 
+// ===== NuGet/SG Fixture (assembly resolution + reachability for NuGet/SG test projects) =====
+
+public class NuGetFixture
+{
+    public string JsonSGTestDllPath => TestProjectBuilder.JsonSGTestDll.Value;
+    public string NuGetSimpleTestDllPath => TestProjectBuilder.NuGetSimpleTestDll.Value;
+
+    public (AssemblySet Set, ReachabilityResult Reach) GetJsonSGTestReleaseContext()
+        => TestProjectBuilder.JsonSGTestReachability.Value;
+}
+
 // ===== Collection Definitions =====
 
 [CollectionDefinition("IRBuilderCore")]
@@ -111,3 +122,6 @@ public class DllPathsCollection : ICollectionFixture<DllPathsFixture> { }
 
 [CollectionDefinition("Reachability")]
 public class ReachabilityCollection : ICollectionFixture<ReachabilityFixture> { }
+
+[CollectionDefinition("NuGet")]
+public class NuGetCollection : ICollectionFixture<NuGetFixture> { }

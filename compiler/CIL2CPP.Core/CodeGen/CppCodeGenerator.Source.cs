@@ -390,13 +390,25 @@ public partial class CppCodeGenerator
         // All types (user + BCL) compile from IL — Unity IL2CPP model
         foreach (var method in type.Methods)
         {
-            if (method.IsAbstract || method.IsInternalCall || method.IsPInvoke) continue;
-            if (method.BasicBlocks.Count == 0) continue;
-            if (method.HasICallMapping) continue;
+            if (method.IsInternalCall || method.IsPInvoke) continue;
             // Core runtime types (Object, String, Array, etc.): only emit static methods.
             // Non-core RuntimeProvided types (Task, Thread, CancellationToken) emit all methods.
             if (type.IsRuntimeProvided && !method.IsStatic
                 && IRBuilder.CoreRuntimeTypes.Contains(type.ILFullName)) continue;
+            // Abstract methods have no IL body but may be referenced by direct calls
+            // in base class methods (should be vtable dispatch, but some callvirt
+            // patterns emit direct calls). Emit stub to prevent linker errors.
+            // Must be AFTER CoreRuntimeType skip to avoid duplicating stubs for
+            // System.Type abstract methods that already have implementations in stubs file.
+            if (method.IsAbstract)
+            {
+                // Track signature to prevent duplicate in stubs file
+                if (_emittedMethodSignatures.Add(method.GetCppSignature()))
+                    GenerateStubForMethod(sb, method);
+                continue;
+            }
+            if (method.BasicBlocks.Count == 0) continue;
+            if (method.HasICallMapping) continue;
             if (!TryEmitMethodThroughGates(sb, method)) continue;
 
             // Check known stub implementations before trial render

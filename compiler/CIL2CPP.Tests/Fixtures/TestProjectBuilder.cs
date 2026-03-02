@@ -36,6 +36,14 @@ public static class TestProjectBuilder
         return path;
     });
 
+    // ===== NuGet/SG test projects (net9.0) =====
+
+    public static Lazy<string> JsonSGTestDll { get; } = new(() =>
+        BuildAndGetPath("JsonSGTest", "net9.0"));
+
+    public static Lazy<string> NuGetSimpleTestDll { get; } = new(() =>
+        BuildAndGetPath("NuGetSimpleTest", "net9.0"));
+
     // ===== Cached Reachability Contexts (built FIRST — shared with module builds) =====
     // AssemblySet kept alive (not disposed) for the process lifetime.
     // ReachabilityAnalyzer.Analyze() is the main bottleneck (~50-70s).
@@ -56,6 +64,10 @@ public static class TestProjectBuilder
 
     public static Lazy<(AssemblySet Set, ReachabilityResult Reach)> MathLibReachability { get; } = new(() =>
         BuildReachability(MathLibDll.Value));
+
+    // NuGet/SG reachability contexts
+    public static Lazy<(AssemblySet Set, ReachabilityResult Reach)> JsonSGTestReachability { get; } = new(() =>
+        BuildReachability(JsonSGTestDll.Value));
 
     // Debug contexts (with PDB — needed so IRBuilder can read sequence points from Cecil types)
     public static Lazy<(AssemblySet Set, ReachabilityResult Reach)> HelloWorldDebugReachability { get; } = new(() =>
@@ -121,11 +133,11 @@ public static class TestProjectBuilder
 
     // ===== Build Helpers =====
 
-    private static string BuildAndGetPath(string projectName)
+    private static string BuildAndGetPath(string projectName, string targetFramework = "net8.0")
     {
         var csprojPath = Path.Combine(SolutionRoot, "tests", projectName, $"{projectName}.csproj");
         var dllPath = Path.Combine(SolutionRoot,
-            "tests", projectName, "bin", "Debug", "net8.0", $"{projectName}.dll");
+            "tests", projectName, "bin", "Debug", targetFramework, $"{projectName}.dll");
 
         // Always run dotnet build to pick up source changes.
         // dotnet build has incremental compilation — it's free (~1s) when nothing changed.
