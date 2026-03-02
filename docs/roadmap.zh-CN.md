@@ -138,20 +138,25 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 
 详见上方"RuntimeProvided 类型分类"章节。
 
-### Stub 分布（HelloWorld, 1,565 个 stubs，~95% 翻译率）
+### Stub 分布（HelloWorld, 1,666 个 stubs，~94.6% 翻译率）
+
+> 指标来源：`tests/baselines/stub_budget.json` — 集成测试自动校准（`--stub-budget` 标志）。
+> Commit: abca1af (2026-03-02)。程序集: HelloWorld（~31k 方法）。
 
 | 类别 | 数量 | 占比 | 性质 |
 |------|------|------|------|
-| MissingBody | 664 | 42.4% | 无 IL body（abstract/extern/JIT intrinsic）— 多数合理 |
-| KnownBrokenPattern | 621 | 39.7% | SIMD 333 + line-level 体扫描 patterns + TypeHandle/MethodTable |
-| UndeclaredFunction | 68 | 4.3% | 泛型特化缺失（IRBuilder 未创建特化类型） |
-| ClrInternalType | 96 | 6.1% | QCall/MetadataImport CLR JIT 专用类型 |
-| RenderedBodyError | 116 | 7.4% | Codegen bug — Phase C 扩展编译范围后增长（28→116） |
+| MissingBody | 705 | 42.3% | 无 IL body（abstract/extern/JIT intrinsic）— 多数合理 |
+| KnownBrokenPattern | 646 | 38.8% | SIMD 333 + line-level 体扫描 patterns + TypeHandle/MethodTable |
+| RenderedBodyError | 115 | 6.9% | Codegen bug — Phase H.2 目标降至 ~50 |
+| ClrInternalType | 100 | 6.0% | QCall/MetadataImport CLR JIT 专用类型（永久保留） |
+| UndeclaredFunction | 90 | 5.4% | MissingBody/KBP 级联 — 泛型特化缺口 |
+| UnknownParameterTypes | 9 | 0.5% | 方法参数引用未知类型 |
+| UnknownBodyReferences | 1 | 0.1% | 方法体 IL 引用未知类型 |
 
-**不可修复或暂缓**：SIMD (333+) 需要 intrinsics 支持或运行时回退。CLR 内部类型 (96) 永久保留。
+**不可修复或暂缓**：SIMD (333+) 需要 intrinsics 支持或运行时回退。CLR 内部类型 (100) 永久保留。
 
-**IL 转译率**：~95%。Phase A: 2,777 → 1,537; Phase B: 1,537 → 1,478; Phase C: 1,478 → 1,565（泛型发现扩展导致 RenderedBodyError 增长）。
-**测试**：1,240 C# + 592 C++ + 47 集成 — 全部通过。
+**IL 转译率**：~94.6%。Phase A: 2,777 → 1,478; Phase B: 1,478 → 1,537; Phase C+审计: → 1,666（C2362 switch 修复 + 泛型发现扩展编译范围）。
+**测试**：1,240 C# + 599 C++ + 47 集成 — 全部通过。
 
 ### 已实现的架构能力
 
@@ -242,6 +247,18 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 
 ---
 
+### Pass 3.6 策略：Stub Body vs 完整编译
+
+> **架构决策**（2026-02）：Pass 3.6 从 Pass 3.4/3.5 编译的方法体中传递发现泛型类型。对于新发现的类型，它有意生成 **stub body**（仅声明）而非完整编译方法体。
+
+**原因**：编译新方法体 → 发现新被调用方 → 被调用方成为 UndeclaredFunction stubs → stub 净数量增加。生成 stub body 使方法在 header 中声明（减少 UF 级联）而不触发新的级联。
+
+**权衡**：一些本可成功编译的方法仍为 stubs。在 stub 总数通过编译器 bug 修复持续下降的当前阶段，这是正确的短期策略。未来改进：为高频 BCL 泛型（如 `EqualityComparer<T>`、`Comparer<T>`）建立选择性真实编译白名单。
+
+**位置**：`IRBuilder.cs` 第 565-608 行（带 FIXME 注解的不动点发现循环）。
+
+---
+
 ## Phase IV: 可行类型回归 IL（40 → 32）✅
 
 **目标**：移除 8 个 RuntimeProvided 类型 — **已完成**
@@ -270,7 +287,7 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 
 ### Phase A: 编译器收尾 — 修复 stubs 根因 ✅
 
-**目标**：翻译率 > 92%，stubs < 2,000 — **已达成：1,478 stubs，~95.2% 翻译率**
+**目标**：翻译率 > 92%，stubs < 2,000 — **已达成**（Phase A 结束时 1,478 stubs；Phase C/审计后当前 1,666）
 
 **成果**：2,777 → 1,478 stubs（-1,299，-46.8%）
 
@@ -328,6 +345,31 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 
 **前置**：Phase B ✅
 **产出**：Socket + DNS + HttpClient 构造已通过（Windows）。完整 HTTP GET 待做。
+
+### ThreadPool 架构评估（2026-03-02）
+
+> **决策**：短期无需重构。当前实现**在当前范围内是正确的**；限制在于性能而非正确性。
+
+**当前架构**（`runtime/src/async/threadpool.cpp`，~125 行）：
+- 固定大小工作线程池（`std::thread` × `hardware_concurrency`）
+- 单一全局 FIFO 队列（`std::queue` + `std::mutex` + `std::condition_variable`）
+- 所有 async/await、Task 组合器、continuations 均以真正并发工作
+- BCL ThreadPool ICalls（9 个条目）均为有意的 no-op — CIL2CPP 通过自己的 C++ 线程池路由工作
+
+**已验证工作**（599 运行时测试 + 47 集成测试）：
+- `queue_work()` 在工作线程上执行（100 个并发项 ✅）
+- Task.Run / task_delay / task_when_all / task_when_any ✅
+- Continuations: 线程安全链表，400 个并发注册 ✅
+
+**缺少的 .NET 特性**（性能，非正确性）：
+- Hill climbing（动态线程数）— 固定数量对 <100 并发任务足够
+- Work stealing（每线程 LIFO 队列）— 单队列竞争更高但可工作
+- 线程注入（`RequestWorkerThread` 是 no-op）— 极端负载下嵌套 `Task.Run` 死锁风险，BCL 同步回退缓解
+
+**何时重构**（Phase F.2）：
+- 当 Task 结构体迁移到 BCL IL 时（需要完整 TPL 依赖链）
+- 或性能基准测试显示 4+ 核心上竞争问题
+- 中间步骤：实现 work-stealing 队列（~200 行）在完整 Task 迁移之前
 
 ### Phase H: 质量收敛（与 C.6/D 并行）
 
@@ -470,7 +512,7 @@ macOS 支持 (Objective-C 桥接)
 
 | 里程碑 | 达成条件 | 对应阶段 | 状态 |
 |--------|---------|---------|------|
-| **M1: 编译器成熟** | stubs < 2,000，翻译率 > 92% | A | ✅（1,478 stubs, 95.2%） |
+| **M1: 编译器成熟** | stubs < 2,000，翻译率 > 92% | A | ✅（1,666 stubs, 94.6%） |
 | **M2: 文件 I/O** | FileStream/StreamReader 从 BCL IL 编译并运行 | B | ✅ Windows（~90%） |
 | **M3: 联网应用** | HttpClient HTTP GET 从 BCL IL 编译并运行 | C.6 | ~60%：Socket+DNS+构造 ✅，完整 GET 待做 |
 | **M3.5: REST 客户端** | HTTP GET + `JsonSerializer.Deserialize<T>()`（via SG）端到端 | C.6+D | 阻塞 — 需 C.6 + D.1 + D.3 + D.5 |
@@ -482,10 +524,23 @@ macOS 支持 (Objective-C 桥接)
 
 | 指标 | 定义 | 当前值 | Phase A 目标 | 长期目标 |
 |------|------|--------|-------------|----------|
-| IL 转译率 | (total_methods - stubs) / total_methods | **~95%**（1,565 stubs / ~31k 方法） | >92% ✅ | >95% |
+| IL 转译率 | (total_methods - stubs) / total_methods | **~94.6%**（1,666 stubs / ~31k 方法） | >92% ✅ | >95% |
 | RuntimeProvided 数 | RuntimeProvidedTypes 条目 | **32**（was 40, -8） | ~32 | ~25（Phase F.2） |
 | CoreRuntime 数 | 方法完全由 C++ 提供 | 22 | ~22 | ~10（Phase F.4） |
-| ICall 数 | C++ 内部调用 | **~400** | ~400 | 趋稳（功能来自 BCL IL，非 ICall） |
+| ICall 数 | C++ 内部调用 | **~484** | ~400 | 趋稳（功能来自 BCL IL，非 ICall） |
+
+### 指标口径规范（确保一致性报告）
+
+| 维度 | 值 | 说明 |
+|------|-----|------|
+| **程序集** | HelloWorld（主要），SocketTest（次要） | 所有标题指标使用 HelloWorld，除非另有说明 |
+| **数据来源** | `tests/baselines/stub_budget.json` | 集成测试期间通过 `--stub-budget` 标志自动校准 |
+| **分类** | StubAnalyzer.cs 中的 7 个 StubRootCause 枚举值 | MissingBody, KnownBrokenPattern, RenderedBodyError, ClrInternalType, UndeclaredFunction, UnknownParameterTypes, UnknownBodyReferences |
+| **转译率** | `1 - (stub_total / total_methods)` | `total_methods` 来自所有 pass 完成后的 IRModule |
+| **更新频率** | 每次集成测试运行时自动校准 | 实际值 < 预算时自动下调（仅下降） |
+| **版本绑定** | 引用指标时包含 commit hash + 日期 | 防止过时数据跨阶段持续 |
+
+> **注意**：当编译器改进扩展编译范围时，stub 数量可能暂时增加（例如修复 C2362 switch 门控使更多方法可编译，暴露其被调用方为新 stubs）。这是正面进展——更多方法编译——即使标题数字上升。
 
 ---
 
@@ -496,6 +551,7 @@ macOS 支持 (Objective-C 桥接)
 | RuntimeType | Type 别名 | 对标 IL2CPP `Il2CppReflectionType` |
 | 反射类型 | 保持 CoreRuntime | .NET 8 BCL 反射 IL 深度依赖 QCall/MetadataImport，短期无法 IL 编译 |
 | Task | 保持 RuntimeProvided（短期） | 4 个自定义运行时字段 + std::mutex* + MSVC padding，长期需架构重构 |
+| ThreadPool | 保持自定义 C++ 实现（短期） | 固定大小线程池 + 全局 FIFO 队列在当前范围内正确。BCL ThreadPool ICalls 为有意 no-op。缺少 hill climbing、work stealing、每线程队列 — 仅性能优化。重构推迟到 Phase F.2。 |
 | WaitHandle | 目标 IL + ICall（Phase IV） | struct 简单，BCL IL 可编译，需注册 8 个 OS 原语 ICall |
 | SIMD | 标量回退 struct + IsSupported=false | BCL 有非 SIMD 回退路径 |
 | File I/O ICall | HACK — Phase B 完成后移除 | File.ReadAllText 等 12 个 ICall 绕过了 FileStream IL 链，违反 IL-first |

@@ -8,16 +8,16 @@
 
 ## Overview
 
-CIL2CPP is a C# → C++ AOT compiler (similar to Unity IL2CPP). Currently supports complete C# syntax (100% IL opcode coverage), BCL compiled from IL (Unity IL2CPP architecture), ~400 ICall entries. 1,240 C# + 592 C++ + 47 integration tests all passing.
+CIL2CPP is a C# → C++ AOT compiler (similar to Unity IL2CPP). Currently supports complete C# syntax (100% IL opcode coverage), BCL compiled from IL (Unity IL2CPP architecture), ~484 ICall entries. 1,240 C# + 599 C++ + 47 integration tests all passing.
 
 ## Key Metrics
 
 | Metric | Count |
 |--------|-------|
 | IL opcode coverage | **100%** (all ~230 ECMA-335 opcodes) |
-| ICallRegistry entries | **~400** (covering 30+ categories) |
+| ICallRegistry entries | **~484** (covering 30+ categories) |
 | C# compiler tests | **~1,240** (xUnit) |
-| C++ runtime tests | **592** (Google Test, 18 test files) |
+| C++ runtime tests | **599** (Google Test, 18 test files) |
 | End-to-end integration tests | **47** (11 stages) |
 | Runtime headers | **32** |
 
@@ -134,7 +134,7 @@ CIL2CPP is a C# → C++ AOT compiler (similar to Unity IL2CPP). Currently suppor
 
 ---
 
-## ICallRegistry Breakdown (~270 entries)
+## ICallRegistry Breakdown (~484 entries)
 
 | Category | Count | Description |
 |----------|-------|-------------|
@@ -249,12 +249,12 @@ System.IO uses ICall interception at the public API level, intercepting File/Pat
 | Reflection (GetType/typeof) | Full | Full | Full | TypeInfo-based |
 | Reflection (GetMethods/GetFields) | Functional | Functional | Functional | Returns correct names, simplified attributes |
 | Reflection (BindingFlags) | Stub | Stub | Stub | Returns hardcoded Public\|Instance (0x14) |
-| Reflection (TypeCode) | Stub | Stub | Stub | Returns Object for all types. Fix planned (Phase H.1) |
-| Reflection (IsPublic/visibility) | Stub | Stub | Stub | Returns true for all types |
+| Reflection (TypeCode) | Full | Full | Full | 17 primitives mapped to correct TypeCode enum values (Phase H.1 ✅) |
+| Reflection (IsPublic/visibility) | Full | Full | Full | TypeFlags::Public/NestedPublic from Cecil metadata (audit ✅) |
 | Reflection (StackFrame) | Stub | Stub | Stub | Returns nullptr for method info |
 | Reflection (Assembly metadata) | Stub | Stub | Stub | No assembly objects. Needs Phase D |
 | Thread priority | Stub | Stub | Stub | No-op, returns Normal |
-| Thread managed ID | Functional | Functional | Stub | Uses OS thread ID (macOS: returns 0) |
+| Thread managed ID | Full | Full | Full | Unique atomic ID per thread (main=1, workers from 2). P0 fix: eliminated duplicate ID risk |
 | P/Invoke (kernel32/ws2_32) | Full | N/A | N/A | Windows-specific |
 | DLL symbol loading | Full | N/A | N/A | Windows: GetProcAddress. Linux: dlsym pending |
 | SIMD execution | N/A | N/A | N/A | Scalar fallback structs only |
@@ -264,16 +264,16 @@ System.IO uses ICall interception at the public API level, intercepting File/Pat
 
 ## Reflection ICall Status
 
-> 14 of 23 reflection icalls return simplified/placeholder values. Full reflection fidelity requires Phase D (NativeAOT metadata).
+> 12 of 23 reflection icalls return simplified/placeholder values. Full reflection fidelity requires Phase D (NativeAOT metadata).
 
 | ICall | Expected (.NET) | Current (CIL2CPP) | Fix Phase |
 |-------|----------------|-------------------|-----------|
-| Type.GetTypeCode | Per-type enum (Int32→9, String→18, etc.) | Always returns Object (1) | H.1 |
-| Type.IsPublic | Actual visibility | Always true | H.1 (TypeFlags) |
+| Type.GetTypeCode | Per-type enum (Int32→9, String→18, etc.) | Correct ✅ (17 primitives mapped) | ~~H.1~~ Done |
+| Type.IsPublic | Actual visibility | Correct ✅ (TypeFlags::Public) | ~~H.1~~ Done |
 | Type.IsAbstract | Actual flag | Correct ✅ | — |
 | Type.IsValueType | Actual flag | Correct ✅ | — |
 | Type.IsArray | Actual flag | Correct ✅ | — |
-| Type.IsNestedPublic | Nested visibility | Always false | D |
+| Type.IsNestedPublic | Nested visibility | Correct ✅ (TypeFlags::NestedPublic) | ~~Audit~~ Done |
 | Type.IsEnumDefined | Enum value lookup | Always false | D |
 | Type.IsEquivalentTo | Structural equiv | Pointer equality only | D |
 | RuntimeTypeHandle.GetElementType | Array/pointer element type | Returns nullptr | D |
@@ -292,7 +292,7 @@ System.IO uses ICall interception at the public API level, intercepting File/Pat
 
 ## Test Coverage
 
-### C++ Runtime Tests (591, 18 files)
+### C++ Runtime Tests (599, 18 files)
 
 | Module | Test Count |
 |--------|-----------|
@@ -314,7 +314,7 @@ System.IO uses ICall interception at the public API level, intercepting File/Pat
 | Threading | 17 |
 | GC | 16 |
 | TypedReference | 11 |
-| **Total** | **592** |
+| **Total** | **599** |
 
 ### End-to-End Integration Tests (47, 11 stages)
 

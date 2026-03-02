@@ -10,6 +10,8 @@
 #include "object.h"
 #include "delegate.h"
 
+#include <atomic>
+
 namespace cil2cpp {
 
 // ===== Monitor (ECMA-335 II.15.4.4) =====
@@ -92,7 +94,7 @@ struct ManagedThread : Object {
     void* native_handle;        // std::thread* (heap-allocated)
     Delegate* start_delegate;   // ThreadStart delegate
     Int32 managed_id;           // Managed thread ID
-    Int32 state;                // 0=unstarted, 1=running, 2=stopped
+    std::atomic<Int32> state;   // 0=unstarted, 1=running, 2=stopped
     void* f_executionContext;        // BCL: Thread._executionContext (ExecutionContext)
     void* f_synchronizationContext;  // BCL: Thread._synchronizationContext (SynchronizationContext)
     String* f_name;                  // BCL: Thread._name

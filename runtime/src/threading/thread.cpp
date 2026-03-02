@@ -29,14 +29,14 @@ void thread_set_current(ManagedThread* t) {
 
 namespace thread {
 
-static std::atomic<Int32> g_next_managed_id{1};
+static std::atomic<Int32> g_next_managed_id{2}; // Start at 2; ID=1 reserved for main thread
 
 // Thread entry point — runs on the new thread
 static void thread_entry(ManagedThread* t) {
     gc::register_thread();
     thread_set_current(t);
 
-    t->state = 1; // running
+    t->state.store(1, std::memory_order_release); // running
 
 #ifdef _MSC_VER
 #pragma warning(push)
@@ -59,7 +59,7 @@ static void thread_entry(ManagedThread* t) {
 #pragma warning(pop)
 #endif
 
-    t->state = 2; // stopped
+    t->state.store(2, std::memory_order_release); // stopped
     thread_set_current(nullptr);
 
     gc::unregister_thread();
@@ -74,13 +74,13 @@ ManagedThread* create(Delegate* start) {
     t->native_handle = nullptr;
     t->start_delegate = start;
     t->managed_id = g_next_managed_id.fetch_add(1, std::memory_order_relaxed);
-    t->state = 0; // unstarted
+    t->state.store(0, std::memory_order_relaxed); // unstarted (single-threaded init)
     return t;
 }
 
 void start(ManagedThread* t) {
     if (!t) throw_null_reference();
-    if (t->state != 0) throw_invalid_operation();
+    if (t->state.load(std::memory_order_acquire) != 0) throw_invalid_operation();
 
     // Create the native thread
     auto* native = new std::thread(thread_entry, t);
@@ -102,7 +102,7 @@ bool join_timeout(ManagedThread* t, Int32 timeout_ms) {
 
     // std::thread doesn't support timed join directly.
     // For now, poll the state flag.
-    if (t->state == 2) return true;
+    if (t->state.load(std::memory_order_acquire) == 2) return true;
 
     auto deadline = std::chrono::steady_clock::now() +
         std::chrono::milliseconds(timeout_ms);
@@ -110,7 +110,7 @@ bool join_timeout(ManagedThread* t, Int32 timeout_ms) {
     // Exponential backoff: 1ms → 2ms → 4ms → ... → cap 50ms
     Int32 sleep_ms = 1;
     while (std::chrono::steady_clock::now() < deadline) {
-        if (t->state == 2) {
+        if (t->state.load(std::memory_order_acquire) == 2) {
             // Thread finished — join to clean up
             auto* native = static_cast<std::thread*>(t->native_handle);
             if (native && native->joinable()) {
@@ -143,7 +143,7 @@ void sleep(Int32 milliseconds) {
 
 bool is_alive(ManagedThread* t) {
     if (!t) throw_null_reference();
-    return t->state == 1;
+    return t->state.load(std::memory_order_acquire) == 1;
 }
 
 Int32 get_managed_id(ManagedThread* t) {
