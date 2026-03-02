@@ -96,7 +96,7 @@ CIL2CPP 能声称"可编译 .NET NativeAOT 项目"之前必须完成：
 | Task + 异步非泛型 ×6 | 6 | Task（4 自定义字段 + std::mutex*）+ TaskAwaiter/Builder/ValueTask/ValueTaskAwaiter/AsyncIteratorBuilder |
 | CancellationTokenSource | 1 | 依赖 ITimer + ManualResetEvent + Registrations 链 |
 
-### 已迁移为 IL 的类型（8 个，Phase IV ✅）
+### 已迁移为 IL 的类型（8 个，Phase 4 ✅）
 
 | 类型 | 数量 | 状态 | 说明 |
 |------|------|------|------|
@@ -117,7 +117,7 @@ CIL2CPP 能声称"可编译 .NET NativeAOT 项目"之前必须完成：
 
 ### RuntimeProvided 目标
 
-- **当前**：32 条目（Phase IV 完成：移除 IAsyncStateMachine + CancellationToken + WaitHandle×6 = -8）
+- **当前**：32 条目（Phase 4 完成：移除 IAsyncStateMachine + CancellationToken + WaitHandle×6 = -8）
 - **短期目标达成**：40 → 32（-8 个 RuntimeProvided 类型）
 - **长期**：32 → 25（Task 架构重构后移除 Task+异步依赖+CTS 共 7 个）
 
@@ -134,7 +134,7 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 
 ## 当前状态
 
-### RuntimeProvided 类型：32 条目（Phase IV 完成 -8，长期目标 25）
+### RuntimeProvided 类型：32 条目（Phase 4 完成 -8，长期目标 25）
 
 详见上方"RuntimeProvided 类型分类"章节。
 
@@ -195,20 +195,20 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 
 ---
 
-## Phase I: 基础打通 ✅
+## Phase 1: 基础打通 ✅
 
 - Stub 依赖分析工具 (`--analyze-stubs`)
 - RuntimeType = Type 别名（对标 `Il2CppReflectionType`）
 - Handle 类型移除（RuntimeTypeHandle/MethodHandle/FieldHandle → intptr_t）
 - AggregateException / SafeHandle / Thread.CurrentThread TLS / GCHandle 弱引用
 
-## Phase II: 中间层解锁 ✅
+## Phase 2: 中间层解锁 ✅
 
 - CalendarId/EraInfo/DefaultBinder/DBNull 等 CLR 内部类型移除（从 27 个降到 6 个）
 - 反射类型别名（RuntimeMethodInfo → ManagedMethodInfo 等）
 - WaitHandle OS 原语 / P/Invoke 调用约定 / SafeHandle ICall 补全
 
-## Phase III: 编译器管道质量 ✅
+## Phase 3: 编译器管道质量 ✅
 
 **目标**：提升 IL 转译率——修复阻止 BCL IL 编译的根因
 
@@ -216,34 +216,34 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 
 | # | 任务 | 影响量 | 状态 | 说明 |
 |---|------|--------|------|------|
-| III.1 | SIMD 标量回退 | ✅ 完成 | ✅ | Vector64/128/256/512 struct 定义 |
-| III.2a | ExternalEnumTypes 修复 | -386 | ✅ | 外部程序集枚举类型注册到 knownTypeNames |
-| III.2b | Ldelem_Any/Stelem_Any 修复 | -114 | ✅ | 泛型数组元素访问指令支持 |
-| III.2c | IsResolvedValueType 修正 | 正确性 | ✅ | IsPrimitive 包含 String/Object → 改用 IsValueType |
-| III.2d | IsValidMergeVariable 修正 | -45 | ✅ | 禁止 &expr 作为分支合并赋值目标 |
-| III.2e | DetermineTempVarTypes 改进 | -17 | ✅ | IRBinaryOp 类型推断 + IRRawCpp 模式推断 |
-| III.2f | Stub 分类完善 | 诊断 | ✅ | GetBrokenPatternDetail 覆盖所有 HasKnownBrokenPatterns 模式 |
-| III.2g | 集成测试修复 | 35/35 | ✅ | 修复 7 个 C++ 编译错误模式（void ICall/TypeInfo/ctor/Span/指针类型） |
-| III.2h | StackEntry 类型化栈 + IRRawCpp 类型标注 | -98 | ✅ | Stack\<StackEntry\> 类型跟踪 + IRRawCpp ResultVar/ResultTypeCpp 补全 |
-| III.3 | UnknownBodyReferences 修复 | 506→285 | ✅ | gate 重排序 + knownTypeNames 同步 + opaque stubs + SIMD/数组类型检测 |
-| III.4 | UndeclaredFunction 修复 | 222→151 | ✅ | 拓宽 calledFunctions 扫描 + 多趟发现 + 诊断 filter 修复（剩余 151 为泛型特化缺失） |
-| III.5 | FilteredGenericNamespaces 放开 | 级联解锁 | 待定 | 逐步放开安全命名空间（System.Diagnostics 等） |
-| III.6 | KnownBrokenPattern 精简 + unbox 修复 | 637→604 | ✅ | 分类完善 + 数组类型修复 + 自递归误判移除 + unbox 泛型尾部下划线修复 |
-| III.7 | 嵌套泛型类型特化 | -26 | ✅ | CreateNestedGenericSpecializations: Dictionary.Entry, List.Enumerator 等 |
-| III.8 | 指针 local 修复 + opaque stubs | -46 | ✅ | HasUnknownBodyReferences 死代码修复 + 值类型 local 的 opaque struct 生成 + 指针 local 前向声明 |
-| III.9 | 嵌套嵌套类型定点迭代 + 参数/返回类型 stubs | -46 | ✅ | CreateNestedGenericSpecializations fixpoint loop + 方法参数和返回类型的 opaque struct 扫描 |
-| III.10 | 泛型特化泛型参数解析 + stub gate 修正 | -84 | ✅ | ResolveRemainingGenericParams 扩展到全指令类型 + func ptr 误判修正 + delegate arg 类型转换 |
-| III.11 | Scalar alias + Numerics DIM + TimeZoneInfo | -80 | ✅ | m_value 标量拦截 + 原始 Numerics DIM 放行 + TimeZoneInfo 误判移除 |
-| III.12 | 泛型特化 mangled 名解析 | -49 | ✅ | arity-prefixed mangled name resolution（_N_TKey → _N_System_String），29 unresolved generic → 0 |
-| III.13 | transitive generic discovery | +1319 compiled | ✅ | fixpoint loop 发现 207 新类型 1393 方法，gate hardening 5 pattern（Object*→f_、MdArray**、MdArray*→typed、FINALLY without END_TRY、delegate invoke Object*→typed） |
-| III.14 | delegate invoke typed pointer cast | -28 | ✅ | IRDelegateInvoke 对所有 typed 指针参数添加 (void*) 中间转换，修复 Object*→String* 等 C2664 |
-| III.15 | RenderedBodyError false positives + ldind.ref type tracking | RE -41 | ✅ | 5 fixes: non-pointer void* cast RHS check, static_cast skip, TypeHandle→KnownBroken, ldind.ref StackEntry typed deref, Span byref detection |
-| III.15b | IntPtr/UIntPtr ICall + intptr_t casting + RE reclassification | RE 113→0 | ✅ | IntPtr/UIntPtr ctor ICall + intptr_t arg/return casting + 113 RE→KBP 方法级重分类（权宜之计，根因待修复） |
-| III.16 | 修复 reclassified RE 根因 | -10 | ✅ | GuidResult/RuntimeType.SplitName RE 根因修复 + KBP 误判移除（TimeSpanFormat/Number/GuidResult/SplitName） |
-| III.17 | IRBuilder 泛型特化补全 | -57 | ✅ | 嵌套类型方法体编译 + DiscoverTransitiveGenericTypesFromMethods + GIM 参数扫描 |
-| III.18 | ICall-mapped 方法体跳过 + ThreadPool ICall | -143 | ✅ | HasICallMapping 方法跳过体转换（-124 MissingBody）+ ThreadPool/Interlocked ICall（-19） |
-| III.19 | stub budget ratchet 更新 | 诊断 | ✅ | stub_budget.json 基线从 3,310 → 3,147 |
-| III.20 | KBP false positive audit | -287 | ✅ | 移除 30+ 过度宽泛的 method-level KBP 检查（Numerics DIM -60、DISH -35、Span/IAsyncLocal -58、CWT -23、P/Invoke/Buffers/Reflection -68 等）。RenderedBodyError 0→90（真实 codegen bug 正确暴露） |
+| 3.1 | SIMD 标量回退 | ✅ 完成 | ✅ | Vector64/128/256/512 struct 定义 |
+| 3.2a | ExternalEnumTypes 修复 | -386 | ✅ | 外部程序集枚举类型注册到 knownTypeNames |
+| 3.2b | Ldelem_Any/Stelem_Any 修复 | -114 | ✅ | 泛型数组元素访问指令支持 |
+| 3.2c | IsResolvedValueType 修正 | 正确性 | ✅ | IsPrimitive 包含 String/Object → 改用 IsValueType |
+| 3.2d | IsValidMergeVariable 修正 | -45 | ✅ | 禁止 &expr 作为分支合并赋值目标 |
+| 3.2e | DetermineTempVarTypes 改进 | -17 | ✅ | IRBinaryOp 类型推断 + IRRawCpp 模式推断 |
+| 3.2f | Stub 分类完善 | 诊断 | ✅ | GetBrokenPatternDetail 覆盖所有 HasKnownBrokenPatterns 模式 |
+| 3.2g | 集成测试修复 | 35/35 | ✅ | 修复 7 个 C++ 编译错误模式（void ICall/TypeInfo/ctor/Span/指针类型） |
+| 3.2h | StackEntry 类型化栈 + IRRawCpp 类型标注 | -98 | ✅ | Stack\<StackEntry\> 类型跟踪 + IRRawCpp ResultVar/ResultTypeCpp 补全 |
+| 3.3 | UnknownBodyReferences 修复 | 506→285 | ✅ | gate 重排序 + knownTypeNames 同步 + opaque stubs + SIMD/数组类型检测 |
+| 3.4 | UndeclaredFunction 修复 | 222→151 | ✅ | 拓宽 calledFunctions 扫描 + 多趟发现 + 诊断 filter 修复（剩余 151 为泛型特化缺失） |
+| 3.5 | FilteredGenericNamespaces 放开 | 级联解锁 | 待定 | 逐步放开安全命名空间（System.Diagnostics 等） |
+| 3.6 | KnownBrokenPattern 精简 + unbox 修复 | 637→604 | ✅ | 分类完善 + 数组类型修复 + 自递归误判移除 + unbox 泛型尾部下划线修复 |
+| 3.7 | 嵌套泛型类型特化 | -26 | ✅ | CreateNestedGenericSpecializations: Dictionary.Entry, List.Enumerator 等 |
+| 3.8 | 指针 local 修复 + opaque stubs | -46 | ✅ | HasUnknownBodyReferences 死代码修复 + 值类型 local 的 opaque struct 生成 + 指针 local 前向声明 |
+| 3.9 | 嵌套嵌套类型定点迭代 + 参数/返回类型 stubs | -46 | ✅ | CreateNestedGenericSpecializations fixpoint loop + 方法参数和返回类型的 opaque struct 扫描 |
+| 3.10 | 泛型特化泛型参数解析 + stub gate 修正 | -84 | ✅ | ResolveRemainingGenericParams 扩展到全指令类型 + func ptr 误判修正 + delegate arg 类型转换 |
+| 3.11 | Scalar alias + Numerics DIM + TimeZoneInfo | -80 | ✅ | m_value 标量拦截 + 原始 Numerics DIM 放行 + TimeZoneInfo 误判移除 |
+| 3.12 | 泛型特化 mangled 名解析 | -49 | ✅ | arity-prefixed mangled name resolution（_N_TKey → _N_System_String），29 unresolved generic → 0 |
+| 3.13 | transitive generic discovery | +1319 compiled | ✅ | fixpoint loop 发现 207 新类型 1393 方法，gate hardening 5 pattern（Object*→f_、MdArray**、MdArray*→typed、FINALLY without END_TRY、delegate invoke Object*→typed） |
+| 3.14 | delegate invoke typed pointer cast | -28 | ✅ | IRDelegateInvoke 对所有 typed 指针参数添加 (void*) 中间转换，修复 Object*→String* 等 C2664 |
+| 3.15 | RenderedBodyError false positives + ldind.ref type tracking | RE -41 | ✅ | 5 fixes: non-pointer void* cast RHS check, static_cast skip, TypeHandle→KnownBroken, ldind.ref StackEntry typed deref, Span byref detection |
+| 3.15b | IntPtr/UIntPtr ICall + intptr_t casting + RE reclassification | RE 113→0 | ✅ | IntPtr/UIntPtr ctor ICall + intptr_t arg/return casting + 113 RE→KBP 方法级重分类（权宜之计，根因待修复） |
+| 3.16 | 修复 reclassified RE 根因 | -10 | ✅ | GuidResult/RuntimeType.SplitName RE 根因修复 + KBP 误判移除（TimeSpanFormat/Number/GuidResult/SplitName） |
+| 3.17 | IRBuilder 泛型特化补全 | -57 | ✅ | 嵌套类型方法体编译 + DiscoverTransitiveGenericTypesFromMethods + GIM 参数扫描 |
+| 3.18 | ICall-mapped 方法体跳过 + ThreadPool ICall | -143 | ✅ | HasICallMapping 方法跳过体转换（-124 MissingBody）+ ThreadPool/Interlocked ICall（-19） |
+| 3.19 | stub budget ratchet 更新 | 诊断 | ✅ | stub_budget.json 基线从 3,310 → 3,147 |
+| 3.20 | KBP false positive audit | -287 | ✅ | 移除 30+ 过度宽泛的 method-level KBP 检查（Numerics DIM -60、DISH -35、Span/IAsyncLocal -58、CWT -23、P/Invoke/Buffers/Reflection -68 等）。RenderedBodyError 0→90（真实 codegen bug 正确暴露） |
 
 ---
 
@@ -259,24 +259,24 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 
 ---
 
-## Phase IV: 可行类型回归 IL（40 → 32）✅
+## Phase 4: 可行类型回归 IL（40 → 32）✅
 
 **目标**：移除 8 个 RuntimeProvided 类型 — **已完成**
 
 | # | 任务 | 移除数 | 可行性 | 说明 |
 |---|------|--------|--------|------|
-| IV.1 | IAsyncStateMachine → IL | 1 | ✅ 完成 | 纯接口，移除 RuntimeProvided + 删除 task.h alias |
-| IV.2 | CancellationToken → IL | 1 | ✅ 完成 | 只有 f_source 指针，struct 从 Cecil 生成 |
-| IV.3-7 | WaitHandle 层级×6 → IL | 6 | ✅ 完成 | struct 从 Cecil 生成，TypeInfo 从 IL 生成，WaitOneCore ICall 保留；POSIX Mutex/Semaphore 有 TODO（当前为 stub 实现） |
+| 4.1 | IAsyncStateMachine → IL | 1 | ✅ 完成 | 纯接口，移除 RuntimeProvided + 删除 task.h alias |
+| 4.2 | CancellationToken → IL | 1 | ✅ 完成 | 只有 f_source 指针，struct 从 Cecil 生成 |
+| 4.3-7 | WaitHandle 层级×6 → IL | 6 | ✅ 完成 | struct 从 Cecil 生成，TypeInfo 从 IL 生成，WaitOneCore ICall 保留；POSIX Mutex/Semaphore 有 TODO（当前为 stub 实现） |
 
-**前提**：Phase III 编译器质量足够让 BCL WaitHandle/CancellationToken IL 正确编译。
+**前提**：Phase 3 编译器质量足够让 BCL WaitHandle/CancellationToken IL 正确编译。
 
-## Phase V: 异步架构重构（长期，32 → 25）— 降级为 Phase F.2
+## Phase 5: 异步架构重构（长期，32 → 25）— 降级为 Phase F.2
 
 > **降级原因**：async/await 已能工作（true concurrency + thread pool + combinators）。Task struct 重构是内部质量优化，对"编译任意项目"几乎无贡献。
 
-**V.1 已完成** ✅：TplEventSource no-op ICall + ThreadPool ICall + Interlocked.ExchangeAdd — 66 方法从 IL 编译，65 stubbed
-**V.2-V.5 待定**：Task struct 重构 → 降级到 Phase F.2（性能优化阶段）
+**5.1 已完成** ✅：TplEventSource no-op ICall + ThreadPool ICall + Interlocked.ExchangeAdd — 66 方法从 IL 编译，65 stubbed
+**5.2-5.5 待定**：Task struct 重构 → 降级到 Phase F.2（性能优化阶段）
 
 ---
 
@@ -451,9 +451,9 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 | # | 任务 | 预估 | 说明 |
 |---|------|------|------|
 | F.1 | SIMD 标量回退路径完善 | 高 | **必须实现。**消除 333 SIMD stubs — 很多 BCL 热路径依赖这些 |
-| F.2 | Task struct 重构（原 Phase V.2-V.5） | 高 | **待定。**降低 RuntimeProvided 32→25（内部质量，无用户可感知影响） |
+| F.2 | Task struct 重构（原 Phase 5.2-5.5） | 高 | **待定。**降低 RuntimeProvided 32→25（内部质量，无用户可感知影响） |
 | F.3 | 增量编译 | 中 | **待定。**IR/codegen 缓存（性能优化） |
-| F.4 | 反射模型评估（原 Phase VI） | 中 | **待定。**评估 QCall 替代方案 |
+| F.4 | 反射模型评估（原 Phase 6） | 中 | **待定。**评估 QCall 替代方案 |
 
 **前置**：Phase A-E 核心功能完成
 **产出**：翻译率 > 95%
@@ -476,7 +476,7 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 ### 必须实现（Windows x64）
 
 ```
-Phase I-IV ✅  →  Phase A ✅  →  Phase B ✅ (Windows)
+Phase 1-4 ✅  →  Phase A ✅  →  Phase B ✅ (Windows)
        ↓
    ┌── Phase C.6 (完整 HTTP GET) ──────────────┐
    │      ↓                                     │ ← 并行
@@ -552,7 +552,7 @@ macOS 支持 (Objective-C 桥接)
 | 反射类型 | 保持 CoreRuntime | .NET 8 BCL 反射 IL 深度依赖 QCall/MetadataImport，短期无法 IL 编译 |
 | Task | 保持 RuntimeProvided（短期） | 4 个自定义运行时字段 + std::mutex* + MSVC padding，长期需架构重构 |
 | ThreadPool | 保持自定义 C++ 实现（短期） | 固定大小线程池 + 全局 FIFO 队列在当前范围内正确。BCL ThreadPool ICalls 为有意 no-op。缺少 hill climbing、work stealing、每线程队列 — 仅性能优化。重构推迟到 Phase F.2。 |
-| WaitHandle | 目标 IL + ICall（Phase IV） | struct 简单，BCL IL 可编译，需注册 8 个 OS 原语 ICall |
+| WaitHandle | 目标 IL + ICall（Phase 4） | struct 简单，BCL IL 可编译，需注册 8 个 OS 原语 ICall |
 | SIMD | 标量回退 struct + IsSupported=false | BCL 有非 SIMD 回退路径 |
 | File I/O ICall | HACK — Phase B 完成后移除 | File.ReadAllText 等 12 个 ICall 绕过了 FileStream IL 链，违反 IL-first |
 | 网络层 | BCL IL 自然编译 | BCL 内置跨平台分支 |

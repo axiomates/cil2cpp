@@ -156,16 +156,16 @@ The following types have their **struct definitions** provided by the C++ runtim
 - **Task**: 4 custom runtime fields + f_lock (std::mutex*) + MSVC padding issue
 - **Varargs**: TypedReference, ArgIterator
 
-**Short-term migratable to IL (8 types, Phase IV)**:
+**Short-term migratable to IL (8 types, Phase 4)**:
 - **IAsyncStateMachine** — Pure interface, no struct needed
 - **CancellationToken** — Only has f_source pointer
 - **WaitHandle hierarchy ×6** — BCL IL compilable, needs OS primitive ICall registration
 
-**Long-term requires architectural refactoring (6 types, Phase V)**:
+**Long-term requires architectural refactoring (6 types, Phase 5)**:
 - **TaskAwaiter / AsyncTaskMethodBuilder / ValueTask / ValueTaskAwaiter / AsyncIteratorMethodBuilder** — Depend on Task struct layout
 - **CancellationTokenSource** — Depends on ITimer + ManualResetEvent chain
 
-See [roadmap.md](roadmap.md) Phase IV-V for details.
+See [roadmap.md](roadmap.md) Phase 4-5 for details.
 
 ### Compiler Built-in Intrinsics
 

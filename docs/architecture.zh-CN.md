@@ -150,16 +150,16 @@ ICallRegistry 查找 (~270 个映射)
 - **Task**: 4 个自定义运行时字段 + f_lock (std::mutex*) + MSVC padding 问题
 - **Varargs**: TypedReference, ArgIterator
 
-**短期可迁移为 IL（8 个，Phase IV）**：
+**短期可迁移为 IL（8 个，Phase 4）**：
 - **IAsyncStateMachine** — 纯接口，无需 struct
 - **CancellationToken** — 只有 f_source 指针
 - **WaitHandle 层级 ×6** — BCL IL 可编译，需注册 OS 原语 ICall
 
-**长期需架构重构（6 个，Phase V）**：
+**长期需架构重构（6 个，Phase 5）**：
 - **TaskAwaiter / AsyncTaskMethodBuilder / ValueTask / ValueTaskAwaiter / AsyncIteratorMethodBuilder** — 依赖 Task struct 布局
 - **CancellationTokenSource** — 依赖 ITimer + ManualResetEvent 链
 
-详见 [roadmap.zh-CN.md](roadmap.zh-CN.md) Phase IV-V。
+详见 [roadmap.zh-CN.md](roadmap.zh-CN.md) Phase 4-5。
 
 ### 编译器内置 intrinsics
 

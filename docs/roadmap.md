@@ -96,7 +96,7 @@ A type needs to be RuntimeProvided if and only if it meets any of these conditio
 | Task + async non-generic ×6 | 6 | Task (4 custom fields + std::mutex*) + TaskAwaiter/Builder/ValueTask/ValueTaskAwaiter/AsyncIteratorBuilder |
 | CancellationTokenSource | 1 | Depends on ITimer + ManualResetEvent + Registrations chain |
 
-### Types Migrated to IL (8, Phase IV ✅)
+### Types Migrated to IL (8, Phase 4 ✅)
 
 | Type | Count | Status | Description |
 |------|-------|--------|-------------|
@@ -117,7 +117,7 @@ A type needs to be RuntimeProvided if and only if it meets any of these conditio
 
 ### RuntimeProvided Goals
 
-- **Current**: 32 entries (Phase IV complete: removed IAsyncStateMachine + CancellationToken + WaitHandle×6 = -8)
+- **Current**: 32 entries (Phase 4 complete: removed IAsyncStateMachine + CancellationToken + WaitHandle×6 = -8)
 - **Short-term target achieved**: 40 → 32 (-8 RuntimeProvided types)
 - **Long-term**: 32 → 25 (after Task architectural refactoring, remove Task+async deps+CTS = 7)
 
@@ -134,7 +134,7 @@ IL2CPP compiles from IL: Task/async entire family, CancellationToken/Source, Wai
 
 ## Current Status
 
-### RuntimeProvided Types: 32 entries (Phase IV complete -8, long-term target 25)
+### RuntimeProvided Types: 32 entries (Phase 4 complete -8, long-term target 25)
 
 See "RuntimeProvided Type Classification" section above.
 
@@ -195,20 +195,20 @@ See "RuntimeProvided Type Classification" section above.
 
 ---
 
-## Phase I: Foundation ✅
+## Phase 1: Foundation ✅
 
 - Stub dependency analysis tool (`--analyze-stubs`)
 - RuntimeType = Type alias (matching `Il2CppReflectionType`)
 - Handle type removal (RuntimeTypeHandle/MethodHandle/FieldHandle → intptr_t)
 - AggregateException / SafeHandle / Thread.CurrentThread TLS / GCHandle weak reference
 
-## Phase II: Middle Layer Unlock ✅
+## Phase 2: Middle Layer Unlock ✅
 
 - CalendarId/EraInfo/DefaultBinder/DBNull etc. CLR internal type removal (27 → 6)
 - Reflection type aliases (RuntimeMethodInfo → ManagedMethodInfo etc.)
 - WaitHandle OS primitives / P/Invoke calling conventions / SafeHandle ICall completion
 
-## Phase III: Compiler Pipeline Quality ✅
+## Phase 3: Compiler Pipeline Quality ✅
 
 **Goal**: Improve IL translation rate — fix root causes blocking BCL IL compilation
 
@@ -216,34 +216,34 @@ See "RuntimeProvided Type Classification" section above.
 
 | # | Task | Impact | Status | Description |
 |---|------|--------|--------|-------------|
-| III.1 | SIMD scalar fallback | ✅ Done | ✅ | Vector64/128/256/512 struct definitions |
-| III.2a | ExternalEnumTypes fix | -386 | ✅ | External assembly enum types registered to knownTypeNames |
-| III.2b | Ldelem_Any/Stelem_Any fix | -114 | ✅ | Generic array element access instruction support |
-| III.2c | IsResolvedValueType correction | Correctness | ✅ | IsPrimitive includes String/Object → changed to IsValueType |
-| III.2d | IsValidMergeVariable correction | -45 | ✅ | Forbid &expr as branch merge assignment target |
-| III.2e | DetermineTempVarTypes improvement | -17 | ✅ | IRBinaryOp type inference + IRRawCpp pattern inference |
-| III.2f | Stub classification improvement | Diagnostics | ✅ | GetBrokenPatternDetail covers all HasKnownBrokenPatterns patterns |
-| III.2g | Integration test fixes | 35/35 | ✅ | Fixed 7 C++ compilation error patterns (void ICall/TypeInfo/ctor/Span/pointer types) |
-| III.2h | StackEntry typed stack + IRRawCpp type annotation | -98 | ✅ | Stack\<StackEntry\> type tracking + IRRawCpp ResultVar/ResultTypeCpp completion |
-| III.3 | UnknownBodyReferences fix | 506→285 | ✅ | Gate reordering + knownTypeNames sync + opaque stubs + SIMD/array type detection |
-| III.4 | UndeclaredFunction fix | 222→151 | ✅ | Broadened calledFunctions scan + multi-pass discovery + diagnostic filter fix (remaining 151 are generic specialization gaps) |
-| III.5 | FilteredGenericNamespaces relaxation | Cascade unlock | Deferred | Gradually relax safe namespaces (System.Diagnostics etc.) |
-| III.6 | KnownBrokenPattern refinement + unbox fix | 637→604 | ✅ | Classification improvement + array type fix + self-recursion false positive removal + unbox generic trailing underscore fix |
-| III.7 | Nested generic type specialization | -26 | ✅ | CreateNestedGenericSpecializations: Dictionary.Entry, List.Enumerator etc. |
-| III.8 | Pointer local fix + opaque stubs | -46 | ✅ | HasUnknownBodyReferences dead code fix + opaque struct generation for value type locals + pointer local forward declaration |
-| III.9 | Nested-nested type fixpoint iteration + param/return type stubs | -46 | ✅ | CreateNestedGenericSpecializations fixpoint loop + opaque struct scan for method params and return types |
-| III.10 | Generic specialization param resolution + stub gate correction | -84 | ✅ | ResolveRemainingGenericParams extended to all instruction types + func ptr false positive fix + delegate arg type conversion |
-| III.11 | Scalar alias + Numerics DIM + TimeZoneInfo | -80 | ✅ | m_value scalar interception + primitive Numerics DIM passthrough + TimeZoneInfo false positive removal |
-| III.12 | Generic specialization mangled name resolution | -49 | ✅ | Arity-prefixed mangled name resolution (_N_TKey → _N_System_String), 29 unresolved generic → 0 |
-| III.13 | Transitive generic discovery | +1319 compiled | ✅ | Fixpoint loop discovers 207 new types 1393 methods, gate hardening 5 patterns (Object*→f_, MdArray**, MdArray*→typed, FINALLY without END_TRY, delegate invoke Object*→typed) |
-| III.14 | Delegate invoke typed pointer cast | -28 | ✅ | IRDelegateInvoke adds (void*) intermediate cast for all typed pointer args, fixing Object*→String* C2664 |
-| III.15 | RenderedBodyError false positives + ldind.ref type tracking | RE -41 | ✅ | 5 fixes: non-pointer void* cast RHS check, static_cast skip, TypeHandle→KnownBroken, ldind.ref StackEntry typed deref, Span byref detection |
-| III.15b | IntPtr/UIntPtr ICall + intptr_t casting + RE reclassification | RE 113→0 | ✅ | IntPtr/UIntPtr ctor ICall + intptr_t arg/return casting + 113 RE→KBP method-level reclassification (stopgap, root cause pending) |
-| III.16 | Fix reclassified RE root causes | -10 | ✅ | GuidResult/RuntimeType.SplitName RE root cause fix + KBP false positive removal (TimeSpanFormat/Number/GuidResult/SplitName) |
-| III.17 | IRBuilder generic specialization completion | -57 | ✅ | Nested type method body compilation + DiscoverTransitiveGenericTypesFromMethods + GIM argument scanning |
-| III.18 | ICall-mapped method body skip + ThreadPool ICall | -143 | ✅ | HasICallMapping methods skip body conversion (-124 MissingBody) + ThreadPool/Interlocked ICall (-19) |
-| III.19 | Stub budget ratchet update | Diagnostics | ✅ | stub_budget.json baseline from 3,310 → 3,147 |
-| III.20 | KBP false positive audit | -287 | ✅ | Removed 30+ overly broad method-level KBP checks (Numerics DIM -60, DISH -35, Span/IAsyncLocal -58, CWT -23, P/Invoke/Buffers/Reflection -68 etc.). RenderedBodyError 0→90 (real codegen bugs correctly exposed) |
+| 3.1 | SIMD scalar fallback | ✅ Done | ✅ | Vector64/128/256/512 struct definitions |
+| 3.2a | ExternalEnumTypes fix | -386 | ✅ | External assembly enum types registered to knownTypeNames |
+| 3.2b | Ldelem_Any/Stelem_Any fix | -114 | ✅ | Generic array element access instruction support |
+| 3.2c | IsResolvedValueType correction | Correctness | ✅ | IsPrimitive includes String/Object → changed to IsValueType |
+| 3.2d | IsValidMergeVariable correction | -45 | ✅ | Forbid &expr as branch merge assignment target |
+| 3.2e | DetermineTempVarTypes improvement | -17 | ✅ | IRBinaryOp type inference + IRRawCpp pattern inference |
+| 3.2f | Stub classification improvement | Diagnostics | ✅ | GetBrokenPatternDetail covers all HasKnownBrokenPatterns patterns |
+| 3.2g | Integration test fixes | 35/35 | ✅ | Fixed 7 C++ compilation error patterns (void ICall/TypeInfo/ctor/Span/pointer types) |
+| 3.2h | StackEntry typed stack + IRRawCpp type annotation | -98 | ✅ | Stack\<StackEntry\> type tracking + IRRawCpp ResultVar/ResultTypeCpp completion |
+| 3.3 | UnknownBodyReferences fix | 506→285 | ✅ | Gate reordering + knownTypeNames sync + opaque stubs + SIMD/array type detection |
+| 3.4 | UndeclaredFunction fix | 222→151 | ✅ | Broadened calledFunctions scan + multi-pass discovery + diagnostic filter fix (remaining 151 are generic specialization gaps) |
+| 3.5 | FilteredGenericNamespaces relaxation | Cascade unlock | Deferred | Gradually relax safe namespaces (System.Diagnostics etc.) |
+| 3.6 | KnownBrokenPattern refinement + unbox fix | 637→604 | ✅ | Classification improvement + array type fix + self-recursion false positive removal + unbox generic trailing underscore fix |
+| 3.7 | Nested generic type specialization | -26 | ✅ | CreateNestedGenericSpecializations: Dictionary.Entry, List.Enumerator etc. |
+| 3.8 | Pointer local fix + opaque stubs | -46 | ✅ | HasUnknownBodyReferences dead code fix + opaque struct generation for value type locals + pointer local forward declaration |
+| 3.9 | Nested-nested type fixpoint iteration + param/return type stubs | -46 | ✅ | CreateNestedGenericSpecializations fixpoint loop + opaque struct scan for method params and return types |
+| 3.10 | Generic specialization param resolution + stub gate correction | -84 | ✅ | ResolveRemainingGenericParams extended to all instruction types + func ptr false positive fix + delegate arg type conversion |
+| 3.11 | Scalar alias + Numerics DIM + TimeZoneInfo | -80 | ✅ | m_value scalar interception + primitive Numerics DIM passthrough + TimeZoneInfo false positive removal |
+| 3.12 | Generic specialization mangled name resolution | -49 | ✅ | Arity-prefixed mangled name resolution (_N_TKey → _N_System_String), 29 unresolved generic → 0 |
+| 3.13 | Transitive generic discovery | +1319 compiled | ✅ | Fixpoint loop discovers 207 new types 1393 methods, gate hardening 5 patterns (Object*→f_, MdArray**, MdArray*→typed, FINALLY without END_TRY, delegate invoke Object*→typed) |
+| 3.14 | Delegate invoke typed pointer cast | -28 | ✅ | IRDelegateInvoke adds (void*) intermediate cast for all typed pointer args, fixing Object*→String* C2664 |
+| 3.15 | RenderedBodyError false positives + ldind.ref type tracking | RE -41 | ✅ | 5 fixes: non-pointer void* cast RHS check, static_cast skip, TypeHandle→KnownBroken, ldind.ref StackEntry typed deref, Span byref detection |
+| 3.15b | IntPtr/UIntPtr ICall + intptr_t casting + RE reclassification | RE 113→0 | ✅ | IntPtr/UIntPtr ctor ICall + intptr_t arg/return casting + 113 RE→KBP method-level reclassification (stopgap, root cause pending) |
+| 3.16 | Fix reclassified RE root causes | -10 | ✅ | GuidResult/RuntimeType.SplitName RE root cause fix + KBP false positive removal (TimeSpanFormat/Number/GuidResult/SplitName) |
+| 3.17 | IRBuilder generic specialization completion | -57 | ✅ | Nested type method body compilation + DiscoverTransitiveGenericTypesFromMethods + GIM argument scanning |
+| 3.18 | ICall-mapped method body skip + ThreadPool ICall | -143 | ✅ | HasICallMapping methods skip body conversion (-124 MissingBody) + ThreadPool/Interlocked ICall (-19) |
+| 3.19 | Stub budget ratchet update | Diagnostics | ✅ | stub_budget.json baseline from 3,310 → 3,147 |
+| 3.20 | KBP false positive audit | -287 | ✅ | Removed 30+ overly broad method-level KBP checks (Numerics DIM -60, DISH -35, Span/IAsyncLocal -58, CWT -23, P/Invoke/Buffers/Reflection -68 etc.). RenderedBodyError 0→90 (real codegen bugs correctly exposed) |
 
 ### Pass 3.6 Strategy: Stub Body vs Full Compilation
 
@@ -257,25 +257,25 @@ See "RuntimeProvided Type Classification" section above.
 
 ---
 
-## Phase IV: Viable Types Return to IL (40 → 32) ✅
+## Phase 4: Viable Types Return to IL (40 → 32) ✅
 
 **Goal**: Remove 8 RuntimeProvided types — **Complete**
 
 | # | Task | Removed | Feasibility | Description |
 |---|------|---------|-------------|-------------|
-| IV.1 | IAsyncStateMachine → IL | 1 | ✅ Done | Pure interface, removed RuntimeProvided + deleted task.h alias |
-| IV.2 | CancellationToken → IL | 1 | ✅ Done | Only has f_source pointer, struct generated from Cecil |
-| IV.3-7 | WaitHandle hierarchy ×6 → IL | 6 | ✅ Done | struct from Cecil, TypeInfo from IL, WaitOneCore ICall retained; POSIX Mutex/Semaphore have TODO (currently stub impl) |
+| 4.1 | IAsyncStateMachine → IL | 1 | ✅ Done | Pure interface, removed RuntimeProvided + deleted task.h alias |
+| 4.2 | CancellationToken → IL | 1 | ✅ Done | Only has f_source pointer, struct generated from Cecil |
+| 4.3-7 | WaitHandle hierarchy ×6 → IL | 6 | ✅ Done | struct from Cecil, TypeInfo from IL, WaitOneCore ICall retained; POSIX Mutex/Semaphore have TODO (currently stub impl) |
 
-**Prerequisite**: Phase III compiler quality sufficient for BCL WaitHandle/CancellationToken IL to compile correctly.
+**Prerequisite**: Phase 3 compiler quality sufficient for BCL WaitHandle/CancellationToken IL to compile correctly.
 
-## Phase V: Async Architecture Refactoring (Long-term, 32 → 25) — Downgraded to Phase F.2
+## Phase 5: Async Architecture Refactoring (Long-term, 32 → 25) — Downgraded to Phase F.2
 
 > **Downgrade reason**: async/await already works (true concurrency + thread pool + combinators). Task struct refactoring is internal quality optimization with almost no contribution to "compile any project".
 > See [phase_v1_analysis.md](phase_v1_analysis.md)
 
-**V.1 Complete** ✅: TplEventSource no-op ICall + ThreadPool ICall + Interlocked.ExchangeAdd — 66 methods compile from IL, 65 stubbed
-**V.2-V.5 Deferred**: Task struct refactoring → downgraded to Phase F.2 (performance optimization phase)
+**5.1 Complete** ✅: TplEventSource no-op ICall + ThreadPool ICall + Interlocked.ExchangeAdd — 66 methods compile from IL, 65 stubbed
+**5.2-5.5 Deferred**: Task struct refactoring → downgraded to Phase F.2 (performance optimization phase)
 
 ---
 
@@ -452,9 +452,9 @@ See "RuntimeProvided Type Classification" section above.
 | # | Task | Estimate | Description |
 |---|------|----------|-------------|
 | F.1 | SIMD scalar fallback path completion | High | **Must-implement.** Eliminate 333 SIMD stubs — many BCL hot paths depend on these |
-| F.2 | Task struct refactoring (from Phase V.2-V.5) | High | **Deferred.** Reduce RuntimeProvided 32→25 (internal quality, no user-facing impact) |
+| F.2 | Task struct refactoring (from Phase 5.2-5.5) | High | **Deferred.** Reduce RuntimeProvided 32→25 (internal quality, no user-facing impact) |
 | F.3 | Incremental compilation | Medium | **Deferred.** IR/codegen caching (performance optimization) |
-| F.4 | Reflection model evaluation (from Phase VI) | Medium | **Deferred.** Evaluate QCall alternatives |
+| F.4 | Reflection model evaluation (from Phase 6) | Medium | **Deferred.** Evaluate QCall alternatives |
 
 **Prerequisites**: Phase A-E core functionality complete
 **Output**: Translation rate > 95%
@@ -477,7 +477,7 @@ See "RuntimeProvided Type Classification" section above.
 ### Must-Implement (Windows x64)
 
 ```
-Phase I-IV ✅  →  Phase A ✅  →  Phase B ✅ (Windows)
+Phase 1-4 ✅  →  Phase A ✅  →  Phase B ✅ (Windows)
        ↓
    ┌── Phase C.6 (Full HTTP GET) ──────────────┐
    │      ↓                                     │ ← parallel
@@ -555,7 +555,7 @@ macOS support (Objective-C bridge)
 | Reflection types | Keep CoreRuntime | .NET 8 BCL reflection IL deeply depends on QCall/MetadataImport, cannot IL-compile short-term |
 | Task | Keep RuntimeProvided (short-term) | 4 custom runtime fields + std::mutex* + MSVC padding, long-term needs architectural refactoring |
 | ThreadPool | Keep custom C++ impl (short-term) | Fixed-size pool + global FIFO queue is correct for current scope. BCL ThreadPool ICalls are intentional no-ops (config/metrics/injection). Missing: hill climbing, work stealing, per-thread queues — performance optimization only, not correctness. Restructure deferred to Phase F.2 alongside Task refactoring. |
-| WaitHandle | Target IL + ICall (Phase IV) | Simple struct, BCL IL compilable, needs 8 OS primitive ICall registrations |
+| WaitHandle | Target IL + ICall (Phase 4) | Simple struct, BCL IL compilable, needs 8 OS primitive ICall registrations |
 | SIMD | Scalar fallback struct + IsSupported=false | BCL has non-SIMD fallback paths |
 | File I/O ICall | HACK — remove after Phase B | File.ReadAllText etc. 12 ICalls bypass FileStream IL chain, violates IL-first |
 | Network layer | BCL IL natural compilation | BCL has built-in cross-platform branching |
