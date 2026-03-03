@@ -188,3 +188,83 @@ BCL generic types (Nullable\<T\>, ValueTuple, etc.) have method bodies in `Syste
 ### ICall void* for this
 
 Runtime icall `__this` parameters must use `void*` rather than `Object*`, because compiler-generated flat structs don't inherit from `cil2cpp::Object`.
+
+---
+
+## Tree-Shaking & OOM Lessons
+
+### Budget Caps Are the Wrong Solution
+
+**Original approach**: IRBuilder's three fixpoint loops (Pass 0.5/3.5/3.6) had a 50-iteration safety cap to prevent infinite loops and OOM.
+
+**Problems**:
+- Caps merely masked the problem without addressing root cause
+- Silent truncation could produce incorrect compilation (missing types/methods)
+- Or the cap was too high to prevent OOM anyway
+
+**Lesson**: Find and fix the divergence root cause, then rely on natural termination conditions (set exhaustion). A budget cap is technical debt — always find the real cause.
+
+### Diagnosing OOM: Add Logging First, Don't Guess
+
+**Context**: NuGetSimpleTest (2 Newtonsoft.Json calls) consumed 24GB RAM and produced 0 output. Initial hypothesis was cctor cascade explosion.
+
+**Wrong turn**: Implemented lazy cctor seeding first — types only dropped from 3,411 to 3,356. Hypothesis was wrong.
+
+**Correct approach**: Added diagnostic prints to the Pass 0.5 fixpoint loop, revealing +100/+65/+50 new generic types per iteration, never converging. Printing the type names immediately identified `System.Text.RegularExpressions.Symbolic` recursive nesting.
+
+**Lesson**: Don't guess at OOM causes. Add logging to identify which loop is diverging and what data it's producing. Data beats hypotheses.
+
+### Infinite Recursive Generic Nesting Is an Inherent AOT Risk
+
+Certain BCL types (`Symbolic.BDD`, `DerivativeEffect`, `SymbolicRegexNode`) have generic parameters that reference each other, creating infinitely nested instantiations:
+
+```
+KVP<BDD>> → KVP<KVP<BDD>>> → KVP<KVP<KVP<BDD>>>> → ...
+```
+
+JIT doesn't need ahead-of-time instantiation so this never surfaces. AOT must monomorphize all reachable generics — natural fixpoint termination ("no new types") never arrives.
+
+**Fix**: Dual protection — (a) namespace filtering for known-problematic namespaces, (b) `MaxGenericNestingDepth=5` structural limit in `CollectGenericType`.
+
+**Lesson**: AOT generic monomorphization requires a depth limit. "Set stops growing" is insufficient as a sole termination condition.
+
+### Cctor Cascade: Follow ECMA-335 §II.10.5.3.3
+
+**Original approach**: `MarkTypeReachable` unconditionally seeded the static constructor (cctor) for every reachable type. Type A's cctor references Type B → seeds B's cctor → exponential explosion.
+
+**Correct model**: Per ECMA-335, cctor triggers only at:
+1. First static field access (`ldsfld`/`stsfld`/`ldsflda`)
+2. First static method invocation (`call`/`callvirt` on static method)
+3. First object construction (`newobj` → `MarkTypeConstructed`)
+
+Instance field access (`ldfld`/`stfld`) and function pointer loading (`ldftn`/`ldvirtftn`) do NOT trigger cctor.
+
+**Lesson**: RTA + lazy cctor are complementary — RTA reduces virtual dispatch fan-out, lazy cctor reduces static initialization propagation.
+
+### Field Type Cascade: Reference Types vs Value Types
+
+In C++, reference-type fields are 8-byte pointers requiring only a forward declaration, not a full type definition. Value-type fields are embedded in the struct and need complete layout information.
+
+**Original approach**: `MarkTypeReachable` cascaded full reachability to ALL field types — causing massive transitive closure expansion.
+
+**Fix**: `MarkTypeForLayout` — lightweight reachability that only cascades value-type fields, without seeding cctor/finalizer/interfaces. A separate `_fullyProcessedTypes` guard set allows layout-only types to be upgraded to fully-reachable when later discovered through method bodies.
+
+**Lesson**: Distinguishing "needs struct layout" from "needs methods compiled" is a critical AOT tree-shaking optimization.
+
+### HasCctor Must Be Synchronized with Reachability
+
+After implementing lazy cctor, some types' cctors were no longer seeded (e.g., `SpinWait`, `DateTimeOffset`). But the code generator still set `HasCctor=true` based on Cecil metadata, emitting `_ensure_cctor()` calls.
+
+**Result**: Linker error — cctor function definition not found (`C3861`).
+
+**Fix**: `HasCctor = type has cctor method AND that method is in the reachable methods set`.
+
+**Lesson**: IR attributes must reflect actual compilation decisions, not just metadata presence.
+
+### AOT-Excluded Namespaces Are Effective Coarse-Grained Pruning
+
+Excluded namespaces: `Symbolic`, `ComponentModel`, `Serialization`, `CodeDom`, `Resources`. These are meaningless in AOT scenarios (reflection-based serialization, dynamic code, designers).
+
+Dual filtering: `ReachabilityAnalyzer.IsAotExcludedNamespace` + `IRBuilder.FilteredGenericNamespaces`.
+
+**Lesson**: Namespace exclusion is effective but requires clear AOT-incompatibility justification for each entry. Don't exclude blindly.

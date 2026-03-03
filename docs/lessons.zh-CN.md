@@ -188,3 +188,83 @@ BCL 泛型类型（Nullable\<T\>、ValueTuple 等）的方法体在 `System.Runt
 ### ICall void* for this
 
 运行时 icall 的 `__this` 参数必须使用 `void*` 而非 `Object*`，因为编译器生成的 flat struct 不继承 `cil2cpp::Object`。
+
+---
+
+## 树摇与 OOM 教训
+
+### 安全上限（Budget Cap）是错误方案
+
+**原方案**：IRBuilder 三个 fixpoint 循环（Pass 0.5/3.5/3.6）设置 50 次迭代上限，防止无限循环和 OOM。
+
+**问题**：
+- 上限只是掩盖问题，不解决根因
+- 静默截断可能产生不正确的编译结果（丢失类型/方法）
+- 或者上限太高根本挡不住 OOM
+
+**教训**：找到发散根因并修复，依赖自然终止条件（集合耗尽）。Budget cap = 技术债，永远要找真正的根因。
+
+### OOM 诊断：先加日志，不要猜
+
+**背景**：NuGetSimpleTest（2 个 Newtonsoft.Json 调用）消耗 24GB 内存，输出为 0。最初假设是 cctor 级联爆炸。
+
+**错误方向**：先实施 lazy cctor——类型数仅从 3,411 降到 3,356，假设错误。
+
+**正确做法**：给 Pass 0.5 fixpoint 循环加诊断打印，发现每轮 +100/+65/+50 新泛型类型，永不收敛。打印类型名后立刻定位到 `System.Text.RegularExpressions.Symbolic` 递归嵌套。
+
+**教训**：不要猜 OOM 根因。加日志确认哪个循环在发散、产生什么数据。数据胜过假设。
+
+### 无限递归泛型嵌套是 AOT 编译器的固有风险
+
+某些 BCL 类型（`Symbolic.BDD`、`DerivativeEffect`、`SymbolicRegexNode`）的泛型参数互相引用，创建无限深度嵌套实例化：
+
+```
+KVP<BDD>> → KVP<KVP<BDD>>> → KVP<KVP<KVP<BDD>>>> → ...
+```
+
+JIT 不需要提前实例化所以不会出问题。AOT 必须单态化所有可达泛型——自然 fixpoint 终止条件（"没有新类型"）永远不会到达。
+
+**修复**：双重保险——(a) 命名空间过滤已知问题命名空间 (b) `MaxGenericNestingDepth=5` 结构性限制。
+
+**教训**：AOT 泛型单态化必须有深度限制。仅靠"集合不再增长"作为终止条件是不够的。
+
+### Cctor 级联：遵循 ECMA-335 §II.10.5.3.3
+
+**原方案**：`MarkTypeReachable` 无条件 seed 每个可达类型的静态构造函数（cctor）。类型 A 的 cctor 引用类型 B → seed B 的 cctor → 指数爆炸。
+
+**正确模型**：按 ECMA-335 规范，cctor 仅在以下情况触发：
+1. 首次静态字段访问（`ldsfld`/`stsfld`/`ldsflda`）
+2. 首次静态方法调用（`call`/`callvirt` 对 static 方法）
+3. 首次对象构造（`newobj` → `MarkTypeConstructed`）
+
+实例字段访问（`ldfld`/`stfld`）和函数指针加载（`ldftn`/`ldvirtftn`）不触发 cctor。
+
+**教训**：RTA + lazy cctor 是互补的——RTA 减少虚派发扇出，lazy cctor 减少静态初始化传播。
+
+### 字段类型级联：引用类型 vs 值类型
+
+C++ 中引用类型字段是 8 字节指针，只需前置声明，不需要完整类型定义。值类型字段嵌入 struct，需要完整布局信息。
+
+**原方案**：`MarkTypeReachable` 对所有字段类型做完整可达性级联——导致巨大的传递闭包膨胀。
+
+**修复**：`MarkTypeForLayout` ——轻量级可达性，只级联值类型字段，不 seed cctor/finalizer/interface。单独的 `_fullyProcessedTypes` 守卫集允许 layout-only 类型在后续被方法体发现时升级为 fully-reachable。
+
+**教训**：区分"需要结构体布局"和"需要编译方法"是 AOT 树摇的关键优化点。
+
+### HasCctor 必须与可达性同步
+
+实施 lazy cctor 后，某些类型的 cctor 不再被 seed（如 `SpinWait`、`DateTimeOffset`）。但代码生成器仍根据 Cecil 元数据设置 `HasCctor=true`，生成 `_ensure_cctor()` 调用。
+
+**结果**：链接报错——找不到 cctor 函数定义（`C3861`）。
+
+**修复**：`HasCctor = 类型有 cctor 方法 AND 该方法在可达方法集中`。
+
+**教训**：IR 属性必须反映实际编译决策，不能只看元数据。
+
+### AOT 排除命名空间是有效的粗粒度修剪
+
+排除列表：`Symbolic`、`ComponentModel`、`Serialization`、`CodeDom`、`Resources`。这些命名空间在 AOT 场景无意义（反射序列化、动态代码、设计器）。
+
+双重过滤：`ReachabilityAnalyzer.IsAotExcludedNamespace` + `IRBuilder.FilteredGenericNamespaces`。
+
+**教训**：命名空间排除是有效手段，但每个条目都需要明确的 AOT 不兼容理由。不能盲目排除。
