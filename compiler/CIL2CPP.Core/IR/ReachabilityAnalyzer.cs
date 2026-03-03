@@ -63,9 +63,13 @@ public class ReachabilityAnalyzer
     // MarkTypeReachable checks this set so a layout-only type can be upgraded later.
     private readonly HashSet<TypeDefinition> _fullyProcessedTypes = new();
 
-    public ReachabilityAnalyzer(AssemblySet assemblySet)
+    // F.1: Feature switch resolver for dead-branch elimination
+    private readonly FeatureSwitchResolver? _featureSwitchResolver;
+
+    public ReachabilityAnalyzer(AssemblySet assemblySet, FeatureSwitchResolver? featureSwitchResolver = null)
     {
         _assemblySet = assemblySet;
+        _featureSwitchResolver = featureSwitchResolver;
     }
 
     /// <summary>
@@ -714,8 +718,16 @@ public class ReachabilityAnalyzer
         if (!method.HasBody)
             return;
 
+        // F.1: Compute dead ranges from SIMD/feature-switch guards.
+        // Pattern: call Type.get_IsSupported → brfalse target → dead range is fall-through to target.
+        // This prevents SIMD methods from being marked reachable when guarded by IsSupported=false.
+        var deadRanges = ComputeFeatureSwitchDeadRanges(method.Body.Instructions);
+
         foreach (var instr in method.Body.Instructions)
         {
+            // Skip instructions in dead (feature-switch guarded) code ranges
+            if (deadRanges != null && IsInDeadRange(deadRanges, instr.Offset))
+                continue;
             switch (instr.OpCode.Code)
             {
                 // Method calls: trigger cctor if calling a static method (ECMA-335 §II.10.5.3.3)
@@ -816,6 +828,117 @@ public class ReachabilityAnalyzer
                     break;
             }
         }
+    }
+
+    /// <summary>
+    /// F.1: Compute dead code ranges from feature-switch guards (SIMD IsSupported, etc.).
+    /// Detects pattern: call Type.get_IsSupported → brfalse target.
+    /// When IsSupported=false, brfalse TAKES the branch, so fall-through to target is dead.
+    /// Also handles: ldsfld FeatureSwitch → brfalse/brtrue.
+    /// </summary>
+    private List<(int Start, int End)>? ComputeFeatureSwitchDeadRanges(
+        Mono.Collections.Generic.Collection<Mono.Cecil.Cil.Instruction> instructions)
+    {
+        List<(int Start, int End)>? deadRanges = null;
+
+        foreach (var instr in instructions)
+        {
+            bool isConstantFalse = false;
+
+            // Pattern 1: call/callvirt to SIMD IsSupported/IsHardwareAccelerated getter
+            if (instr.OpCode.Code is Code.Call or Code.Callvirt &&
+                instr.Operand is MethodReference callRef)
+            {
+                var methodName = callRef.Name;
+                if (methodName is "get_IsSupported" or "get_IsHardwareAccelerated" or "get_Count")
+                {
+                    var declType = callRef.DeclaringType?.FullName ?? "";
+                    if (declType.StartsWith("System.Runtime.Intrinsics.") ||
+                        declType.StartsWith("System.Numerics.Vector"))
+                    {
+                        isConstantFalse = true; // IsSupported always false in AOT
+                    }
+                }
+            }
+
+            // Pattern 2: ldsfld of a known feature switch (FeatureSwitchResolver entries)
+            if (instr.OpCode.Code == Code.Ldsfld &&
+                instr.Operand is FieldReference fldRef)
+            {
+                var declType = fldRef.DeclaringType?.FullName ?? "";
+                var fldName = fldRef.Name;
+                if (_featureSwitchResolver != null &&
+                    _featureSwitchResolver.TryResolve(declType, fldName, out bool switchValue) &&
+                    !switchValue)
+                {
+                    isConstantFalse = true;
+                }
+            }
+
+            if (!isConstantFalse) continue;
+
+            // Check next instruction: must be brfalse/brtrue
+            var nextInstr = instr.Next;
+            if (nextInstr == null) continue;
+
+            var nextCode = nextInstr.OpCode.Code;
+            Mono.Cecil.Cil.Instruction? branchTarget = null;
+
+            if (nextCode is Code.Brfalse or Code.Brfalse_S)
+            {
+                branchTarget = nextInstr.Operand as Mono.Cecil.Cil.Instruction;
+                if (branchTarget != null && nextInstr.Next != null)
+                {
+                    // brfalse with value=false → branch TAKEN.
+                    // Fall-through (from nextInstr.Next to branchTarget) is dead.
+                    int deadStart = nextInstr.Next.Offset;
+                    int deadEnd = branchTarget.Offset;
+                    if (deadEnd > deadStart)
+                    {
+                        deadRanges ??= new();
+                        deadRanges.Add((deadStart, deadEnd));
+                    }
+                }
+            }
+            else if (nextCode is Code.Brtrue or Code.Brtrue_S)
+            {
+                // brtrue with value=false → branch NOT taken, falls through.
+                // The branch target is the start of the SIMD (dead) path.
+                // Dead range: [branchTarget, mergePoint).
+                // mergePoint = target of the unconditional `br` just before branchTarget.
+                branchTarget = nextInstr.Operand as Mono.Cecil.Cil.Instruction;
+                if (branchTarget?.Previous != null)
+                {
+                    var prevInstr = branchTarget.Previous;
+                    if (prevInstr.OpCode.Code is Code.Br or Code.Br_S &&
+                        prevInstr.Operand is Mono.Cecil.Cil.Instruction mergeTarget)
+                    {
+                        int deadStart = branchTarget.Offset;
+                        int deadEnd = mergeTarget.Offset;
+                        if (deadEnd > deadStart)
+                        {
+                            deadRanges ??= new();
+                            deadRanges.Add((deadStart, deadEnd));
+                        }
+                    }
+                }
+            }
+        }
+
+        return deadRanges;
+    }
+
+    /// <summary>
+    /// Check if an instruction offset falls within a dead code range.
+    /// </summary>
+    private static bool IsInDeadRange(List<(int Start, int End)> deadRanges, int offset)
+    {
+        foreach (var (start, end) in deadRanges)
+        {
+            if (offset >= start && offset < end)
+                return true;
+        }
+        return false;
     }
 
     private void ProcessMethodRef(MethodReference? methodRef)

@@ -252,7 +252,8 @@ class Program
             sw.Restart();
 
             Console.WriteLine("[2/4] Analyzing reachability...");
-            var analyzer = new ReachabilityAnalyzer(assemblySet);
+            var featureSwitchResolver = new FeatureSwitchResolver();
+            var analyzer = new ReachabilityAnalyzer(assemblySet, featureSwitchResolver);
             // D.2: Apply rd.xml preservation rules before tree-shaking
             if (!string.IsNullOrEmpty(rdXmlPath))
             {
@@ -340,7 +341,8 @@ class Program
             Console.WriteLine($"      Root assembly: {assemblySet.RootAssemblyName}");
 
             Console.WriteLine("[2/6] Analyzing reachability...");
-            var analyzer = new ReachabilityAnalyzer(assemblySet);
+            var featureSwitchResolver = new FeatureSwitchResolver();
+            var analyzer = new ReachabilityAnalyzer(assemblySet, featureSwitchResolver);
             // D.2: Apply rd.xml preservation rules before tree-shaking
             if (!string.IsNullOrEmpty(rdXmlPath))
             {

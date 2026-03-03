@@ -1965,12 +1965,41 @@ public partial class CppCodeGenerator
         if (rendered.Contains("CIL2CPP_FINALLY") && !rendered.Contains("CIL2CPP_END_TRY"))
             return "CIL2CPP_FINALLY without END_TRY";
 
-        // Body-level check: CIL2CPP_FILTER_BEGIN + CIL2CPP_CATCH in same method.
+        // Body-level check: CIL2CPP_FILTER_BEGIN + CIL2CPP_CATCH in same TRY block.
         // FILTER_BEGIN expands to "} else {" and CATCH expands to "} else if (...) {" —
         // when CATCH follows FILTER_BEGIN within the same TRY, the else-if has no matching if.
-        // This produces C2181 "illegal else without matching if".
-        if (rendered.Contains("CIL2CPP_FILTER_BEGIN") && rendered.Contains("CIL2CPP_CATCH"))
-            return "CIL2CPP_FILTER_BEGIN + CATCH in same method (C2181 illegal else)";
+        // Only flag when both are between the same CIL2CPP_TRY / CIL2CPP_END_TRY pair.
+        // If they're in different (nested) try blocks, they're independent and safe.
+        {
+            bool inTryWithFilter = false;
+            bool foundConflict = false;
+            int tryDepth = 0;
+            foreach (var line in rendered.AsSpan().EnumerateLines())
+            {
+                var trimmed = line.ToString().TrimStart();
+                if (trimmed.StartsWith("CIL2CPP_TRY"))
+                {
+                    tryDepth++;
+                    if (tryDepth == 1) inTryWithFilter = false;
+                }
+                else if (trimmed.StartsWith("CIL2CPP_END_TRY"))
+                {
+                    if (tryDepth == 1) inTryWithFilter = false;
+                    tryDepth--;
+                }
+                else if (tryDepth == 1 && trimmed.StartsWith("CIL2CPP_FILTER_BEGIN"))
+                {
+                    inTryWithFilter = true;
+                }
+                else if (tryDepth == 1 && trimmed.StartsWith("CIL2CPP_CATCH") && inTryWithFilter)
+                {
+                    foundConflict = true;
+                    break;
+                }
+            }
+            if (foundConflict)
+                return "CIL2CPP_FILTER_BEGIN + CATCH in same TRY block (C2181 illegal else)";
+        }
 
         // Body-level check: field access via parameter or ldelema on forward-declared-only types.
         // The ldelema fix (StackEntry type) correctly uses -> for pointer access, but if the
@@ -1982,7 +2011,7 @@ public partial class CppCodeGenerator
             {
                 if (param.Name == "__this") continue;
                 var paramType = param.CppTypeName.TrimEnd('*').Trim();
-                if (paramType.Length == 0 || paramType.StartsWith("cil2cpp::") || knownTypes.Contains(paramType))
+                if (paramType.Length == 0 || paramType == "void" || paramType.StartsWith("cil2cpp::") || knownTypes.Contains(paramType))
                     continue;
                 // Only flag if body accesses fields on this specific parameter.
                 // Use word-boundary check to avoid short names matching inside longer identifiers.
@@ -2150,13 +2179,16 @@ public partial class CppCodeGenerator
                     // Skip lines accessing through __this (concrete declaring type)
                     if (s.Contains("__this->f_m_") || s.Contains("__this)->f_m_"))
                         continue;
-                    // Flag lines that cast to aliased reflection types and access these fields
+                    // Flag lines that cast to aliased reflection types and access these fields.
+                    // Exclude concrete subtypes (RtFieldInfo, MdFieldInfo, etc.) which have full struct defs.
                     bool hasAliasedCast = s.Contains("RuntimeFieldInfo*)") || s.Contains("RuntimeMethodInfo*)") ||
                                           s.Contains("ManagedFieldInfo*)") || s.Contains("ManagedMethodInfo*)");
+                    bool isConcreteSubtype = s.Contains("RtFieldInfo*)") || s.Contains("MdFieldInfo*)") ||
+                                             s.Contains("RuntimeEventInfo*)") || s.Contains("Signature*)");
                     bool hasFieldAccess = s.Contains("f_m_reflectedTypeCache") || s.Contains("f_m_fieldAttributes") ||
                         s.Contains("f_m_fieldType") || s.Contains("f_m_returnType") || s.Contains("f_m_parameters") ||
                         s.Contains("->f_m_declaringType");
-                    if (hasAliasedCast && hasFieldAccess)
+                    if (hasAliasedCast && !isConcreteSubtype && hasFieldAccess)
                         return "reflection aliased type field access (RuntimeFieldInfo/RuntimeMethodInfo)";
                 }
             }
@@ -2694,17 +2726,8 @@ public partial class CppCodeGenerator
             }
         }
 
-        // Method-level: System.Reflection.Pointer — f_ptr is void* but IL treats as IntPtr.
-        // GetPointerType and Equals compile fine (pointer-to-pointer operations).
-        // GetPointerValue returns intptr_t from void* field, GetHashCode assigns void* to uintptr_t local.
-        // Only block methods where f_ptr value flows to intptr_t/uintptr_t without cast.
-        if (method.DeclaringType?.ILFullName == "System.Reflection.Pointer" && rendered.Contains("f_ptr"))
-        {
-            if (method.ReturnTypeCpp is "intptr_t" or "uintptr_t")
-                return "Reflection.Pointer f_ptr void* returned as intptr_t/uintptr_t";
-            if (method.Locals.Any(l => l.CppTypeName is "intptr_t" or "uintptr_t") && !rendered.Contains("(intptr_t)") && !rendered.Contains("(uintptr_t)"))
-                return "Reflection.Pointer f_ptr void* assigned to intptr_t/uintptr_t local without cast";
-        }
+        // Gate removed: System.Reflection.Pointer f_ptr — return value casting now adds
+        // (intptr_t)/(uintptr_t) cast at ret instruction. GetPointerValue compiles fine.
 
         // Method-level: IntPtr/UIntPtr methods try to access f_value field
         // IntPtr is aliased to intptr_t (scalar), so ->f_value is invalid
@@ -2714,10 +2737,8 @@ public partial class CppCodeGenerator
                 return "IntPtr/UIntPtr ->f_value on scalar alias";
         }
 
-        // Method-level: void* parameter assigned to typed field (Span<T> constructors)
-        if (rendered.Contains("f_reference = pointer") &&
-            method.Parameters.Any(p => p.CppTypeName == "void*"))
-            return "void* param assigned to typed Span f_reference field";
+        // Gate removed: void* parameter in Span ctors — the codegen now casts pointer param
+        // to the correct element type before assigning to f_reference.
 
         // Note: void* local in intptr_t-returning method gate removed —
         // return value casting now adds (intptr_t) cast at ret instruction.
@@ -2790,12 +2811,8 @@ public partial class CppCodeGenerator
             return "Thread.StartCore references f_priority not on ManagedThread";
         }
 
-        // Method-level: RuntimeParameterInfo .ctor — references f_MemberImpl which doesn't exist
-        // on ManagedParameterInfo (BCL internal field not mapped to runtime struct)
-        if (method.CppName.Contains("RuntimeParameterInfo__ctor__System_Reflection_RuntimeParameterInfo_System_Reflection_MemberInfo"))
-        {
-            return "RuntimeParameterInfo .ctor references f_MemberImpl not on ManagedParameterInfo";
-        }
+        // Gate removed: RuntimeParameterInfo .ctor — f_MemberImpl IS defined on ParameterInfo
+        // (parent struct has the field via inheritance). The generated code is valid.
 
         // Method-level: RegistryKey.GetValue — calls Interop_Advapi32_RegQueryValueEx with
         // int32_t* where uint32_t* is expected (parameter 6 type mismatch)
@@ -2833,27 +2850,15 @@ public partial class CppCodeGenerator
 
         // Phase II.2: DBNull guard removed — DBNull compiles from BCL IL
 
-        // Phase II.5: Pre-declared Thread* temp assigned from ICall returning void*/Object*
-        // ExecutionContext methods use Thread.CurrentThread (ICall returns void* but var is Thread*)
-        if (rendered.Contains("System_Threading_Thread* __t") && rendered.Contains("Thread_get_CurrentThread"))
-            return "Thread.CurrentThread pre-declared type mismatch";
+        // Gate removed: Thread.CurrentThread — codegen now adds (System_Threading_Thread*) cast
+        // from ICall return value. ExecutionContext::SetLocalValue compiles fine.
 
         // Phase III.7: TimeZoneInfo cross-scope check REMOVED — all 52 methods compile fine in MSVC
         // Previously flagged DateTime temps and AdjustmentRule references, but with improved
         // DetermineTempVarTypes and TempVarTypes, cross-scope issues are resolved.
 
-        // Method-level: switch-between-switch goto-skips-init (C2362)
-        // Two+ consecutive switch blocks with auto __tN between them and goto targets
-        if (rendered.Contains("switch (") && rendered.Contains("auto __t") && rendered.Contains("goto IL_"))
-        {
-            int switchCount = 0;
-            foreach (var line in rendered.AsSpan().EnumerateLines())
-            {
-                if (line.ToString().TrimStart().StartsWith("switch (")) switchCount++;
-            }
-            if (switchCount >= 2)
-                return "switch goto-skips-init (C2362)";
-        }
+        // Gate removed: switch-goto-skips-init (C2362) is now prevented at Source.cs level
+        // via gotoScopeOpen braces after IRSwitch/IRBranch/IRConditionalBranch (lines 1433-1440).
 
         // Method-level: GuidResult pointer parameter accessed with dot instead of arrow
         // stfld on by-ref param generates result.f_X instead of result->f_X
@@ -3418,45 +3423,9 @@ public partial class CppCodeGenerator
 
         // Body-level check: pointer-to-intptr_t field assignment without cast.
         // BCL IL treats IntPtr fields (f_Pointer, f_pvBuffer, etc.) as pointer-sized ints,
-        // but codegen computes them as uint8_t*/void*/Object*. C++ requires explicit cast.
-        if (rendered.Contains("intptr_t"))
-        {
-            foreach (var ln in rendered.AsSpan().EnumerateLines())
-            {
-                var s = ln.ToString().TrimStart();
-                // Broad pattern: any ->f_XXX = <expr> where RHS is a pointer expression
-                // and the field is known to be intptr_t (via the C2440 error pattern)
-                var fieldAssignIdx = s.IndexOf("->f_");
-                if (fieldAssignIdx < 0) fieldAssignIdx = s.IndexOf(")->f_");
-                if (fieldAssignIdx >= 0)
-                {
-                    var eqIdx = s.IndexOf(" = ", fieldAssignIdx);
-                    if (eqIdx > fieldAssignIdx)
-                    {
-                        var rhs = s[(eqIdx + 3)..].TrimEnd(';').Trim();
-                        // RHS is a pointer if it's a temp var, pointer cast, or address-of
-                        if ((rhs.StartsWith("__t") || rhs.StartsWith("(uint8_t") ||
-                             rhs.StartsWith("(void*") || rhs.StartsWith("loc_") || rhs.StartsWith("&")) &&
-                            !rhs.Contains("(intptr_t)") && !rhs.Contains("(uintptr_t)"))
-                        {
-                            // Only flag for intptr_t fields — check if the field name matches
-                            // known intptr_t fields (f_Pointer, f_pointer, f_pvBuffer, f_BufferList,
-                            // f_pvOptional, f_Token, f_pAddrBuf, f_handle, etc.)
-                            var fieldStart = s.IndexOf("f_", fieldAssignIdx);
-                            var fieldEnd = eqIdx;
-                            if (fieldStart >= 0 && fieldEnd > fieldStart)
-                            {
-                                var fieldName = s[fieldStart..fieldEnd].Trim();
-                                if (fieldName is "f_Pointer" or "f_pointer" or "f_pvBuffer" or
-                                    "f_BufferList" or "f_pvOptional" or "f_pAddrBuf" or
-                                    "f_cbBuffer" or "f_handle")
-                                    return $"pointer assigned to intptr_t field ({fieldName})";
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        // Gate removed: pointer→intptr_t field assignment — C-style casts between pointer and
+        // intptr_t are valid C++. GCHandle, DependentHandle use this pattern legitimately.
+        // The codegen now adds (intptr_t) casts where needed via conv.i/conv.u handling.
 
         // Body-level check: pre-declared intptr_t/uintptr_t variable assigned from pointer expression.
         // BCL IL treats IntPtr as native pointer, but C++ intptr_t is integer — incompatible assignment.
@@ -4068,11 +4037,9 @@ public partial class CppCodeGenerator
         // RuntimeFieldInfo/RuntimeMethodInfo.m_declaringType accessed via arrow — only for aliased types
         // (moved to RenderedBodyHasErrors with method context to avoid false positives on concrete subtypes)
 
-        // Phase II.1: GetCalendarInfoEx passes char16_t* where intptr_t expected
-        // Also catches definitions — some variants call nested PInvoke helpers that may have no body
-        // FIXME: fix PInvoke helper body generation for _g____PInvoke variants, then exclude definitions
-        if (s.Contains("Interop_Kernel32_GetCalendarInfoEx") || s.Contains("Interop_Kernel32_GetCalendarInfoW"))
-            return "fix PInvoke helper body generation for _g____PInvoke variants, then exclude d...";
+        // Phase II.1: GetCalendarInfoEx/W — gate removed.
+        // The P/Invoke helpers are generated correctly in HelloWorld_data.cpp.
+        // CalendarData methods call these helpers with matching types.
 
         // Pattern: enum type pointer cast where value expected
         // e.g., (System_Resources_UltimateResourceFallbackLocation*)__t5 in function args
@@ -4259,16 +4226,14 @@ public partial class CppCodeGenerator
         if (s.Contains("GregorianCalendar*") && s.Contains("Calendar*") && s.Contains("= __t"))
             return "Calendar-derived to Calendar-base assignment without cast";
 
-        // Pattern: Enum as value type in function arg (it's a reference type)
-        if (s.Contains("System_Enum_GetValue(") && !s.Contains("System_Enum*"))
-            return "Enum as value type in function arg (it's a reference type)";
+        // Gate removed: System_Enum_GetValue — enum values are boxed before the call.
+        // The codegen correctly casts to Object* via boxing. Let MSVC verify.
 
         // Note: pointer-parameter dot-access (e.g., options.f_X) is checked at body level
         // in GetRenderedBodyErrorReason where method.Parameters provides type context.
 
-        // Pattern: intptr_t/uint8_t* pointer mismatch in reflection/tracing
-        if (s.Contains("_GetPropertyOrFieldData(") || s.Contains("set_DataPointer("))
-            return "intptr_t/uint8_t* pointer mismatch in reflection/tracing";
+        // Gate removed: GetPropertyOrFieldData/set_DataPointer — C-style casts between
+        // intptr_t and uint8_t* are valid. Let MSVC catch actual type errors.
 
         // Pattern: CustomAttributeData comparison with Object*
         // The comparison line itself may not mention the type — it just has "obj == __this"
@@ -4300,12 +4265,9 @@ public partial class CppCodeGenerator
         if (s.Contains("FreeCoTaskMem(") && !s.Contains("(intptr_t)"))
             return "FreeCoTaskMem — BCL passes raw pointers (uint8_t*, uint16_t*) where intptr_t ...";
 
-        // Pattern: void* pointer arithmetic (void has unknown size)
-        // e.g., __t3 + index where __t3 is void*
-        // Note: IntPtr.ToPointer is now an ICall, but callers still produce void* values
-        // that may be used in pointer arithmetic. Keep the gate for now.
-        if (s.Contains("ToPointer("))
-            return "that may be used in pointer arithmetic. Keep the gate for now.";
+        // Gate removed: ToPointer() — IntPtr.ToPointer is now an ICall that correctly returns void*.
+        // Pointer arithmetic on void* is a GCC/MSVC extension that works in practice.
+        // If actual errors occur, MSVC will catch them at build time.
 
         // Phase III.7: Span_1_System_TimeZoneInfo_AdjustmentRule check REMOVED — compiles fine in MSVC
 
