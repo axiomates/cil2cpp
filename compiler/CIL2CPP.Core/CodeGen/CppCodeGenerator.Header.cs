@@ -218,6 +218,9 @@ public partial class CppCodeGenerator
                 }
             }
         }
+        // Store all TypeInfo names referenced from method bodies for TypeInfo tiering
+        _referencedTypeInfoNames = neededTypeInfos;
+
         // Build set of all types that will be defined (for field type sanitization)
         var definedTypeNames = new HashSet<string>();
         foreach (var type in userTypes)

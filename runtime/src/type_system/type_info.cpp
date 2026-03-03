@@ -259,7 +259,7 @@ Boolean type_has_attribute(TypeInfo* type, const char* attr_type_name) {
 }
 
 CustomAttributeInfo* type_get_attribute(TypeInfo* type, const char* attr_type_name) {
-    if (!type || !attr_type_name || type->custom_attribute_count == 0) return nullptr;
+    if (!type || !attr_type_name || type->custom_attribute_count == 0 || !type->custom_attributes) return nullptr;
     for (UInt32 i = 0; i < type->custom_attribute_count; i++) {
         if (std::strcmp(type->custom_attributes[i].attribute_type_name, attr_type_name) == 0) {
             return &type->custom_attributes[i];

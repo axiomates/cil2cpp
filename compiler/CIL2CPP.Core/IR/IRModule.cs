@@ -72,6 +72,20 @@ public class IRModule
     public Dictionary<string, string> ExternalEnumTypes { get; } = new();
 
     /// <summary>
+    /// Types that need full reflection metadata (FieldInfo[], MethodInfo[], CustomAttributeInfo[]).
+    /// Contains IL full names. Types NOT in this set get TypeInfo with fields=nullptr, methods=nullptr.
+    /// Populated from ReachabilityResult.ReflectionTargetTypes.
+    /// </summary>
+    public HashSet<string> ReflectionTargetTypes { get; set; } = new();
+
+    /// <summary>
+    /// Types that are actually instantiated (newobj/newarr/box/Activator).
+    /// Contains IL full names. Non-constructed types get minimal TypeInfo (no VTable/interfaces/instance_size).
+    /// Populated from ReachabilityResult.ConstructedTypes.
+    /// </summary>
+    public HashSet<string> ConstructedTypes { get; set; } = new();
+
+    /// <summary>
     /// Register a primitive type that needs a TypeInfo (used as array element type).
     /// </summary>
     public void RegisterPrimitiveTypeInfo(string ilFullName)

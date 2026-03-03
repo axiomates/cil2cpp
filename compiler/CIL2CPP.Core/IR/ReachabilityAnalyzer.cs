@@ -21,9 +21,17 @@ public class ReachabilityResult
     /// </summary>
     public HashSet<TypeDefinition> ConstructedTypes { get; } = new();
 
+    /// <summary>
+    /// Types that are accessed via reflection APIs (GetFields, GetMethods, typeof, GetType, etc.).
+    /// Only these types get full FieldInfo[]/MethodInfo[]/CustomAttributeInfo[] arrays in codegen.
+    /// Non-reflection types still get TypeInfo but with fields=nullptr, methods=nullptr.
+    /// </summary>
+    public HashSet<string> ReflectionTargetTypes { get; } = new();
+
     public bool IsReachable(TypeDefinition type) => ReachableTypes.Contains(type);
     public bool IsReachable(MethodDefinition method) => ReachableMethods.Contains(method);
     public bool IsConstructed(TypeDefinition type) => ConstructedTypes.Contains(type);
+    public bool IsReflectionTarget(string ilFullName) => ReflectionTargetTypes.Contains(ilFullName);
 }
 
 /// <summary>
@@ -40,9 +48,10 @@ public class ReachabilityAnalyzer
     private readonly HashSet<string> _processedMethods = new();
 
     // Track dispatched virtual method slots for deferred override resolution.
-    // Each slot records the declaring type so we only match overrides in subtypes/implementors.
-    private readonly List<(string MethodName, int ParamCount, TypeDefinition DeclaringType)> _dispatchedVirtualSlots = new();
-    private readonly HashSet<string> _dispatchedSlotKeys = new(); // dedup by "DeclaringType::Name/Count"
+    // Each slot records the declaring type and parameter signature so we only match
+    // overrides with the exact same parameter types (not just name+count).
+    private readonly List<(string MethodName, int ParamCount, string ParamSignature, TypeDefinition DeclaringType)> _dispatchedVirtualSlots = new();
+    private readonly HashSet<string> _dispatchedSlotKeys = new(); // dedup by "DeclaringType::Name/Count/ParamSig"
 
     // D.2: rd.xml preservation rules
     private List<RdXmlParser.PreservationRule>? _preservationRules;
@@ -119,6 +128,9 @@ public class ReachabilityAnalyzer
             var method = _worklist.Dequeue();
             ProcessMethod(method);
         }
+
+        // Post-fixpoint: mark user-assembly types and rd.xml preserved types as reflection targets
+        MarkUserAndPreservedReflectionTargets();
 
         return _result;
     }
@@ -216,6 +228,42 @@ public class ReachabilityAnalyzer
                     MarkTypeConstructed(typeDef);
                     break;
                 }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Mark a type as needing full reflection metadata (FieldInfo[], MethodInfo[], CustomAttributeInfo[]).
+    /// Called for types referenced via typeof(T), GetType(), reflection APIs, DAM, rd.xml.
+    /// </summary>
+    private void MarkReflectionTarget(TypeReference typeRef)
+    {
+        var resolved = TryResolve(typeRef);
+        if (resolved != null)
+            _result.ReflectionTargetTypes.Add(resolved.FullName);
+    }
+
+    /// <summary>
+    /// Post-fixpoint pass: mark all user-assembly types as reflection targets.
+    /// User-defined types are always reflection targets (small count, user expects reflection).
+    /// Also mark rd.xml preserved types.
+    /// </summary>
+    private void MarkUserAndPreservedReflectionTargets()
+    {
+        // All types from the root assembly → reflection targets
+        foreach (var type in _result.ReachableTypes)
+        {
+            if (IsUserAssembly(type))
+                _result.ReflectionTargetTypes.Add(type.FullName);
+        }
+
+        // rd.xml preserved types → reflection targets
+        if (_preservationRules != null)
+        {
+            foreach (var rule in _preservationRules)
+            {
+                if (!string.IsNullOrEmpty(rule.TypeName))
+                    _result.ReflectionTargetTypes.Add(rule.TypeName);
             }
         }
     }
@@ -455,11 +503,12 @@ public class ReachabilityAnalyzer
     /// </summary>
     private void DispatchVirtualSlot(MethodDefinition method)
     {
-        var key = $"{method.DeclaringType.FullName}::{method.Name}/{method.Parameters.Count}";
+        var paramSig = GetParamSignature(method);
+        var key = $"{method.DeclaringType.FullName}::{method.Name}/{method.Parameters.Count}/{paramSig}";
         if (!_dispatchedSlotKeys.Add(key))
             return;
 
-        _dispatchedVirtualSlots.Add((method.Name, method.Parameters.Count, method.DeclaringType));
+        _dispatchedVirtualSlots.Add((method.Name, method.Parameters.Count, paramSig, method.DeclaringType));
 
         // RTA: only check CONSTRUCTED subtypes for virtual dispatch
         if (_subtypeIndex.TryGetValue(method.DeclaringType.FullName, out var subtypes))
@@ -467,7 +516,7 @@ public class ReachabilityAnalyzer
             foreach (var type in subtypes.ToArray())
             {
                 if (_result.ConstructedTypes.Contains(type))
-                    MarkOverrideIfExists(type, method.Name, method.Parameters.Count);
+                    MarkOverrideIfExists(type, method.Name, method.Parameters.Count, paramSig);
             }
         }
     }
@@ -480,13 +529,13 @@ public class ReachabilityAnalyzer
     {
         // Snapshot: MarkOverrideIfExists → SeedMethod → DispatchVirtualSlot can add entries
         var snapshot = _dispatchedVirtualSlots.ToArray();
-        foreach (var (methodName, paramCount, declaringType) in snapshot)
+        foreach (var (methodName, paramCount, paramSig, declaringType) in snapshot)
         {
             // Check if this type is a subtype of the declaring type via the index
             if (_subtypeIndex.TryGetValue(declaringType.FullName, out var subtypes)
                 && subtypes.Contains(type))
             {
-                MarkOverrideIfExists(type, methodName, paramCount);
+                MarkOverrideIfExists(type, methodName, paramCount, paramSig);
             }
         }
     }
@@ -545,18 +594,49 @@ public class ReachabilityAnalyzer
         return false;
     }
 
-    private void MarkOverrideIfExists(TypeDefinition type, string methodName, int paramCount)
+    private void MarkOverrideIfExists(TypeDefinition type, string methodName, int paramCount, string paramSig)
     {
-        // Mark ALL matching overrides, not just the first.
-        // Multiple overloads can share (name, paramCount) with different param types
+        // Phase 4: match by parameter type signature, not just name+count.
+        // This avoids seeding unrelated overloads with the same name/count but different param types
         // (e.g. DecoderNLS.GetChars(byte[],int,int,char[],int) vs GetChars(byte*,int,char*,int,bool)).
-        // Using FirstOrDefault would only mark one, leaving the other unreachable
-        // and causing vtable fallback to the base class — potential infinite recursion.
         foreach (var overrideMethod in type.Methods.Where(m =>
             m.IsVirtual && m.Name == methodName && m.Parameters.Count == paramCount))
         {
-            SeedMethod(overrideMethod);
+            var overrideSig = GetParamSignature(overrideMethod);
+            if (ParamSignaturesMatch(paramSig, overrideSig))
+            {
+                SeedMethod(overrideMethod);
+            }
         }
+    }
+
+    /// <summary>
+    /// Check if two parameter signatures match for virtual dispatch purposes.
+    /// Exact match is preferred. When either signature contains generic parameters (!0, !!0),
+    /// fall back to accepting the match — because interface implementations substitute concrete
+    /// types for the interface's generic parameters (e.g., IComparable&lt;T&gt;.CompareTo(!0)
+    /// is implemented as String.CompareTo(System.String)).
+    /// </summary>
+    private static bool ParamSignaturesMatch(string baseSig, string overrideSig)
+    {
+        if (baseSig == overrideSig)
+            return true;
+        // If either contains generic type/method parameters, we can't reliably compare
+        // (e.g., !0 vs System.String for generic interface implementations)
+        if (baseSig.Contains('!') || overrideSig.Contains('!'))
+            return true;
+        return false;
+    }
+
+    /// <summary>
+    /// Get a normalized parameter type signature for virtual dispatch matching.
+    /// Returns comma-separated parameter type FullNames (e.g., "System.Int32,System.String").
+    /// </summary>
+    private static string GetParamSignature(MethodDefinition method)
+    {
+        if (method.Parameters.Count == 0)
+            return "";
+        return string.Join(",", method.Parameters.Select(p => p.ParameterType.FullName));
     }
 
     private bool IsUserAssembly(TypeDefinition type)
@@ -739,6 +819,9 @@ public class ReachabilityAnalyzer
                         var callMethodDef = TryResolveMethod(callRef);
                         if (callMethodDef != null && callMethodDef.IsStatic)
                             SeedCctorFor(TryResolve(callRef.DeclaringType));
+
+                        // Detect reflection API calls that require full metadata on target types
+                        DetectReflectionApiCall(callRef, instr);
                     }
                     break;
 
@@ -818,6 +901,9 @@ public class ReachabilityAnalyzer
                     break;
 
                 // Ldtoken can be field, type, or method
+                // Note: typeof(T) uses ldtoken but doesn't always mean reflection access.
+                // Reflection targets are detected in DetectReflectionApiCall when
+                // the typeof result flows to GetFields/GetMethods/etc.
                 case Code.Ldtoken:
                     if (instr.Operand is MethodReference tokenMethod)
                         ProcessMethodRef(tokenMethod);
@@ -1058,6 +1144,52 @@ public class ReachabilityAnalyzer
     /// <summary>
     /// When a constrained. prefix is followed by call/callvirt, resolve the interface method
     /// to the concrete type's explicit interface implementation and mark it reachable.
+    // Reflection API methods that require full metadata on the receiver type.
+    // When these are called on a Type object, we need FieldInfo[]/MethodInfo[] for that type.
+    private static readonly HashSet<string> ReflectionApiMethods = new()
+    {
+        "GetFields", "GetField", "GetMethods", "GetMethod",
+        "GetProperties", "GetProperty", "GetMembers", "GetMember",
+        "GetConstructor", "GetConstructors", "GetEvents", "GetEvent",
+        "GetNestedType", "GetNestedTypes", "InvokeMember",
+    };
+
+    /// <summary>
+    /// Detect reflection API calls and mark target types as needing full reflection metadata.
+    /// Conservative: if we can statically determine the target type (e.g., typeof(T).GetFields()),
+    /// only mark that type. Otherwise, mark all constructed types (very conservative fallback).
+    /// </summary>
+    private void DetectReflectionApiCall(MethodReference callRef, Mono.Cecil.Cil.Instruction instr)
+    {
+        var declType = callRef.DeclaringType?.FullName ?? "";
+        var methodName = callRef.Name;
+
+        // Type.GetFields(), Type.GetMethods(), etc. on System.Type
+        if ((declType == "System.Type" || declType == "System.RuntimeType") &&
+            ReflectionApiMethods.Contains(methodName))
+        {
+            // Try to find the type operand from a preceding ldtoken (typeof pattern)
+            // Pattern: ldtoken T → call GetTypeFromHandle → callvirt GetFields
+            var prev = instr.Previous;
+            if (prev?.OpCode.Code is Code.Call or Code.Callvirt &&
+                prev.Operand is MethodReference getTypeFromHandle &&
+                getTypeFromHandle.Name == "GetTypeFromHandle")
+            {
+                var ldtoken = prev.Previous;
+                if (ldtoken?.OpCode.Code == Code.Ldtoken &&
+                    ldtoken.Operand is TypeReference typeToken)
+                {
+                    MarkReflectionTarget(typeToken);
+                    return;
+                }
+            }
+
+            // Fallback: can't determine target type statically (e.g., Type.GetFields() on `this`).
+            // Skip blanket marking — it would mark ALL constructed types as reflection targets.
+            // FIXME: implement more precise tracking (e.g., track Type variable assignments)
+        }
+    }
+
     /// Without this, static abstract interface methods (e.g., IUtfChar&lt;Char&gt;.CastFrom)
     /// remain as stubs because only the abstract interface method (with no body) is discovered.
     /// </summary>
@@ -1228,6 +1360,9 @@ public class ReachabilityAnalyzer
     private void SeedDynamicallyAccessedMembers(TypeDefinition type, int memberTypes)
     {
         var flags = (DamFlags)memberTypes;
+
+        // DAM implies reflection access — mark as reflection target for full metadata emission
+        _result.ReflectionTargetTypes.Add(type.FullName);
 
         // All = seed everything
         if (flags == DamFlags.All)

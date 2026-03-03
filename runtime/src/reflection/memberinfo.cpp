@@ -120,7 +120,8 @@ Array* type_get_methods(Type* t) {
     if (!t || !t->type_info) throw_null_reference();
 
     auto* info = t->type_info;
-    UInt32 count = info->method_count;
+    // Reflection metadata may be stripped for types not accessed via reflection
+    UInt32 count = info->methods ? info->method_count : 0;
 
     // Create an array of ManagedMethodInfo* (pointer-sized elements)
     auto* arr = array_create(&System_Reflection_MethodInfo_TypeInfo,
@@ -136,7 +137,8 @@ Array* type_get_fields(Type* t) {
     if (!t || !t->type_info) throw_null_reference();
 
     auto* info = t->type_info;
-    UInt32 count = info->field_count;
+    // Reflection metadata may be stripped for types not accessed via reflection
+    UInt32 count = info->fields ? info->field_count : 0;
 
     auto* arr = array_create(&System_Reflection_FieldInfo_TypeInfo,
                              static_cast<Int32>(count));
@@ -152,6 +154,7 @@ ManagedMethodInfo* type_get_method(Type* t, String* name) {
     if (!name) throw_null_reference();
 
     auto* info = t->type_info;
+    if (!info->methods) return nullptr;  // Reflection metadata stripped
     auto* name_utf8 = string_to_utf8(name);
 
     for (UInt32 i = 0; i < info->method_count; i++) {
@@ -167,6 +170,7 @@ ManagedFieldInfo* type_get_field(Type* t, String* name) {
     if (!name) throw_null_reference();
 
     auto* info = t->type_info;
+    if (!info->fields) return nullptr;  // Reflection metadata stripped
     auto* name_utf8 = string_to_utf8(name);
 
     for (UInt32 i = 0; i < info->field_count; i++) {

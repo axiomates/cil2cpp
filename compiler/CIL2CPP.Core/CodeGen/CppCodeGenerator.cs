@@ -215,6 +215,13 @@ public partial class CppCodeGenerator
     private HashSet<string> _autoTypeInfoDecls = new();
 
     /// <summary>
+    /// All TypeInfo CppNames referenced from method bodies (via _TypeInfo pattern scan).
+    /// Used for TypeInfo tiering: types whose _TypeInfo is never referenced get minimal TypeInfo.
+    /// Populated during header generation by CollectTypeInfoRefs().
+    /// </summary>
+    private HashSet<string> _referencedTypeInfoNames = new();
+
+    /// <summary>
     /// Minimum IR instructions per method partition. Each TU re-parses the full header,
     /// so partitions need enough method code to amortize that overhead.
     /// ~20000 instructions ≈ 13k-17k C++ lines per partition (ratio ~0.7 lines/instruction).

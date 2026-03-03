@@ -1148,9 +1148,70 @@ public partial class CppCodeGenerator
 
         var baseName = type.BaseType != null ? $"&{type.BaseType.CppName}_TypeInfo" : "nullptr";
 
-        // Interfaces array (EmitInterfaceData skips interfaces themselves, so null for them)
+        // Flags (needed by both full and minimal)
+        var flagParts = new List<string>();
+        if (type.IsValueType) flagParts.Add("cil2cpp::TypeFlags::ValueType");
+        if (type.IsInterface) flagParts.Add("cil2cpp::TypeFlags::Interface");
+        if (type.IsAbstract) flagParts.Add("cil2cpp::TypeFlags::Abstract");
+        if (type.IsSealed) flagParts.Add("cil2cpp::TypeFlags::Sealed");
+        if (type.IsEnum) flagParts.Add("cil2cpp::TypeFlags::Enum");
+        if (type.IsPublic) flagParts.Add("cil2cpp::TypeFlags::Public");
+        if (type.IsNestedPublic) flagParts.Add("cil2cpp::TypeFlags::NestedPublic");
+        var flagsStr = flagParts.Count > 0 ? string.Join(" | ", flagParts) : "cil2cpp::TypeFlags::None";
+
+        // CorElementType (needed by both full and minimal)
+        var corElementType = GetCorElementType(type);
+
+        // Generic variance data (needed by both full and minimal for assignability)
+        var typeInfoLookup = BuildTypeInfoExprLookup();
+        var hasGenericArgs = type.IsGenericInstance && type.GenericArguments.Count > 0
+                             && type.GenericParameterVariances.Count > 0
+                             && type.GenericArguments.All(arg => typeInfoLookup.ContainsKey(arg));
+
+        // Interfaces (pointer array, needed by both tiers for assignability)
         var interfacesExpr = (!type.IsInterface && type.Interfaces.Count > 0) ? $"{type.CppName}_interfaces" : "nullptr";
         var interfaceCount = type.IsInterface ? 0 : type.Interfaces.Count;
+
+        // TypeInfo tiering: non-constructed types whose _TypeInfo is not referenced in code
+        // get minimal TypeInfo (identity + hierarchy + flags only). Omitted fields are zero-initialized.
+        var constructedTypes = _module.ConstructedTypes;
+        var isMinimalTypeInfo = constructedTypes.Count > 0
+            && !constructedTypes.Contains(type.ILFullName)
+            && !_referencedTypeInfoNames.Contains(type.CppName);
+
+        if (isMinimalTypeInfo)
+        {
+            sb.AppendLine($"cil2cpp::TypeInfo {type.CppName}_TypeInfo = {{");
+            sb.AppendLine($"    .name = \"{type.Name}\",");
+            sb.AppendLine($"    .namespace_name = \"{type.Namespace}\",");
+            sb.AppendLine($"    .full_name = \"{type.ILFullName}\",");
+            sb.AppendLine($"    .base_type = {baseName},");
+            if (interfaceCount > 0)
+            {
+                sb.AppendLine($"    .interfaces = {interfacesExpr},");
+                sb.AppendLine($"    .interface_count = {interfaceCount},");
+            }
+            sb.AppendLine($"    .flags = {flagsStr},");
+            sb.AppendLine($"    .cor_element_type = 0x{corElementType:X2},");
+            if (type.IsEnum && type.EnumUnderlyingType != null)
+            {
+                var underlyingCpp = CppNameMapper.MangleTypeName(type.EnumUnderlyingType);
+                sb.AppendLine($"    .underlying_type = &{underlyingCpp}_TypeInfo,");
+            }
+            if (hasGenericArgs)
+            {
+                sb.AppendLine($"    .generic_arguments = {type.CppName}_generic_args,");
+                sb.AppendLine($"    .generic_variances = {type.CppName}_generic_variances,");
+                sb.AppendLine($"    .generic_argument_count = {type.GenericArguments.Count},");
+                var minGenDefName = type.GenericDefinitionCppName != null
+                    ? $"\"{type.GenericDefinitionCppName}\"" : "nullptr";
+                sb.AppendLine($"    .generic_definition_name = {minGenDefName},");
+            }
+            sb.AppendLine("};");
+            return;
+        }
+
+        // Full TypeInfo: all fields populated
 
         // VTable (delegates have no vtable)
         var vtableExpr = (!type.IsInterface && !type.IsDelegate && type.VTable.Count > 0) ? $"&{type.CppName}_VTable" : "nullptr";
@@ -1164,17 +1225,6 @@ public partial class CppCodeGenerator
 
         // Instance size (interfaces have no struct)
         var instanceSize = type.IsInterface ? "0" : $"sizeof({type.CppName})";
-
-        // Flags
-        var flagParts = new List<string>();
-        if (type.IsValueType) flagParts.Add("cil2cpp::TypeFlags::ValueType");
-        if (type.IsInterface) flagParts.Add("cil2cpp::TypeFlags::Interface");
-        if (type.IsAbstract) flagParts.Add("cil2cpp::TypeFlags::Abstract");
-        if (type.IsSealed) flagParts.Add("cil2cpp::TypeFlags::Sealed");
-        if (type.IsEnum) flagParts.Add("cil2cpp::TypeFlags::Enum");
-        if (type.IsPublic) flagParts.Add("cil2cpp::TypeFlags::Public");
-        if (type.IsNestedPublic) flagParts.Add("cil2cpp::TypeFlags::NestedPublic");
-        var flagsStr = flagParts.Count > 0 ? string.Join(" | ", flagParts) : "cil2cpp::TypeFlags::None";
 
         sb.AppendLine($"cil2cpp::TypeInfo {type.CppName}_TypeInfo = {{");
         sb.AppendLine($"    .name = \"{type.Name}\",");
@@ -1193,9 +1243,11 @@ public partial class CppCodeGenerator
         var reflectableMethods = type.Methods.Where(m => !CppNameMapper.IsCompilerGeneratedType(m.Name)).ToList();
         // EmitReflectionMetadata also skips types with no fields and no reflectable methods —
         // must match here, otherwise TypeInfo references custom_attrs/fields/methods that are never emitted
+        var reflectionTargets = _module.ReflectionTargetTypes;
         var skipReflection = type.IsEnum || type.IsDelegate || type.IsRuntimeProvided
             || CppNameMapper.IsRuntimeExceptionType(type.ILFullName)
-            || (allFields.Count == 0 && reflectableMethods.Count == 0);
+            || (allFields.Count == 0 && reflectableMethods.Count == 0)
+            || (reflectionTargets.Count > 0 && !reflectionTargets.Contains(type.ILFullName));
         var fieldsExpr = (!skipReflection && allFields.Count > 0) ? $"{type.CppName}_fields" : "nullptr";
         var methodsExpr = (!skipReflection && reflectableMethods.Count > 0) ? $"{type.CppName}_methods" : "nullptr";
         if (skipReflection) { allFields = new(); reflectableMethods = new(); }
@@ -1213,8 +1265,6 @@ public partial class CppCodeGenerator
         var typeAttrCount = skipReflection ? 0 : type.CustomAttributes.Count;
         sb.AppendLine($"    .custom_attributes = {typeAttrsExpr},");
         sb.AppendLine($"    .custom_attribute_count = {typeAttrCount},");
-        // CorElementType (ECMA-335 II.23.1.16) — packed after UInt32 for alignment
-        var corElementType = GetCorElementType(type);
         sb.AppendLine($"    .cor_element_type = 0x{corElementType:X2},");
         // Enum underlying type
         var underlyingTypeExpr = "nullptr";
@@ -1225,10 +1275,6 @@ public partial class CppCodeGenerator
         }
         sb.AppendLine($"    .underlying_type = {underlyingTypeExpr},");
         // Generic variance data (must match EmitGenericVarianceData filter)
-        var typeInfoLookup = BuildTypeInfoExprLookup();
-        var hasGenericArgs = type.IsGenericInstance && type.GenericArguments.Count > 0
-                             && type.GenericParameterVariances.Count > 0
-                             && type.GenericArguments.All(arg => typeInfoLookup.ContainsKey(arg));
         var genArgsExpr = hasGenericArgs ? $"{type.CppName}_generic_args" : "nullptr";
         var genVarExpr = hasGenericArgs ? $"{type.CppName}_generic_variances" : "nullptr";
         var genCount = hasGenericArgs ? type.GenericArguments.Count : 0;
@@ -1865,12 +1911,16 @@ public partial class CppCodeGenerator
                 generatedMethodTypes.Add(t.CppName);
         }
 
+        var constructedTypes = _module.ConstructedTypes;
         bool any = false;
         foreach (var type in userTypes)
         {
             // Skip core runtime types (Object, String) but generate vtables for non-core (Task, Thread)
             var isCoreRuntime = type.IsRuntimeProvided && IRBuilder.CoreRuntimeTypes.Contains(type.ILFullName);
             if (type.IsInterface || type.IsDelegate || isCoreRuntime || type.VTable.Count == 0) continue;
+            // Skip VTable for non-constructed types (no instances → no virtual dispatch)
+            if (constructedTypes.Count > 0 && !constructedTypes.Contains(type.ILFullName)
+                && !_referencedTypeInfoNames.Contains(type.CppName)) continue;
             if (!any)
             {
                 sb.AppendLine("// ===== VTable Data =====");
@@ -1959,10 +2009,14 @@ public partial class CppCodeGenerator
         }
 
         // Interface vtable method arrays and InterfaceVTable arrays
+        var constructedTypesIface = _module.ConstructedTypes;
         foreach (var type in userTypes)
         {
             var isCoreRt = type.IsRuntimeProvided && IRBuilder.CoreRuntimeTypes.Contains(type.ILFullName);
             if (type.IsInterface || isCoreRt || type.InterfaceImpls.Count == 0) continue;
+            // Skip interface vtables for non-constructed types (no instances → no interface dispatch)
+            if (constructedTypesIface.Count > 0 && !constructedTypesIface.Contains(type.ILFullName)
+                && !_referencedTypeInfoNames.Contains(type.CppName)) continue;
 
             foreach (var impl in type.InterfaceImpls)
             {
@@ -2133,6 +2187,7 @@ public partial class CppCodeGenerator
         var typeInfoLookup = BuildTypeInfoExprLookup();
         bool any = false;
         var emittedReflection = new HashSet<string>();
+        var reflectionTargets = _module.ReflectionTargetTypes;
 
         foreach (var type in userTypes)
         {
@@ -2140,6 +2195,8 @@ public partial class CppCodeGenerator
             // Skip runtime exception types — their C++ struct layout is defined by the runtime
             // and doesn't match the generated field layout (e.g., cil2cpp::ArgumentException has no f_paramName)
             if (CppNameMapper.IsRuntimeExceptionType(type.ILFullName)) continue;
+            // Skip types not accessed via reflection — no FieldInfo[]/MethodInfo[] needed
+            if (reflectionTargets.Count > 0 && !reflectionTargets.Contains(type.ILFullName)) continue;
             // Deduplicate — BCL proxies may appear multiple times
             if (!emittedReflection.Add(type.CppName)) continue;
 

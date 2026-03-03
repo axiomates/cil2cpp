@@ -370,6 +370,12 @@ public partial class IRBuilder
 
         _module.Name = assemblySet.RootAssemblyName;
 
+        // Pass reflection target types to IRModule for codegen filtering
+        _module.ReflectionTargetTypes = reachability.ReflectionTargetTypes;
+
+        // Pass constructed types to IRModule for TypeInfo tiering
+        _module.ConstructedTypes = new HashSet<string>(reachability.ConstructedTypes.Select(t => t.FullName));
+
         // Collect all reachable types as TypeDefinitionInfo, with classification
         var types = new List<TypeDefinitionInfo>();
         foreach (var cecilType in reachability.ReachableTypes)
