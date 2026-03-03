@@ -79,6 +79,25 @@ public partial class IRBuilder
     };
 
     /// <summary>
+    /// Reflection types aliased to runtime structs with different field layouts.
+    /// When accessing fields on these types, do NOT cast to the aliased type because
+    /// the runtime struct (ManagedFieldInfo, ManagedMethodInfo, etc.) has different fields
+    /// than the BCL-generated struct. The actual derived type (RuntimeParameterInfo, etc.)
+    /// has all ancestor fields in the flat struct model.
+    /// </summary>
+    internal static readonly HashSet<string> ReflectionAliasedTypes = new()
+    {
+        "System.Reflection.MemberInfo",           // aliased to cil2cpp::Object
+        "System.Reflection.MethodBase",           // aliased to ManagedMethodInfo
+        "System.Reflection.MethodInfo",           // aliased to ManagedMethodInfo
+        "System.Reflection.FieldInfo",            // aliased to ManagedFieldInfo
+        "System.Reflection.ParameterInfo",        // aliased to ManagedParameterInfo
+        "System.Reflection.RuntimeMethodInfo",    // aliased to ManagedMethodInfo
+        "System.Reflection.RuntimeFieldInfo",     // aliased to ManagedFieldInfo
+        "System.Reflection.RuntimeConstructorInfo", // aliased to ManagedMethodInfo
+    };
+
+    /// <summary>
     /// Core runtime types where instance methods should NOT be emitted from IL.
     /// These types have their methods fully provided by the C++ runtime.
     /// Non-core RuntimeProvidedTypes (Task, Thread, etc.) DO emit instance methods.

@@ -1320,8 +1320,12 @@ public partial class IRBuilder
                 var isValueAccess = IsValueTypeAccess(fieldRef.DeclaringType, obj, method, objEntry.CppType);
                 // Cast to declaring type when the stack value might be a base type (Object*)
                 // CIL ldfld specifies the declaring type; C++ needs the correct type for field access
+                // Skip cast for reflection base types that are aliased to runtime structs with different
+                // field layouts (e.g. ParameterInfo → ManagedParameterInfo which lacks f_MemberImpl).
+                // The actual generated struct (RuntimeParameterInfo, etc.) has all BCL fields.
                 string? castToType = null;
-                if (!isValueAccess && !fieldRef.DeclaringType.IsValueType && obj != "__this")
+                if (!isValueAccess && !fieldRef.DeclaringType.IsValueType && obj != "__this"
+                    && !ReflectionAliasedTypes.Contains(fieldRef.DeclaringType.FullName))
                 {
                     var declTypeName = GetMangledTypeNameForRef(fieldRef.DeclaringType);
                     if (declTypeName != "cil2cpp::Object" && declTypeName != "cil2cpp::String")
@@ -1375,11 +1379,12 @@ public partial class IRBuilder
                     break;
                 }
 
-                // Cast value for reference type fields to handle derived→base type mismatch
-                // (flat struct model: no C++ inheritance, so all pointer casts must be explicit)
+                // Cast value for pointer fields to handle type mismatches in flat struct model
+                // (no C++ inheritance, so all pointer casts must be explicit).
+                // This applies to both reference types AND value-type pointers (e.g. Span._reference = T*).
                 var fieldTypeName = ResolveFieldTypeRef(fieldRef);
                 var fieldTypeCpp = CppNameMapper.GetCppTypeForDecl(fieldTypeName);
-                if (fieldTypeCpp.EndsWith("*") && !CppNameMapper.IsValueType(fieldTypeName)
+                if (fieldTypeCpp.EndsWith("*")
                     && fieldTypeCpp != "void*" && val != "nullptr" && val != "0")
                 {
                     // Use (void*) intermediate to handle flat struct model (no C++ inheritance)
@@ -1388,7 +1393,8 @@ public partial class IRBuilder
                 // Pass stack CppType to detect pointer values not tracked in TempVarTypes
                 var isValueAccess = IsValueTypeAccess(fieldRef.DeclaringType, obj, method, objEntry.CppType);
                 string? stCastToType = null;
-                if (!isValueAccess && !fieldRef.DeclaringType.IsValueType && obj != "__this")
+                if (!isValueAccess && !fieldRef.DeclaringType.IsValueType && obj != "__this"
+                    && !ReflectionAliasedTypes.Contains(fieldRef.DeclaringType.FullName))
                 {
                     var stDeclTypeName = GetMangledTypeNameForRef(fieldRef.DeclaringType);
                     if (stDeclTypeName != "cil2cpp::Object" && stDeclTypeName != "cil2cpp::String")

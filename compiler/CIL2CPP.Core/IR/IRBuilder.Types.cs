@@ -15,7 +15,8 @@ public partial class IRBuilder
             CppName = cppName,
             Name = typeDef.Name,
             Namespace = typeDef.Namespace,
-            IsValueType = typeDef.IsValueType,
+            // System.Enum and System.ValueType are reference types despite Cecil IsValueType=true
+            IsValueType = typeDef.IsValueType && typeDef.FullName is not "System.Enum" and not "System.ValueType",
             IsInterface = typeDef.IsInterface,
             IsAbstract = typeDef.IsAbstract,
             IsSealed = typeDef.IsSealed,
@@ -33,7 +34,10 @@ public partial class IRBuilder
 
         // Register value types for CppNameMapper so it doesn't add pointer suffix
         // Register both IL name (for IsValueType lookups) and C++ name (for GetDefaultValue)
-        if (typeDef.IsValueType)
+        // System.Enum and System.ValueType are abstract reference types even though
+        // Cecil reports IsValueType=true (because their base is System.ValueType).
+        // They must be treated as reference types (pointer semantics) in generated C++.
+        if (typeDef.IsValueType && typeDef.FullName is not "System.Enum" and not "System.ValueType")
         {
             CppNameMapper.RegisterValueType(typeDef.FullName);
             CppNameMapper.RegisterValueType(cppName);

@@ -1475,12 +1475,15 @@ public partial class IRBuilder
             {
                 // BCL mapped value type instance methods:
                 // 'this' is a pointer (&x). Most icalls expect a value (dereference),
-                // but mutable value types like ArgIterator need the pointer (no dereference).
+                // but value types whose ICalls take self* need the pointer (no dereference):
+                //   ArgIterator — mutable value type
+                //   IntPtr/UIntPtr — ToPointer ICall takes intptr_t*/uintptr_t*
                 bool isValueTarget = false;
                 try { isValueTarget = methodRef.DeclaringType.Resolve()?.IsValueType == true; }
                 catch { }
                 if (isValueTarget
-                    && methodRef.DeclaringType.FullName != "System.ArgIterator")
+                    && methodRef.DeclaringType.FullName is not "System.ArgIterator"
+                        and not "System.IntPtr" and not "System.UIntPtr")
                     thisArg = $"*({thisArg})";
                 else if (!isValueTarget)
                 {
