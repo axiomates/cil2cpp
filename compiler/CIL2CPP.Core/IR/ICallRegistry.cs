@@ -32,6 +32,15 @@ public static class ICallRegistry
         // System.Exception is a CoreRuntimeType so its instance methods are skipped during
         // normal emission — register as ICall to avoid stub.
         RegisterICall("System.Exception", "GetType", 0, "cil2cpp::object_get_type_managed");
+        // Exception constructors and property accessors — Exception is a RuntimeProvided type
+        // so its IL bodies are MissingBody. These ICalls provide field access.
+        RegisterICall("System.Exception", ".ctor", 1, "cil2cpp::exception_ctor_string");
+        RegisterICall("System.Exception", ".ctor", 2, "cil2cpp::exception_ctor_string_exception");
+        RegisterICall("System.Exception", "get_Message", 0, "cil2cpp::exception_get_message");
+        RegisterICall("System.Exception", "get_InnerException", 0, "cil2cpp::exception_get_inner_exception");
+        RegisterICall("System.Exception", "get_HResult", 0, "cil2cpp::exception_get_hresult");
+        RegisterICall("System.Exception", "set_HResult", 1, "cil2cpp::exception_set_hresult");
+        RegisterICall("System.Exception", "get_StackTrace", 0, "cil2cpp::exception_get_stack_trace");
 
         // ===== System.Object (virtual methods — runtime default implementations) =====
         // These have IL bodies in BCL but are called through vtable dispatch.

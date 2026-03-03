@@ -665,7 +665,9 @@ public class ReachabilityAnalyzer
 
         // Design-time infrastructure — TypeConverter, TypeDescriptor, etc.
         // Runtime type inspection/conversion used by designers, not AOT
-        if (typeFullName.StartsWith("System.ComponentModel."))
+        // Exception: Win32Exception is a base class for SocketException, HttpRequestException, etc.
+        if (typeFullName.StartsWith("System.ComponentModel.") &&
+            !typeFullName.StartsWith("System.ComponentModel.Win32Exception"))
             return true;
 
         // Legacy serialization — BinaryFormatter, IFormatter, DataContract

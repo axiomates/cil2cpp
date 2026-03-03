@@ -41,6 +41,30 @@ struct Exception : Object {
     String*& stack_trace() { return f_stackTraceString; }
 };
 
+// --- Exception ICall implementations (RuntimeProvided type — IL bodies are MissingBody) ---
+inline void exception_ctor_string(Exception* __this, String* message) {
+    __this->f_message = message;
+}
+inline void exception_ctor_string_exception(Exception* __this, String* message, Exception* inner) {
+    __this->f_message = message;
+    __this->f_innerException = inner;
+}
+inline String* exception_get_message(Exception* __this) {
+    return __this->f_message;
+}
+inline Exception* exception_get_inner_exception(Exception* __this) {
+    return __this->f_innerException;
+}
+inline int32_t exception_get_hresult(Exception* __this) {
+    return __this->f_HResult;
+}
+inline void exception_set_hresult(Exception* __this, int32_t value) {
+    __this->f_HResult = value;
+}
+inline String* exception_get_stack_trace(Exception* __this) {
+    return __this->f_stackTraceString;
+}
+
 // --- SystemException hierarchy ---
 struct NullReferenceException : Exception {};
 struct IndexOutOfRangeException : Exception {};

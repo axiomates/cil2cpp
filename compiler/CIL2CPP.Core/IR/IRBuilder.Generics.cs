@@ -357,8 +357,21 @@ public partial class IRBuilder
         if (!_typeCache.TryGetValue(info.DeclaringTypeName, out var declaringIrType))
             return;
 
-            // Build method-level type parameter map
+            // Build type parameter map: BOTH declaring type params AND method-level params.
+            // E.g., for EnumInfo<Byte>.CloneValues<SByte>:
+            //   TStorage=System.Byte (from declaring type EnumInfo<Byte>)
+            //   TResult=System.SByte (from method CloneValues<SByte>)
             var typeParamMap = new Dictionary<string, string>();
+
+            // Add declaring type's generic params (if the type is a generic specialization)
+            if (cecilMethod.DeclaringType.HasGenericParameters && declaringIrType.GenericArguments != null)
+            {
+                var typeGenericParams = cecilMethod.DeclaringType.GenericParameters;
+                for (int i = 0; i < typeGenericParams.Count && i < declaringIrType.GenericArguments.Count; i++)
+                    typeParamMap[typeGenericParams[i].Name] = declaringIrType.GenericArguments[i];
+            }
+
+            // Add method-level generic params
             for (int i = 0; i < cecilMethod.GenericParameters.Count && i < info.TypeArguments.Count; i++)
             {
                 typeParamMap[cecilMethod.GenericParameters[i].Name] = info.TypeArguments[i];
@@ -1688,8 +1701,11 @@ public partial class IRBuilder
                 for (int arity = 1; arity <= 8; arity++)
                     mangledResolvedMap[$"_{arity}_{paramName}"] = $"_{arity}_{mangledResolved}";
 
-                // Note: array type pattern (T[]) is handled at the ldtoken level in IRBuilder.Methods.cs
-                // (all arrays use System_Array_TypeInfo), so no mangled T__ pattern needed here.
+                // Add non-arity patterns for generic method params embedded in function names.
+                // E.g., MemoryMarshal_Cast_TStorage_System_Char → MemoryMarshal_Cast_System_Byte_System_Char
+                // The regex lookahead (?![a-zA-Z]) ensures _TStorage_ matches (underscore not a letter)
+                // but _TStorageHelper does NOT match (letter follows).
+                mangledResolvedMap[$"_{paramName}"] = $"_{mangledResolved}";
             }
         }
 

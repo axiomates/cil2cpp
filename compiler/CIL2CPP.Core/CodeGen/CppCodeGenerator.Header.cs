@@ -3052,6 +3052,21 @@ public partial class CppCodeGenerator
                 // The type is forward-declared but has no struct definition (C2027)
                 if (s.Contains(")->f_") || s.Contains(")->get_") || s.Contains(")->set_"))
                 {
+                    // Span/ReadOnlySpan element type exclusion:
+                    // In Span<T> methods, the element type T appears as (T*)(void*)expr for pointer
+                    // arithmetic (Memmove, SizeOf). The )->f_ on the same line is for Span's own
+                    // f_reference/f_length — NOT for accessing T's fields. Skip T in undefined check.
+                    string? spanElementType = null;
+                    if (method.DeclaringType?.ILFullName != null)
+                    {
+                        var declName = method.DeclaringType.ILFullName;
+                        if ((declName.StartsWith("System.Span`1<") || declName.StartsWith("System.ReadOnlySpan`1<"))
+                            && declName.EndsWith(">") && method.DeclaringType.GenericArguments?.Count > 0)
+                        {
+                            spanElementType = CppNameMapper.MangleTypeName(method.DeclaringType.GenericArguments[0]);
+                        }
+                    }
+
                     // Look for "(TypeName*)" cast patterns — find the type name before "*)"
                     var searchPos2 = 0;
                     while (searchPos2 < s.Length)
@@ -3065,6 +3080,10 @@ public partial class CppCodeGenerator
                         if (typeStart >= 0 && typeEnd > typeStart + 1)
                         {
                             var castType = s[(typeStart + 1)..typeEnd].Trim();
+                            // Skip the Span element type — pointer arithmetic only, no field access.
+                            // For reference types T*, the cast is (T**) so castType = "T*".
+                            if (spanElementType != null && castType.TrimEnd('*') == spanElementType)
+                            { searchPos2 = starIdx + 2; continue; }
                             if (IsUndefinedBclType(castType, knownTypes))
                                 return $"undefined type '{castType}' member access (C2027)";
                         }
@@ -3564,7 +3583,10 @@ public partial class CppCodeGenerator
             CollectBodyPointerTypeRefs(rendered, bodyRefs);
             foreach (var bodyRef in bodyRefs)
             {
-                if (bodyRef.Contains("Safe") && bodyRef.Contains("Handle") && !knownTypes.Contains(bodyRef))
+                // Exclude SafeHandleMarshaller — it's a marshalling helper, not a SafeHandle subclass.
+                // Its ManagedToUnmanagedIn nested type accesses f_handle on a stored SafeHandle reference.
+                if (bodyRef.Contains("Safe") && bodyRef.Contains("Handle") &&
+                    !bodyRef.Contains("Marshaller") && !knownTypes.Contains(bodyRef))
                     return $"f_handle access on opaque SafeHandle stub '{bodyRef}'";
             }
             // Also check the declaring type itself (__this->f_handle)
@@ -3574,7 +3596,9 @@ public partial class CppCodeGenerator
                 // SafeHandle subclasses with flat struct definitions inherit f_handle from
                 // SafeHandle base — if the struct IS emitted (in knownTypes), field access is valid.
                 // Only gate types that are truly opaque (not in knownTypes).
+                // Exclude SafeHandleMarshaller — it's a marshalling helper, not a SafeHandle subclass.
                 if (declCppName.Contains("Safe") && declCppName.Contains("Handle") &&
+                    !declCppName.Contains("Marshaller") &&
                     declCppName != "System_Runtime_InteropServices_SafeHandle" &&
                     !knownTypes.Contains(declCppName))
                     return $"f_handle access on opaque SafeHandle declaring type '{declCppName}'";
