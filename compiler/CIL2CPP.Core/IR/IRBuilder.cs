@@ -443,19 +443,11 @@ public partial class IRBuilder
             var scannedTypeKeys = new HashSet<string>();
             var scannedMethodKeys = new HashSet<string>();
             int prevCount;
-            int iterations = 0;
-            const int MaxPass05Iterations = 50;
             do
             {
                 prevCount = _genericInstantiations.Count;
                 DiscoverTransitiveGenericTypes(scannedTypeKeys);
                 DiscoverTransitiveGenericTypesFromMethods(scannedMethodKeys);
-                iterations++;
-                if (iterations >= MaxPass05Iterations)
-                {
-                    Console.Error.WriteLine($"[WARN] Pass 0.5: generic discovery fixpoint capped at {MaxPass05Iterations} iterations ({_genericInstantiations.Count} types)");
-                    break;
-                }
             } while (_genericInstantiations.Count > prevCount);
         }
 
@@ -502,7 +494,12 @@ public partial class IRBuilder
             if (typeDef.HasGenericParameters) continue;
             if (_typeCache.TryGetValue(typeDef.FullName, out var irType2))
             {
-                irType2.HasCctor = typeDef.Methods.Any(m => m.IsConstructor && m.IsStatic);
+                // Only flag HasCctor if the cctor is actually reachable (will be compiled).
+                // With lazy cctor seeding, types that are reachable but whose cctors
+                // were never triggered (no static field access, no static method call,
+                // no construction) should not emit _ensure_cctor() guards.
+                irType2.HasCctor = typeDef.Methods.Any(m => m.IsConstructor && m.IsStatic
+                    && _reachability.IsReachable(m.GetCecilMethod()));
             }
         }
 
@@ -584,8 +581,6 @@ public partial class IRBuilder
             var scannedTypeKeys = new HashSet<string>();
             var scannedMethodKeys = new HashSet<string>();
             int prevTypeCount;
-            int pass36Iterations = 0;
-            const int MaxPass36Iterations = 50;
             do
             {
                 prevTypeCount = _genericInstantiations.Count;
@@ -613,12 +608,6 @@ public partial class IRBuilder
                     foreach (var (_, irMethod, _) in _deferredGenericBodies)
                         GenerateStubBody(irMethod);
                     _deferredGenericBodies.Clear();
-                }
-                pass36Iterations++;
-                if (pass36Iterations >= MaxPass36Iterations)
-                {
-                    Console.Error.WriteLine($"[WARN] Pass 3.6: re-discovery fixpoint capped at {MaxPass36Iterations} iterations ({_genericInstantiations.Count} types)");
-                    break;
                 }
             } while (_genericInstantiations.Count > prevTypeCount);
         }

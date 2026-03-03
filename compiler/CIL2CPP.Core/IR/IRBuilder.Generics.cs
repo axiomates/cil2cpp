@@ -125,6 +125,7 @@ public partial class IRBuilder
         "System.Resources",
         "System.Security",
         "System.Buffers.IndexOfAnyAsciiSearcher",  // SIMD-dependent search internals
+        "System.Text.RegularExpressions.Symbolic",  // Recursive generic types (BDD/DerivativeEffect) cause infinite nesting
         "Internal",
     ];
 
@@ -179,6 +180,26 @@ public partial class IRBuilder
         "Internal.Win32.RegistryKey",
     ];
 
+    /// <summary>
+    /// Maximum nesting depth for generic type arguments.
+    /// Prevents infinite recursive generic instantiations (e.g., Dict&lt;KVP&lt;KVP&lt;...&gt;&gt;&gt;).
+    /// Legitimate .NET generics rarely exceed depth 4; recursive BCL types
+    /// (Regex Symbolic engine) can nest infinitely.
+    /// </summary>
+    private const int MaxGenericNestingDepth = 5;
+
+    private static int GetGenericNestingDepth(TypeReference typeRef)
+    {
+        if (typeRef is not GenericInstanceType git) return 0;
+        int maxChild = 0;
+        foreach (var arg in git.GenericArguments)
+        {
+            int childDepth = GetGenericNestingDepth(arg);
+            if (childDepth > maxChild) maxChild = childDepth;
+        }
+        return 1 + maxChild;
+    }
+
     private void CollectGenericType(TypeReference typeRef)
     {
         if (typeRef is not GenericInstanceType git) return;
@@ -186,6 +207,10 @@ public partial class IRBuilder
         // Skip if any type argument contains an unresolved generic parameter
         // (e.g., TResult, TResult[], Task<TResult> — all contain GenericParameter)
         if (git.GenericArguments.Any(ContainsGenericParameter))
+            return;
+
+        // Safety: prevent infinite recursive generic nesting
+        if (GetGenericNestingDepth(git) > MaxGenericNestingDepth)
             return;
 
         // Skip generic types from BCL internal namespaces
@@ -301,28 +326,26 @@ public partial class IRBuilder
         // generic method instantiations (e.g., GetNameInlined<Byte> calls FindDefinedIndex<Byte>).
         // Uses class-level _processedMethodSpecKeys so this method can be safely re-called
         // (e.g., from Pass 3.6 re-discovery) without reprocessing already-created methods.
-        bool changed = true;
-        int iterations = 0;
-        const int MaxPass35Iterations = 50;
-        while (changed)
+        //
+        // Termination: finite input assemblies → finite set of (method × type-arg) combinations
+        // → each key processed at most once → the pending set shrinks monotonically to empty.
+        var pending = _genericMethodInstantiations.Keys
+            .Where(k => !_processedMethodSpecKeys.Contains(k))
+            .ToList();
+
+        while (pending.Count > 0)
         {
-            changed = false;
-            // Snapshot KEYS only (lighter than .ToList() which copies key+value pairs)
-            var snapshotKeys = _genericMethodInstantiations.Keys.ToArray();
-            foreach (var key in snapshotKeys)
+            foreach (var key in pending)
             {
-                if (_processedMethodSpecKeys.Contains(key)) continue;
                 _processedMethodSpecKeys.Add(key);
-                changed = true;
                 if (_genericMethodInstantiations.TryGetValue(key, out var info))
                     ProcessGenericMethodSpecialization(key, info);
             }
-            iterations++;
-            if (iterations >= MaxPass35Iterations)
-            {
-                Console.Error.WriteLine($"[WARN] Pass 3.5: generic method specialization fixpoint capped at {MaxPass35Iterations} iterations ({_genericMethodInstantiations.Count} methods)");
-                break;
-            }
+
+            // Collect keys discovered during this round's processing
+            pending = _genericMethodInstantiations.Keys
+                .Where(k => !_processedMethodSpecKeys.Contains(k))
+                .ToList();
         }
     }
 

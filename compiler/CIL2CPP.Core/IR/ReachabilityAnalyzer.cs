@@ -58,6 +58,11 @@ public class ReachabilityAnalyzer
     // Performance: cache TryResolve results to avoid repeated Cecil Resolve() calls
     private readonly Dictionary<string, TypeDefinition?> _resolveCache = new();
 
+    // Separate guard for full reachability processing vs layout-only.
+    // MarkTypeForLayout adds to ReachableTypes (struct emission) but not here.
+    // MarkTypeReachable checks this set so a layout-only type can be upgraded later.
+    private readonly HashSet<TypeDefinition> _fullyProcessedTypes = new();
+
     public ReachabilityAnalyzer(AssemblySet assemblySet)
     {
         _assemblySet = assemblySet;
@@ -214,11 +219,15 @@ public class ReachabilityAnalyzer
     private void MarkTypeReachable(TypeDefinition type)
     {
         // BCL boundary filtering — deep internal types are not useful to compile
-        // Don't even add them to the reachable set (avoids incomplete type definitions)
         if (IsBclBoundaryType(type))
             return;
 
-        if (!_result.ReachableTypes.Add(type))
+        // Always add to reachable set (may already be there from MarkTypeForLayout)
+        _result.ReachableTypes.Add(type);
+
+        // Full processing guard: allows layout-only types to be upgraded later
+        // when discovered through method bodies or construction sites.
+        if (!_fullyProcessedTypes.Add(type))
             return;
 
         // Mark base types reachable (needed for struct layout / vtable)
@@ -237,26 +246,31 @@ public class ReachabilityAnalyzer
                 MarkTypeReachable(ifaceDef);
         }
 
-        // Mark static constructor reachable
-        var cctor = type.Methods.FirstOrDefault(m => m.IsConstructor && m.IsStatic);
-        if (cctor != null)
-            SeedMethod(cctor);
+        // NOTE: Static constructor (cctor) is NOT seeded here.
+        // Per ECMA-335 §II.10.5.3.3, cctor triggers only on:
+        //   1. First static field access (ldsfld/stsfld/ldsflda)
+        //   2. First static method invocation (call/callvirt on static method)
+        //   3. First object construction (newobj → MarkTypeConstructed)
+        // Seeding cctor unconditionally here caused exponential cascade explosion
+        // (e.g., NuGetSimpleTest: 2 JSON calls → 30K methods → 21GB OOM).
 
         // Mark finalizer reachable
         var finalizer = type.Methods.FirstOrDefault(m => m.Name == "Finalize" && m.IsVirtual);
         if (finalizer != null)
             SeedMethod(finalizer);
 
-        // Mark field types reachable (needed for struct layout and forward declarations).
-        // All field types need their struct definitions generated — even reference types
-        // (C++ code generator needs the type definition for forward declarations).
-        // RTA note: field types are made REACHABLE (struct emitted) but NOT CONSTRUCTED
-        // (no virtual dispatch). The dispatch reduction comes from MarkTypeConstructed.
+        // Field type cascade: lightweight — only value types need struct layout.
+        // Reference-type fields are pointers in C++ (8 bytes, forward-declared).
+        // SanitizeFieldType() handles unknown pointer types as void*.
+        // This cuts off the exponential cascade through reference-type field graphs.
         foreach (var field in type.Fields)
         {
             var fieldTypeDef = TryResolve(field.FieldType);
-            if (fieldTypeDef != null)
-                MarkTypeReachable(fieldTypeDef);
+            if (fieldTypeDef == null) continue;
+
+            if (fieldTypeDef.IsValueType || fieldTypeDef.IsEnum)
+                MarkTypeForLayout(fieldTypeDef);
+            // Reference types: skip — discovered through method bodies when actually used
         }
 
         // D.1: [DynamicallyAccessedMembers] on the type itself — seed members per flags
@@ -284,8 +298,41 @@ public class ReachabilityAnalyzer
 
         // RTA: virtual dispatch only for CONSTRUCTED types (not merely reachable).
         // MarkDispatchedOverrides is called from MarkTypeConstructed, not here.
-        // This is the key CHA→RTA upgrade: types that are only field-type-reachable
-        // or cast-target-reachable don't get virtual dispatch overhead.
+    }
+
+    /// <summary>
+    /// Lightweight reachability: only adds the type to ReachableTypes for struct emission.
+    /// Does NOT seed cctor/finalizer, does NOT cascade reference-type fields,
+    /// does NOT process interfaces/DAM/subtype index.
+    /// Used for field-type cascade: C++ only needs the struct layout for value-type fields
+    /// (embedded in parent struct). Reference-type fields are pointers (forward-declared).
+    /// Types initially layout-only can be upgraded to fully-reachable via MarkTypeReachable
+    /// when discovered through method bodies or construction sites.
+    /// </summary>
+    private void MarkTypeForLayout(TypeDefinition type)
+    {
+        if (IsBclBoundaryType(type))
+            return;
+
+        if (!_result.ReachableTypes.Add(type))
+            return;
+
+        // Base types needed for inherited field layout
+        if (type.BaseType != null)
+        {
+            var baseTypeDef = TryResolve(type.BaseType);
+            if (baseTypeDef != null)
+                MarkTypeForLayout(baseTypeDef);
+        }
+
+        // Only value-type fields need layout cascade (embedded in struct).
+        // Reference-type fields are pointers — forward declaration sufficient.
+        foreach (var field in type.Fields)
+        {
+            var fieldTypeDef = TryResolve(field.FieldType);
+            if (fieldTypeDef != null && (fieldTypeDef.IsValueType || fieldTypeDef.IsEnum))
+                MarkTypeForLayout(fieldTypeDef);
+        }
     }
 
     /// <summary>
@@ -303,6 +350,9 @@ public class ReachabilityAnalyzer
         if (!_result.ConstructedTypes.Add(type))
             return;
 
+        // ECMA-335: object construction triggers cctor
+        SeedCctorFor(type);
+
         // Only NOW dispatch virtual overrides — the core RTA distinction.
         // Types that are merely reachable (field types, cast targets) don't dispatch.
         MarkDispatchedOverrides(type);
@@ -315,6 +365,23 @@ public class ReachabilityAnalyzer
             if (baseTypeDef != null)
                 MarkTypeConstructed(baseTypeDef);
         }
+    }
+
+    /// <summary>
+    /// Seed a type's static constructor (.cctor) if it exists.
+    /// Called only at ECMA-335 §II.10.5.3.3 trigger points:
+    ///   1. First static field access (ldsfld/stsfld/ldsflda)
+    ///   2. First static method invocation
+    ///   3. First object construction (MarkTypeConstructed)
+    /// This lazy seeding prevents exponential cascade through cctor chains
+    /// (the primary explosion source for NuGet-dependent assemblies).
+    /// </summary>
+    private void SeedCctorFor(TypeDefinition? type)
+    {
+        if (type == null) return;
+        var cctor = type.Methods.FirstOrDefault(m => m.IsConstructor && m.IsStatic);
+        if (cctor != null)
+            SeedMethod(cctor);
     }
 
     /// <summary>
@@ -615,6 +682,11 @@ public class ReachabilityAnalyzer
         if (typeFullName.StartsWith("System.Resources."))
             return true;
 
+        // Regex symbolic engine — recursive generic types (BDD, DerivativeEffect, SymbolicRegexNode)
+        // create infinitely nested generic instantiations. These are internal implementation details.
+        if (typeFullName.StartsWith("System.Text.RegularExpressions.Symbolic."))
+            return true;
+
         return false;
     }
 
@@ -644,9 +716,19 @@ public class ReachabilityAnalyzer
         {
             switch (instr.OpCode.Code)
             {
-                // Method references (non-constructing calls)
+                // Method calls: trigger cctor if calling a static method (ECMA-335 §II.10.5.3.3)
                 case Code.Call:
                 case Code.Callvirt:
+                    ProcessMethodRef(instr.Operand as MethodReference);
+                    if (instr.Operand is MethodReference callRef)
+                    {
+                        var callMethodDef = TryResolveMethod(callRef);
+                        if (callMethodDef != null && callMethodDef.IsStatic)
+                            SeedCctorFor(TryResolve(callRef.DeclaringType));
+                    }
+                    break;
+
+                // Function pointer loads: no cctor trigger (just loads pointer, no invocation)
                 case Code.Ldftn:
                 case Code.Ldvirtftn:
                     ProcessMethodRef(instr.Operand as MethodReference);
@@ -705,14 +787,20 @@ public class ReachabilityAnalyzer
                     ProcessConstrainedCall(instr.Operand as TypeReference, instr.Next);
                     break;
 
-                // Field references
+                // Instance field references: no cctor trigger
                 case Code.Ldfld:
                 case Code.Stfld:
+                case Code.Ldflda:
+                    ProcessFieldRef(instr.Operand as FieldReference);
+                    break;
+
+                // Static field access: triggers cctor (ECMA-335 §II.10.5.3.3)
                 case Code.Ldsfld:
                 case Code.Stsfld:
-                case Code.Ldflda:
                 case Code.Ldsflda:
                     ProcessFieldRef(instr.Operand as FieldReference);
+                    if (instr.Operand is FieldReference sfldRef)
+                        SeedCctorFor(TryResolve(sfldRef.DeclaringType));
                     break;
 
                 // Ldtoken can be field, type, or method
