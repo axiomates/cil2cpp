@@ -1587,6 +1587,18 @@ public partial class CppCodeGenerator
         // algorithms (IntroSort, FormatCustomized, String.Concat, etc.), not JIT intrinsics.
         // JIT intrinsics are already caught by System.Runtime.Intrinsics namespace check above.
 
+        // Open-generic types with unresolved type parameters (e.g., Span`1<TStorage>,
+        // ReadOnlySpan`1<TStorage>, MemoryMarshal.Cast<TStorage,X>).
+        // These are non-instantiated generic definitions that should never be compiled.
+        // Only concrete specializations (Span<Byte>, Span<Char>, etc.) should be compiled.
+        if (method.DeclaringType?.CppName != null &&
+            MangledNameContainsUnresolvedGenericParam(method.DeclaringType.CppName))
+            return true;
+        // Also check the method's own C++ name for unresolved generic params
+        // (e.g., MemoryMarshal_Cast_TStorage_System_Char)
+        if (MangledNameContainsUnresolvedGenericParam(method.CppName))
+            return true;
+
         // Numerics interface DIM with non-primitive struct params or unresolved generic params.
         // INumber<T>/IComparisonOperators<T> DIM bodies operate on large value types
         // (128-bit integers, 128-bit decimals, 16-bit floats) or have unresolved generic type
@@ -1708,96 +1720,6 @@ public partial class CppCodeGenerator
         // RuntimeMethodInfoStub constructors — reference RuntimeMethodHandle fields not in our model
         if (method.DeclaringType?.ILFullName == "System.RuntimeMethodInfoStub" && method.Name == ".ctor")
             return true;
-
-        // ConcurrentQueue.Segment — REMOVED: tested through remaining gates
-        // Reflection.Pointer — REMOVED: tested through remaining gates
-        // IntPtr/UIntPtr method definitions — REMOVED: tested through remaining gates
-        // RuntimeParameterInfo .ctor — REMOVED: tested through remaining gates
-
-        // Encoding GetCharsWithFallback — REMOVED: tested through remaining gates
-
-        // ConditionalWeakTable Container.Finalize/Resize and CWT.ctor — REMOVED: MdArray** field access
-        // was flagged as KBP but methods now tested through remaining gates
-
-        // SharedArrayPool.Rent — REMOVED: ConditionalWeakTable + AsyncLocal — now tested through remaining gates
-
-        // Globalization NLS methods — REMOVED: tested through remaining gates
-        // CalendarData — REMOVED: tested through remaining gates
-        // ResourceReader/RuntimeResourceSet — REMOVED: tested through remaining gates
-        // Interop P/Invoke — REMOVED: tested through remaining gates
-        // Interop/Kernel32 — REMOVED: tested through remaining gates
-
-        // Globalization CultureData P/Invoke — REMOVED: tested through remaining gates
-
-        // TimeSpanFormat.Format/FormatC/FormatG — REMOVED: these are stubs, calls to them compile fine.
-        // The "wrong argument ordering" comment was from a false positive in RenderedLineHasError.
-
-        // Number.FormatFixed/NumberToStringFormat — REMOVED: ValueListBuilder calls compile correctly.
-        // Callers already pass correct this pointers; the false positive was from the line-level check.
-
-        // Globalization InvariantModeCasing.ToLower/ToUpper — REMOVED: Span struct ↔ void* conversion
-        // was flagged as KBP but methods compile correctly after code gen improvements
-
-        // Globalization TextInfo.ToLowerAsciiInvariant — REMOVED: Span struct conversion
-        // was flagged as KBP but method compiles correctly now
-
-        // CancellationTokenSource.ExecuteCallbackHandlers — REMOVED: tested through remaining gates
-
-        // TimeZoneInfo.GetLocalizedNameByMuiNativeResource — REMOVED: tested through remaining gates
-
-        // OperationCanceledException.get_CancellationToken — REMOVED: tested through remaining gates
-
-        // Buffers search methods — REMOVED: tested through remaining gates
-        // CultureData.InitIcuCultureDataCore — REMOVED: tested through remaining gates
-
-        // HashCode.GenerateGlobalSeed / Marvin.GenerateSeed → now have ICalls (removed KBP)
-        // Marshal.StringToCoTaskMemUni → now has ICall (removed KBP)
-        // RuntimeTypeHandle .ctor → now has ICall (removed KBP)
-
-        // NativeLibrary.GetSymbol — REMOVED: tested through remaining gates
-        // RandomizedStringEqualityComparer .ctor — REMOVED: tested through remaining gates
-        // XoshiroImpl .ctor — REMOVED: tested through remaining gates
-        // DateTimeFormatInfoScanner.ArrayElementsHaveSpace — REMOVED: tested through remaining gates
-
-        // ExecutionContext.SetLocalValue — REMOVED: tested through remaining gates
-
-        // IO.UnmanagedMemoryStream.Initialize — fixed: pointer→integer now uses C-style cast
-        // Math.CopySign → now has ICall (removed KBP)
-
-        // GuidResult.SetFailure — REMOVED: body-level dot-access check handles any remaining issues.
-        // Method-level KBP was overly broad (blocked even after root cause fix).
-
-        // CultureInfo.set_CurrentCulture/CurrentUICulture — REMOVED: tested through remaining gates
-
-        // StringBuilder.set_Length — REMOVED: tested through remaining gates
-
-        // ConstArray.get_Item — REMOVED: tested through remaining gates
-        // CustomAttribute.GetPropertyOrFieldData — REMOVED: tested through remaining gates
-        // CustomAttributeTypedArgument.CanonicalizeValue — REMOVED: tested through remaining gates
-        // MdFieldInfo.Equals/CacheEquals — REMOVED: tested through remaining gates
-        // RtFieldInfo.Equals — REMOVED: tested through remaining gates
-
-        // Number.FormatFixed/NumberToStringFormat — REMOVED: ValueListBuilder calls compile correctly
-        // (false positive was from the line-level check, callers already pass correct this pointers)
-
-        // MemoryExtensions.Equals/StartsWith — REMOVED: Span struct ↔ void* conversion
-        // was flagged as KBP but methods compile correctly now
-
-        // DefaultInterpolatedStringHandler — REMOVED: ExceptionHandlingClauseOptions TypeInfo
-        // was undeclared but methods now pass through correctly after gate improvements
-
-        // RuntimeType.SplitName — FIXED: string_length false positive resolved (knownStringTemps now includes param-derived temps)
-        // REMOVED KBP check
-
-        // MemberInfoCache<RuntimeType>.AddMethod — REMOVED: tested through remaining gates
-
-        // Span<KeyValuePair<IAsyncLocal,Object>>.ctor — REMOVED: forward-declared type field access
-        // was flagged as KBP but methods should pass through correctly now
-
-        // TimeSpan — ALL methods now compile:
-        // - void*→intptr_t FIXED by IRConversion SourceCppType (C-style cast)
-        // - ldsflda pointer tracking FIXED by StackEntry CppType propagation
-        // - TimeSpanFormat_FormatC/FormatG false positive REMOVED from RenderedLineHasError
 
         foreach (var block in method.BasicBlocks)
         {
@@ -2214,7 +2136,10 @@ public partial class CppCodeGenerator
         }
 
         // SIMD Vector: methods that use Vector128/256/512 struct types.
-        // These structs are opaque stubs — operators and cross-type assignments fail.
+        // The operator gate remains — C++ operators (+, |, &, ~) don't work on opaque Vector structs.
+        // The assignment gate was REMOVED: SIMD method calls push __SIMD_STUB__ sentinel onto
+        // the IL stack; all consumer instructions (stloc/stfld/brfalse/conv/etc.) skip or
+        // propagate the stub — no C++ code is emitted for dead SIMD code paths.
         if (rendered.Contains("System_Runtime_Intrinsics_Vector"))
         {
             foreach (var line in rendered.AsSpan().EnumerateLines())
@@ -2225,17 +2150,6 @@ public partial class CppCodeGenerator
                 if (s.Contains("= (System_Runtime_Intrinsics_Vector") &&
                     (s.Contains(")(~") || s.Contains(" | ") || s.Contains(" & ") || s.Contains(" - ")))
                     return "SIMD Vector operator on opaque struct type (C2676/C2088)";
-                // Pattern: loc_N = __tN; where __tN is a Vector type and loc_N is different type
-                // (cross-scope type mismatch from SIMD operations)
-                if (s.StartsWith("loc_") && s.Contains(" = __t") && !s.Contains("("))
-                {
-                    var eqIdx = s.IndexOf(" = ");
-                    var rhs = s[(eqIdx + 3)..].TrimEnd(';').Trim();
-                    // Check if rhs temp was declared as a Vector type earlier
-                    if (rendered.Contains($"System_Runtime_Intrinsics_Vector128_1_") &&
-                        rendered.Contains($"{rhs} = {{}}; // SIMD stub"))
-                        return "SIMD Vector stub assigned to non-Vector local (C2679)";
-                }
             }
         }
 
@@ -2666,8 +2580,16 @@ public partial class CppCodeGenerator
                     foreach (var v in arrayGetVars)
                     {
                         // (X*)varName — value-to-pointer cast of array_get result
-                        if (s.Contains($"*){v}") && !s.Contains("array_"))
-                            return $"array_get<non-pointer> result {v} cast to pointer";
+                        // Must check for exact variable name (not substring like __t3 matching __t35)
+                        var pattern = $"*){v}";
+                        var idx = s.IndexOf(pattern);
+                        if (idx >= 0 && !s.Contains("array_"))
+                        {
+                            // Ensure the match is at exact boundary (next char is not alphanumeric/underscore)
+                            var afterIdx = idx + pattern.Length;
+                            if (afterIdx >= s.Length || !char.IsLetterOrDigit(s[afterIdx]) && s[afterIdx] != '_')
+                                return $"array_get<non-pointer> result {v} cast to pointer";
+                        }
                     }
                 }
             }
@@ -3476,9 +3398,17 @@ public partial class CppCodeGenerator
                         if (rhs.Contains("(intptr_t)") || rhs.Contains("(uintptr_t)")) continue;
                         if (rhs.StartsWith("__t") && !rhs.Contains("->") && !rhs.Contains("(")) continue;
                         if (rhs == "0" || rhs == "nullptr") continue;
-                        // RHS is a local variable — check if it's pointer-typed
-                        if (rhs.StartsWith("loc_") || rhs.StartsWith("&"))
+                        // RHS is address-of — always a pointer
+                        if (rhs.StartsWith("&"))
                             return $"intptr_t pre-declared var {v} assigned pointer-typed value";
+                        // RHS is a simple local variable — check if that local is pointer-typed
+                        // (compound expressions like "loc_1 - loc_2" are integer math, safe for intptr_t)
+                        if (rhs.StartsWith("loc_") && !rhs.Contains(' ') && !rhs.Contains('+') && !rhs.Contains('-'))
+                        {
+                            var local = method.Locals.FirstOrDefault(l => l.CppName == rhs);
+                            if (local != null && local.CppTypeName.EndsWith("*"))
+                                return $"intptr_t pre-declared var {v} assigned pointer-typed value";
+                        }
                     }
                 }
             }
@@ -3580,33 +3510,51 @@ public partial class CppCodeGenerator
                         return $"f_Item field access on opaque ValueTuple local type '{lType}'";
                 }
                 // Scan rendered body for any ValueTuple type name (may appear in function calls,
-                // sizeof, memset, etc.) that's not in knownTypes
+                // sizeof, memset, etc.) that's not in knownTypes.
+                // NOTE: Extraction may capture method suffixes (e.g. __ctor, _GetHashCode).
+                // Check if any prefix of the extracted name is a known type before flagging.
                 foreach (var ln in rendered.AsSpan().EnumerateLines())
                 {
                     var s = ln.ToString();
                     var vtIdx = s.IndexOf("System_ValueTuple_");
                     while (vtIdx >= 0)
                     {
-                        // Extract full type name (ends at non-identifier char)
+                        // Extract full identifier (ends at non-identifier char)
                         var end = vtIdx;
                         while (end < s.Length && (char.IsLetterOrDigit(s[end]) || s[end] == '_'))
                             end++;
-                        var typeName = s[vtIdx..end];
-                        if (!knownTypes.Contains(typeName) && typeName.Contains("ValueTuple_"))
-                            return $"f_Item field access on opaque ValueTuple '{typeName}' in body";
+                        var fullName = s[vtIdx..end];
+                        // Check if the full name or any prefix at '_' boundary is a known type
+                        bool isKnown = knownTypes.Contains(fullName);
+                        if (!isKnown)
+                        {
+                            for (int pi = fullName.Length - 1; pi > 0; pi--)
+                            {
+                                if (fullName[pi] == '_')
+                                {
+                                    var prefix = fullName[..pi];
+                                    if (knownTypes.Contains(prefix))
+                                    {
+                                        isKnown = true;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        if (!isKnown && fullName.Contains("ValueTuple_"))
+                            return $"f_Item field access on opaque ValueTuple '{fullName}' in body";
                         vtIdx = s.IndexOf("System_ValueTuple_", end);
                     }
                 }
             }
         }
 
-        // Body-level check: f_reference/f_length on ArraySegment opaque stubs.
-        // ArraySegment<T> is emitted as opaque empty struct — f_reference/f_length don't exist.
-        // IL code accesses via dot (value type) or arrow (pointer).
-        if (rendered.Contains("ArraySegment") &&
-            (rendered.Contains(".f_reference") || rendered.Contains(".f_length") ||
-             rendered.Contains("->f_reference") || rendered.Contains("->f_length")))
-            return "field access on opaque ArraySegment stub";
+        // REMOVED: false-positive ArraySegment gate.
+        // Previous check flagged methods containing BOTH "ArraySegment" AND ".f_reference"/".f_length",
+        // but f_reference/f_length are Span fields (on __this), not ArraySegment fields.
+        // ArraySegment fields are f__array/f__offset/f__count. Span.op_Implicit(ArraySegment<T>)
+        // accesses Span's own f_reference/f_length — the gate incorrectly joined unrelated accesses.
+        // Real ArraySegment field access issues (if any) are caught by the forward-declared type gate.
 
         // Body-level check: f_handle on SafeHandle subtypes that are opaque stubs.
         if (rendered.Contains("->f_handle") && knownTypes != null)
@@ -3623,46 +3571,18 @@ public partial class CppCodeGenerator
             if (rendered.Contains("__this->f_handle") && method.DeclaringType != null)
             {
                 var declCppName = CppNameMapper.MangleTypeName(method.DeclaringType.ILFullName);
-                // SafeHandle subclasses may be opaque stubs (in knownTypes but without f_handle field)
-                // Only the base SafeHandle has f_handle in the flat struct; subclass stubs don't
+                // SafeHandle subclasses with flat struct definitions inherit f_handle from
+                // SafeHandle base — if the struct IS emitted (in knownTypes), field access is valid.
+                // Only gate types that are truly opaque (not in knownTypes).
                 if (declCppName.Contains("Safe") && declCppName.Contains("Handle") &&
-                    declCppName != "System_Runtime_InteropServices_SafeHandle")
+                    declCppName != "System_Runtime_InteropServices_SafeHandle" &&
+                    !knownTypes.Contains(declCppName))
                     return $"f_handle access on opaque SafeHandle declaring type '{declCppName}'";
             }
         }
 
-        // Body-level check: array_get with non-Array* argument (jagged array access).
-        // Pattern: array_get<T>(object_ptr, idx) where object_ptr is Object* not Array*.
-        // IL ldelem on jagged arrays returns Object* which must be cast to Array* for next access.
-        if (rendered.Contains("array_get"))
-        {
-            foreach (var ln in rendered.AsSpan().EnumerateLines())
-            {
-                var s = ln.ToString().TrimStart();
-                // auto __tN = cil2cpp::array_get<T>(__tM, idx) where __tM came from a previous array_get<Object*>
-                var agIdx = s.IndexOf("cil2cpp::array_get<");
-                if (agIdx < 0) continue;
-                var parenIdx = s.IndexOf('(', agIdx + 19);
-                if (parenIdx < 0) continue;
-                // Check what the close of the template arg is
-                var closeAngle = s.IndexOf('>', agIdx + 19);
-                if (closeAngle < 0 || closeAngle >= parenIdx) continue;
-                var templateArg = s[(agIdx + 19)..closeAngle].Trim();
-                // If template arg is NOT Object*/Array*/void*, the array argument must be Array*
-                // But if the argument is a __tN that was previously Object*, this fails
-                if (templateArg != "cil2cpp::Object*" && templateArg != "cil2cpp::Array*" && templateArg != "void*")
-                {
-                    // Get the first function argument
-                    var argStart = parenIdx + 1;
-                    var commaIdx = s.IndexOf(',', argStart);
-                    if (commaIdx < 0) continue;
-                    var firstArg = s[argStart..commaIdx].Trim();
-                    // If the first arg is a __tN (temp from previous array_get), it's likely Object*
-                    if (firstArg.StartsWith("__t") && firstArg.Length <= 7)
-                        return "array_get on non-Array* argument (jagged array access needs cast)";
-                }
-            }
-        }
+        // REMOVED: jagged array gate. IRArrayAccess.ToCpp() now inserts (cil2cpp::Array*) cast
+        // on temp/local array expressions, fixing Object*→Array* mismatch for jagged arrays.
 
         // Body-level check: void* pointer arithmetic (C2036: void* unknown size).
         // IL pointer add on void* arrays or untyped pointers produces (void*)ptr + offset.

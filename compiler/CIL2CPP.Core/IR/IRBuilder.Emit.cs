@@ -9,6 +9,14 @@ public partial class IRBuilder
     private void EmitStoreLocal(IRBasicBlock block, Stack<StackEntry> stack, IRMethod method, int index)
     {
         var val = stack.PopExpr();
+        // SIMD stub: skip the store entirely. SIMD code paths are dead (guarded by
+        // IsSupported==false). Emitting the assignment would cause type mismatches
+        // when SIMD and scalar paths share the same local variable.
+        if (val == "__SIMD_STUB__")
+        {
+            block.Instructions.Add(new IRRawCpp { Code = $"// SIMD stub store to loc_{index} skipped (dead code)" });
+            return;
+        }
         // For pointer-type locals, add explicit cast to handle implicit upcasts
         // (e.g., Dog* → Animal*) since generated C++ structs don't use C++ inheritance.
         // Also handles void* locals: in .NET, IntPtr/UIntPtr and void* are interchangeable
@@ -162,6 +170,12 @@ public partial class IRBuilder
     {
         var rightEntry = stack.PopEntry();
         var leftEntry = stack.PopEntry();
+        // SIMD stub: propagate stub through binary ops (dead code in SIMD branch)
+        if (rightEntry.Expr == "__SIMD_STUB__" || leftEntry.Expr == "__SIMD_STUB__")
+        {
+            stack.Push("__SIMD_STUB__");
+            return;
+        }
         var right = rightEntry.Expr;
         var left = leftEntry.Expr;
 
@@ -226,6 +240,17 @@ public partial class IRBuilder
     {
         var rightEntry = stack.PopEntry();
         var leftEntry = stack.PopEntry();
+        // SIMD stub: emit branch with false condition (dead code, branch not taken)
+        if (rightEntry.Expr == "__SIMD_STUB__" || leftEntry.Expr == "__SIMD_STUB__")
+        {
+            var stubTarget = (Instruction)instr.Operand!;
+            block.Instructions.Add(new IRConditionalBranch
+            {
+                Condition = "0",
+                TrueLabel = $"IL_{stubTarget.Offset:X4}"
+            });
+            return;
+        }
         var right = rightEntry.Expr;
         var left = leftEntry.Expr;
 
@@ -336,6 +361,30 @@ public partial class IRBuilder
     private void EmitMethodCall(IRBasicBlock block, Stack<StackEntry> stack, MethodReference methodRef,
         bool isVirtual, ref int tempCounter, TypeReference? constrainedType = null)
     {
+        // Early SIMD stub check: if any argument on the stack is __SIMD_STUB__,
+        // skip the entire call (including intrinsic handlers). This prevents SIMD stub
+        // values from leaking into WriteUnaligned/Add/CopyBlock and other Unsafe intrinsics.
+        {
+            var paramCount = methodRef.Parameters.Count + (methodRef.HasThis ? 1 : 0);
+            var stackArr = stack.ToArray(); // top of stack is index 0
+            bool hasSimdStub = false;
+            for (int si = 0; si < paramCount && si < stackArr.Length; si++)
+            {
+                if (stackArr[si].Expr == "__SIMD_STUB__") { hasSimdStub = true; break; }
+            }
+            if (hasSimdStub)
+            {
+                // Pop all arguments
+                for (int si = 0; si < paramCount && stack.Count > 0; si++)
+                    stack.Pop();
+                // Push SIMD stub for non-void return
+                if (!IsVoidReturnType(methodRef.ReturnType))
+                    stack.Push("__SIMD_STUB__");
+                block.Instructions.Add(new IRComment { Text = $"SIMD stub call to {methodRef.Name} skipped (dead code)" });
+                return;
+            }
+        }
+
         // ===== Compiler Intrinsics — emit inline C++ instead of function calls =====
 
         // INumber<T>.CreateTruncating<TOther>(TOther) — numeric cast intrinsic
@@ -736,6 +785,8 @@ public partial class IRBuilder
             }
 
             // SIMD operations → stub as no-ops (unreachable: guarded by IsSupported==false)
+            // Push a tagged "SIMD_STUB" value so stloc/stfld can skip the assignment
+            // instead of creating type mismatches between SIMD and scalar code paths.
             if (isSimdType)
             {
                 for (int i = 0; i < methodRef.Parameters.Count; i++)
@@ -743,10 +794,7 @@ public partial class IRBuilder
                 if (methodRef.HasThis && stack.Count > 0) stack.Pop();
                 if (!IsVoidReturnType(methodRef.ReturnType))
                 {
-                    var tmp = $"__t{tempCounter++}";
-                    var retType = ResolveCallReturnType(methodRef);
-                    block.Instructions.Add(new IRRawCpp { Code = $"{retType} {tmp} = {{}}; // SIMD stub", ResultVar = tmp, ResultTypeCpp = retType });
-                    stack.Push(tmp);
+                    stack.Push("__SIMD_STUB__");
                 }
                 return;
             }
@@ -1325,6 +1373,17 @@ public partial class IRBuilder
             args.Add(stack.PopExpr());
         }
         args.Reverse();
+
+        // SIMD stub: if any argument is __SIMD_STUB__, this call is in dead SIMD code.
+        // Skip the call entirely and propagate the stub to avoid type mismatches.
+        if (args.Any(a => a == "__SIMD_STUB__"))
+        {
+            // Also consume 'this' from stack if instance call
+            if (methodRef.HasThis && stack.Count > 0) stack.Pop();
+            if (!IsVoidReturnType(methodRef.ReturnType))
+                stack.Push("__SIMD_STUB__");
+            return;
+        }
 
         // Handle varargs call sites: package extra arguments into VarArgHandle.
         // The handle is stored separately to avoid CastArgumentsToParameterTypes
@@ -2153,6 +2212,13 @@ public partial class IRBuilder
         }
         args.Reverse();
 
+        // SIMD stub: if any constructor argument is __SIMD_STUB__, this is dead SIMD code.
+        if (args.Any(a => a == "__SIMD_STUB__"))
+        {
+            stack.Push("__SIMD_STUB__");
+            return;
+        }
+
         // Cast constructor arguments to expected parameter types
         // (handles derived→base pointer casts in flat struct model)
         CastArgumentsToParameterTypes(args, ctorRef);
@@ -2835,6 +2901,8 @@ public partial class IRBuilder
     private void EmitConversion(IRBasicBlock block, Stack<StackEntry> stack, string targetType, ref int tempCounter)
     {
         var entry = stack.PopEntry();
+        // SIMD stub: propagate stub through conversions (dead code in SIMD branch)
+        if (entry.Expr == "__SIMD_STUB__") { stack.Push("__SIMD_STUB__"); return; }
         var tmp = $"__t{tempCounter++}";
         block.Instructions.Add(new IRConversion
         {

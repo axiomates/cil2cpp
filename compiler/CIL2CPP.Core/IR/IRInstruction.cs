@@ -328,9 +328,15 @@ public class IRArrayAccess : IRInstruction
 
     public override string ToCpp()
     {
+        // Ensure the array expression is cast to Array* for array_get/array_set.
+        // Jagged arrays: inner arrays are loaded as Object* (from array_get<Object*>),
+        // but array_get<T>/array_set<T> require Array* as first argument.
+        var arrExpr = ArrayExpr;
+        if (arrExpr.StartsWith("__t") || arrExpr.StartsWith("loc_"))
+            arrExpr = $"(cil2cpp::Array*){arrExpr}";
         if (IsStore)
-            return $"cil2cpp::array_set<{ElementType}>({ArrayExpr}, {IndexExpr}, {StoreValue});";
-        return $"{ResultVar} = cil2cpp::array_get<{ElementType}>({ArrayExpr}, {IndexExpr});";
+            return $"cil2cpp::array_set<{ElementType}>({arrExpr}, {IndexExpr}, {StoreValue});";
+        return $"{ResultVar} = cil2cpp::array_get<{ElementType}>({arrExpr}, {IndexExpr});";
     }
 }
 

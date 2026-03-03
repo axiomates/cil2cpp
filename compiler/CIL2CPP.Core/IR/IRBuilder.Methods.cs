@@ -571,7 +571,9 @@ public partial class IRBuilder
                     var currentTop = stack.Pop();
                     if (mergeEntry.Expr != currentTop.Expr && IsValidMergeVariable(mergeEntry.Expr))
                     {
-                        block.Instructions.Add(new IRAssign { Target = mergeEntry.Expr, Value = currentTop.Expr });
+                        // SIMD stub: skip merge assignment (dead SIMD branch)
+                        if (currentTop.Expr != "__SIMD_STUB__")
+                            block.Instructions.Add(new IRAssign { Target = mergeEntry.Expr, Value = currentTop.Expr });
                     }
                     // Phase 2: refine the merge variable's type using the live path.
                     // The br handler set a preliminary type; the live path may be more
@@ -917,6 +919,12 @@ public partial class IRBuilder
                 int stArgIdx = stArgDef?.Index ?? 0;
                 if (!method.IsStatic) stArgIdx++;
                 var stArgVal = stack.PopExpr();
+                // SIMD stub: skip the store (dead code in SIMD branch)
+                if (stArgVal == "__SIMD_STUB__")
+                {
+                    block.Instructions.Add(new IRRawCpp { Code = $"// SIMD stub store to arg_{stArgIdx} skipped (dead code)" });
+                    break;
+                }
                 // For pointer-type parameters, add explicit cast to handle implicit upcasts
                 // (e.g., EqualityComparer<T>* → IEqualityComparer<T>*) and uintptr_t→void*
                 // conversions since generated C++ structs don't use C++ inheritance and
@@ -1054,6 +1062,8 @@ public partial class IRBuilder
                 var isUn = IsUnsignedCheckedConv(instr.OpCode);
                 var func = isUn ? "cil2cpp::checked_conv_un" : "cil2cpp::checked_conv";
                 var val = stack.PopExpr();
+                // SIMD stub: propagate stub through checked conversions (dead code)
+                if (val == "__SIMD_STUB__") { stack.Push("__SIMD_STUB__"); break; }
                 var tmp = $"__t{tempCounter++}";
                 block.Instructions.Add(new IRRawCpp
                 {
@@ -1068,6 +1078,7 @@ public partial class IRBuilder
             case Code.Neg:
             {
                 var entry = stack.PopEntry();
+                if (entry.Expr == "__SIMD_STUB__") { stack.Push("__SIMD_STUB__"); break; }
                 var tmp = $"__t{tempCounter++}";
                 block.Instructions.Add(new IRUnaryOp { Op = "-", Operand = entry.Expr, ResultVar = tmp, ResultTypeCpp = entry.CppType });
                 stack.Push(new StackEntry(tmp, entry.CppType));
@@ -1077,6 +1088,7 @@ public partial class IRBuilder
             case Code.Not:
             {
                 var entry = stack.PopEntry();
+                if (entry.Expr == "__SIMD_STUB__") { stack.Push("__SIMD_STUB__"); break; }
                 var tmp = $"__t{tempCounter++}";
                 block.Instructions.Add(new IRUnaryOp { Op = "~", Operand = entry.Expr, ResultVar = tmp, ResultTypeCpp = entry.CppType });
                 stack.Push(new StackEntry(tmp, entry.CppType));
@@ -1122,6 +1134,11 @@ public partial class IRBuilder
                         if (entry.Expr != null
                             && !entry.Expr.Contains("(") && !entry.Expr.Contains("->"))
                         {
+                            // SIMD stub: skip creating merge variable — keep __SIMD_STUB__ on stack
+                            // so downstream consumers (stloc, stfld, etc.) will skip the assignment.
+                            if (entry.Expr == "__SIMD_STUB__")
+                                break;
+
                             // Phase 1: Create the merge variable and assign the br-path value.
                             // The type may be refined at the label handler (phase 2) once
                             // the live-path type is also known.
@@ -1150,6 +1167,8 @@ public partial class IRBuilder
             case Code.Brtrue_S:
             {
                 var cond = stack.PopExpr();
+                // SIMD stub: use 0 (false) as condition — dead code, branch not taken
+                if (cond == "__SIMD_STUB__") cond = "0";
                 var target = (Instruction)instr.Operand!;
                 // Save stack top as merge variable for branch target (dup+brtrue pattern)
                 // Only save if the stack top is a valid C++ lvalue (variable name, not a literal)
@@ -1173,6 +1192,8 @@ public partial class IRBuilder
             case Code.Brfalse_S:
             {
                 var cond = stack.PopExpr();
+                // SIMD stub: use 0 (false) as condition — dead code, branch always taken
+                if (cond == "__SIMD_STUB__") cond = "0";
                 var target = (Instruction)instr.Operand!;
                 // Save stack top as merge variable for branch target (dup+brfalse pattern)
                 // Only save if the stack top is a valid C++ lvalue (variable name, not a literal)
@@ -1237,6 +1258,8 @@ public partial class IRBuilder
             case Code.Switch:
             {
                 var value = stack.PopExpr();
+                // SIMD stub: use 0 (dead code)
+                if (value == "__SIMD_STUB__") value = "0";
                 var targets = (Instruction[])instr.Operand!;
                 var sw = new IRSwitch { ValueExpr = value };
                 foreach (var t in targets)
@@ -1251,6 +1274,13 @@ public partial class IRBuilder
                 var fieldRef = (FieldReference)instr.Operand!;
                 var objEntry = stack.PopEntry();
                 var obj = objEntry.Expr.Length > 0 ? objEntry.Expr : "__this";
+                // SIMD stub: propagate stub through field access (dead code)
+                if (obj == "__SIMD_STUB__")
+                {
+                    _pendingVolatile = false;
+                    stack.Push("__SIMD_STUB__");
+                    break;
+                }
                 // volatile. prefix: fence before load
                 if (_pendingVolatile)
                 {
@@ -1321,6 +1351,13 @@ public partial class IRBuilder
                 var obj = objEntry.Expr.Length > 0 ? objEntry.Expr : "__this";
                 bool isVolatileStore = _pendingVolatile;
                 _pendingVolatile = false;
+
+                // SIMD stub: skip the store (dead code in SIMD branch)
+                if (val == "__SIMD_STUB__")
+                {
+                    block.Instructions.Add(new IRRawCpp { Code = $"// SIMD stub stfld skipped (dead code)" });
+                    break;
+                }
 
                 // Scalar alias interception: stfld m_value on primitive alias → direct write
                 if (fieldRef.Name == "m_value" && CppNameMapper.IsPrimitive(fieldRef.DeclaringType.FullName))
@@ -1444,6 +1481,13 @@ public partial class IRBuilder
                 var fieldCacheKey = ResolveCacheKey(fieldRef.DeclaringType);
                 EmitCctorGuardIfNeeded(block, fieldCacheKey, typeCppName);
                 var val = stack.PopExpr();
+                // SIMD stub: skip the store (dead code in SIMD branch)
+                if (val == "__SIMD_STUB__")
+                {
+                    _pendingVolatile = false;
+                    block.Instructions.Add(new IRRawCpp { Code = $"// SIMD stub stsfld skipped (dead code)" });
+                    break;
+                }
                 bool isVolatileStore = _pendingVolatile;
                 _pendingVolatile = false;
                 // Cast value for reference type static fields (derived→base in flat struct model)
@@ -1594,6 +1638,12 @@ public partial class IRBuilder
                 var resolvedName = ResolveTypeRefOperand(typeRef);
                 var val = stack.PopExpr();
                 var addr = stack.PopExprOr("nullptr");
+                // SIMD stub: skip the store (dead code in SIMD branch)
+                if (val == "__SIMD_STUB__")
+                {
+                    block.Instructions.Add(new IRRawCpp { Code = $"// SIMD stub stobj skipped (dead code)" });
+                    break;
+                }
                 if (CppNameMapper.IsValueType(resolvedName))
                 {
                     var cppType = CppNameMapper.GetCppTypeName(resolvedName);
@@ -1672,6 +1722,12 @@ public partial class IRBuilder
                 var cppType = GetIndirectType(instr.OpCode);
                 var val = stack.PopExpr();
                 var addr = stack.PopExprOr("nullptr");
+                // SIMD stub: skip the store (dead code in SIMD branch)
+                if (val == "__SIMD_STUB__")
+                {
+                    block.Instructions.Add(new IRRawCpp { Code = $"// SIMD stub stind skipped (dead code)" });
+                    break;
+                }
                 block.Instructions.Add(new IRRawCpp
                 {
                     Code = $"*({cppType}*){addr} = ({cppType}){val};"
@@ -1683,6 +1739,12 @@ public partial class IRBuilder
             {
                 var val = stack.PopExprOr("nullptr");
                 var addr = stack.PopExprOr("nullptr");
+                // SIMD stub: skip the store (dead code in SIMD branch)
+                if (val == "__SIMD_STUB__")
+                {
+                    block.Instructions.Add(new IRRawCpp { Code = $"// SIMD stub stind.ref skipped (dead code)" });
+                    break;
+                }
                 block.Instructions.Add(new IRRawCpp
                 {
                     Code = $"*(cil2cpp::Object**){addr} = (cil2cpp::Object*){val};"
@@ -1715,6 +1777,12 @@ public partial class IRBuilder
                 if (method.ReturnTypeCpp != "void" && stack.Count > 0)
                 {
                     var retVal = stack.Pop().Expr;
+                    // SIMD stub: emit default return value (dead code in SIMD branch)
+                    if (retVal == "__SIMD_STUB__")
+                    {
+                        block.Instructions.Add(new IRRawCpp { Code = $"return {{}}; // SIMD stub return (dead code)" });
+                        break;
+                    }
                     // Cast return value to method's declared return type for interface/generic returns
                     if (method.ReturnTypeCpp.EndsWith("*"))
                         retVal = $"({method.ReturnTypeCpp}){retVal}";
@@ -1815,6 +1883,8 @@ public partial class IRBuilder
                 // instead of sign-extending to uint64_t which would give wrong results
                 // for 32-bit values (e.g., int32(-1) → uint32(4294967295), not uint64(18446...)).
                 var val = stack.PopExpr();
+                // SIMD stub: propagate stub (dead code)
+                if (val == "__SIMD_STUB__") { stack.Push("__SIMD_STUB__"); break; }
                 var tmp = $"__t{tempCounter++}";
                 block.Instructions.Add(new IRConversion
                 {
@@ -2166,6 +2236,8 @@ public partial class IRBuilder
                 var typeRef = (TypeReference)instr.Operand!;
                 var resolvedName = ResolveTypeRefOperand(typeRef);
                 var val = stack.PopExpr();
+                // SIMD stub: skip boxing (dead code in SIMD branch), push nullptr
+                if (val == "__SIMD_STUB__") { stack.Push("nullptr"); break; }
                 var tmp = $"__t{tempCounter++}";
 
                 if (IsNullableType(typeRef))
