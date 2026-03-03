@@ -875,6 +875,27 @@ public class ReachabilityAnalyzer
                 }
             }
 
+            // Pattern 3: ldsfld FeatureSwitch → ldc.i4.0/ldc.i4.1 → ceq → inverted/direct comparison
+            // Handles `if (field == false)` and `if (field == true)` patterns
+            if (!isConstantFalse && instr.OpCode.Code == Code.Ldsfld &&
+                instr.Operand is FieldReference fldRef2 &&
+                instr.Next?.OpCode.Code is Code.Ldc_I4_0 or Code.Ldc_I4_1 &&
+                instr.Next.Next?.OpCode.Code == Code.Ceq)
+            {
+                var declType2 = fldRef2.DeclaringType?.FullName ?? "";
+                var comparand = instr.Next.OpCode.Code == Code.Ldc_I4_0 ? 0 : 1;
+                if (_featureSwitchResolver != null &&
+                    _featureSwitchResolver.TryResolve(declType2, fldRef2.Name, out bool switchValue2))
+                {
+                    // ceq result: (switchValue == comparand)
+                    bool ceqResult = (switchValue2 ? 1 : 0) == comparand;
+                    var ceqInstr = instr.Next.Next;
+                    var brAfterCeq = ceqInstr.Next;
+                    if (brAfterCeq != null)
+                        AddCeqDeadRange(brAfterCeq, ceqResult, ref deadRanges);
+                }
+            }
+
             if (!isConstantFalse) continue;
 
             // Check next instruction: must be brfalse/brtrue
@@ -926,6 +947,61 @@ public class ReachabilityAnalyzer
         }
 
         return deadRanges;
+    }
+
+    /// <summary>
+    /// Helper for Pattern 3: add dead range based on ceq result and branch instruction.
+    /// </summary>
+    private static void AddCeqDeadRange(
+        Mono.Cecil.Cil.Instruction brInstr, bool ceqResult,
+        ref List<(int Start, int End)>? deadRanges)
+    {
+        var brCode = brInstr.OpCode.Code;
+        bool branchTaken;
+
+        if (brCode is Code.Brfalse or Code.Brfalse_S)
+            branchTaken = !ceqResult;
+        else if (brCode is Code.Brtrue or Code.Brtrue_S)
+            branchTaken = ceqResult;
+        else
+            return;
+
+        var target = brInstr.Operand as Mono.Cecil.Cil.Instruction;
+        if (target == null) return;
+
+        if (branchTaken)
+        {
+            // Branch taken → fall-through is dead
+            if (brInstr.Next != null)
+            {
+                int deadStart = brInstr.Next.Offset;
+                int deadEnd = target.Offset;
+                if (deadEnd > deadStart)
+                {
+                    deadRanges ??= new();
+                    deadRanges.Add((deadStart, deadEnd));
+                }
+            }
+        }
+        else
+        {
+            // Branch not taken → branch target path is dead (if there's a br merge point)
+            if (target.Previous != null)
+            {
+                var prevInstr = target.Previous;
+                if (prevInstr.OpCode.Code is Code.Br or Code.Br_S &&
+                    prevInstr.Operand is Mono.Cecil.Cil.Instruction mergeTarget)
+                {
+                    int deadStart = target.Offset;
+                    int deadEnd = mergeTarget.Offset;
+                    if (deadEnd > deadStart)
+                    {
+                        deadRanges ??= new();
+                        deadRanges.Add((deadStart, deadEnd));
+                    }
+                }
+            }
+        }
     }
 
     /// <summary>

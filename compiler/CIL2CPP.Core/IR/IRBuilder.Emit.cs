@@ -208,6 +208,21 @@ public partial class IRBuilder
             right = $"(void*){right}";
         }
 
+        // Arithmetic ops (*, /, %) on pointer operands: C++ doesn't allow arithmetic
+        // on pointer types (MSVC C2296). IL treats native int and pointers interchangeably
+        // (e.g., charEnd_ptr / 2 to get element count). Cast to intptr_t.
+        if (op is "/" or "*" or "%")
+        {
+            bool leftIsPtr = leftEntry.IsPointer
+                || (method != null && IsPointerTypedOperand(left, method));
+            bool rightIsPtr = rightEntry.IsPointer
+                || (method != null && IsPointerTypedOperand(right, method));
+            if (leftIsPtr)
+                left = $"(intptr_t){left}";
+            if (rightIsPtr)
+                right = $"(intptr_t){right}";
+        }
+
         // Bitwise ops (&, |, ^) on pointer operands: C++ doesn't allow bitwise operations
         // on pointer types (MSVC C2296). IL treats native int and pointers interchangeably
         // for bitwise ops (e.g., alignment checks: (uintptr_t)ptr & 0xF).

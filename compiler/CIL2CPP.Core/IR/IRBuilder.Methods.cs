@@ -1331,6 +1331,13 @@ public partial class IRBuilder
                     if (declTypeName != "cil2cpp::Object" && declTypeName != "cil2cpp::String")
                         castToType = declTypeName;
                 }
+                // void* parameter field access: IL can load fields through void* params
+                // (e.g. P/Invoke callbacks with void* lParam). Cast to declaring type.
+                if (castToType == null && !isValueAccess && objEntry.CppType == "void*")
+                {
+                    var declTypeName = GetMangledTypeNameForRef(fieldRef.DeclaringType);
+                    castToType = declTypeName;
+                }
                 var tmp2 = $"__t{tempCounter++}";
                 var lfFieldTypeName2 = ResolveFieldTypeRef(fieldRef);
                 var lfFieldTypeCpp2 = CppNameMapper.GetCppTypeForDecl(lfFieldTypeName2);
@@ -1399,6 +1406,12 @@ public partial class IRBuilder
                     var stDeclTypeName = GetMangledTypeNameForRef(fieldRef.DeclaringType);
                     if (stDeclTypeName != "cil2cpp::Object" && stDeclTypeName != "cil2cpp::String")
                         stCastToType = stDeclTypeName;
+                }
+                // void* parameter field store: same as ldfld void* fix
+                if (stCastToType == null && !isValueAccess && objEntry.CppType == "void*")
+                {
+                    var stDeclTypeName = GetMangledTypeNameForRef(fieldRef.DeclaringType);
+                    stCastToType = stDeclTypeName;
                 }
                 block.Instructions.Add(new IRFieldAccess
                 {
@@ -1522,7 +1535,8 @@ public partial class IRBuilder
             case Code.Ldflda:
             {
                 var fieldRef = (FieldReference)instr.Operand!;
-                var obj = stack.PopExprOr("__this");
+                var objEntry = stack.PopEntry();
+                var obj = objEntry.Expr.Length > 0 ? objEntry.Expr : "__this";
 
                 // Scalar alias interception: ldflda m_value on primitive alias → address of the value itself
                 if (fieldRef.Name == "m_value" && CppNameMapper.IsPrimitive(fieldRef.DeclaringType.FullName))
@@ -1550,6 +1564,12 @@ public partial class IRBuilder
 
                 var tmp3 = $"__t{tempCounter++}";
                 var fieldName = CppNameMapper.MangleFieldName(fieldRef.Name);
+                // void* parameter field address: cast to declaring type first
+                if (objEntry.CppType == "void*")
+                {
+                    var declTypeName = GetMangledTypeNameForRef(fieldRef.DeclaringType);
+                    obj = $"(({declTypeName}*){obj})";
+                }
                 // When obj is an address (e.g. &loc_0 from ldloca), use . accessor
                 // to avoid &&loc_0->field which MSVC tokenizes as rvalue-ref &&
                 string expr;

@@ -2088,35 +2088,9 @@ public partial class CppCodeGenerator
             }
         }
 
-        // Body-level check: char16_t* pointer division — IL subtracts char16_t* pointers then
-        // divides by 2, but in C++ pointer subtraction already gives element count.
-        // Only flag when a temp assigned (char16_t*) is directly divided — NOT when
-        // the division is on an intptr_t/ptrdiff_t from byte-level subtraction.
-        {
-            var char16Temps = new HashSet<string>();
-            foreach (var ln in rendered.AsSpan().EnumerateLines())
-            {
-                var s = ln.ToString().TrimStart();
-                // auto __tN = (char16_t*)expr;
-                if (s.StartsWith("auto ") && s.Contains("= (char16_t*)"))
-                {
-                    var varEnd = s.IndexOf(' ', 5);
-                    if (varEnd > 5) char16Temps.Add(s[5..varEnd]);
-                }
-            }
-            if (char16Temps.Count > 0)
-            {
-                foreach (var ln in rendered.AsSpan().EnumerateLines())
-                {
-                    var s = ln.ToString().TrimStart();
-                    foreach (var t in char16Temps)
-                    {
-                        if (s.Contains($"{t} / 2"))
-                            return "char16_t* pointer division by 2";
-                    }
-                }
-            }
-        }
+        // Body-level check: char16_t* pointer division — REMOVED
+        // Fixed in IRBuilder.Emit.cs: EmitBinaryOp now casts pointer operands to intptr_t
+        // before division/multiplication/modulo operations (matching bitwise op pattern).
 
         // Pre-pass: collect temp vars known to be String* (from explicit casts)
         // Used to avoid false positives in string_length(__tN) check
@@ -3130,6 +3104,8 @@ public partial class CppCodeGenerator
                     // In Span<T> methods, the element type T appears as (T*)(void*)expr for pointer
                     // arithmetic (Memmove, SizeOf). The )->f_ on the same line is for Span's own
                     // f_reference/f_length — NOT for accessing T's fields. Skip T in undefined check.
+                    // Also applies to MemoryMarshal.GetReference<T> which has same pattern:
+                    //   (T**)(void*)(&span)->f_reference
                     string? spanElementType = null;
                     if (method.DeclaringType?.ILFullName != null)
                     {
@@ -3139,6 +3115,19 @@ public partial class CppCodeGenerator
                         {
                             spanElementType = CppNameMapper.MangleTypeName(method.DeclaringType.GenericArguments[0]);
                         }
+                    }
+                    // MemoryMarshal.GetReference<T>: extract T from the method's generic suffix
+                    // Method name pattern: GetReference_System_TypeName or GetReference_System_TypeName__...
+                    if (spanElementType == null && method.CppName.Contains("MemoryMarshal_GetReference_"))
+                    {
+                        // The method's return type is T* (or T** for reference types).
+                        // Extract the element type from method name after "GetReference_"
+                        var grIdx = method.CppName.IndexOf("MemoryMarshal_GetReference_");
+                        var afterGR = method.CppName[(grIdx + "MemoryMarshal_GetReference_".Length)..];
+                        // For overloads with __Span suffix, strip it
+                        var overloadIdx = afterGR.IndexOf("__");
+                        if (overloadIdx > 0) afterGR = afterGR[..overloadIdx];
+                        spanElementType = afterGR;
                     }
 
                     // Look for "(TypeName*)" cast patterns — find the type name before "*)"
@@ -4452,9 +4441,8 @@ public partial class CppCodeGenerator
             return "BCL calls compareinfo with ReadOnlySpan<char> but our ICall takes cil2cpp::St...";
 
         // Pattern: char16_t pointer division — pointer arithmetic error
-        // e.g., (char16_t*) ... / 2 → C2296 pointer division is invalid
-        if (s.Contains("char16_t*") && s.Contains("/ 2"))
-            return "e.g., (char16_t*) ... / 2 → C2296 pointer division is invalid";
+        // char16_t* pointer division gate REMOVED — fixed in IRBuilder.Emit.cs
+        // (EmitBinaryOp casts pointer operands to intptr_t before /, *, %)
 
         // ExceptionHandlingClauseOptions_TypeInfo check REMOVED — external enum TypeInfo
         // declarations are now generated for all ExternalEnumTypes (see GenerateHeader).

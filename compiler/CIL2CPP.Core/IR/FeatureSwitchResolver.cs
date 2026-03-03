@@ -43,6 +43,27 @@ public class FeatureSwitchResolver
 
         // Metrics — CLR runtime metrics infrastructure
         ["System.Diagnostics.Metrics.RuntimeMetrics::IsEnabled"] = false,
+
+        // NLS globalization — disabled (CIL2CPP uses ICU)
+        ["System.Globalization.GlobalizationMode::UseNls"] = false,
+
+        // Hybrid globalization — not used
+        ["System.Globalization.GlobalizationMode::Hybrid"] = false,
+
+        // PredefinedCulturesOnly — allow all cultures
+        ["System.Globalization.GlobalizationMode::PredefinedCulturesOnly"] = false,
+
+        // COM object cleanup — not needed in AOT
+        ["System.Runtime.InteropServices.ComAwareWeakReference::IsSupported"] = false,
+
+        // Verifiable code — JIT-only concept
+        ["System.Security.CodeAccessPermission::IsSupported"] = false,
+
+        // MetricsEventSource — CLR metrics infrastructure
+        ["System.Diagnostics.Metrics.Instrument::IsObservableInstrumentSupported"] = false,
+
+        // X509 revocation download — network-dependent, not needed for basic scenarios
+        ["System.Security.Cryptography.X509Certificates.X509RevocationDownloader::IsSupported"] = false,
     };
 
     private readonly Dictionary<string, bool> _overrides;
