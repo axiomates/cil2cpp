@@ -1165,6 +1165,23 @@ public partial class CppCodeGenerator
     }
 
     /// <summary>
+    /// Check if <paramref name="text"/> contains <paramref name="pattern"/> at a word boundary.
+    /// A word boundary means the character before the match is not an identifier character
+    /// (letter, digit, or underscore). This prevents short names like "e" matching inside "value".
+    /// </summary>
+    private static bool ContainsAtWordBoundary(string text, string pattern)
+    {
+        int idx = text.IndexOf(pattern);
+        while (idx >= 0)
+        {
+            if (idx == 0 || !(char.IsLetterOrDigit(text[idx - 1]) || text[idx - 1] == '_'))
+                return true;
+            idx = text.IndexOf(pattern, idx + 1);
+        }
+        return false;
+    }
+
+    /// <summary>
     /// Get the size in bytes of a C++ primitive type name.
     /// Returns 0 for unknown / non-primitive types.
     /// </summary>
@@ -1931,9 +1948,17 @@ public partial class CppCodeGenerator
         if (method.IsStatic && rendered.Contains("__this"))
             return "__this in static method";
 
-        // Body-level check: gc_allocate_uninitialized_array returns void*, CompareExchange expects Array*
+        // Per-line check: gc_allocate_uninitialized_array returns void*, CompareExchange expects Array*.
+        // Only flag when both appear on the same line (passing void* directly to CompareExchange).
         if (rendered.Contains("gc_allocate_uninitialized_array") && rendered.Contains("CompareExchange"))
-            return "gc_allocate_uninitialized_array + CompareExchange type mismatch";
+        {
+            foreach (var line in rendered.AsSpan().EnumerateLines())
+            {
+                var sl = line.ToString();
+                if (sl.Contains("CompareExchange") && sl.Contains("gc_allocate_uninitialized_array"))
+                    return "gc_allocate_uninitialized_array in CompareExchange arg (type mismatch)";
+            }
+        }
 
         // Body-level check: CIL2CPP_FINALLY without CIL2CPP_END_TRY — missing end-of-try-finally
         // causes unclosed braces (C2601 "local function definition is illegal" / C1075 "unmatched {")
@@ -1959,8 +1984,10 @@ public partial class CppCodeGenerator
                 var paramType = param.CppTypeName.TrimEnd('*').Trim();
                 if (paramType.Length == 0 || paramType.StartsWith("cil2cpp::") || knownTypes.Contains(paramType))
                     continue;
-                // Only flag if body accesses fields on this specific parameter
-                if (rendered.Contains($"{param.Name})->f_") || rendered.Contains($"{param.Name}->f_"))
+                // Only flag if body accesses fields on this specific parameter.
+                // Use word-boundary check to avoid short names matching inside longer identifiers.
+                if (ContainsAtWordBoundary(rendered, $"{param.Name})->f_") ||
+                    ContainsAtWordBoundary(rendered, $"{param.Name}->f_"))
                     return $"field access on forward-declared param type '{paramType}'";
             }
             // Check ldelema result: auto __tN = (Type*)array_get_element_ptr(...); __tN->f_
@@ -2324,11 +2351,12 @@ public partial class CppCodeGenerator
             foreach (var line in rendered.AsSpan().EnumerateLines())
             {
                 var s = line.ToString().TrimStart();
-                if (s.StartsWith("cil2cpp::Object* __t") && s.Contains("= nullptr;"))
+                const string ObjPtrPrefix = "cil2cpp::Object* __t";
+                if (s.StartsWith(ObjPtrPrefix) && s.Contains("= nullptr;"))
                 {
-                    var varEnd = s.IndexOf(' ', 20);
-                    if (varEnd > 20)
-                        objectPtrVars.Add(s[20..varEnd]);
+                    var varEnd = s.IndexOf(' ', ObjPtrPrefix.Length);
+                    if (varEnd > ObjPtrPrefix.Length)
+                        objectPtrVars.Add(s[ObjPtrPrefix.Length..varEnd]);
                 }
             }
             if (objectPtrVars.Count > 0)
@@ -2815,20 +2843,60 @@ public partial class CppCodeGenerator
         // DetermineTempVarTypes and TempVarTypes, cross-scope issues are resolved.
 
         // Method-level: switch-between-switch goto-skips-init (C2362)
-        // Two consecutive switch blocks with auto __tN between them
-        if (rendered.Contains("switch (") && rendered.Contains("auto __t") &&
-            rendered.Contains("goto IL_003C") && rendered.Contains("goto IL_003E"))
-            return "switch goto-skips-init (C2362)";
+        // Two+ consecutive switch blocks with auto __tN between them and goto targets
+        if (rendered.Contains("switch (") && rendered.Contains("auto __t") && rendered.Contains("goto IL_"))
+        {
+            int switchCount = 0;
+            foreach (var line in rendered.AsSpan().EnumerateLines())
+            {
+                if (line.ToString().TrimStart().StartsWith("switch (")) switchCount++;
+            }
+            if (switchCount >= 2)
+                return "switch goto-skips-init (C2362)";
+        }
 
         // Method-level: GuidResult pointer parameter accessed with dot instead of arrow
         // stfld on by-ref param generates result.f_X instead of result->f_X
-        if (method.Parameters.Any(p => p.CppTypeName.Contains("GuidResult*")))
         {
-            foreach (var line in rendered.AsSpan().EnumerateLines())
+            var guidParams = method.Parameters
+                .Where(p => p.CppTypeName.Contains("GuidResult*"))
+                .Select(p => p.CppName ?? p.Name)
+                .ToList();
+            if (guidParams.Count > 0)
             {
-                var s2 = line.ToString().TrimStart();
-                if (s2.StartsWith("result.f_"))
-                    return "GuidResult pointer dot-access";
+                foreach (var line in rendered.AsSpan().EnumerateLines())
+                {
+                    var s2 = line.ToString().TrimStart();
+                    foreach (var pn in guidParams)
+                    {
+                        if (s2.StartsWith($"{pn}.f_"))
+                            return "GuidResult pointer dot-access";
+                    }
+                }
+            }
+        }
+
+        // Method-level: pointer parameter accessed with dot instead of arrow (generalized)
+        // e.g., EventSourceOptions* options → options.f_X should be options->f_X
+        {
+            var ptrParams = method.Parameters
+                .Where(p => p.Name != "__this" && p.CppTypeName.EndsWith("*"))
+                .Select(p => p.CppName ?? p.Name)
+                .ToList();
+            if (ptrParams.Count > 0 && rendered.Contains(".f_"))
+            {
+                foreach (var line in rendered.AsSpan().EnumerateLines())
+                {
+                    var s2 = line.ToString().TrimStart();
+                    if (!s2.Contains(".f_") || s2.Contains("->")) continue;
+                    foreach (var pn in ptrParams)
+                    {
+                        // Use word-boundary check to avoid short names (e.g., "s") matching
+                        // inside longer identifiers like "__this.f_" → "s.f_" substring
+                        if (ContainsAtWordBoundary(s2, $"{pn}.f_"))
+                            return $"pointer param '{pn}' dot-access (should be ->)";
+                    }
+                }
             }
         }
 
@@ -2891,11 +2959,12 @@ public partial class CppCodeGenerator
             {
                 var s = line.ToString().TrimStart();
                 // Match: cil2cpp::Object* __tNN = nullptr;
-                if (s.StartsWith("cil2cpp::Object* __t") && s.EndsWith("= nullptr;"))
+                const string ObjPtrPrefix2 = "cil2cpp::Object* __t";
+                if (s.StartsWith(ObjPtrPrefix2) && s.EndsWith("= nullptr;"))
                 {
-                    var spaceIdx = s.IndexOf(' ', 20);
-                    if (spaceIdx > 20)
-                        objectPreDeclVars.Add(s[20..spaceIdx]);
+                    var spaceIdx = s.IndexOf(' ', ObjPtrPrefix2.Length);
+                    if (spaceIdx > ObjPtrPrefix2.Length)
+                        objectPreDeclVars.Add(s[ObjPtrPrefix2.Length..spaceIdx]);
                 }
             }
             if (objectPreDeclVars.Count > 0)
@@ -4030,9 +4099,9 @@ public partial class CppCodeGenerator
             // If identifier is followed by '*)&' or '*)<expr>' without void* → byref address-of → safe
             // If identifier is followed by ')' without '*' → function pointer param type → safe
             if (endIdx + 9 <= s.Length && s.Substring(endIdx, 9) == "*)(void*)")
-                return "(SpanType*)(void*) — pointer cast to Span through void*"; // (SpanType*)(void*) — pointer cast to Span through void*
-            if (endIdx >= s.Length)
-                return "truncated line — flag as error"; // truncated line — flag as error
+                return "(SpanType*)(void*) — pointer cast to Span through void*";
+            // Note: if Span identifier ends the line (endIdx >= s.Length), it's just a type name
+            // reference (function param, return type, etc.) — NOT an error. Don't flag it.
         }
 
         // Pattern: missing this pointer — function call where first arg is small int
@@ -4081,10 +4150,19 @@ public partial class CppCodeGenerator
         }
 
         // Pattern: static_cast<uint64_t>(ptr) — pointer to uint64 needs reinterpret_cast
-        // Only flag when the argument looks like a pointer variable (contains * or ->)
-        // Don't flag integer widening conversions like static_cast<uint64_t>(count)
-        if (s.Contains("static_cast<uint64_t>(") && (s.Contains("->") || s.Contains("*)")))
-            return "Don't flag integer widening conversions like static_cast<uint64_t>(count)";
+        // Only flag when the argument itself contains pointer ops (-> or *)), not elsewhere on the line.
+        if (s.Contains("static_cast<uint64_t>("))
+        {
+            var scIdx = s.IndexOf("static_cast<uint64_t>(");
+            var argStart = scIdx + "static_cast<uint64_t>(".Length;
+            var argEnd = s.IndexOf(')', argStart);
+            if (argEnd > argStart)
+            {
+                var arg = s[argStart..argEnd];
+                if (arg.Contains("->") || arg.Contains("*)"))
+                    return "static_cast<uint64_t> on pointer expression (needs reinterpret_cast)";
+            }
+        }
 
         // Pattern: Guid* subtracted from uint8_t* (pointer arithmetic type mismatch)
         if (s.Contains("System_Guid*") && s.Contains("uint8_t*") && s.Contains("-"))
@@ -4125,11 +4203,29 @@ public partial class CppCodeGenerator
             return "e.g., unbox<System_ValueTuple_4_..._String_> — trailing _ before > is always ...";
 
         // FIXME: __ before *) can come from both bad nested-generic mangling (>>→__)
-        // and valid array types ([]→__). Removing this gate exposes underlying
-        // mangling inconsistencies (trailing _ mismatches). Keep gate until
-        // MangleTypeNameClean is used in all code paths.
+        // and valid array types ([]→__). Keep gate until MangleTypeNameClean is used
+        // in all code paths. Exclude known array element types to reduce false-positives.
         if (s.Contains("__*)") || s.Contains("__*>"))
-            return "e.g., List_1_WeakReference_1_EventSource__*) — the __ before *) is wrong";
+        {
+            var dblIdx = s.Contains("__*)") ? s.IndexOf("__*)") : s.IndexOf("__*>");
+            // Walk backwards to find the start of the identifier before __
+            var idEnd = dblIdx;
+            var idStart = idEnd;
+            while (idStart > 0 && (char.IsLetterOrDigit(s[idStart - 1]) || s[idStart - 1] == '_'))
+                idStart--;
+            var beforeDbl = s[idStart..idEnd];
+            // Array types: T[] → T__ in mangled names. Known element types end with these suffixes.
+            bool isLikelyArray = beforeDbl.EndsWith("Byte") || beforeDbl.EndsWith("Char") ||
+                beforeDbl.EndsWith("Int32") || beforeDbl.EndsWith("Int64") ||
+                beforeDbl.EndsWith("String") || beforeDbl.EndsWith("Object") ||
+                beforeDbl.EndsWith("UInt32") || beforeDbl.EndsWith("UInt64") ||
+                beforeDbl.EndsWith("Boolean") || beforeDbl.EndsWith("Single") ||
+                beforeDbl.EndsWith("Double") || beforeDbl.EndsWith("IntPtr") ||
+                beforeDbl.EndsWith("UIntPtr") || beforeDbl.EndsWith("SByte") ||
+                beforeDbl.EndsWith("Int16") || beforeDbl.EndsWith("UInt16");
+            if (!isLikelyArray)
+                return "nested generic mangling __ before pointer (not array)";
+        }
 
         // Pattern: VerificationException undeclared type
         if (s.Contains("VerificationException"))
@@ -4155,7 +4251,8 @@ public partial class CppCodeGenerator
             return "DataCollector methods with wrong this pointer (args shifted)";
 
         // Pattern: void* to intptr_t/uintptr_t conversion (needs reinterpret_cast)
-        if ((s.Contains("loc_0 = __t") || s.Contains("return __t")) && s.Contains("ToPointer"))
+        if (s.Contains("ToPointer") &&
+            (s.Contains("return __t") || (s.Contains("loc_") && s.Contains(" = __t"))))
             return "void* to intptr_t/uintptr_t conversion (needs reinterpret_cast)";
 
         // Pattern: Calendar-derived to Calendar-base assignment without cast
@@ -4166,9 +4263,8 @@ public partial class CppCodeGenerator
         if (s.Contains("System_Enum_GetValue(") && !s.Contains("System_Enum*"))
             return "Enum as value type in function arg (it's a reference type)";
 
-        // Pattern: pointer-parameter dot-access (EventSourceOptions* → options.f_X)
-        if (s.Contains("options.f_") && !s.Contains("->"))
-            return "pointer-parameter dot-access (EventSourceOptions* → options.f_X)";
+        // Note: pointer-parameter dot-access (e.g., options.f_X) is checked at body level
+        // in GetRenderedBodyErrorReason where method.Parameters provides type context.
 
         // Pattern: intptr_t/uint8_t* pointer mismatch in reflection/tracing
         if (s.Contains("_GetPropertyOrFieldData(") || s.Contains("set_DataPointer("))
@@ -4299,14 +4395,17 @@ public partial class CppCodeGenerator
         if ((s.Contains("ValueStringBuilder_Append") || s.Contains("ValueStringBuilder_Insert"))
             && !s.TrimEnd().EndsWith("{"))
         {
-            var fnEnd = s.LastIndexOf('(');
-            if (fnEnd > 0)
+            // Find '(' after the function name (not LastIndexOf which picks nested parens)
+            var vsbIdx = s.IndexOf("ValueStringBuilder_Append");
+            if (vsbIdx < 0) vsbIdx = s.IndexOf("ValueStringBuilder_Insert");
+            var fnParen = vsbIdx >= 0 ? s.IndexOf('(', vsbIdx) : -1;
+            if (fnParen > 0)
             {
-                var afterParen = s[(fnEnd + 1)..].TrimStart();
+                var afterParen = s[(fnParen + 1)..].TrimStart();
                 // First arg should be a pointer expression: &loc_, __this, __tN, param name, cast
                 // Only flag if it starts with a digit (integer literal) or quote (string literal)
                 if (afterParen.Length > 0 && (char.IsDigit(afterParen[0]) || afterParen[0] == '"'))
-                    return "First arg should be a pointer expression: &loc_, __this, __tN, param name, cast";
+                    return "ValueStringBuilder wrong this (literal instead of pointer)";
             }
         }
 

@@ -138,7 +138,9 @@ public partial class IRBuilder
         if (_tempPtrTypes.TryGetValue(expr, out var tempType))
             return tempType;
 
-        // Check explicit cast patterns: (type*)expr
+        // HACK: Recovers pointer type from rendered C++ cast expression when CppType is not tracked.
+        // This is a fallback for code paths that still use PopExpr() instead of PopEntry().
+        // TODO: Phase 2 (StackEntry.CppType propagation) will eliminate the need for this.
         if (expr.StartsWith("(") && expr.Contains("*)"))
         {
             var closeIdx = expr.IndexOf("*)");
@@ -1606,7 +1608,9 @@ public partial class IRBuilder
                         var thisPtr = irCall.Arguments[0]; // e.g., "(cil2cpp::Object*)&loc_0"
                         var cppTypeName = GetMangledTypeNameForRef(constrainedType);
                         var typeInfoName = $"{cppTypeName}_TypeInfo";
-                        // Strip the (cil2cpp::Object*) cast to get the raw value pointer
+                        // HACK: Strip (cil2cpp::Object*) cast prefix from rendered string.
+                        // Safe because thisPtr was constructed by our own codegen with consistent formatting.
+                        // TODO: Phase 2 — use StackEntry.CppType to avoid string manipulation.
                         var rawPtr = thisPtr;
                         if (rawPtr.StartsWith("(cil2cpp::Object*)"))
                             rawPtr = rawPtr["(cil2cpp::Object*)".Length..];

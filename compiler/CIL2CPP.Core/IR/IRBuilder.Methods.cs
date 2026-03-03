@@ -1817,6 +1817,10 @@ public partial class IRBuilder
                 // in cross-scope pre-declared variables (AddAutoDeclarations).
                 if (convIEntry.IsAddressOf || convIEntry.IsPointer) break;
                 // Local variables (loc_N) that are pointer types — conv.i is a no-op.
+                // TODO: Phase 2 — if StackEntry.CppType is populated for all locals, these
+                // StartsWith("loc_")/StartsWith("__t") prefix checks can be replaced by CppType.
+                // Currently, pointer values in expressions that don't start with loc_/__t
+                // (e.g., params, __this, complex expressions) will incorrectly emit intptr_t cast.
                 if (convIEntry.Expr.StartsWith("loc_"))
                 {
                     if (int.TryParse(convIEntry.Expr.AsSpan(4), out var locIdx)
