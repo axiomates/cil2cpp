@@ -214,7 +214,7 @@ public class IRInstructionTests
             ResultVar = "__t0",
             IsStore = false
         };
-        Assert.Equal("__t0 = cil2cpp::array_get<int32_t>(arr, i);", instr.ToCpp());
+        Assert.Equal("__t0 = cil2cpp::array_get<int32_t>((cil2cpp::Array*)arr, i);", instr.ToCpp());
     }
 
     [Fact]
@@ -228,7 +228,7 @@ public class IRInstructionTests
             IsStore = true,
             StoreValue = "42"
         };
-        Assert.Equal("cil2cpp::array_set<int32_t>(arr, i, 42);", instr.ToCpp());
+        Assert.Equal("cil2cpp::array_set<int32_t>((cil2cpp::Array*)arr, i, 42);", instr.ToCpp());
     }
 
     [Fact]
