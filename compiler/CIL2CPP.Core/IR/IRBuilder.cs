@@ -626,13 +626,10 @@ public partial class IRBuilder
                     // Re-run disambiguation for newly created types — their methods may
                     // have C++ name collisions (e.g., overloads with scalar vs SIMD params).
                     DisambiguateOverloadedMethods();
-                    // Generate stub bodies instead of compiling full bodies.
-                    // This ensures method declarations exist (reducing UF stubs) without
-                    // risking cascade stub creation from compiled body callees.
-                    // FIXME: selective body compilation could reduce UF further if cascade is controlled
-                    foreach (var (_, irMethod, _) in _deferredGenericBodies)
-                        GenerateStubBody(irMethod);
-                    _deferredGenericBodies.Clear();
+                    // Compile late-discovered generic type method bodies.
+                    // Uses per-method error handling: if body compilation throws,
+                    // fall back to stub body to avoid cascade failures.
+                    ConvertDeferredGenericBodies();
                 }
             } while (_genericInstantiations.Count > prevTypeCount);
         }

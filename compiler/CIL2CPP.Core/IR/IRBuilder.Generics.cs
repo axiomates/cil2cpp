@@ -763,10 +763,30 @@ public partial class IRBuilder
         // (e.g., from Pass 3.6), preventing duplicate interface entries.
         foreach (var (key, info) in _genericInstantiations)
         {
-            if (_resolvedGenericTypeKeys.Contains(key)) continue;
-            _resolvedGenericTypeKeys.Add(key);
+            bool alreadyResolved = _resolvedGenericTypeKeys.Contains(key);
+            if (!alreadyResolved)
+                _resolvedGenericTypeKeys.Add(key);
             if (info.CecilOpenType == null) continue;
             if (!_typeCache.TryGetValue(key, out var irType)) continue;
+
+            // For already-resolved types, only re-check missing base types
+            // (the base type may have been created by a later fixpoint iteration)
+            if (alreadyResolved)
+            {
+                if (irType.BaseType == null && info.CecilOpenType.BaseType != null && !irType.IsValueType)
+                {
+                    var typeParamMap2 = new Dictionary<string, string>();
+                    for (int i = 0; i < info.CecilOpenType.GenericParameters.Count && i < info.TypeArguments.Count; i++)
+                        typeParamMap2[info.CecilOpenType.GenericParameters[i].Name] = info.TypeArguments[i];
+                    var baseName2 = ResolveGenericTypeName(info.CecilOpenType.BaseType, typeParamMap2);
+                    if (_typeCache.TryGetValue(baseName2, out var baseType2))
+                    {
+                        irType.BaseType = baseType2;
+                        CalculateInstanceSize(irType);
+                    }
+                }
+                continue;
+            }
 
             var openType = info.CecilOpenType;
             var typeParamMap = new Dictionary<string, string>();
@@ -1051,6 +1071,40 @@ public partial class IRBuilder
                     TryCollectResolvedGenericType(method.ReturnType, nameMap, shallowOnly: true);
                     foreach (var p in method.Parameters)
                         TryCollectResolvedGenericType(p.ParameterType, nameMap, shallowOnly: true);
+                }
+            }
+
+            // Scan base type chain: if UnionIterator2<T> extends UnionIterator<T> extends
+            // Iterator<T>, discovering UnionIterator2<Char> must also discover UnionIterator<Char>
+            // and Iterator<Char> so their methods get compiled in Pass 3.4 (not stubbed in 3.6).
+            {
+                var baseType = openType.BaseType;
+                var btNameMap = new Dictionary<string, string>(nameMap);
+                while (baseType != null)
+                {
+                    TryCollectResolvedGenericType(baseType, btNameMap);
+                    var baseDef = baseType is GenericInstanceType git
+                        ? git.ElementType.Resolve() : baseType.Resolve();
+                    baseType = baseDef?.BaseType;
+                    if (baseDef != null && baseDef.HasGenericParameters && baseType is GenericInstanceType baseGit)
+                    {
+                        // Remap: if UnionIterator<T> : Iterator<T>, and Iterator has param U,
+                        // we need to map U to the resolved T from the current nameMap
+                        var innerMap = new Dictionary<string, string>(nameMap);
+                        for (int gi = 0; gi < baseDef.GenericParameters.Count && gi < baseGit.GenericArguments.Count; gi++)
+                        {
+                            var arg = baseGit.GenericArguments[gi];
+                            if (arg is Mono.Cecil.GenericParameter gp2 && nameMap.TryGetValue(gp2.Name, out var resolved))
+                                innerMap[baseDef.GenericParameters[gi].Name] = resolved;
+                        }
+                        TryCollectResolvedGenericType(baseType, innerMap);
+                        baseType = baseDef.BaseType;
+                        nameMap = innerMap;
+                    }
+                    else
+                    {
+                        break;
+                    }
                 }
             }
 

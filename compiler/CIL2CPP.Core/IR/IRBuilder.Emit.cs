@@ -2530,32 +2530,60 @@ public partial class IRBuilder
 
     private void BuildInterfaceImpls(IRType irType)
     {
+        // Build InterfaceImpls for directly declared interfaces
         foreach (var iface in irType.Interfaces)
         {
-            var impl = new IRInterfaceImpl { Interface = iface };
-            foreach (var ifaceMethod in iface.Methods)
-            {
-                // Skip constructors — only map actual interface methods
-                if (ifaceMethod.IsConstructor || ifaceMethod.IsStaticConstructor) continue;
-
-                // First: check explicit interface overrides (.override directive)
-                var implMethod = FindExplicitOverride(irType, iface, ifaceMethod);
-
-                // Fallback: implicit name + parameter matching
-                implMethod ??= FindImplementingMethod(irType, ifaceMethod);
-
-                // DIM fallback: if no class impl, use the interface's default method body
-                // At Pass 5 time, bodies haven't been converted yet (Pass 6), so check
-                // !IsAbstract which indicates the Cecil method has a body
-                if (implMethod == null && !ifaceMethod.IsAbstract)
-                {
-                    implMethod = ifaceMethod;
-                }
-
-                impl.MethodImpls.Add(implMethod); // null if not found — keeps slot alignment
-            }
-            irType.InterfaceImpls.Add(impl);
+            BuildSingleInterfaceImpl(irType, iface);
         }
+
+        // Also build InterfaceImpls for interfaces inherited from the base type chain.
+        // CLR semantics: each type must have its own interface vtable entries for ALL
+        // interfaces in its hierarchy, so that derived types overriding abstract (or
+        // virtual) base interface methods get concrete function pointers in their
+        // dispatch tables. Without this, the runtime walks to the base type's interface
+        // vtable and finds nullptr for abstract methods, causing a null dispatch crash.
+        // Example: UnionIterator<Char> overrides Iterator<Char>.MoveNext (abstract)
+        // and needs its own IEnumerator interface vtable with concrete MoveNext.
+        // Note: inherited interfaces are added to InterfaceImpls only (not Interfaces),
+        // preserving the directly-declared-only semantics of the Interfaces list.
+        var seen = new HashSet<string>(irType.Interfaces.Select(i => i.ILFullName));
+        var bt = irType.BaseType;
+        while (bt != null)
+        {
+            foreach (var baseIface in bt.Interfaces)
+            {
+                if (seen.Add(baseIface.ILFullName))
+                    BuildSingleInterfaceImpl(irType, baseIface);
+            }
+            bt = bt.BaseType;
+        }
+    }
+
+    private void BuildSingleInterfaceImpl(IRType irType, IRType iface)
+    {
+        var impl = new IRInterfaceImpl { Interface = iface };
+        foreach (var ifaceMethod in iface.Methods)
+        {
+            // Skip constructors — only map actual interface methods
+            if (ifaceMethod.IsConstructor || ifaceMethod.IsStaticConstructor) continue;
+
+            // First: check explicit interface overrides (.override directive)
+            var implMethod = FindExplicitOverride(irType, iface, ifaceMethod);
+
+            // Fallback: implicit name + parameter matching
+            implMethod ??= FindImplementingMethod(irType, ifaceMethod);
+
+            // DIM fallback: if no class impl, use the interface's default method body
+            // At Pass 5 time, bodies haven't been converted yet (Pass 6), so check
+            // !IsAbstract which indicates the Cecil method has a body
+            if (implMethod == null && !ifaceMethod.IsAbstract)
+            {
+                implMethod = ifaceMethod;
+            }
+
+            impl.MethodImpls.Add(implMethod); // null if not found — keeps slot alignment
+        }
+        irType.InterfaceImpls.Add(impl);
     }
 
     /// <summary>

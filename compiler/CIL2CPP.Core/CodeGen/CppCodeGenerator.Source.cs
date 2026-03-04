@@ -1181,9 +1181,9 @@ public partial class CppCodeGenerator
 
         if (isMinimalTypeInfo)
         {
-            // Tier 3 (stub): no interfaces, no generic args, not enum → single-line TypeInfo
-            bool isStubTypeInfo = interfaceCount == 0 && !hasGenericArgs
-                && !(type.IsEnum && type.EnumUnderlyingType != null);
+            // Tier 3 (stub): no interfaces, no inherited interface vtables, no generic args, not enum → single-line TypeInfo
+            bool isStubTypeInfo = interfaceCount == 0 && type.InterfaceImpls.Count == 0
+                && !hasGenericArgs && !(type.IsEnum && type.EnumUnderlyingType != null);
             if (isStubTypeInfo)
             {
                 sb.AppendLine($"cil2cpp::TypeInfo {type.CppName}_TypeInfo = {{ .name = \"{type.Name}\", .namespace_name = \"{type.Namespace}\", .full_name = \"{type.ILFullName}\", .base_type = {baseName}, .flags = {flagsStr}, .cor_element_type = 0x{corElementType:X2} }};");
@@ -1202,6 +1202,14 @@ public partial class CppCodeGenerator
                 sb.AppendLine($"    .interface_count = {interfaceCount},");
             }
             sb.AppendLine($"    .flags = {flagsStr},");
+            // Interface vtables: even minimal-tier types need interface_vtables when they have
+            // interfaces, because derived constructed types walk the base chain for dispatch.
+            if (!type.IsInterface && type.InterfaceImpls.Count > 0)
+            {
+                var minIfaceVtablesExpr = $"{type.CppName}_interface_vtables";
+                sb.AppendLine($"    .interface_vtables = {minIfaceVtablesExpr},");
+                sb.AppendLine($"    .interface_vtable_count = {type.InterfaceImpls.Count},");
+            }
             sb.AppendLine($"    .cor_element_type = 0x{corElementType:X2},");
             if (type.IsEnum && type.EnumUnderlyingType != null)
             {
@@ -2069,9 +2077,9 @@ public partial class CppCodeGenerator
         {
             var isCoreRt = type.IsRuntimeProvided && IRBuilder.CoreRuntimeTypes.Contains(type.ILFullName);
             if (type.IsInterface || isCoreRt || type.InterfaceImpls.Count == 0) continue;
-            // Skip interface vtables for non-constructed types (no instances → no interface dispatch)
-            if (constructedTypesIface.Count > 0 && !constructedTypesIface.Contains(type.ILFullName)
-                && !_referencedTypeInfoNames.Contains(type.CppName)) continue;
+            // NOTE: Previously skipped non-constructed types ("no instances → no interface dispatch").
+            // WRONG: derived instances use base type interface vtables via type_get_interface_vtable's
+            // base_type chain walk. Must emit for ALL types with InterfaceImpls.
 
             foreach (var impl in type.InterfaceImpls)
             {
