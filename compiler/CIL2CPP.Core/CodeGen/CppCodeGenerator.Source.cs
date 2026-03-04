@@ -1210,8 +1210,8 @@ public partial class CppCodeGenerator
             }
             if (hasGenericArgs)
             {
-                sb.AppendLine($"    .generic_arguments = {type.CppName}_generic_args,");
-                sb.AppendLine($"    .generic_variances = {type.CppName}_generic_variances,");
+                // Tier 2 types are non-constructed — variance arrays not emitted for them.
+                // Only emit count and definition name (no pointer arrays).
                 sb.AppendLine($"    .generic_argument_count = {type.GenericArguments.Count},");
                 var minGenDefName = type.GenericDefinitionCppName != null
                     ? $"\"{type.GenericDefinitionCppName}\"" : "nullptr";
@@ -1236,23 +1236,9 @@ public partial class CppCodeGenerator
         // Instance size (interfaces have no struct)
         var instanceSize = type.IsInterface ? "0" : $"sizeof({type.CppName})";
 
-        sb.AppendLine($"cil2cpp::TypeInfo {type.CppName}_TypeInfo = {{");
-        sb.AppendLine($"    .name = \"{type.Name}\",");
-        sb.AppendLine($"    .namespace_name = \"{type.Namespace}\",");
-        sb.AppendLine($"    .full_name = \"{type.ILFullName}\",");
-        sb.AppendLine($"    .base_type = {baseName},");
-        sb.AppendLine($"    .interfaces = {interfacesExpr},");
-        sb.AppendLine($"    .interface_count = {interfaceCount},");
-        sb.AppendLine($"    .instance_size = {instanceSize},");
-        sb.AppendLine($"    .element_size = 0,");
-        sb.AppendLine($"    .flags = {flagsStr},");
-        sb.AppendLine($"    .vtable = {vtableExpr},");
-        // Reflection metadata: FieldInfo/MethodInfo arrays
-        // Enums and delegates skip EmitReflectionMetadata, so always use nullptr for them
+        // Compute reflection metadata expressions
         var allFields = type.Fields.Concat(type.StaticFields).ToList();
         var reflectableMethods = type.Methods.Where(m => !CppNameMapper.IsCompilerGeneratedType(m.Name)).ToList();
-        // EmitReflectionMetadata also skips types with no fields and no reflectable methods —
-        // must match here, otherwise TypeInfo references custom_attrs/fields/methods that are never emitted
         var reflectionTargets = _module.ReflectionTargetTypes;
         var skipReflection = type.IsEnum || type.IsDelegate || type.IsRuntimeProvided
             || CppNameMapper.IsRuntimeExceptionType(type.ILFullName)
@@ -1261,39 +1247,72 @@ public partial class CppCodeGenerator
         var fieldsExpr = (!skipReflection && allFields.Count > 0) ? $"{type.CppName}_fields" : "nullptr";
         var methodsExpr = (!skipReflection && reflectableMethods.Count > 0) ? $"{type.CppName}_methods" : "nullptr";
         if (skipReflection) { allFields = new(); reflectableMethods = new(); }
-        sb.AppendLine($"    .fields = {fieldsExpr},");
-        sb.AppendLine($"    .field_count = {allFields.Count},");
-        sb.AppendLine($"    .methods = {methodsExpr},");
-        sb.AppendLine($"    .method_count = {reflectableMethods.Count},");
-        sb.AppendLine($"    .default_ctor = nullptr,");
-        sb.AppendLine($"    .finalizer = {finalizerExpr},");
-        sb.AppendLine($"    .interface_vtables = {ifaceVtablesExpr},");
-        sb.AppendLine($"    .interface_vtable_count = {ifaceVtableCount},");
-        // Custom attributes
         var typeAttrsExpr = (!skipReflection && type.CustomAttributes.Count > 0)
             ? $"{type.CppName}_custom_attrs" : "nullptr";
         var typeAttrCount = skipReflection ? 0 : type.CustomAttributes.Count;
-        sb.AppendLine($"    .custom_attributes = {typeAttrsExpr},");
-        sb.AppendLine($"    .custom_attribute_count = {typeAttrCount},");
-        sb.AppendLine($"    .cor_element_type = 0x{corElementType:X2},");
-        // Enum underlying type
         var underlyingTypeExpr = "nullptr";
         if (type.IsEnum && type.EnumUnderlyingType != null)
         {
             var underlyingCpp = CppNameMapper.MangleTypeName(type.EnumUnderlyingType);
             underlyingTypeExpr = $"&{underlyingCpp}_TypeInfo";
         }
-        sb.AppendLine($"    .underlying_type = {underlyingTypeExpr},");
-        // Generic variance data (must match EmitGenericVarianceData filter)
         var genArgsExpr = hasGenericArgs ? $"{type.CppName}_generic_args" : "nullptr";
         var genVarExpr = hasGenericArgs ? $"{type.CppName}_generic_variances" : "nullptr";
         var genCount = hasGenericArgs ? type.GenericArguments.Count : 0;
         var genDefName = type.GenericDefinitionCppName != null
             ? $"\"{type.GenericDefinitionCppName}\"" : "nullptr";
-        sb.AppendLine($"    .generic_arguments = {genArgsExpr},");
-        sb.AppendLine($"    .generic_variances = {genVarExpr},");
-        sb.AppendLine($"    .generic_argument_count = {genCount},");
-        sb.AppendLine($"    .generic_definition_name = {genDefName},");
+
+        // Emit full TypeInfo with compaction: skip null/0 fields (C++20 zero-inits omitted fields)
+        sb.AppendLine($"cil2cpp::TypeInfo {type.CppName}_TypeInfo = {{");
+        sb.AppendLine($"    .name = \"{type.Name}\",");
+        sb.AppendLine($"    .namespace_name = \"{type.Namespace}\",");
+        sb.AppendLine($"    .full_name = \"{type.ILFullName}\",");
+        if (baseName != "nullptr")
+            sb.AppendLine($"    .base_type = {baseName},");
+        if (interfaceCount > 0)
+        {
+            sb.AppendLine($"    .interfaces = {interfacesExpr},");
+            sb.AppendLine($"    .interface_count = {interfaceCount},");
+        }
+        if (!type.IsInterface)
+            sb.AppendLine($"    .instance_size = {instanceSize},");
+        // .element_size always 0 for non-array types — omit
+        sb.AppendLine($"    .flags = {flagsStr},");
+        if (vtableExpr != "nullptr")
+            sb.AppendLine($"    .vtable = {vtableExpr},");
+        if (fieldsExpr != "nullptr")
+        {
+            sb.AppendLine($"    .fields = {fieldsExpr},");
+            sb.AppendLine($"    .field_count = {allFields.Count},");
+        }
+        if (methodsExpr != "nullptr")
+        {
+            sb.AppendLine($"    .methods = {methodsExpr},");
+            sb.AppendLine($"    .method_count = {reflectableMethods.Count},");
+        }
+        // .default_ctor always nullptr — omit
+        if (finalizerExpr != "nullptr")
+            sb.AppendLine($"    .finalizer = {finalizerExpr},");
+        if (ifaceVtableCount > 0)
+        {
+            sb.AppendLine($"    .interface_vtables = {ifaceVtablesExpr},");
+            sb.AppendLine($"    .interface_vtable_count = {ifaceVtableCount},");
+        }
+        if (typeAttrCount > 0)
+        {
+            sb.AppendLine($"    .custom_attributes = {typeAttrsExpr},");
+            sb.AppendLine($"    .custom_attribute_count = {typeAttrCount},");
+        }
+        sb.AppendLine($"    .cor_element_type = 0x{corElementType:X2},");
+        if (underlyingTypeExpr != "nullptr")
+            sb.AppendLine($"    .underlying_type = {underlyingTypeExpr},");
+        if (hasGenericArgs)
+        {
+            sb.AppendLine($"    .generic_arguments = {genArgsExpr},");
+            sb.AppendLine($"    .generic_variances = {genVarExpr},");
+            sb.AppendLine($"    .generic_argument_count = {genCount},");
+            sb.AppendLine($"    .generic_definition_name = {genDefName},");
+        }
         sb.AppendLine("};");
     }
 
@@ -2088,12 +2107,17 @@ public partial class CppCodeGenerator
     private void EmitGenericVarianceData(StringBuilder sb, List<IRType> userTypes)
     {
         var typeInfoLookup = BuildTypeInfoExprLookup();
+        var constructedTypes = _module.ConstructedTypes;
         bool any = false;
         foreach (var type in userTypes)
         {
             if (type.IsRuntimeProvided) continue;
             if (!type.IsGenericInstance || type.GenericArguments.Count == 0
                 || type.GenericParameterVariances.Count == 0) continue;
+
+            // Skip non-constructed, non-referenced types — no runtime assignability checks needed
+            if (constructedTypes.Count > 0 && !constructedTypes.Contains(type.ILFullName)
+                && !_referencedTypeInfoNames.Contains(type.CppName)) continue;
 
             // Verify all generic arguments have TypeInfo available
             bool allArgsResolvable = type.GenericArguments.All(arg =>

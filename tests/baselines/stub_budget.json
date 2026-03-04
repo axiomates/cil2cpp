@@ -1,22 +1,22 @@
 {
   "HelloWorld": {
-    "total": 1253,
+    "total": 1264,
     "MissingBody": 590,
     "KnownBrokenPattern": 458,
     "UndeclaredFunction": 93,
     "ClrInternalType": 96,
     "UnknownBodyReferences": 0,
     "UnknownParameterTypes": 10,
-    "RenderedBodyError": 6
+    "RenderedBodyError": 17
   },
   "SocketTest": {
-    "total": 1613,
+    "total": 1624,
     "MissingBody": 727,
     "KnownBrokenPattern": 524,
-    "UndeclaredFunction": 166,
+    "UndeclaredFunction": 167,
     "ClrInternalType": 107,
     "UnknownBodyReferences": 0,
     "UnknownParameterTypes": 45,
-    "RenderedBodyError": 44
+    "RenderedBodyError": 54
   }
 }

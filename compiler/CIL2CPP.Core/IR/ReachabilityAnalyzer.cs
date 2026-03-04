@@ -773,6 +773,17 @@ public class ReachabilityAnalyzer
         if (typeFullName.StartsWith("System.Text.RegularExpressions.Symbolic."))
             return true;
 
+        // Expression tree interpreter — JIT fallback for evaluating expression trees.
+        // AOT compiles expression trees ahead-of-time; the interpreter is never used.
+        // Prevents ~10K types from cascading via generic specializations.
+        if (typeFullName.StartsWith("System.Linq.Expressions.Interpreter."))
+            return true;
+
+        // XML serialization internals — XmlSerializer uses runtime IL emit (AOT-incompatible).
+        // Basic Xml.Linq types (XDocument, XElement) are not affected.
+        if (typeFullName.StartsWith("System.Xml.Serialization."))
+            return true;
+
         return false;
     }
 

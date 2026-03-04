@@ -252,6 +252,8 @@ public partial class CppCodeGenerator
             declaredTypeInfoNames.Add(typeName);
             _autoTypeInfoDecls.Add(typeName);
         }
+        // Store for RenderedBodyError gate to check undeclared TypeInfo references
+        _allDeclaredTypeInfoNames = declaredTypeInfoNames;
         sb.AppendLine();
 
         // Type Definitions — ordering: enums first, then delegates, then structs (topologically sorted).
@@ -2206,6 +2208,222 @@ public partial class CppCodeGenerator
             }
         }
 
+        // Body-level check: checked_add/checked_sub/checked_mul type deduction failure.
+        // The signed templates checked_add<T>(T,T) require is_signed_v<T>, but when the
+        // codegen passes mixed-width args (uint8_t/uint16_t + int, or signed + uint64_t),
+        // MSVC can't deduce T (C2672), cascading to C3536 for dependent auto vars.
+        // Gate: checked_ appears on a line near unsigned array_get/static_cast results.
+        if (rendered.Contains("cil2cpp::checked_add(") || rendered.Contains("cil2cpp::checked_sub(") ||
+            rendered.Contains("cil2cpp::checked_mul("))
+        {
+            // Collect temp variables known to be unsigned (from array_get<uintN> or static_cast<uintN>)
+            var unsignedTemps = new HashSet<string>();
+            // Also check if any parameter is unsigned
+            var unsignedParams = new HashSet<string>();
+            foreach (var p in method.Parameters)
+            {
+                if (p.CppTypeName is "uint8_t" or "uint16_t" or "uint32_t" or "uint64_t")
+                    unsignedParams.Add(p.CppName ?? p.Name);
+            }
+            foreach (var line in rendered.AsSpan().EnumerateLines())
+            {
+                var s = line.ToString().TrimStart();
+                // Track temps from array_get<uintN> or static_cast<uintN>
+                if (s.StartsWith("auto __t") && (s.Contains("array_get<uint") || s.Contains("static_cast<uint")))
+                {
+                    var spIdx = s.IndexOf(' ', 5);
+                    if (spIdx > 5) unsignedTemps.Add(s[5..spIdx]);
+                }
+                // Check if checked_ call uses an unsigned temp or param as argument
+                if (s.Contains("cil2cpp::checked_add(") || s.Contains("cil2cpp::checked_sub(") ||
+                    s.Contains("cil2cpp::checked_mul("))
+                {
+                    foreach (var t in unsignedTemps)
+                    {
+                        if (s.Contains(t))
+                            return "checked_add/sub/mul with unsigned temp (C2672)";
+                    }
+                    foreach (var p in unsignedParams)
+                    {
+                        if (s.Contains(p))
+                            return "checked_add/sub/mul with unsigned param (C2672)";
+                    }
+                }
+            }
+        }
+
+        // Body-level check: CIL2CPP_CATCH(TypeName) where TypeName_TypeInfo is not declared (C2065).
+        // The macro expands to reference TypeName##_TypeInfo, so we need to check the type name.
+        if (rendered.Contains("CIL2CPP_CATCH(") && _allDeclaredTypeInfoNames.Count > 0)
+        {
+            foreach (var line in rendered.AsSpan().EnumerateLines())
+            {
+                var s = line.ToString().TrimStart();
+                if (!s.StartsWith("CIL2CPP_CATCH(")) continue;
+                var nameStart = "CIL2CPP_CATCH(".Length;
+                var nameEnd = s.IndexOf(')', nameStart);
+                if (nameEnd <= nameStart) continue;
+                var typeName = s[nameStart..nameEnd];
+                if (typeName.Length > 3 && typeName.Contains('_') && !_allDeclaredTypeInfoNames.Contains(typeName))
+                    return $"CIL2CPP_CATCH with undeclared TypeInfo for '{typeName}' (C2065)";
+            }
+        }
+
+        // Multi-line check: void* from array_get_value assigned to Object* on different line (C2440).
+        // array_get_value returns void*. Track temps, then check if cast to Object* later.
+        if (rendered.Contains("array_get_value"))
+        {
+            // Same-line check (original)
+            foreach (var line in rendered.AsSpan().EnumerateLines())
+            {
+                var s = line.ToString().TrimStart();
+                if (s.Contains("= (cil2cpp::Object*)") && s.Contains("array_get_value"))
+                    return "array_get_value result cast to Object* (void*→Object* C2440)";
+            }
+            // Multi-line check: track temps from array_get_value, check later casts
+            var agvTemps = new HashSet<string>();
+            foreach (var line in rendered.AsSpan().EnumerateLines())
+            {
+                var s = line.ToString().TrimStart();
+                if (!s.Contains("array_get_value(")) continue;
+                // Pattern: "__tN = cil2cpp::array_get_value(" or "auto __tN = cil2cpp::array_get_value("
+                var tIdx = s.IndexOf("__t");
+                if (tIdx < 0) continue;
+                var tEnd = tIdx;
+                while (tEnd < s.Length && (char.IsLetterOrDigit(s[tEnd]) || s[tEnd] == '_'))
+                    tEnd++;
+                var tempName = s[tIdx..tEnd];
+                // Ensure this temp is on the LHS of the assignment
+                var eqIdx = s.IndexOf(" = ", tEnd);
+                if (eqIdx < 0 && s.Contains($"{tempName} = "))
+                    agvTemps.Add(tempName);
+                else if (s.StartsWith("auto ") && s.Contains($"{tempName} = "))
+                    agvTemps.Add(tempName);
+                else if (s.StartsWith($"{tempName} = "))
+                    agvTemps.Add(tempName);
+            }
+            if (agvTemps.Count > 0)
+            {
+                foreach (var line in rendered.AsSpan().EnumerateLines())
+                {
+                    var s = line.ToString().TrimStart();
+                    foreach (var t in agvTemps)
+                    {
+                        if (s.Contains($"(cil2cpp::Object*){t}") || s.Contains($"(cil2cpp::Object*)(void*){t}"))
+                            return $"array_get_value temp {t} cast to Object* on later line (C2440)";
+                    }
+                }
+            }
+        }
+
+        // Body-level check: Hashtable* assigned to field typed as Array* (C2440).
+        // Field-shadowing: MatchSparse._caps (Hashtable) shadows Group._caps (int[]/Array*).
+        // In C++ struct layout, f_caps is Array* from the base class.
+        // Only flag stores (->f_FIELD = expr), not loads (= ...->f_FIELD).
+        // Skip Hashtable subclasses (SyncHashtable etc.) — their fields ARE typed as Hashtable*.
+        if (rendered.Contains("Hashtable*") && rendered.Contains("->f_") &&
+            !(method.DeclaringType?.CppName ?? "").Contains("Hashtable"))
+        {
+            foreach (var line in rendered.AsSpan().EnumerateLines())
+            {
+                var s = line.ToString().TrimStart();
+                if (!s.Contains("Hashtable*") || !s.Contains("->f_")) continue;
+                // Check: ->f_FIELD = expr (store pattern — "= " must follow "->f_")
+                var fIdx = s.IndexOf("->f_");
+                var eqIdx = s.IndexOf(" = ", fIdx);
+                if (eqIdx > fIdx)
+                    return "Hashtable* assigned to base class field (field shadowing C2440)";
+            }
+        }
+
+        // Body-level check: Math_Round/Math_Truncate called with System_Decimal argument.
+        // Generic DataStorage<T> methods where T=double but body operates on System_Decimal (C2664).
+        if ((rendered.Contains("Math_Round") || rendered.Contains("Math_Truncate")) &&
+            rendered.Contains("System_Decimal"))
+            return "Math_Round/Math_Truncate with System_Decimal type (generic T mismatch C2664)";
+
+        // Body-level check: array_get<Object*> result used where typed pointer expected (C2664/C2440).
+        // Pattern: array_get<cil2cpp::Object*> → temp, then temp passed as function arg, to array ops, etc.
+        if (rendered.Contains("array_get<cil2cpp::Object*>"))
+        {
+            // Collect temps from array_get<Object*>
+            var objectTemps = new HashSet<string>();
+            foreach (var line in rendered.AsSpan().EnumerateLines())
+            {
+                var s = line.ToString().TrimStart();
+                if (s.Contains("array_get<cil2cpp::Object*>") && s.StartsWith("auto __t"))
+                {
+                    var spIdx = s.IndexOf(' ', 5);
+                    if (spIdx > 5) objectTemps.Add(s[5..spIdx]);
+                }
+            }
+            if (objectTemps.Count > 0)
+            {
+                foreach (var line in rendered.AsSpan().EnumerateLines())
+                {
+                    var s = line.ToString().TrimStart();
+                    foreach (var t in objectTemps)
+                    {
+                        // array_length(Object*_temp) — expects Array*
+                        if (s.Contains($"array_length({t})"))
+                            return $"array_get<Object*> result passed to array_length (C2664)";
+                        // array_get_value(..., Object*_temp) — expects int32_t index
+                        if (s.Contains("array_get_value(") && s.Contains($", {t})"))
+                            return $"array_get<Object*> result passed to array_get_value as index (C2664)";
+                        // *__tX = __tY (dereference assignment from Object* temp)
+                        if (s.StartsWith("*__t") && s.Contains($"= {t};"))
+                            return $"array_get<Object*> result stored to typed pointer (C2440)";
+                        // Function argument: temp passed directly as arg to a typed function (not cast)
+                        // Pattern: FuncName(..., __t18, ...) where __t18 is Object* but param expects Array*/etc.
+                        // Detect: ", __tN," or ", __tN)" or "(__tN," — temp as bare argument without cast
+                        if (!s.Contains("array_get<") && !s.Contains("array_set<") &&
+                            !s.Contains($"(cil2cpp::Object*){t}") && !s.Contains($"(void*){t}"))
+                        {
+                            if ((s.Contains($", {t},") || s.Contains($", {t})") || s.Contains($"({t},")) &&
+                                !s.Contains($"= {t};") && !s.StartsWith($"{t} =") &&
+                                !s.StartsWith("auto ") && !s.StartsWith("if "))
+                                return $"array_get<Object*> temp {t} passed as typed function argument (C2664)";
+                        }
+                    }
+                }
+            }
+        }
+
+        // Body-level check: delegate dispatch with wrong argument types (C2664).
+        // Pattern: Listeners`1 methods where DataViewListener* is passed where ListChangedType expected.
+        if (rendered.Contains("DataViewListener") && rendered.Contains("ListChangedType"))
+            return "delegate dispatch DataViewListener→ListChangedType type mismatch (C2664)";
+
+        // Body-level check: function pointer reference (ldftn) to undeclared function (C2065).
+        // Pattern: "= (void*)FUNCTION_NAME;" on a line by itself — ldftn creates a bare
+        // function pointer reference, distinct from casts like "(Type*)(void*)expr".
+        // Exclude _statics globals and function calls (name followed by '(' or '.').
+        if (rendered.Contains("delegate_create") && _declaredFunctionNames.Count > 0)
+        {
+            foreach (var line in rendered.AsSpan().EnumerateLines())
+            {
+                var s = line.ToString().TrimStart();
+                // Only check lines that assign a function pointer: "auto __tN = (void*)FUNC_NAME;"
+                if (!s.Contains("= (void*)")) continue;
+                var fpIdx = s.IndexOf("= (void*)", StringComparison.Ordinal);
+                if (fpIdx < 0) continue;
+                var nameStart = fpIdx + 9; // After "= (void*)"
+                if (nameStart >= s.Length || !char.IsLetter(s[nameStart])) continue;
+                var nameEnd = nameStart;
+                while (nameEnd < s.Length && (char.IsLetterOrDigit(s[nameEnd]) || s[nameEnd] == '_'))
+                    nameEnd++;
+                var funcName = s[nameStart..nameEnd];
+                // Skip if followed by '(' (function call) or '.' (statics access)
+                if (nameEnd < s.Length && (s[nameEnd] == '(' || s[nameEnd] == '.')) continue;
+                // Skip known non-function patterns
+                if (funcName.EndsWith("_statics")) continue;
+                if (!funcName.Contains('_') || funcName.StartsWith("cil2cpp") ||
+                    funcName.StartsWith("__") || funcName.Length <= 10) continue;
+                if (!_declaredFunctionNames.Contains(funcName))
+                    return $"undeclared function pointer '{funcName}' (C2065)";
+            }
+        }
+
         // Check each line for known error patterns
         foreach (var line in rendered.AsSpan().EnumerateLines())
         {
@@ -2216,31 +2434,34 @@ public partial class CppCodeGenerator
             if (lineReason != null)
                 return lineReason;
 
-            // Check for references to _TypeInfo globals for opaque types.
-            // Opaque stubs emit struct { }; but no TypeInfo global — references cause C2065.
-            // Note: these types MAY be in knownTypes (opaque struct IS emitted), but their
-            // TypeInfo globals are NOT generated. So we can't use knownTypes to filter.
-            if (s.Contains("_TypeInfo") && s.Contains("&"))
+            // Check for references to _TypeInfo globals that were not declared in the header.
+            // Types excluded by tree-shaking or namespace filtering may not have TypeInfo
+            // globals emitted, but method bodies may still reference them (C2065).
+            // IMPORTANT: _TypeInfo must be a SUFFIX (followed by non-identifier char or end-of-string),
+            // not a substring like "System_Reflection_TypeInfo_GetRankString".
+            if (s.Contains("_TypeInfo") && _allDeclaredTypeInfoNames.Count > 0)
             {
                 var typeInfoIdx2 = s.IndexOf("_TypeInfo", StringComparison.Ordinal);
                 while (typeInfoIdx2 > 0)
                 {
+                    // Ensure _TypeInfo is a suffix: next char must be non-identifier or end-of-string
+                    var afterTI = typeInfoIdx2 + 9; // length of "_TypeInfo"
+                    if (afterTI < s.Length && (char.IsLetterOrDigit(s[afterTI]) || s[afterTI] == '_'))
+                    {
+                        // Not a suffix — _TypeInfo is part of a longer identifier (e.g. _TypeInfo_GetRankString)
+                        typeInfoIdx2 = s.IndexOf("_TypeInfo", afterTI, StringComparison.Ordinal);
+                        continue;
+                    }
                     var tiStart = typeInfoIdx2 - 1;
                     while (tiStart > 0 && (char.IsLetterOrDigit(s[tiStart - 1]) || s[tiStart - 1] == '_'))
                         tiStart--;
                     var tiTypeName = s[tiStart..typeInfoIdx2];
-                    if (tiTypeName.Length > 5 && !tiTypeName.StartsWith("cil2cpp") && tiTypeName.Contains('_') &&
-                        (tiTypeName.Contains("ValueTuple_4_") || tiTypeName.Contains("ValueTuple_5_") ||
-                         tiTypeName.Contains("ValueTuple_6_") || tiTypeName.Contains("ValueTuple_7_") ||
-                         tiTypeName.Contains("AsyncOverSync")))
+                    if (tiTypeName.Length > 3 && !tiTypeName.StartsWith("cil2cpp") && tiTypeName.Contains('_'))
                     {
-                        // Only flag if the type's TypeInfo is NOT found in declared function names
-                        // (which tracks extern declarations). This is a heuristic — full TypeInfos
-                        // have ensure_cctor or other methods.
-                        if (!_declaredFunctionNames.Contains($"{tiTypeName}__ctor"))
-                            return $"_TypeInfo reference for opaque type '{tiTypeName}' (C2065)";
+                        if (!_allDeclaredTypeInfoNames.Contains(tiTypeName))
+                            return $"undeclared _TypeInfo for '{tiTypeName}' (C2065)";
                     }
-                    typeInfoIdx2 = s.IndexOf("_TypeInfo", typeInfoIdx2 + 9);
+                    typeInfoIdx2 = s.IndexOf("_TypeInfo", afterTI, StringComparison.Ordinal);
                 }
             }
 

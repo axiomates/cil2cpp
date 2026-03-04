@@ -126,6 +126,9 @@ public partial class IRBuilder
         "System.Security",
         "System.Buffers.IndexOfAnyAsciiSearcher",  // SIMD-dependent search internals
         "System.Text.RegularExpressions.Symbolic",  // Recursive generic types (BDD/DerivativeEffect) cause infinite nesting
+        "System.Linq.Expressions.Interpreter",      // JIT-only expression tree interpreter, AOT-incompatible
+        "System.Xml.Serialization",                  // XmlSerializer uses runtime IL emit, AOT-incompatible
+        "System.Xml.Schema",                         // Heavy XML schema validation, pulls in expression evaluators
         "Internal",
     ];
 
@@ -558,6 +561,7 @@ public partial class IRBuilder
                 IsInterface = openType.IsInterface,
                 IsAbstract = openType.IsAbstract,
                 IsSealed = openType.IsSealed,
+                IsEnum = openType.IsEnum,
                 IsGenericInstance = true,
                 IsDelegate = isDelegate,
                 IsPublic = openType.IsPublic,
@@ -566,6 +570,13 @@ public partial class IRBuilder
                 IsRuntimeProvided = RuntimeProvidedTypes.Contains(info.OpenTypeName),
                 SourceKind = _assemblySet.ClassifyAssembly(openType.Module.Assembly.Name.Name),
             };
+
+            // Propagate enum underlying type from Cecil definition
+            if (openType.IsEnum)
+            {
+                var valueField = openType.Fields.FirstOrDefault(f => f.Name == "value__");
+                irType.EnumUnderlyingType = valueField?.FieldType.FullName ?? "System.Int32";
+            }
 
             // Propagate generic parameter variances from open type definition
             if (openType.HasGenericParameters)
@@ -599,6 +610,9 @@ public partial class IRBuilder
             // Fields from Cecil definition
             foreach (var fieldDef in openType.Fields)
             {
+                // Skip value__ backing field for enums (same as IRBuilder.Types.cs)
+                if (irType.IsEnum && fieldDef.Name == "value__") continue;
+
                 var fieldTypeName = ResolveGenericTypeName(fieldDef.FieldType, typeParamMap);
                 var irField = new IRField
                 {
@@ -609,6 +623,11 @@ public partial class IRBuilder
                     IsPublic = fieldDef.IsPublic,
                     DeclaringType = irType,
                 };
+
+                // For enum constant fields, extract the constant value
+                if (irType.IsEnum && fieldDef.IsStatic && fieldDef.HasConstant)
+                    irField.ConstantValue = fieldDef.Constant?.ToString();
+
                 if (fieldDef.IsStatic)
                     irType.StaticFields.Add(irField);
                 else
@@ -854,6 +873,7 @@ public partial class IRBuilder
                 IsInterface = openType.IsInterface,
                 IsAbstract = openType.IsAbstract,
                 IsSealed = openType.IsSealed,
+                IsEnum = openType.IsEnum,
                 IsGenericInstance = true,
                 IsDelegate = openType.BaseType?.FullName is "System.MulticastDelegate" or "System.Delegate",
                 IsPublic = openType.IsPublic,
@@ -862,6 +882,13 @@ public partial class IRBuilder
                 IsRuntimeProvided = false,
                 SourceKind = _assemblySet.ClassifyAssembly(openType.Module.Assembly.Name.Name),
             };
+
+            // Propagate enum underlying type from Cecil definition
+            if (openType.IsEnum)
+            {
+                var valueField = openType.Fields.FirstOrDefault(f => f.Name == "value__");
+                irType.EnumUnderlyingType = valueField?.FieldType.FullName ?? "System.Int32";
+            }
 
             if (openType.IsValueType)
             {
@@ -872,6 +899,9 @@ public partial class IRBuilder
             // Fields
             foreach (var fieldDef in openType.Fields)
             {
+                // Skip value__ backing field for enums (same as IRBuilder.Types.cs)
+                if (irType.IsEnum && fieldDef.Name == "value__") continue;
+
                 var fieldTypeName = ResolveGenericTypeName(fieldDef.FieldType, typeParamMap);
                 var irField = new IRField
                 {
@@ -882,6 +912,11 @@ public partial class IRBuilder
                     IsPublic = fieldDef.IsPublic,
                     DeclaringType = irType,
                 };
+
+                // For enum constant fields, extract the constant value
+                if (irType.IsEnum && fieldDef.IsStatic && fieldDef.HasConstant)
+                    irField.ConstantValue = fieldDef.Constant?.ToString();
+
                 if (fieldDef.IsStatic)
                     irType.StaticFields.Add(irField);
                 else

@@ -222,6 +222,13 @@ public partial class CppCodeGenerator
     private HashSet<string> _referencedTypeInfoNames = new();
 
     /// <summary>
+    /// All TypeInfo CppNames that have extern declarations in the header.
+    /// Used by RenderedBodyError to detect references to undeclared TypeInfo globals.
+    /// Populated during header generation.
+    /// </summary>
+    private HashSet<string> _allDeclaredTypeInfoNames = new();
+
+    /// <summary>
     /// Minimum IR instructions per method partition. Each TU re-parses the full header,
     /// so partitions need enough method code to amortize that overhead.
     /// ~20000 instructions ≈ 13k-17k C++ lines per partition (ratio ~0.7 lines/instruction).
@@ -488,8 +495,9 @@ public partial class CppCodeGenerator
     private static string EscapeString(string s)
     {
         var sb = new StringBuilder(s.Length);
-        foreach (var ch in s)
+        for (int i = 0; i < s.Length; i++)
         {
+            var ch = s[i];
             switch (ch)
             {
                 case '\\': sb.Append("\\\\"); break;
@@ -499,7 +507,21 @@ public partial class CppCodeGenerator
                 case '\t': sb.Append("\\t"); break;
                 case '\0': sb.Append("\\0"); break;
                 default:
-                    if (ch > 127)
+                    if (char.IsHighSurrogate(ch) && i + 1 < s.Length && char.IsLowSurrogate(s[i + 1]))
+                    {
+                        // Surrogate pair → combine into a single 32-bit UCN (\UXXXXXXXX).
+                        // MSVC C3850: \uD800-\uDFFF are invalid as 16-bit universal character names.
+                        int codePoint = char.ConvertToUtf32(ch, s[i + 1]);
+                        sb.Append($"\\U{codePoint:X8}");
+                        i++; // skip low surrogate
+                    }
+                    else if (ch >= 0xD800 && ch <= 0xDFFF)
+                    {
+                        // Lone surrogate (no valid pair) — replace with U+FFFD.
+                        // Surrogates are invalid as \uXXXX (C3850) and too large for \xXX (C7744).
+                        sb.Append("\\uFFFD");
+                    }
+                    else if (ch > 127)
                     {
                         // Escape non-ASCII as universal character names for MSVC compatibility
                         sb.Append($"\\u{(int)ch:X4}");
