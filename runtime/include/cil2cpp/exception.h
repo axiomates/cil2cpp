@@ -7,6 +7,8 @@
 #include "object.h"
 #include "string.h"
 #include <setjmp.h>
+#include <cstdio>
+#include <intrin.h>
 
 namespace cil2cpp {
 
@@ -209,11 +211,14 @@ String* capture_stack_trace();
 /**
  * Null check - throws NullReferenceException if null.
  */
-inline void null_check(void* ptr) {
+inline void null_check_impl(void* ptr, const char* file, int line) {
     if (ptr == nullptr) {
+        // HACK: temporary diagnostic — print file:line to identify crash location
+        fprintf(stderr, "[NULL_CHECK] failed at %s:%d\n", file, line);
         throw_null_reference();
     }
 }
+#define null_check(ptr) null_check_impl(ptr, __FILE__, __LINE__)
 
 // Exception TypeInfo extern declarations (defined in exception.cpp)
 extern TypeInfo Exception_TypeInfo;

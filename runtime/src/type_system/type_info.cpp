@@ -145,6 +145,10 @@ InterfaceVTable* type_get_interface_vtable(TypeInfo* type, TypeInfo* interface_t
 InterfaceVTable* type_get_interface_vtable_checked(TypeInfo* type, TypeInfo* interface_type) {
     auto* result = type_get_interface_vtable(type, interface_type);
     if (!result) {
+        fprintf(stderr, "[InvalidCast] type_get_interface_vtable_checked FAILED: type='%s' does not implement interface='%s'\n",
+            type ? (type->full_name ? type->full_name : "?") : "null",
+            interface_type ? (interface_type->full_name ? interface_type->full_name : "?") : "null");
+        fflush(stderr);
         throw_invalid_cast();
     }
     return result;
@@ -207,9 +211,9 @@ Boolean object_is_instance_of(Object* obj, TypeInfo* type) {
         }
         // Also check interfaces that System.Array implements (IList, ICollection, etc.)
         if (type->flags & TypeFlags::Interface) {
-            // Walk the target's name to check common array interfaces
             if (type->full_name) {
                 const char* name = type->full_name;
+                // Non-generic interfaces
                 if (std::strcmp(name, "System.Collections.IList") == 0 ||
                     std::strcmp(name, "System.Collections.ICollection") == 0 ||
                     std::strcmp(name, "System.Collections.IEnumerable") == 0 ||
@@ -219,6 +223,11 @@ Boolean object_is_instance_of(Object* obj, TypeInfo* type) {
                     return true;
                 }
             }
+            // Generic interfaces: T[] implements IList<T>, ICollection<T>, IEnumerable<T>,
+            // IReadOnlyList<T>, IReadOnlyCollection<T>
+            // TODO: enable this once array interface vtable dispatch is implemented
+            // Currently disabled because object_is_instance_of returning true leads to
+            // type_get_interface_vtable_checked calls that fail (arrays don't have interface vtables)
         }
     }
 
@@ -237,6 +246,10 @@ Object* object_cast(Object* obj, TypeInfo* type) {
     if (object_is_instance_of(obj, type)) {
         return obj;
     }
+    fprintf(stderr, "[InvalidCast] object_cast FAILED: obj type='%s' cannot cast to '%s'\n",
+        (obj && obj->__type_info && obj->__type_info->full_name) ? obj->__type_info->full_name : "?",
+        (type && type->full_name) ? type->full_name : "?");
+    fflush(stderr);
     throw_invalid_cast();
 }
 

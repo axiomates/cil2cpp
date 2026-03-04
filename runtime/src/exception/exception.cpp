@@ -95,10 +95,12 @@ extern TypeInfo KeyNotFoundException_TypeInfo;
     // from within a catch or finally block — matching .NET semantics where
     // such exceptions propagate to the enclosing try block.
     while (g_exception_context && g_exception_context->state != 0) {
+        fprintf(stderr, "  [throw_exception] skipping context %p (state=%d)\n", (void*)g_exception_context, g_exception_context->state); fflush(stderr);
         g_exception_context = g_exception_context->previous;
     }
 
     if (g_exception_context) {
+        fprintf(stderr, "  [throw_exception] longjmp to context %p\n", (void*)g_exception_context); fflush(stderr);
         g_exception_context->current_exception = ex;
         longjmp(g_exception_context->jump_buffer, 1);
     }

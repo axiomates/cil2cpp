@@ -320,6 +320,15 @@ public partial class CppCodeGenerator
             sb.AppendLine();
         }
 
+        // HACK: Patch runtime built-in TypeInfos with codegen vtable/interfaces.
+        // Runtime has TWO TypeInfos for String/Object:
+        //   1. cil2cpp::System::String_TypeInfo (BCL, used by string_literal/string_create_utf8)
+        //   2. cil2cpp::System_String_TypeInfo (reflection, used by codegen reference alias)
+        // Both have vtable=nullptr. We must patch both so virtual dispatch works on
+        // strings regardless of which TypeInfo pointer they carry.
+        // This function is emitted AFTER all VTable/interface data is visible in this TU.
+        EmitRuntimeVTablePatching(sb, needsStringAlias, needsObjectAlias);
+
         return new GeneratedFile
         {
             FileName = $"{_module.Name}_data.cpp",
@@ -395,6 +404,7 @@ public partial class CppCodeGenerator
             // Non-core RuntimeProvided types (Task, Thread, CancellationToken) emit all methods.
             if (type.IsRuntimeProvided && !method.IsStatic
                 && IRBuilder.CoreRuntimeTypes.Contains(type.ILFullName)) continue;
+
             // Abstract methods have no IL body but may be referenced by direct calls
             // in base class methods (should be vtable dispatch, but some callvirt
             // patterns emit direct calls). Emit stub to prevent linker errors.
@@ -409,6 +419,22 @@ public partial class CppCodeGenerator
             }
             if (method.BasicBlocks.Count == 0) continue;
             if (method.HasICallMapping) continue;
+
+            // Pre-gate: AOT replacement bodies for methods that use AOT-incompatible patterns
+            // (e.g., typeof(IEquatable<>).MakeGenericType) but have well-known fixed semantics.
+            // These bypass all gates because their IL body is never emitted — only the custom C++ body.
+            var aotBody = GetAotReplacementBody(method.CppName, _knownTypeNames);
+            if (aotBody != null)
+            {
+                if (_emittedMethodSignatures.Add(method.GetCppSignature()))
+                {
+                    sb.AppendLine($"{method.GetCppSignature()} {{");
+                    sb.AppendLine(aotBody);
+                    sb.AppendLine("}");
+                }
+                continue;
+            }
+
             if (!TryEmitMethodThroughGates(sb, method)) continue;
 
             // Check known stub implementations before trial render
@@ -429,7 +455,7 @@ public partial class CppCodeGenerator
             var reReason = GetRenderedBodyErrorReason(rendered, method, _knownTypeNames);
             if (reReason != null)
             {
-                var renderDetail = _stubAnalyzer != null
+                    var renderDetail = _stubAnalyzer != null
                     ? reReason  // Use the exact reason from the check that caught it
                     : "trial render error";
 
@@ -1062,6 +1088,7 @@ public partial class CppCodeGenerator
             if (!emittedOverloads.Add(GetOverloadKey(method))) continue;
 
             // Skip stubs with unresolved generic params (bare name without underscore: TKey, TOther, etc.)
+            // But allow known types (user types like "Person" that have no namespace prefix)
             bool hasProblematicType = false;
             var stubTypesToCheck = method.Parameters.Select(p => p.CppTypeName).ToList();
             if (!string.IsNullOrEmpty(method.ReturnTypeCpp) && method.ReturnTypeCpp != "void")
@@ -1071,13 +1098,17 @@ public partial class CppCodeGenerator
                 var baseType = typeName.TrimEnd('*').Trim();
                 if (string.IsNullOrEmpty(baseType)) continue;
                 if (!baseType.Contains('_') && !baseType.StartsWith("cil2cpp::") &&
-                    !IsCppPrimitiveType(baseType))
+                    !IsCppPrimitiveType(baseType) && !_knownTypeNames.Contains(baseType))
                 {
                     hasProblematicType = true;
                     break;
                 }
             }
             if (hasProblematicType) continue;
+
+            // Skip methods with AOT replacement bodies (already emitted in main loop)
+            var aotBody = GetAotReplacementBody(method.CppName, _knownTypeNames);
+            if (aotBody != null) continue;
 
             var knownBody = GetKnownStubBody(method.CppName);
             if (knownBody != null)
@@ -1166,6 +1197,7 @@ public partial class CppCodeGenerator
         var typeInfoLookup = BuildTypeInfoExprLookup();
         var hasGenericArgs = type.IsGenericInstance && type.GenericArguments.Count > 0
                              && type.GenericParameterVariances.Count > 0
+                             && !type.GenericParameterVariances.All(v => v == 0) // invariant types don't need variance data
                              && type.GenericArguments.All(arg => typeInfoLookup.ContainsKey(arg));
 
         // Interfaces (pointer array, needed by both tiers for assignability)
@@ -2072,6 +2104,83 @@ public partial class CppCodeGenerator
         }
 
         // Interface vtable method arrays and InterfaceVTable arrays
+
+        // Pre-pass: generate no-op stubs for interface methods that would otherwise be nullptr.
+        // This handles both undeclared method impls (non-null m, but not in _declaredFunctionNames)
+        // and unresolved method impls (null m, method not found during Pass 5).
+        // Stubs prevent null function pointer crashes on interface dispatch.
+        var ifaceStubLookup = new Dictionary<string, string>(); // "Type|Iface|slot" → stubFuncName
+        var emittedIfaceStubs = new HashSet<string>();
+        // Known C++ type names — used to detect open generic params in interface stubs
+        var knownCppTypes = new HashSet<string>(_module.Types.Select(t => t.CppName));
+        foreach (var prim in new[] { "int8_t", "uint8_t", "int16_t", "uint16_t", "int32_t", "uint32_t",
+            "int64_t", "uint64_t", "float", "double", "bool", "char16_t", "intptr_t", "uintptr_t", "void" })
+            knownCppTypes.Add(prim);
+        foreach (var type in userTypes)
+        {
+            var isCoreRt2 = type.IsRuntimeProvided && IRBuilder.CoreRuntimeTypes.Contains(type.ILFullName);
+            if (type.IsInterface || isCoreRt2 || type.InterfaceImpls.Count == 0) continue;
+            foreach (var impl in type.InterfaceImpls)
+            {
+                for (int mi = 0; mi < impl.MethodImpls.Count; mi++)
+                {
+                    var m = impl.MethodImpls[mi];
+
+                    if (m != null)
+                    {
+                        // Non-null: check if the method would end up as nullptr in the vtable
+                        var declType = m.DeclaringType;
+                        var isDeclCoreRt = declType != null && declType.IsRuntimeProvided
+                            && IRBuilder.CoreRuntimeTypes.Contains(declType.ILFullName);
+                        if (declType != null && (isDeclCoreRt || !generatedMethodTypes.Contains(declType.CppName)))
+                            continue; // Core runtime types use nullptr (runtime-handled)
+                        if (_declaredFunctionNames.Contains(m.CppName)) continue; // Already declared
+                        if (!emittedIfaceStubs.Add(m.CppName)) continue;
+
+                        var sig = m.GetCppSignature();
+                        var retDefault = string.IsNullOrEmpty(m.ReturnTypeCpp) || m.ReturnTypeCpp == "void"
+                            ? "" : " return {};";
+                        sb.AppendLine($"// STUB: undeclared interface method implementation");
+                        sb.AppendLine($"{sig} {{{retDefault} }}");
+                        _declaredFunctionNames.Add(m.CppName);
+                        _emittedMethodSignatures.Add(sig); // prevent duplicate in stubs file
+                    }
+                    else
+                    {
+                        // Null: create stub from interface method signature
+                        if (mi >= impl.Interface.Methods.Count) continue;
+                        var ifaceMethod = impl.Interface.Methods[mi];
+                        var stubName = $"{type.CppName}_{impl.Interface.CppName}_{ifaceMethod.Name}";
+                        if (_declaredFunctionNames.Contains(stubName)) continue; // Already compiled
+                        if (!emittedIfaceStubs.Add(stubName)) continue;
+
+                        var paramList = new List<string> { $"{type.CppName}* __this" };
+                        foreach (var p in ifaceMethod.Parameters.Skip(1))
+                        {
+                            // Replace open generic param types (e.g. IComparer_1_TKey) with void*
+                            var pType = p.CppTypeName;
+                            var baseType = pType.TrimEnd('*', ' ');
+                            if (!string.IsNullOrEmpty(baseType) && !knownCppTypes.Contains(baseType))
+                                pType = "void*";
+                            paramList.Add($"{pType} {p.Name}");
+                        }
+                        var retType = string.IsNullOrEmpty(ifaceMethod.ReturnTypeCpp) ? "void" : ifaceMethod.ReturnTypeCpp;
+                        // Also sanitize return type for open generic params
+                        var retBase = retType.TrimEnd('*', ' ');
+                        if (!string.IsNullOrEmpty(retBase) && !knownCppTypes.Contains(retBase))
+                            retType = "void*";
+                        var retDefault = retType == "void" ? "" : " return {};";
+
+                        sb.AppendLine($"// STUB: unresolved interface method ({impl.Interface.Name}.{ifaceMethod.Name})");
+                        sb.AppendLine($"{retType} {stubName}({string.Join(", ", paramList)}) {{{retDefault} }}");
+
+                        ifaceStubLookup[$"{type.CppName}|{impl.Interface.CppName}|{mi}"] = stubName;
+                    }
+                }
+            }
+        }
+        if (emittedIfaceStubs.Count > 0) sb.AppendLine();
+
         var constructedTypesIface = _module.ConstructedTypes;
         foreach (var type in userTypes)
         {
@@ -2083,9 +2192,25 @@ public partial class CppCodeGenerator
 
             foreach (var impl in type.InterfaceImpls)
             {
-                var methods = string.Join(", ", impl.MethodImpls.Select(m =>
+                var implRef = impl; // capture for lambda
+                var typeRef = type; // capture for lambda
+                var methods = string.Join(", ", impl.MethodImpls.Select((m, idx) =>
                 {
-                    if (m == null) return "nullptr";
+                    if (m == null)
+                    {
+                        var key = $"{typeRef.CppName}|{implRef.Interface.CppName}|{idx}";
+                        if (ifaceStubLookup.TryGetValue(key, out var stubName))
+                            return $"(void*)&{stubName}";
+                        // Check if an already-compiled method matches the stub name pattern
+                        if (idx < implRef.Interface.Methods.Count)
+                        {
+                            var ifm = implRef.Interface.Methods[idx];
+                            var compiledName = $"{typeRef.CppName}_{implRef.Interface.CppName}_{ifm.Name}";
+                            if (_declaredFunctionNames.Contains(compiledName))
+                                return $"(void*)&{compiledName}";
+                        }
+                        return "nullptr";
+                    }
                     // If the method's declaring type is a core runtime type or not generated, use nullptr
                     var declType = m.DeclaringType;
                     var isDeclCoreRt = declType != null && declType.IsRuntimeProvided
@@ -2095,6 +2220,18 @@ public partial class CppCodeGenerator
                     // Check if the function was actually declared in the header
                     if (!_declaredFunctionNames.Contains(m.CppName))
                         return "nullptr";
+                    // If this method was stubbed by the pre-pass (no basic blocks),
+                    // GetTypedMethodPointerCast returns "nullptr". Build cast manually.
+                    if (emittedIfaceStubs.Contains(m.CppName))
+                    {
+                        var retType = SanitizeFuncPtrType(m.ReturnTypeCpp ?? "void");
+                        var ptypes = new List<string>();
+                        if (!m.IsStatic && m.DeclaringType != null)
+                            ptypes.Add($"{m.DeclaringType.CppName}*");
+                        foreach (var p in m.Parameters)
+                            ptypes.Add(SanitizeFuncPtrType(p.CppTypeName));
+                        return $"(void*)({retType}(*)({string.Join(", ", ptypes)}))&{m.CppName}";
+                    }
                     return GetTypedMethodPointerCast(m);
                 }));
                 // MSVC: zero-size arrays are not allowed (C2466)
@@ -2122,6 +2259,9 @@ public partial class CppCodeGenerator
             if (type.IsRuntimeProvided) continue;
             if (!type.IsGenericInstance || type.GenericArguments.Count == 0
                 || type.GenericParameterVariances.Count == 0) continue;
+
+            // Skip types where all generic parameters are invariant — no variance checks needed
+            if (type.GenericParameterVariances.All(v => v == 0)) continue;
 
             // Skip non-constructed, non-referenced types — no runtime assignability checks needed
             if (constructedTypes.Count > 0 && !constructedTypes.Contains(type.ILFullName)
@@ -2921,4 +3061,57 @@ public partial class CppCodeGenerator
 
     private static bool IsStringType(string cppType) =>
         cppType is "cil2cpp::String*";
+
+    /// <summary>
+    /// Emit __init_runtime_vtables() — patches runtime built-in TypeInfos with codegen VTable
+    /// and interface data. Must be emitted AFTER all VTable/interface data in the data file
+    /// so that static variables are visible.
+    /// </summary>
+    private void EmitRuntimeVTablePatching(StringBuilder sb, bool needsStringAlias, bool needsObjectAlias)
+    {
+        // Check if String has VTable and interface data generated
+        // String is NOT CoreRuntime, so VTable/interface data should exist
+        var stringType = _userTypes.FirstOrDefault(t => t.ILFullName == "System.String");
+        bool hasStringVTable = stringType != null && stringType.VTable.Count > 0
+            && !(stringType.IsRuntimeProvided && IRBuilder.CoreRuntimeTypes.Contains(stringType.ILFullName));
+        bool hasStringInterfaces = stringType != null && stringType.Interfaces.Count > 0;
+
+        if (!hasStringVTable && !needsStringAlias) return;
+
+        sb.AppendLine("// ===== Runtime TypeInfo VTable Patching =====");
+        sb.AppendLine("void __init_runtime_vtables() {");
+
+        if (hasStringVTable)
+        {
+            // Patch BCL TypeInfo (cil2cpp::System::String_TypeInfo) — used by string_literal/string_create_utf8
+            sb.AppendLine("    // Patch BCL String TypeInfo (used by runtime string functions)");
+            sb.AppendLine("    cil2cpp::System::String_TypeInfo.vtable = &System_String_VTable;");
+            sb.AppendLine("    cil2cpp::System::String_TypeInfo.base_type = &System_Object_TypeInfo;");
+            if (hasStringInterfaces)
+            {
+                sb.AppendLine("    cil2cpp::System::String_TypeInfo.interfaces = System_String_interfaces;");
+                sb.AppendLine($"    cil2cpp::System::String_TypeInfo.interface_count = {stringType!.Interfaces.Count};");
+                sb.AppendLine("    cil2cpp::System::String_TypeInfo.interface_vtables = System_String_interface_vtables;");
+                sb.AppendLine($"    cil2cpp::System::String_TypeInfo.interface_vtable_count = {stringType.InterfaceImpls.Count};");
+            }
+
+            if (needsStringAlias)
+            {
+                // Also patch reflection TypeInfo (cil2cpp::System_String_TypeInfo) — used by typeof/GetType
+                sb.AppendLine("    // Patch reflection String TypeInfo (used by typeof/GetType)");
+                sb.AppendLine("    cil2cpp::System_String_TypeInfo.vtable = &System_String_VTable;");
+                sb.AppendLine("    cil2cpp::System_String_TypeInfo.base_type = &System_Object_TypeInfo;");
+                if (hasStringInterfaces)
+                {
+                    sb.AppendLine("    cil2cpp::System_String_TypeInfo.interfaces = System_String_interfaces;");
+                    sb.AppendLine($"    cil2cpp::System_String_TypeInfo.interface_count = {stringType!.Interfaces.Count};");
+                    sb.AppendLine("    cil2cpp::System_String_TypeInfo.interface_vtables = System_String_interface_vtables;");
+                    sb.AppendLine($"    cil2cpp::System_String_TypeInfo.interface_vtable_count = {stringType.InterfaceImpls.Count};");
+                }
+            }
+        }
+
+        sb.AppendLine("}");
+        sb.AppendLine();
+    }
 }

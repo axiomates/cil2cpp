@@ -584,6 +584,18 @@ public partial class IRBuilder
         // (e.g. different C# enum types collapse to same C++ type via using aliases)
         DisambiguateOverloadedMethods();
 
+        // Pass 3.3b: Build vtables for types discovered so far.
+        // This enables virtual dispatch resolution in Pass 3.4/3.5 method body compilation.
+        // Without this, callvirt in generic method bodies (Pass 3.5) would find empty VTables
+        // and fall back to direct calls, breaking polymorphic dispatch (e.g., Iterator_1.ToArray).
+        // BuildVTable is idempotent (skips if already built), so Pass 4 safely handles
+        // any new types created in Pass 3.6.
+        var vtableBuilt = new HashSet<IRType>();
+        foreach (var irType in _module.Types)
+        {
+            BuildVTableRecursive(irType, vtableBuilt);
+        }
+
         // Pass 3.4: Convert deferred generic specialization bodies.
         // Must happen AFTER disambiguation (Pass 3.3) so that call sites in generic method
         // bodies resolve to the correct disambiguated function names.
@@ -640,9 +652,19 @@ public partial class IRBuilder
         // disambiguation entries existed. Retroactively apply disambiguation lookups.
         FixupDisambiguatedCalls();
 
-        // Pass 4: Build vtables (needs method shells with IsVirtual)
-        // Use recursive helper to ensure base types are built before derived types
-        var vtableBuilt = new HashSet<IRType>();
+        // Pass 3.8: Mark AOT companion types (ObjectEqualityComparer<T>, ObjectComparer<T>)
+        // as constructed so they get full TypeInfo with vtables and interface vtables.
+        foreach (var (key, info) in _genericInstantiations)
+        {
+            if (info.OpenTypeName is "System.Collections.Generic.ObjectEqualityComparer`1"
+                                  or "System.Collections.Generic.ObjectComparer`1")
+            {
+                _module.ConstructedTypes.Add(key);
+            }
+        }
+
+        // Pass 4: Build vtables for new types from Pass 3.6 (re-discovery).
+        // Types from Pass 3.3b already have VTables (BuildVTable is idempotent).
         foreach (var irType in _module.Types)
         {
             BuildVTableRecursive(irType, vtableBuilt);

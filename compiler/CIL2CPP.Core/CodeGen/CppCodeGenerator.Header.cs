@@ -246,8 +246,10 @@ public partial class CppCodeGenerator
             if (!IsValidCppIdentifier(typeName)) continue;
             // Skip if the symbol name conflicts with an existing struct/type
             if (allStructNames.Contains(typeName + "_TypeInfo")) continue;
-            // Only for types with full struct definitions or aliases
-            if (!definedTypeNames.Contains(typeName)) continue;
+            // Only for types with full struct definitions or aliases.
+            // Exception: array types (CppName ends with __) use cil2cpp::Array, no struct needed.
+            bool isArrayType = typeName.EndsWith("__");
+            if (!isArrayType && !definedTypeNames.Contains(typeName)) continue;
             sb.AppendLine($"extern cil2cpp::TypeInfo {typeName}_TypeInfo;");
             declaredTypeInfoNames.Add(typeName);
             _autoTypeInfoDecls.Add(typeName);
@@ -484,6 +486,10 @@ public partial class CppCodeGenerator
             }
             sb.AppendLine();
         }
+
+        // Runtime TypeInfo VTable patching (must be called after __init_string_literals)
+        sb.AppendLine("void __init_runtime_vtables();");
+        sb.AppendLine();
 
         // Extern declarations for array initializer data (defined in data file)
         if (_module.ArrayInitDataBlobs.Count > 0)
@@ -2430,7 +2436,7 @@ public partial class CppCodeGenerator
             var s = line.ToString().TrimStart();
             if (s.Length == 0 || s.StartsWith("//") || s.StartsWith("#")) continue;
 
-            var lineReason = GetRenderedLineErrorReason(s, knownStringTemps);
+            var lineReason = GetRenderedLineErrorReason(s, knownStringTemps, knownTypes);
             if (lineReason != null)
                 return lineReason;
 
@@ -4152,7 +4158,7 @@ public partial class CppCodeGenerator
     /// Check a single rendered C++ line for patterns that would cause MSVC errors.
     /// Returns null if no error, or a reason string describing the detected error.
     /// </summary>
-    private static string? GetRenderedLineErrorReason(string s, HashSet<string>? knownStringTemps = null)
+    private static string? GetRenderedLineErrorReason(string s, HashSet<string>? knownStringTemps = null, HashSet<string>? knownTypeNames = null)
     {
         // Pattern: &variable = (assigning to address-of, invalid l-value)
         if (s.StartsWith("&") && s.Contains(" = "))
@@ -4412,6 +4418,8 @@ public partial class CppCodeGenerator
                 idStart--;
             var beforeDbl = s[idStart..idEnd];
             // Array types: T[] → T__ in mangled names. Known element types end with these suffixes.
+            // Also allow any type that looks like a fully-qualified mangled name (contains _).
+            // The dangerous pattern is bare generic param names like TResult__ from >>-mangling.
             bool isLikelyArray = beforeDbl.EndsWith("Byte") || beforeDbl.EndsWith("Char") ||
                 beforeDbl.EndsWith("Int32") || beforeDbl.EndsWith("Int64") ||
                 beforeDbl.EndsWith("String") || beforeDbl.EndsWith("Object") ||
@@ -4419,7 +4427,14 @@ public partial class CppCodeGenerator
                 beforeDbl.EndsWith("Boolean") || beforeDbl.EndsWith("Single") ||
                 beforeDbl.EndsWith("Double") || beforeDbl.EndsWith("IntPtr") ||
                 beforeDbl.EndsWith("UIntPtr") || beforeDbl.EndsWith("SByte") ||
-                beforeDbl.EndsWith("Int16") || beforeDbl.EndsWith("UInt16");
+                beforeDbl.EndsWith("Int16") || beforeDbl.EndsWith("UInt16") ||
+                beforeDbl.EndsWith("Attribute") || beforeDbl.EndsWith("Property") ||
+                beforeDbl.EndsWith("Event") || beforeDbl.EndsWith("Converter") ||
+                beforeDbl.EndsWith("State") || beforeDbl.EndsWith("Type");
+            // Use knownTypeNames for a precise check: if the identifier before __ is a known
+            // type name, it's a real array type (T[]→T__). Otherwise it's broken generic mangling.
+            if (!isLikelyArray && knownTypeNames != null && knownTypeNames.Contains(beforeDbl))
+                isLikelyArray = true;
             if (!isLikelyArray)
                 return "nested generic mangling __ before pointer (not array)";
         }

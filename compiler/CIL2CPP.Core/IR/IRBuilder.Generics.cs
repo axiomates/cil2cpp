@@ -126,9 +126,11 @@ public partial class IRBuilder
         "System.Security",
         "System.Buffers.IndexOfAnyAsciiSearcher",  // SIMD-dependent search internals
         "System.Text.RegularExpressions.Symbolic",  // Recursive generic types (BDD/DerivativeEffect) cause infinite nesting
-        "System.Linq.Expressions.Interpreter",      // JIT-only expression tree interpreter, AOT-incompatible
+        "System.Linq.Expressions",                   // Expression tree compilation is JIT-only, AOT-incompatible
         "System.Xml.Serialization",                  // XmlSerializer uses runtime IL emit, AOT-incompatible
         "System.Xml.Schema",                         // Heavy XML schema validation, pulls in expression evaluators
+        "System.Data",                               // ADO.NET DataSet/DataTable uses runtime type generation
+        "System.Dynamic",                            // DLR dynamic dispatch requires JIT
         "Internal",
     ];
 
@@ -271,6 +273,44 @@ public partial class IRBuilder
 
         _genericInstantiations[key] = new GenericInstantiationInfo(
             openTypeName, typeArgs, mangledName, cecilOpenType);
+
+        // AOT companion types: EqualityComparer<T> needs ObjectEqualityComparer<T>,
+        // Comparer<T> needs ObjectComparer<T>. The BCL creates these via MakeGenericType
+        // at runtime (AOT-incompatible), so we must pre-generate the correct specialization.
+        EnsureComparerCompanionType(openTypeName, typeArgs);
+    }
+
+    /// <summary>
+    /// When EqualityComparer&lt;T&gt; or Comparer&lt;T&gt; is discovered, also ensure
+    /// ObjectEqualityComparer&lt;T&gt; or ObjectComparer&lt;T&gt; is instantiated.
+    /// These are needed by AOT replacement cctors to allocate the correct type
+    /// that implements IEqualityComparer&lt;T&gt; / IComparer&lt;T&gt;.
+    /// </summary>
+    private void EnsureComparerCompanionType(string openTypeName, List<string> typeArgs)
+    {
+        string? companionOpenName = openTypeName switch
+        {
+            "System.Collections.Generic.EqualityComparer`1" => "System.Collections.Generic.ObjectEqualityComparer`1",
+            "System.Collections.Generic.Comparer`1" => "System.Collections.Generic.ObjectComparer`1",
+            _ => null
+        };
+        if (companionOpenName == null) return;
+
+        var companionKey = $"{companionOpenName}<{string.Join(",", typeArgs)}>";
+        if (_genericInstantiations.ContainsKey(companionKey)) return;
+
+        // Find the Cecil type definition for the companion type
+        TypeDefinition? companionCecil = null;
+        foreach (var (_, asm) in _assemblySet.LoadedAssemblies)
+        {
+            companionCecil = asm.MainModule.GetType(companionOpenName);
+            if (companionCecil != null) break;
+        }
+        if (companionCecil == null) return;
+
+        var companionMangled = CppNameMapper.MangleGenericInstanceTypeName(companionOpenName, typeArgs);
+        _genericInstantiations[companionKey] = new GenericInstantiationInfo(
+            companionOpenName, typeArgs, companionMangled, companionCecil);
     }
 
     private void CollectGenericMethod(GenericInstanceMethod gim)
@@ -527,6 +567,13 @@ public partial class IRBuilder
     /// </summary>
     private void CreateGenericSpecializations()
     {
+        // Pre-scan: ensure ObjectEqualityComparer<T>/ObjectComparer<T> companions exist
+        // for all EqualityComparer<T>/Comparer<T> discovered so far. This catches types
+        // discovered via transitive generic resolution (Pass 0.5) and re-discovery (Pass 3.6).
+        var snapshot = _genericInstantiations.ToList();
+        foreach (var (_, info) in snapshot)
+            EnsureComparerCompanionType(info.OpenTypeName, info.TypeArguments);
+
         foreach (var (key, info) in _genericInstantiations)
         {
             // Skip types already created (e.g., by BCL proxy system or reachability)
@@ -875,6 +922,7 @@ public partial class IRBuilder
         {
             if (_genericInstantiations.ContainsKey(nestedKey)) continue;
             _genericInstantiations[nestedKey] = info;
+            EnsureComparerCompanionType(info.OpenTypeName, info.TypeArguments);
 
             var openType = info.CecilOpenType;
             if (openType == null) continue;
@@ -1313,6 +1361,8 @@ public partial class IRBuilder
 
         _genericInstantiations[instKey] = new GenericInstantiationInfo(
             openTypeName, resolvedArgs, mangledName, cecilOpenType);
+
+        EnsureComparerCompanionType(openTypeName, resolvedArgs);
     }
 
     /// <summary>
@@ -1403,6 +1453,8 @@ public partial class IRBuilder
         var mangledName = CppNameMapper.MangleGenericInstanceTypeName(openTypeName, args);
         _genericInstantiations[instKey] = new GenericInstantiationInfo(
             openTypeName, args, mangledName, cecilOpenType);
+
+        EnsureComparerCompanionType(openTypeName, args);
     }
 
     /// <summary>

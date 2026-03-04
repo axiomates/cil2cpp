@@ -610,7 +610,12 @@ public partial class IRBuilder
 
                 // Reset ternary merge tracking at labels — the conditional branch context
                 // is local to the code between a conditional branch and its merge point.
-                lastCondBranchStackDepth = null;
+                // BUT: preserve it when the stack depth still matches the saved depth,
+                // which indicates we're still in a compound-condition ternary
+                // (e.g., A && B ? X : Y where the false-path label is between the
+                // two conditional branches and the unconditional merge br).
+                if (!lastCondBranchStackDepth.HasValue || stack.Count != lastCondBranchStackDepth.Value)
+                    lastCondBranchStackDepth = null;
             }
 
             // Skip dead code after unconditional branches (br, ret, throw, rethrow)

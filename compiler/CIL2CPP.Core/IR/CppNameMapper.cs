@@ -117,6 +117,9 @@ public static class CppNameMapper
     /// </summary>
     public static bool IsValueType(string ilTypeName)
     {
+        // Arrays are always reference types, even when element type is a value type
+        if (ilTypeName.EndsWith("[]"))
+            return false;
         if (ilTypeName is "System.Boolean" or "System.Byte" or "System.SByte" or
             "System.Int16" or "System.UInt16" or "System.Int32" or "System.UInt32" or
             "System.Int64" or "System.UInt64" or "System.Single" or "System.Double" or
@@ -348,6 +351,7 @@ public static class CppNameMapper
     public static string MangleMethodName(string typeCppName, string methodName)
     {
         var safeName = methodName
+            .Replace("::", "_")
             .Replace(".", "_")
             .Replace("<", "_")
             .Replace(">", "_")

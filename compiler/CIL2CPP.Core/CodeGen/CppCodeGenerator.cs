@@ -139,6 +139,12 @@ public partial class CppCodeGenerator
     private List<string> _opaqueSpanStubs = new();
 
     /// <summary>
+    /// Stub names for unresolved interface method implementations (null MethodImpl entries).
+    /// Key: "TypeCppName|InterfaceCppName|slotIndex", Value: generated stub function name.
+    /// </summary>
+    private Dictionary<string, string> _interfaceStubNames = new();
+
+    /// <summary>
     /// SafeHandleMarshaller ManagedToUnmanagedIn opaque stubs that need method implementations
     /// generated in the source file (FromManaged, ToUnmanaged, Free).
     /// </summary>
@@ -329,8 +335,10 @@ public partial class CppCodeGenerator
         if (_module.StringLiterals.Count > 0)
         {
             sb.AppendLine("    __init_string_literals();");
-            sb.AppendLine();
         }
+        // Patch runtime TypeInfos with codegen VTable/interface data
+        sb.AppendLine("    __init_runtime_vtables();");
+        sb.AppendLine();
 
         // Call entry point
         if (_module.EntryPoint != null)
@@ -731,6 +739,24 @@ public class GeneratedOutput
     public void WriteToDirectory(string outputDir)
     {
         Directory.CreateDirectory(outputDir);
+
+        // Clean stale generated files from previous runs.
+        // When dedup reduces method count, the partition count shrinks, leaving
+        // orphan methods_N.cpp files that cause duplicate symbol linker errors.
+        var generatedFileNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { HeaderFile.FileName };
+        foreach (var sf in AllSourceFiles) generatedFileNames.Add(sf.FileName);
+        if (MainFile != null) generatedFileNames.Add(MainFile.FileName);
+        if (CMakeFile != null) generatedFileNames.Add(CMakeFile.FileName);
+        if (StubReportFile != null) generatedFileNames.Add(StubReportFile.FileName);
+
+        foreach (var existing in Directory.GetFiles(outputDir, "*.cpp")
+            .Concat(Directory.GetFiles(outputDir, "*.h")))
+        {
+            var name = Path.GetFileName(existing);
+            if (!generatedFileNames.Contains(name))
+                File.Delete(existing);
+        }
+
         File.WriteAllText(Path.Combine(outputDir, HeaderFile.FileName), HeaderFile.Content);
         foreach (var sourceFile in AllSourceFiles)
         {

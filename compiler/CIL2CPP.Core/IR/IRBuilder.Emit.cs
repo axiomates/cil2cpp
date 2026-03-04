@@ -1598,10 +1598,13 @@ public partial class IRBuilder
         {
             var constrainedTypeName = ResolveTypeRefOperand(constrainedType);
             var constrainedIrType = _typeCache.GetValueOrDefault(ResolveCacheKey(constrainedType));
-            if (constrainedIrType != null && constrainedIrType.IsValueType)
+            bool isValueType = constrainedIrType != null
+                ? constrainedIrType.IsValueType
+                : constrainedType.IsValueType;
+            if (isValueType)
             {
                 // Find the method override on the constrained type (only methods with bodies)
-                var overrideMethod = constrainedIrType.Methods.FirstOrDefault(m =>
+                var overrideMethod = constrainedIrType?.Methods.FirstOrDefault(m =>
                     m.Name == methodRef.Name && !m.IsStaticConstructor && !m.IsStatic
                     && !m.IsAbstract && !m.IsInternalCall
                     && ParameterTypesMatchRef(m, methodRef));
@@ -1649,6 +1652,23 @@ public partial class IRBuilder
                             rawPtr = rawPtr["(cil2cpp::Object*)".Length..];
                         irCall.Arguments[0] = $"(cil2cpp::Object*)cil2cpp::box_raw({rawPtr}, sizeof({cppTypeName}), &{typeInfoName})";
                     }
+                }
+            }
+            else
+            {
+                // ECMA-335 III.2.1: For reference types, ptr is a managed pointer
+                // to the reference variable/slot. Dereference it to get the actual
+                // object reference. The ptr is typed as T* in our codegen but really
+                // points to a slot containing a T* (so it's effectively T**).
+                // Cast to Object** and dereference to get Object*.
+                if (irCall.Arguments.Count > 0)
+                {
+                    var thisArg = irCall.Arguments[0];
+                    // Strip (cil2cpp::Object*) cast prefix
+                    var rawPtr = thisArg;
+                    if (rawPtr.StartsWith("(cil2cpp::Object*)"))
+                        rawPtr = rawPtr["(cil2cpp::Object*)".Length..];
+                    irCall.Arguments[0] = $"*((cil2cpp::Object**){rawPtr})";
                 }
             }
         }
@@ -2460,6 +2480,10 @@ public partial class IRBuilder
 
     private void BuildVTable(IRType irType)
     {
+        // Idempotent: skip if already built (enables incremental VTable building
+        // across multiple passes — first in Pass 3.3b for early types, then Pass 4 for late types)
+        if (irType.VTable.Count > 0) return;
+
         // Start with base type's vtable
         if (irType.BaseType != null)
         {

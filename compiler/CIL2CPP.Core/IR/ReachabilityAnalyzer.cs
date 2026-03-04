@@ -230,6 +230,29 @@ public class ReachabilityAnalyzer
                 }
             }
         }
+
+        // EqualityComparer/Comparer infrastructure: BCL's CreateDefaultEqualityComparer/CreateDefaultComparer
+        // use typeof(IEquatable<>).MakeGenericType() which is AOT-incompatible. We provide custom implementations
+        // that return ObjectEqualityComparer<Object>/ObjectComparer<Object> as universal fallbacks.
+        // These types must be constructed so their virtual method overrides (Equals, GetHashCode, Compare)
+        // get compiled and populate vtable entries for correct virtual dispatch.
+        var comparerTypes = new[]
+        {
+            "System.Collections.Generic.ObjectEqualityComparer`1",
+            "System.Collections.Generic.ObjectComparer`1",
+        };
+        foreach (var typeName in comparerTypes)
+        {
+            foreach (var (_, asm) in _assemblySet.LoadedAssemblies)
+            {
+                var typeDef = asm.MainModule.GetType(typeName);
+                if (typeDef != null)
+                {
+                    MarkTypeConstructed(typeDef);
+                    break;
+                }
+            }
+        }
     }
 
     /// <summary>
@@ -755,9 +778,22 @@ public class ReachabilityAnalyzer
             return true;
 
         // Legacy serialization — BinaryFormatter, IFormatter, DataContract
-        // Deprecated, security risk, requires runtime reflection
+        // Deprecated, security risk, requires runtime reflection.
+        // Exception: StreamingContext, SerializationInfo, and related callback types are
+        // needed as parameter types by Newtonsoft.Json contract creation methods.
         if (typeFullName.StartsWith("System.Runtime.Serialization."))
+        {
+            if (typeFullName == "System.Runtime.Serialization.StreamingContext" ||
+                typeFullName == "System.Runtime.Serialization.SerializationInfo" ||
+                typeFullName == "System.Runtime.Serialization.ISerializable" ||
+                typeFullName == "System.Runtime.Serialization.ISerializationCallback" ||
+                typeFullName == "System.Runtime.Serialization.IDeserializationCallback" ||
+                typeFullName == "System.Runtime.Serialization.SerializationException" ||
+                typeFullName == "System.Runtime.Serialization.SerializationEntry" ||
+                typeFullName == "System.Runtime.Serialization.SerializationInfoEnumerator")
+                return false;
             return true;
+        }
 
         // Runtime code compilation — requires JIT, fundamentally AOT-incompatible
         if (typeFullName.StartsWith("System.CodeDom"))
@@ -783,6 +819,35 @@ public class ReachabilityAnalyzer
         // Basic Xml.Linq types (XDocument, XElement) are not affected.
         if (typeFullName.StartsWith("System.Xml.Serialization."))
             return true;
+
+        // LINQ Expression trees — require JIT compilation (Expression.Compile()).
+        // Full namespace excluded (not just .Interpreter) because expression tree
+        // compilation is fundamentally JIT-dependent. LambdaExpression, MethodCallExpression,
+        // etc. are tree nodes that only matter for runtime compilation.
+        if (typeFullName.StartsWith("System.Linq.Expressions."))
+            return true;
+
+        // System.Data — ADO.NET DataSet/DataTable/DataColumn infrastructure.
+        // Uses runtime type generation for data binding, AOT-incompatible.
+        // Pulled in by Newtonsoft.Json's DataSet serialization support.
+        if (typeFullName.StartsWith("System.Data."))
+            return true;
+
+        // System.Xml.Schema — XML Schema validation engine.
+        // Pulls in expression evaluators, regex interpreters, XmlSerializer.
+        if (typeFullName.StartsWith("System.Xml.Schema."))
+            return true;
+
+        // Dynamic Language Runtime — requires JIT for dynamic dispatch.
+        // DynamicObject, ExpandoObject, CallSite etc. are JIT-only.
+        // Exception: IDynamicMetaObjectProvider is used by Newtonsoft.Json for type checking
+        // in CreateContract (isinst check to decide contract type, not actual DLR usage).
+        if (typeFullName.StartsWith("System.Dynamic."))
+        {
+            if (typeFullName == "System.Dynamic.IDynamicMetaObjectProvider")
+                return false;
+            return true;
+        }
 
         return false;
     }
