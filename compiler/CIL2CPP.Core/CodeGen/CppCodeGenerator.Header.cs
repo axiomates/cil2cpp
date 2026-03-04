@@ -1571,6 +1571,12 @@ public partial class CppCodeGenerator
                             return true;
                     }
                 }
+                // IRNewObj emits a direct call to the constructor function — also check it.
+                if (instr is IR.IRNewObj newObj && !string.IsNullOrEmpty(newObj.CtorName))
+                {
+                    if (!_declaredFunctionNames.Contains(newObj.CtorName))
+                        return true;
+                }
             }
         }
         return false;
@@ -1618,6 +1624,17 @@ public partial class CppCodeGenerator
         // (e.g., MemoryMarshal_Cast_TStorage_System_Char)
         if (MangledNameContainsUnresolvedGenericParam(method.CppName))
             return true;
+        // Check locals for unresolved generic params — template type T used as local
+        // variable produces invalid casts/operators at C++ compile time (C2664/C2296).
+        foreach (var local in method.Locals)
+        {
+            var localType = local.CppTypeName.TrimEnd('*').Trim();
+            if (localType.Length > 0 && !localType.StartsWith("cil2cpp::") && !IsCppPrimitiveType(localType))
+            {
+                if (IsUnresolvedGenericParam(localType))
+                    return true;
+            }
+        }
 
         // Numerics interface DIM with non-primitive struct params or unresolved generic params.
         // INumber<T>/IComparisonOperators<T> DIM bodies operate on large value types

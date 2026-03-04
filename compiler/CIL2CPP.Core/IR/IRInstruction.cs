@@ -156,8 +156,14 @@ public class IRBinaryOp : IRInstruction
     public string Op { get; set; } = "";
     public string ResultVar { get; set; } = "";
     public bool IsUnsigned { get; set; }
+    /// <summary>When true, emit std::fmod() instead of % operator (C++ % is invalid for float/double).</summary>
+    public bool IsFloatRemainder { get; set; }
     public override string ToCpp()
     {
+        // C++ % operator is invalid for float/double (MSVC C2296/C2297).
+        // Use std::fmod() for floating-point remainder.
+        if (IsFloatRemainder)
+            return $"{ResultVar} = std::fmod({Left}, {Right});";
         if (IsUnsigned)
         {
             // ECMA-335 III.1.5: unsigned comparisons on floats use unordered (NaN → true).

@@ -1181,6 +1181,16 @@ public partial class CppCodeGenerator
 
         if (isMinimalTypeInfo)
         {
+            // Tier 3 (stub): no interfaces, no generic args, not enum → single-line TypeInfo
+            bool isStubTypeInfo = interfaceCount == 0 && !hasGenericArgs
+                && !(type.IsEnum && type.EnumUnderlyingType != null);
+            if (isStubTypeInfo)
+            {
+                sb.AppendLine($"cil2cpp::TypeInfo {type.CppName}_TypeInfo = {{ .name = \"{type.Name}\", .namespace_name = \"{type.Namespace}\", .full_name = \"{type.ILFullName}\", .base_type = {baseName}, .flags = {flagsStr}, .cor_element_type = 0x{corElementType:X2} }};");
+                return;
+            }
+
+            // Tier 2 (minimal): has interfaces/generics/enum — multi-line but reduced
             sb.AppendLine($"cil2cpp::TypeInfo {type.CppName}_TypeInfo = {{");
             sb.AppendLine($"    .name = \"{type.Name}\",");
             sb.AppendLine($"    .namespace_name = \"{type.Namespace}\",");
@@ -1747,11 +1757,37 @@ public partial class CppCodeGenerator
                     !declaredTemps.Contains(varName))
                 {
                     declaredTemps.Add(varName);
+                    // Check if RHS of the FIRST line references the same variable (self-referencing
+                    // initializer). e.g., "__t16 = __t16 + 5" → "auto __t16 = __t16 + 5" is C++ UB.
+                    // Only check first line — multi-line instructions (IRNewObj) have subsequent
+                    // lines that reference the variable as arguments, which is NOT self-referencing.
+                    var rhs = code[(eqIdx + 3)..];
+                    var newlineIdx = rhs.IndexOf('\n');
+                    var firstLineRhs = newlineIdx >= 0 ? rhs[..newlineIdx] : rhs;
+                    if (ContainsVarAtWordBoundary(firstLineRhs, varName))
+                        return code;
                     return $"auto {code}";
                 }
             }
         }
         return code;
+    }
+
+    /// <summary>
+    /// Check if a string contains a variable name at word boundaries.
+    /// __t0 matches in "__t0 + 5" but NOT in "__t0_statics" or "__t0something".
+    /// </summary>
+    private static bool ContainsVarAtWordBoundary(string text, string varName)
+    {
+        int idx = 0;
+        while ((idx = text.IndexOf(varName, idx, StringComparison.Ordinal)) >= 0)
+        {
+            int after = idx + varName.Length;
+            if (after >= text.Length || !char.IsLetterOrDigit(text[after]) && text[after] != '_')
+                return true;
+            idx = after;
+        }
+        return false;
     }
 
     /// <summary>

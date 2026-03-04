@@ -3,11 +3,11 @@
     "total": 1253,
     "MissingBody": 590,
     "KnownBrokenPattern": 458,
-    "UndeclaredFunction": 92,
+    "UndeclaredFunction": 93,
     "ClrInternalType": 96,
     "UnknownBodyReferences": 0,
     "UnknownParameterTypes": 10,
-    "RenderedBodyError": 7
+    "RenderedBodyError": 6
   },
   "SocketTest": {
     "total": 1613,

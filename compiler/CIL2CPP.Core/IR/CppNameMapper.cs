@@ -97,6 +97,11 @@ public static class CppNameMapper
         ["System.Object"] = "cil2cpp::Object",
         ["System.IntPtr"] = "intptr_t",
         ["System.UIntPtr"] = "uintptr_t",
+        // Utf16Char is a single-field struct wrapping char16_t. Treating it as a primitive
+        // avoids MSVC C2440 errors when static_cast<uint32_t> is applied to the struct.
+        // Cecil resolves it as "System.Utf16Char" (without Text.Unicode namespace prefix).
+        ["System.Utf16Char"] = "char16_t",
+        ["System.Text.Unicode.Utf16Char"] = "char16_t",
     };
 
     /// <summary>
@@ -238,7 +243,9 @@ public static class CppNameMapper
     /// </summary>
     public static string MangleTypeName(string ilFullName)
     {
-        return ilFullName
+        // Check if this is a nested type (contains / or +) before mangling
+        bool isNested = ilFullName.Contains('/') || ilFullName.Contains('+');
+        var result = ilFullName
             .Replace(".", "_")
             .Replace("/", "_")  // Nested types
             .Replace("<", "_")
@@ -254,6 +261,12 @@ public static class CppNameMapper
             .Replace("[", "_")  // Array types (e.g., System.String[])
             .Replace("]", "_")
             .Replace("|", "_"); // Local function names (e.g., g__Func|42_0)
+        // Nested types whose mangled name ends with _TypeInfo collide with the
+        // cil2cpp::TypeInfo metadata naming convention ({TypeName}_TypeInfo).
+        // Disambiguate by appending _N (nested).
+        if (isNested && result.EndsWith("_TypeInfo"))
+            result += "_N";
+        return result;
     }
 
     /// <summary>

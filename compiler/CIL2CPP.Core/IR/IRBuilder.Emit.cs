@@ -239,10 +239,25 @@ public partial class IRBuilder
                 right = $"(uintptr_t){right}";
         }
 
+        // Float/double remainder: C++ % operator is invalid for floating-point (MSVC C2296/C2297).
+        // Detect float/double operands and flag for std::fmod emission.
+        bool isFloatRemainder = false;
+        if (op == "%")
+        {
+            var lt = leftEntry.CppType;
+            var rt = rightEntry.CppType;
+            if (lt is "double" or "float" or "System_Single" or "System_Double"
+                || rt is "double" or "float" or "System_Single" or "System_Double")
+            {
+                isFloatRemainder = true;
+            }
+        }
+
         var tmp = $"__t{tempCounter++}";
         block.Instructions.Add(new IRBinaryOp
         {
-            Left = left, Right = right, Op = op, ResultVar = tmp, IsUnsigned = isUnsigned
+            Left = left, Right = right, Op = op, ResultVar = tmp,
+            IsUnsigned = isUnsigned, IsFloatRemainder = isFloatRemainder
         });
         // Comparison operators (ceq/cgt/clt) produce int32_t per ECMA-335 III.4.1.
         // Track this type so ternary merge logic can safely merge comparison results
