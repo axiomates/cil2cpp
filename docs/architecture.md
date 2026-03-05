@@ -41,8 +41,7 @@ cil2cpp/
 │   │       ├── CppCodeGenerator.cs       # Generation entry point
 │   │       ├── CppCodeGenerator.Header.cs  # .h generation
 │   │       ├── CppCodeGenerator.Source.cs  # .cpp generation
-│   │       ├── CppCodeGenerator.KnownStubs.cs  # Hand-written stubs
-│   │       └── StubAnalyzer.cs                 # Stub analysis tool (--analyze-stubs)
+│   │       └── CppCodeGenerator.Utils.cs        # Utility helpers
 │   └── CIL2CPP.Tests/          #   Compiler unit tests (xUnit)
 │       └── Fixtures/           #     Test fixture caching
 ├── tests/                      # Test C# projects (compiler input)
@@ -90,7 +89,7 @@ cil2cpp/
                   │       ↓                                             │
                   │ CppCodeGenerator ──→ C++ headers + multi-source     │
                   │                      + CMake (file splitting +      │     .h / *_data.cpp
-                  │                      trial render + auto stub)      │ ──→ *_methods_N.cpp
+                  │                      auto stub)                     │ ──→ *_methods_N.cpp
                   └─────────────────────────────────────────────────────┘     CMakeLists.txt
                                                                                   ↓
                                                                           cmake + C++ compiler
@@ -132,7 +131,7 @@ CIL2CPP adopts the same strategy as Unity IL2CPP: **all BCL methods with IL bodi
 ```
 Method call
   ↓
-ICallRegistry lookup (~400 mappings)
+ICallRegistry lookup (~484 mappings)
   ├─ Hit → [InternalCall] method, no IL body
   │         GC / Monitor / Interlocked / Buffer / Math / IO / Globalization etc.
   │         → Call C++ runtime implementation
@@ -192,7 +191,7 @@ A few JIT intrinsic methods are inlined by the compiler (not going through ICall
 │  are available                                           │
 ├─────────────────────────────────────────────────────────┤
 │  Layer 3: Runtime ICall                                  │
-│  ~270 [InternalCall] methods → C++ runtime               │
+│  ~484 [InternalCall] methods → C++ runtime               │
 │  implementation                                          │
 │  Limitation: unimplemented icall → feature unavailable   │
 │  This layer determines: GC, threading, string layout,    │
@@ -229,14 +228,14 @@ output/
 
 Partitioning strategy: evenly split by IR instruction count (`MinInstructionsPerPartition = 20000`), each `.cpp` file is approximately 13k-17k lines of C++ code.
 
-### Multi-Layer Safety Net: Auto Stub Mechanism
+### Auto Stub Mechanism
 
-Some BCL methods' IL references CLR internal types that cannot be compiled to C++. The compiler has 4 safety layers:
+Some BCL methods' IL references CLR internal types that cannot be compiled to C++. The compiler has 2 safety layers:
 
 1. **HasClrInternalDependencies** — IR level: method references CLR internal type → replaced with default-value-returning stub
-2. **HasKnownBrokenPatterns** — Pre-render: JIT intrinsics, known issues → skip
-3. **RenderedBodyHasErrors** — Trial render: render method body to C++, detect compilation error patterns → stub
-4. **GenerateMissingMethodStubImpls** — Catch-all: all declared but undefined functions → generate default stub
+2. **GenerateMissingMethodStubImpls** — Catch-all: all declared but undefined functions → generate default stub
+
+> **History**: Previously had 4 layers (including HasKnownBrokenPatterns and RenderedBodyHasErrors). These intermediate gates were removed in Phase X cleanup (~5,500 lines deleted) — problems now surface as C++ compilation errors and are fixed at the root cause rather than masked by gates.
 
 Each codegen run produces a `stubbed_methods.txt` report listing all stubbed methods and their reasons.
 

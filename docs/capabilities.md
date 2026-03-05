@@ -1,6 +1,6 @@
 # CIL2CPP Capabilities
 
-> Last updated: 2026-03-01
+> Last updated: 2026-03-05
 >
 > This document describes what CIL2CPP **can currently do**. For development plans and progress, see [roadmap.md](roadmap.md).
 >
@@ -8,7 +8,7 @@
 
 ## Overview
 
-CIL2CPP is a C# → C++ AOT compiler (similar to Unity IL2CPP). Currently supports complete C# syntax (100% IL opcode coverage), BCL compiled from IL (Unity IL2CPP architecture), ~484 ICall entries. 1,240 C# + 599 C++ + 47 integration tests all passing.
+CIL2CPP is a C# → C++ AOT compiler (similar to Unity IL2CPP). Currently supports complete C# syntax (100% IL opcode coverage), BCL compiled from IL (Unity IL2CPP architecture), ~484 ICall entries. 1,273+ C# + 591 C++ + 35 integration tests all passing.
 
 ## Key Metrics
 
@@ -16,9 +16,9 @@ CIL2CPP is a C# → C++ AOT compiler (similar to Unity IL2CPP). Currently suppor
 |--------|-------|
 | IL opcode coverage | **100%** (all ~230 ECMA-335 opcodes) |
 | ICallRegistry entries | **~484** (covering 30+ categories) |
-| C# compiler tests | **~1,240** (xUnit) |
-| C++ runtime tests | **599** (Google Test, 18 test files) |
-| End-to-end integration tests | **47** (11 stages) |
+| C# compiler tests | **~1,273+** (xUnit) |
+| C++ runtime tests | **591** (Google Test, 18 test files) |
+| End-to-end integration tests | **35** |
 | Runtime headers | **32** |
 
 ---
@@ -180,14 +180,16 @@ System.IO uses ICall interception at the public API level, intercepting File/Pat
 
 **Directory (2)**: Exists, CreateDirectory
 
+### Streaming I/O (Windows)
+
+FileStream / StreamReader / StreamWriter compile from BCL IL and work end-to-end on Windows (via kernel32 P/Invoke). Linux needs System.Native integration (Phase B.5).
+
 ### Not Implemented
 
 | Feature | Description |
 |---------|-------------|
-| FileStream / StreamReader / StreamWriter | No streaming I/O |
 | Directory enumeration | No GetFiles / EnumerateFiles / Delete |
 | File info | No FileInfo / DirectoryInfo, no timestamps/attributes |
-| Encoding parameter | ReadAllText/WriteAllText Encoding parameter is ignored (FIXME) |
 
 ---
 
@@ -211,9 +213,9 @@ System.IO uses ICall interception at the public API level, intercepting File/Pat
 | Calling conventions | ✅ | StdCall/FastCall/ThisCall emitted to extern declarations |
 | CharSet.Auto | ⚠️ | Hard-coded to Unicode |
 | SafeHandle methods | ⚠️ | 8 ICalls (.ctor/DangerousGetHandle/SetHandle/DangerousAddRef/DangerousRelease/IsClosed/SetHandleAsInvalid/Dispose), missing ReleaseHandle virtual dispatch |
-| MarshalAs attribute | ❌ | Not parsed |
-| Out/In attributes | ❌ | Parameter direction not distinguished |
-| Array marshaling / Ref String | ❌ | Not supported |
+| MarshalAs attribute | ✅ | Cecil MarshalInfo parsing, 21 type mappings (LPStr/LPWStr/Bool/integers etc.) |
+| Out/In attributes | ❌ | Parameter direction not distinguished (C.7.2) |
+| Array marshaling / Ref String | ⚠️ | SizeParamIndex parsed, codegen incomplete (C.7.3) |
 
 ---
 
@@ -292,7 +294,7 @@ System.IO uses ICall interception at the public API level, intercepting File/Pat
 
 ## Test Coverage
 
-### C++ Runtime Tests (599, 18 files)
+### C++ Runtime Tests (591, 18 files)
 
 | Module | Test Count |
 |--------|-----------|
@@ -314,22 +316,8 @@ System.IO uses ICall interception at the public API level, intercepting File/Pat
 | Threading | 17 |
 | GC | 16 |
 | TypedReference | 11 |
-| **Total** | **599** |
+| **Total** | **591** |
 
-### End-to-End Integration Tests (47, 11 stages)
+### End-to-End Integration Tests (35)
 
-| Stage | Test Content | Count |
-|-------|-------------|-------|
-| Prerequisites | dotnet, CMake, runtime installation | 3 |
-| HelloWorld | codegen → build → run → verify output | 5 |
-| Library project | No entry point → add_library | 4 |
-| Debug configuration | #line directives, IL comments | 4 |
-| String literals | string_literal, __init_string_literals | 2 |
-| Multi-assembly | Cross-assembly types/methods | 5 |
-| ArglistTest | Varargs | 5 |
-| FeatureTest | Comprehensive language features codegen-only | 3 |
-| SystemIOTest | System.IO end-to-end | 4 |
-| FileStreamTest | FileStream BCL IL chain (write/read/streamwriter/streamreader) | 4 |
-| SocketTest | TCP loopback + DNS resolution via Winsock P/Invoke | 4 |
-| HttpTest | HttpClient construction from BCL IL | 4 |
-| **Total** | | **47** |
+Full compilation pipeline: C# `.csproj` → codegen → CMake configure → C++ build → run → verify output. Covers HelloWorld, library projects, Debug configuration, multi-assembly, varargs, FeatureTest, SystemIO, FileStream, Socket, and HttpClient test projects.

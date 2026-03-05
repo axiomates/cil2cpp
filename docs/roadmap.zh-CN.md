@@ -1,6 +1,6 @@
 # 开发路线图
 
-> 最后更新：2026-03-02
+> 最后更新：2026-03-05
 >
 > [English Version](roadmap.md)
 
@@ -35,8 +35,8 @@ CIL2CPP 能声称"可编译 .NET NativeAOT 项目"之前必须完成：
 | MarshalAs P/Invoke | C.7 | `[MarshalAs]`、`[Out]`/`[In]`、数组编组 — NuGet 生态需要 |
 | SChannel TLS (Windows) | E.win | 通过 `secur32.dll`/`schannel.dll` P/Invoke 实现 HTTPS（OS 自带，无需 FetchContent） |
 | 压缩 | E.2 | 通过 System.IO.Compression.Native 的 zlib |
-| RenderedBodyError → 0 | H.2 | 修复所有 codegen bug（当前 116 个 RE stubs） |
-| SIMD 标量完善 | F.1 | 消除 333 个 SIMD stubs（完整标量回退路径） |
+| RenderedBodyError → 0 | H.2 | 修复所有 codegen bug（当前 17 个 RE stubs，从 116 降低） |
+| SIMD 标量完善 | F.1 | 消除剩余 SIMD stubs（完整标量回退路径） |
 | 10 个 NuGet 包验证 | G.2 | 证明真实包可编译和运行 |
 
 #### 待定（必须实现完成后）
@@ -65,7 +65,7 @@ CIL2CPP 能声称"可编译 .NET NativeAOT 项目"之前必须完成：
 | 分层 JIT 编译 / ReadyToRun | JIT 专用的运行时优化 |
 | `Type.MakeGenericType` + 运行时类型 | AOT 无法单态化编译时未知的类型 |
 | 动态 COM 互操作 (`IDispatch`) | 需要运行时类型发现 |
-| QCall / CLR 内部类型 | CLR JIT 专用桥接（QCallTypeHandle、MetadataImport、MethodTable）— 永久保留为 stub（96 个） |
+| QCall / CLR 内部类型 | CLR JIT 专用桥接（QCallTypeHandle、MetadataImport、MethodTable）— 永久保留为 stub（~96 个） |
 
 > **注意**：使用这些特性的库（gRPC 动态代理、部分 ORM 如 Dapper 的动态查询、基于 Reflection.Emit 的序列化器）无法支持。应使用 source generator 等价方案（gRPC code-first、System.Text.Json SG）替代。
 
@@ -138,25 +138,25 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 
 详见上方"RuntimeProvided 类型分类"章节。
 
-### Stub 分布（HelloWorld, 1,666 个 stubs，~94.6% 翻译率）
+### Stub 分布（HelloWorld, 1,280 个 stubs，~95%+ 翻译率）
 
-> 指标来源：`tests/baselines/stub_budget.json` — 集成测试自动校准（`--stub-budget` 标志）。
-> Commit: abca1af (2026-03-02)。程序集: HelloWorld（~31k 方法）。
+> 指标来源：`tests/baselines/stub_budget.json`。
+> Commit: 3f93840 (2026-03-05)。程序集: HelloWorld（~26k 方法，经需求驱动泛型 + 特化方法可达性优化）。
 
 | 类别 | 数量 | 占比 | 性质 |
 |------|------|------|------|
-| MissingBody | 705 | 42.3% | 无 IL body（abstract/extern/JIT intrinsic）— 多数合理 |
-| KnownBrokenPattern | 646 | 38.8% | SIMD 333 + line-level 体扫描 patterns + TypeHandle/MethodTable |
-| RenderedBodyError | 115 | 6.9% | Codegen bug — Phase H.2 目标降至 ~50 |
-| ClrInternalType | 100 | 6.0% | QCall/MetadataImport CLR JIT 专用类型（永久保留） |
-| UndeclaredFunction | 90 | 5.4% | MissingBody/KBP 级联 — 泛型特化缺口 |
-| UnknownParameterTypes | 9 | 0.5% | 方法参数引用未知类型 |
-| UnknownBodyReferences | 1 | 0.1% | 方法体 IL 引用未知类型 |
+| MissingBody | 604 | 47.2% | 无 IL body（abstract/extern/JIT intrinsic）— 多数合理 |
+| KnownBrokenPattern | 458 | 35.8% | SIMD 死代码分支 + TypeHandle/MethodTable |
+| ClrInternalType | 96 | 7.5% | QCall/MetadataImport CLR JIT 专用类型（永久保留） |
+| UndeclaredFunction | 95 | 7.4% | MissingBody/KBP 级联 — 泛型特化缺口 |
+| RenderedBodyError | 17 | 1.3% | Codegen bug — Phase H.2 目标降至 0 |
+| UnknownParameterTypes | 10 | 0.8% | 方法参数引用未知类型 |
+| UnknownBodyReferences | 0 | 0% | 已解决 |
 
-**不可修复或暂缓**：SIMD (333+) 需要 intrinsics 支持或运行时回退。CLR 内部类型 (100) 永久保留。
+**不可修复或暂缓**：SIMD 死代码分支由 FeatureSwitchResolver 处理（IsSupported=false 死分支消除）。CLR 内部类型（~96）永久保留。
 
-**IL 转译率**：~94.6%。Phase A: 2,777 → 1,478; Phase B: 1,478 → 1,537; Phase C+审计: → 1,666（C2362 switch 修复 + 泛型发现扩展编译范围）。
-**测试**：1,240 C# + 599 C++ + 47 集成 — 全部通过。
+**IL 转译率**：~95%+。历程：Phase A: 2,777 → 1,478; Phase B: 1,478 → 1,537; Phase C: → 1,666; Phase X + 需求驱动泛型: → 1,280（方法总数也从 ~31k 降至 ~26k，得益于特化方法可达性分析）。
+**测试**：1,273+ C# + 591 C++ + 35 集成 — 全部通过。
 
 ### 已实现的架构能力
 
@@ -175,7 +175,7 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 | 网络应用 | ~30% | HTTP GET 待做 (C.6)；HTTPS 需 TLS (Phase E.win) |
 | REST 客户端 (HTTP+JSON) | ~15% | 需 C.6 + Phase D（元数据）+ JSON SG 验证 |
 | 生产级应用 | ~3% | 需 TLS + JSON + DI — 全都需要 Phase D 先行 |
-| 任意 NativeAOT .csproj | **~25%** | NuGet 包未测试、无 `[DynamicallyAccessedMembers]`、无 `[MarshalAs]`、116 个 RE codegen bug |
+| 任意 NativeAOT .csproj | **~25%** | NuGet 包未充分测试、`[MarshalAs]` 部分完成、17 个 RE codegen bug |
 
 > **Linux/macOS**：待定。以上百分比仅限 Windows。Linux 需要 System.Native 集成 (Phase B.5, 待定) + OpenSSL (Phase E.linux, 待定)。当前 Linux 支持：~5%（仅控制台，无文件 I/O 或网络）。
 
@@ -186,18 +186,17 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 - **75%→90%**：10 个 NuGet 包验证 + 综合测试
 - **90%→95%**：边界用例修复 + 打磨
 
-**实现缺口**（2026-03-02 审计，代码复查后更新）：
-- `[DynamicallyAccessedMembers]` — **代码已完成**：ReachabilityAnalyzer.cs（13 种 DamFlag，字段/方法/参数扫描），但 CLI 管道未接入（SetPreservationRules() 未被调用）
-- ILLink feature switches — **已上线**：FeatureSwitchResolver 在 IRBuilder.Methods.cs:1372-1386 编译期替换 10+ AOT 默认开关
-- `[MarshalAs]` 属性 — **已实现**（C.7.1）：Cecil 解析 + 21 种类型映射 + GetPInvokeNativeType()。缺失：`[Out]`/`[In]` 回写（C.7.2）、LPArray 运行时编组（C.7.3）
-- NuGet PackageReference — 程序集解析可用（AssemblySet + deps.json），但零测试项目验证
-- Source generator 输出 — 从未用真实 SG 包（System.Text.Json）验证过
+**实现缺口**（2026-03-05 审计）：
+- `[DynamicallyAccessedMembers]` — **已完成并验证**：13 种 DamFlag，字段/方法/参数扫描，CLI `--rdxml` 已接入，7 个 DAM 可达性测试 + 14 个 rd.xml 解析器测试
+- ILLink feature switches — **已上线**：FeatureSwitchResolver 编译期替换 10+ AOT 默认开关。SIMD IsSupported=false 死分支消除通过 brfalse 模式检测。
+- `[MarshalAs]` 属性 — **已实现**（C.7.1）：Cecil 解析 + 21 种类型映射。缺失：`[Out]`/`[In]` 回写（C.7.2）、LPArray 运行时编组（C.7.3）
+- NuGet PackageReference — 程序集解析已验证（NuGetSimpleTest: Newtonsoft.Json）。大型程序集（41K 方法）完整 codegen 因 IRBuilder OOM 阻塞。JsonSGTest: 完整管道已验证。
+- Source generator 输出 — **已验证**（D.5）：JsonSGTest 使用 `[JsonSerializable]` 通过 CIL2CPP 编译（codegen → cmake → build，0 MSVC 错误）。
 
 ---
 
 ## Phase 1: 基础打通 ✅
 
-- Stub 依赖分析工具 (`--analyze-stubs`)
 - RuntimeType = Type 别名（对标 `Il2CppReflectionType`）
 - Handle 类型移除（RuntimeTypeHandle/MethodHandle/FieldHandle → intptr_t）
 - AggregateException / SafeHandle / Thread.CurrentThread TLS / GCHandle 弱引用
@@ -247,15 +246,27 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 
 ---
 
-### Pass 3.6 策略：Stub Body vs 完整编译
+### Phase X：妥协代码移除 ✅（2026-03）
 
-> **架构决策**（2026-02）：Pass 3.6 从 Pass 3.4/3.5 编译的方法体中传递发现泛型类型。对于新发现的类型，它有意生成 **stub body**（仅声明）而非完整编译方法体。
+> **所有 stub/gate/workaround 基础设施已移除。**删除约 5,500 行妥协代码。
 
-**原因**：编译新方法体 → 发现新被调用方 → 被调用方成为 UndeclaredFunction stubs → stub 净数量增加。生成 stub body 使方法在 header 中声明（减少 UF 级联）而不触发新的级联。
+**已删除系统**：
+- **Gate 系统**（5 个预渲染门控、试渲染、后渲染验证）从 Header.cs/Source.cs 移除
+- **StubAnalyzer.cs**（634 行）— 根因分析、调用图、预算检查
+- **KnownStubs.cs**（521 行）— 手写 AOT 替代方法体
+- **`__SIMD_STUB__` 哨兵**（IRBuilder.Emit/Methods 中约 20 处检查）— 死代码传播的权宜之计
+- **命名空间黑名单**（非 AOT 不兼容的排除项如 System.Data、Interop/*）— 移除
+- **泛型过滤黑名单**（FilteredGenericNamespaces、VectorScalarFallbackTypes）— 删除
+- **`--analyze-stubs` / `--stub-budget` CLI 选项** — 删除
 
-**权衡**：一些本可成功编译的方法仍为 stubs。在 stub 总数通过编译器 bug 修复持续下降的当前阶段，这是正确的短期策略。未来改进：为高频 BCL 泛型（如 `EqualityComparer<T>`、`Comparer<T>`）建立选择性真实编译白名单。
+**替代方案**：
+- **需求驱动泛型发现**：类型在方法体编译时按需发现（无批量预扫描）
+- **特化方法可达性**：`_calledSpecializedMethods` HashSet 追踪哪些泛型特化的哪些方法被实际调用 — 跳过 77% 泛型方法
+- **接口分派感知裁剪**：未分派的泛型接口不会被实例化 — 减少 311 个类型（-7.5%）
+- **FeatureSwitchResolver**：SIMD IsSupported=false 死分支消除（brfalse 模式）
+- **自引用泛型检测**：替代任意的 MaxGenericNestingDepth=5
 
-**位置**：`IRBuilder.cs` 第 565-608 行（带 FIXME 注解的不动点发现循环）。
+**影响**：HelloWorld 代码生成减少 21%，27799 → 26248 方法，315K → 260K 行。
 
 ---
 
@@ -287,7 +298,7 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 
 ### Phase A: 编译器收尾 — 修复 stubs 根因 ✅
 
-**目标**：翻译率 > 92%，stubs < 2,000 — **已达成**（Phase A 结束时 1,478 stubs；Phase C/审计后当前 1,666）
+**目标**：翻译率 > 92%，stubs < 2,000 — **已达成**（Phase A 结束时 1,478 stubs；Phase X 清理 + 需求驱动泛型后当前 1,280）
 
 **成果**：2,777 → 1,478 stubs（-1,299，-46.8%）
 
@@ -380,7 +391,7 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 | # | 任务 | 优先级 | 状态 | 说明 |
 |---|------|--------|------|------|
 | H.1 | TypeCode ICall 修复 | 高 | ✅ | TypeInfo 名称映射到 TypeCode 枚举（17 种原始类型）。修复 `Convert.*`、`String.Format`、序列化器类型判断 |
-| H.2 | RenderedBodyError 消减 | 高 | 待定 | 修复 Header.cs 中 7 个 FIXME gate pattern（116 → 目标 50 RE stubs） |
+| H.2 | RenderedBodyError 消减 | 高 | ~85% 完成 | 116 → 17 RE stubs。剩余 17 个为真实 codegen 边界情况。目标：0。 |
 | H.3 | 移除 File ICall 绕过（B.6） | 高 | 阻塞 | 调试 `FileStream.Read(byte[])` 挂起问题，然后删除 12 个 File ICall。BCL IL 通过 StreamReader 正确处理所有编码 |
 | H.4 | 平台兼容性文档 | 中 | ✅ | 支持矩阵 + 承诺等级：完整 / 功能性 / 占位 / 未实现 |
 | H.5 | 反射状态文档 | 中 | ✅ | 全部 23 个反射 ICall 的"期望行为 vs 实际行为"表 + 完整修复的前置阶段 |
@@ -398,11 +409,11 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 | # | 任务 | 预估 | 状态 | 说明 |
 |---|------|------|------|------|
 | D.0 | NuGet 包集成测试 | 中 | 待定 | 创建带真实 PackageReference 的测试项目（Newtonsoft.Json）。验证 NuGet → Cecil → IR → C++ 管道。程序集解析可用，零测试覆盖。 |
-| D.1 | `[DynamicallyAccessedMembers]` 解析 | 中 | ✅ 代码完成 | ReachabilityAnalyzer.cs:184-815 — 完整 13 种 DamFlag 解析 + SeedDynamicallyAccessedMembers()。**CLI 集成待做**（Program.cs 中 SetPreservationRules() 未被调用）。 |
-| D.2 | rd.xml 解析器 | 低 | ✅ 代码完成 | RdXmlParser.cs — 完整 XML 解析 + PreservationRule 映射。**CLI `--rd-xml` 选项待做。** |
+| D.1 | `[DynamicallyAccessedMembers]` 解析 | 中 | ✅ 已完成并验证 | ReachabilityAnalyzer.cs — 完整 13 种 DamFlag 解析 + SeedDynamicallyAccessedMembers()。CLI `--rdxml` 已接入。7 个 DAM 可达性测试 + 14 个 rd.xml 解析器测试。 |
+| D.2 | rd.xml 解析器 | 低 | ✅ 已完成并验证 | RdXmlParser.cs — 完整 XML 解析 + PreservationRule 映射。CLI `--rdxml` 选项已在 Program.cs 中接入。 |
 | D.3 | ILLink feature switch 替换 | 中 | ✅ 已上线 | FeatureSwitchResolver.cs（10 个 AOT 默认开关）+ IRBuilder.Methods.cs:1372-1386（Ldsfld 编译期替换）。所有构建自动生效。 |
 | D.4 | AOT 兼容性警告 | 低 | 待定 | 报告 `[RequiresUnreferencedCode]` 调用链 |
-| D.5 | Source generator 验证 | 中 | 待定 | 带 `[JsonSerializable]` 属性的测试项目 — 验证 System.Text.Json SG 输出能通过 CIL2CPP 编译。当前声称可行但从未测试。 |
+| D.5 | Source generator 验证 | 中 | ✅ 已验证（可构建） | JsonSGTest：`[JsonSerializable]` + AppJsonContext SG 输出通过 CIL2CPP 编译。Codegen → cmake → MSVC build（0 错误，9.4MB exe）。运行时待定（~4K stubbed 方法）。 |
 
 **前置**：无（可与 C.6 并行）
 **产出**：DI + JSON (SG) + Logging 可编译；NuGet 包在 tree-shaking 下正确工作
@@ -450,7 +461,7 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 
 | # | 任务 | 预估 | 说明 |
 |---|------|------|------|
-| F.1 | SIMD 标量回退路径完善 | 高 | **必须实现。**消除 333 SIMD stubs — 很多 BCL 热路径依赖这些 |
+| F.1 | SIMD 标量回退路径完善 | 高 | **必须实现。**SIMD 死分支消除（FeatureSwitchResolver）处理了大部分情况；KBP 类别中的剩余 SIMD stubs 需要标量回退路径 |
 | F.2 | Task struct 重构（原 Phase 5.2-5.5） | 高 | **待定。**降低 RuntimeProvided 32→25（内部质量，无用户可感知影响） |
 | F.3 | 增量编译 | 中 | **待定。**IR/codegen 缓存（性能优化） |
 | F.4 | 反射模型评估（原 Phase 6） | 中 | **待定。**评估 QCall 替代方案 |
@@ -512,7 +523,7 @@ macOS 支持 (Objective-C 桥接)
 
 | 里程碑 | 达成条件 | 对应阶段 | 状态 |
 |--------|---------|---------|------|
-| **M1: 编译器成熟** | stubs < 2,000，翻译率 > 92% | A | ✅（1,666 stubs, 94.6%） |
+| **M1: 编译器成熟** | stubs < 2,000，翻译率 > 92% | A | ✅（1,280 stubs, ~95%+） |
 | **M2: 文件 I/O** | FileStream/StreamReader 从 BCL IL 编译并运行 | B | ✅ Windows（~90%） |
 | **M3: 联网应用** | HttpClient HTTP GET 从 BCL IL 编译并运行 | C.6 | ~60%：Socket+DNS+构造 ✅，完整 GET 待做 |
 | **M3.5: REST 客户端** | HTTP GET + `JsonSerializer.Deserialize<T>()`（via SG）端到端 | C.6+D | 阻塞 — 需 C.6 + D.1 + D.3 + D.5 |
@@ -524,7 +535,7 @@ macOS 支持 (Objective-C 桥接)
 
 | 指标 | 定义 | 当前值 | Phase A 目标 | 长期目标 |
 |------|------|--------|-------------|----------|
-| IL 转译率 | (total_methods - stubs) / total_methods | **~94.6%**（1,666 stubs / ~31k 方法） | >92% ✅ | >95% |
+| IL 转译率 | (total_methods - stubs) / total_methods | **~95%+**（1,280 stubs / ~26k 方法） | >92% ✅ | >95% |
 | RuntimeProvided 数 | RuntimeProvidedTypes 条目 | **32**（was 40, -8） | ~32 | ~25（Phase F.2） |
 | CoreRuntime 数 | 方法完全由 C++ 提供 | 22 | ~22 | ~10（Phase F.4） |
 | ICall 数 | C++ 内部调用 | **~484** | ~400 | 趋稳（功能来自 BCL IL，非 ICall） |
@@ -534,10 +545,9 @@ macOS 支持 (Objective-C 桥接)
 | 维度 | 值 | 说明 |
 |------|-----|------|
 | **程序集** | HelloWorld（主要），SocketTest（次要） | 所有标题指标使用 HelloWorld，除非另有说明 |
-| **数据来源** | `tests/baselines/stub_budget.json` | 集成测试期间通过 `--stub-budget` 标志自动校准 |
-| **分类** | StubAnalyzer.cs 中的 7 个 StubRootCause 枚举值 | MissingBody, KnownBrokenPattern, RenderedBodyError, ClrInternalType, UndeclaredFunction, UnknownParameterTypes, UnknownBodyReferences |
+| **数据来源** | `tests/baselines/stub_budget.json` | 重大变更后手动更新 |
+| **分类** | 7 个 stub 根因分类 | MissingBody, KnownBrokenPattern, RenderedBodyError, ClrInternalType, UndeclaredFunction, UnknownParameterTypes, UnknownBodyReferences |
 | **转译率** | `1 - (stub_total / total_methods)` | `total_methods` 来自所有 pass 完成后的 IRModule |
-| **更新频率** | 每次集成测试运行时自动校准 | 实际值 < 预算时自动下调（仅下降） |
 | **版本绑定** | 引用指标时包含 commit hash + 日期 | 防止过时数据跨阶段持续 |
 
 > **注意**：当编译器改进扩展编译范围时，stub 数量可能暂时增加（例如修复 C2362 switch 门控使更多方法可编译，暴露其被调用方为新 stubs）。这是正面进展——更多方法编译——即使标题数字上升。

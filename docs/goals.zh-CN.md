@@ -34,18 +34,18 @@ CIL2CPP 借鉴了 Unity IL2CPP 的核心架构思路——**将 BCL (Base Class 
 
 目标不仅限于 Unity 支持的 BCL 子集，而是尽可能覆盖完整的 .NET BCL：
 - 控制台应用（Console I/O、环境变量、命令行参数）
-- 文件系统操作（File/Path/Directory，未来 FileStream）
+- 文件系统操作（File/Path/Directory/FileStream/StreamReader/StreamWriter）
 - 集合与 LINQ（List/Dictionary/Where/Select 等）
 - 异步编程（async/await、Task、线程池）
 - 反射（typeof/GetType/GetMethods/GetFields/Invoke）
-- 网络（未来：Socket/HttpClient）
-- 序列化（未来：System.Text.Json）
+- 网络（Socket TCP/DNS 已工作、HttpClient 构造已工作、完整 HTTP GET 进行中）
+- 序列化（System.Text.Json source generator 路径已验证）
 
 ## 核心设计原则
 
 ### 1. Unity IL2CPP 架构：BCL IL 全编译
 
-所有有 IL 方法体的 BCL 方法**直接从 IL 编译为 C++**，与用户代码走完全相同的编译路径。仅在最底层保留 `[InternalCall]` 方法的 C++ 手写实现（约 243 个 icall 映射）。
+所有有 IL 方法体的 BCL 方法**直接从 IL 编译为 C++**，与用户代码走完全相同的编译路径。仅在最底层保留 `[InternalCall]` 方法的 C++ 手写实现（约 484 个 icall 映射）。
 
 ```
 方法调用
@@ -72,14 +72,14 @@ Console.WriteLine → TextWriter.WriteLine → StreamWriter.Write → Encoding.G
 - **运行时**：C++20，CMake 构建，支持 Windows (MSVC)、Linux (GCC/Clang)、macOS (Apple Clang)
 - **生成代码**：平台无关的 C++ 代码 + CMake 项目
 
-### 4. 多层安全网
+### 4. 安全网
 
-BCL 中部分方法引用 CLR 内部类型（RuntimeType、QCallTypeHandle 等），无法编译为 C++。编译器有 4 层安全网自动检测并 stub 化这些方法，确保编译永不失败：
+BCL 中部分方法引用 CLR 内部类型（RuntimeType、QCallTypeHandle 等），无法编译为 C++。编译器自动检测并 stub 化这些方法：
 
-1. HasClrInternalDependencies — IR 级检测
-2. HasKnownBrokenPatterns — 预渲染检测
-3. RenderedBodyHasErrors — 试渲染检测
-4. GenerateMissingMethodStubImpls — 兜底 stub
+1. HasClrInternalDependencies — IR 级检测 CLR 内部类型依赖
+2. GenerateMissingMethodStubImpls — 兜底：所有声明但未定义的函数生成默认 stub
+
+此前还有额外的门控（HasKnownBrokenPatterns、RenderedBodyHasErrors），但已在 Phase X 清理中移除 — 问题现在表现为 C++ 编译错误，从根因修复。
 
 ## 非目标 / AOT 根本限制
 

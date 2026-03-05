@@ -41,8 +41,7 @@ cil2cpp/
 │   │       ├── CppCodeGenerator.cs       # 生成入口
 │   │       ├── CppCodeGenerator.Header.cs  # .h 生成
 │   │       ├── CppCodeGenerator.Source.cs  # .cpp 生成
-│   │       ├── CppCodeGenerator.KnownStubs.cs  # 手写 stub
-│   │       └── StubAnalyzer.cs                 # stub 分析工具 (--analyze-stubs)
+│   │       └── CppCodeGenerator.Utils.cs        # 工具辅助
 │   └── CIL2CPP.Tests/          #   编译器单元测试 (xUnit)
 │       └── Fixtures/           #     测试 fixture 缓存
 ├── tests/                      # 测试用 C# 项目（编译器输入）
@@ -83,7 +82,7 @@ cil2cpp/
              │ IRBuilder.Build() ──→ 中间表示（8 遍，见下文）        │
              │       ↓                                             │
              │ CppCodeGenerator ──→ C++ 头文件 + 多源文件 + CMake    │
-             │                      (多文件分割 + 试渲染 + 自动 stub)│     .h / *_data.cpp
+             │                      (多文件分割 + 自动 stub)        │     .h / *_data.cpp
              └─────────────────────────────────────────────────────┘ ──→ *_methods_N.cpp
                                                                         CMakeLists.txt
                                                                             ↓
@@ -126,7 +125,7 @@ CIL2CPP 采用与 Unity IL2CPP 相同的策略：**所有有 IL 方法体的 BCL
 ```
 方法调用
   ↓
-ICallRegistry 查找 (~270 个映射)
+ICallRegistry 查找 (~484 个映射)
   ├─ 命中 → [InternalCall] 方法，无 IL 方法体
   │         GC / Monitor / Interlocked / Buffer / Math / IO / Globalization 等
   │         → 调用 C++ 运行时实现
@@ -184,7 +183,7 @@ ICallRegistry 查找 (~270 个映射)
 │  这一层决定: 哪些标准库方法可用                           │
 ├─────────────────────────────────────────────────────────┤
 │  Layer 3: 运行时 icall                                  │
-│  ~270 个 [InternalCall] 方法 → C++ 运行时实现            │
+│  ~484 个 [InternalCall] 方法 → C++ 运行时实现            │
 │  限制: 未实现的 icall → 功能不可用                        │
 │  这一层决定: GC、线程、字符串布局、IO 等底层能力           │
 └─────────────────────────────────────────────────────────┘
@@ -219,14 +218,14 @@ output/
 
 分区策略：按 IR 指令数均匀分割（`MinInstructionsPerPartition = 20000`），每个 `.cpp` 文件约 13k-17k 行 C++ 代码。
 
-### 多层安全网：自动 stub 机制
+### 自动 stub 机制
 
-BCL 中部分方法的 IL 引用了 CLR 内部类型，无法编译为 C++。编译器有 4 层安全网：
+BCL 中部分方法的 IL 引用了 CLR 内部类型，无法编译为 C++。编译器有 2 层安全网：
 
 1. **HasClrInternalDependencies** — IR 级：方法引用 CLR 内部类型 → 替换为返回默认值的 stub
-2. **HasKnownBrokenPatterns** — 预渲染：JIT intrinsics、自递归等已知问题 → 跳过
-3. **RenderedBodyHasErrors** — 试渲染：将方法体渲染为 C++ 后检测编译错误模式 → stub 化
-4. **GenerateMissingMethodStubImpls** — 兜底：所有声明但未定义的函数 → 生成默认 stub
+2. **GenerateMissingMethodStubImpls** — 兜底：所有声明但未定义的函数 → 生成默认 stub
+
+> **历史**：此前有 4 层（包括 HasKnownBrokenPatterns 和 RenderedBodyHasErrors）。这些中间门控在 Phase X 清理中移除（删除约 5,500 行）— 问题现在表现为 C++ 编译错误，从根因修复而非被门控掩盖。
 
 每次 codegen 生成 `stubbed_methods.txt` 报告，列出所有被 stub 化的方法及原因。
 

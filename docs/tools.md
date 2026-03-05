@@ -177,7 +177,7 @@ python tools/dev.py test --coverage
 
 The project has three layers of tests: compiler unit tests, runtime unit tests, and end-to-end integration tests.
 
-### C# Compiler Tests (~1240, xUnit)
+### C# Compiler Tests (~1273+, xUnit)
 
 ```bash
 dotnet test compiler/CIL2CPP.Tests
@@ -187,7 +187,7 @@ dotnet test compiler/CIL2CPP.Tests
 
 > **Important**: When adding tests, you must use `GetXxxReleaseContext()` / `GetXxxReleaseModule()` to access cached compilation results. Never directly `new AssemblySet()` + `new ReachabilityAnalyzer()` in test methods (~12 seconds each).
 
-### C++ Runtime Tests (592, Google Test)
+### C++ Runtime Tests (591, Google Test)
 
 ```bash
 cmake -B runtime/tests/build -S runtime/tests
@@ -195,7 +195,7 @@ cmake --build runtime/tests/build --config Debug
 ctest --test-dir runtime/tests/build -C Debug --output-on-failure
 ```
 
-### End-to-End Integration Tests (47)
+### End-to-End Integration Tests (35)
 
 Full compilation pipeline: C# `.csproj` → codegen → CMake configure → C++ build → run → verify output.
 

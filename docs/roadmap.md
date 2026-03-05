@@ -1,6 +1,6 @@
 # Development Roadmap
 
-> Last updated: 2026-03-02
+> Last updated: 2026-03-05
 >
 > [中文版 (Chinese)](roadmap.zh-CN.md)
 
@@ -35,8 +35,8 @@ These are required before CIL2CPP can claim "compiles .NET NativeAOT projects":
 | MarshalAs P/Invoke | C.7 | `[MarshalAs]`, `[Out]`/`[In]`, array marshaling — needed by NuGet ecosystem |
 | SChannel TLS (Windows) | E.win | HTTPS via `secur32.dll`/`schannel.dll` P/Invoke (OS-provided, no FetchContent) |
 | Compression | E.2 | zlib via System.IO.Compression.Native |
-| RenderedBodyError → 0 | H.2 | Fix all codegen bugs (currently 116 RE stubs) |
-| SIMD scalar completion | F.1 | Eliminate 333 SIMD stubs via complete scalar fallback paths |
+| RenderedBodyError → 0 | H.2 | Fix all codegen bugs (currently 17 RE stubs, down from 116) |
+| SIMD scalar completion | F.1 | Eliminate remaining SIMD stubs via complete scalar fallback paths |
 | 10 NuGet package validation | G.2 | Prove real-world packages compile and run |
 
 #### Deferred (after Must-Implement is complete)
@@ -65,7 +65,7 @@ These .NET features are fundamentally incompatible with AOT compilation and will
 | Tiered JIT compilation / ReadyToRun | JIT-specific runtime optimization |
 | `Type.MakeGenericType` with runtime types | AOT cannot monomorphize types unknown at compile time |
 | Dynamic COM interop (`IDispatch`) | Requires runtime type discovery |
-| QCall / CLR internal types | CLR JIT-specific bridges (QCallTypeHandle, MetadataImport, MethodTable) — permanently retained as stubs (96 stubs) |
+| QCall / CLR internal types | CLR JIT-specific bridges (QCallTypeHandle, MetadataImport, MethodTable) — permanently retained as stubs (~96 stubs) |
 
 > **Note**: Libraries that use these features (gRPC dynamic proxies, some ORMs like Dapper's dynamic queries, Reflection.Emit-based serializers) cannot be supported. Source-generator equivalents (gRPC code-first, System.Text.Json SG) should be used instead.
 
@@ -138,25 +138,25 @@ IL2CPP compiles from IL: Task/async entire family, CancellationToken/Source, Wai
 
 See "RuntimeProvided Type Classification" section above.
 
-### Stub Distribution (HelloWorld, 1,666 stubs, ~94.6% translation rate)
+### Stub Distribution (HelloWorld, 1,280 stubs, ~95%+ translation rate)
 
-> Metrics from `tests/baselines/stub_budget.json` — auto-ratcheted by CI (`--stub-budget` flag).
-> Commit: abca1af (2026-03-02). Assembly: HelloWorld (~31k methods).
+> Metrics from `tests/baselines/stub_budget.json`.
+> Commit: 3f93840 (2026-03-05). Assembly: HelloWorld (~26k methods after demand-driven generics + specialized method reachability).
 
 | Category | Count | % | Nature |
 |----------|-------|---|--------|
-| MissingBody | 705 | 42.3% | No IL body (abstract/extern/JIT intrinsic) — most are legitimate |
-| KnownBrokenPattern | 646 | 38.8% | SIMD 333 + line-level body scan patterns + TypeHandle/MethodTable |
-| RenderedBodyError | 115 | 6.9% | Codegen bugs — Phase H.2 goal to reduce to ~50 |
-| ClrInternalType | 100 | 6.0% | QCall/MetadataImport CLR JIT-specific types (permanent) |
-| UndeclaredFunction | 90 | 5.4% | Cascade from MissingBody/KBP — generic specialization gaps |
-| UnknownParameterTypes | 9 | 0.5% | Method parameters reference unknown types |
-| UnknownBodyReferences | 1 | 0.1% | Method body IL references unknown types |
+| MissingBody | 604 | 47.2% | No IL body (abstract/extern/JIT intrinsic) — most are legitimate |
+| KnownBrokenPattern | 458 | 35.8% | SIMD dead-code branches + TypeHandle/MethodTable |
+| ClrInternalType | 96 | 7.5% | QCall/MetadataImport CLR JIT-specific types (permanent) |
+| UndeclaredFunction | 95 | 7.4% | Cascade from MissingBody/KBP — generic specialization gaps |
+| RenderedBodyError | 17 | 1.3% | Codegen bugs — Phase H.2 target: 0 |
+| UnknownParameterTypes | 10 | 0.8% | Method parameters reference unknown types |
+| UnknownBodyReferences | 0 | 0% | Resolved |
 
-**Unfixable or deferred**: SIMD (333+) needs intrinsics support or runtime fallback. CLR internal types (100) are permanently retained.
+**Unfixable or deferred**: SIMD dead-code branches are handled by FeatureSwitchResolver (IsSupported=false dead-branch elimination). CLR internal types (~96) are permanently retained.
 
-**IL translation rate**: ~94.6%. Phase A: 2,777 → 1,478; Phase B: 1,478 → 1,537; Phase C+audit: → 1,666 (scope expansion from C2362 switch fix + generic discovery).
-**Tests**: 1,273 C# + 599 C++ + 47 integration — all passing.
+**IL translation rate**: ~95%+. History: Phase A: 2,777 → 1,478; Phase B: 1,478 → 1,537; Phase C: → 1,666; Phase X + demand-driven generics: → 1,280 (method count also reduced ~26k from ~31k via specialized method reachability).
+**Tests**: 1,273+ C# + 591 C++ + 35 integration — all passing.
 
 ### Implemented Architecture Capabilities
 
@@ -172,10 +172,10 @@ See "RuntimeProvided Type Classification" section above.
 | Simple console apps | ~92% | Reflection stubs may cause runtime surprises |
 | Library projects | ~78% | `[DynamicallyAccessedMembers]` not parsed — tree-shaking breaks NuGet packages |
 | File I/O apps | ~80% | File.ReadAllBytes hangs (B.6); encoding gaps in File ICalls |
-| Network apps | ~45% | HTTP GET compiles (C.6 builds); runtime pending BCL stubs; HTTPS needs TLS (Phase E.win) |
+| Network apps | ~45% | HTTP GET compiles (C.6 builds); HTTPS needs TLS (Phase E.win) |
 | REST client (HTTP+JSON) | ~15% | Needs C.6 + Phase D (metadata) + JSON SG validation |
 | Production-grade apps | ~3% | Needs TLS + JSON + DI — all require Phase D first |
-| Arbitrary NativeAOT .csproj | **~25%** | NuGet packages untested, no `[DynamicallyAccessedMembers]`, no `[MarshalAs]`, 116 RE codegen bugs |
+| Arbitrary NativeAOT .csproj | **~25%** | NuGet packages untested, `[MarshalAs]` partial, 17 RE codegen bugs |
 
 > **Linux/macOS**: Deferred. All percentages above are Windows-only. Linux requires System.Native integration (Phase B.5, deferred) + OpenSSL (Phase E.linux, deferred). Current Linux support: ~5% (console-only, no file I/O or networking).
 
@@ -186,18 +186,17 @@ See "RuntimeProvided Type Classification" section above.
 - **75%→90%**: 10 NuGet package validation + comprehensive testing
 - **90%→95%**: Edge case fixes + polish
 
-**Implementation gaps** (2026-03-02 audit, updated after code review):
+**Implementation gaps** (2026-03-05 audit):
 - `[DynamicallyAccessedMembers]` — **complete (validated)**: 13 DamFlags, field/method/parameter scanning, CLI `--rdxml` wired, 7 DAM reachability tests + 14 rd.xml parser tests
-- ILLink feature switches — **active** since D.3 implementation; FeatureSwitchResolver substitutes 10+ AOT defaults at compile time in IRBuilder.Methods.cs:1372-1386
-- `[MarshalAs]` attribute — **implemented** (C.7.1): Cecil parsing in IRBuilder.Methods.cs, 21 type mappings in CppCodeGenerator.Source.cs:3024-3094. Missing: `[Out]`/`[In]` copy-back (C.7.2), LPArray runtime marshaling (C.7.3)
-- NuGet PackageReference — assembly resolution works (AssemblySet + deps.json), but zero test projects validate the path
-- Source generator output — never validated with a real SG package (System.Text.Json)
+- ILLink feature switches — **active**: FeatureSwitchResolver substitutes 10+ AOT defaults at compile time. SIMD IsSupported=false dead-branch elimination via brfalse pattern detection.
+- `[MarshalAs]` attribute — **implemented** (C.7.1): Cecil parsing + 21 type mappings. Missing: `[Out]`/`[In]` copy-back (C.7.2), LPArray runtime marshaling (C.7.3)
+- NuGet PackageReference — assembly resolution validated (NuGetSimpleTest: Newtonsoft.Json). Full codegen blocked by IRBuilder OOM for large assemblies (41K methods). JsonSGTest: full pipeline validated.
+- Source generator output — **validated** (D.5): JsonSGTest with `[JsonSerializable]` compiles through CIL2CPP (codegen → cmake → build, 0 MSVC errors).
 
 ---
 
 ## Phase 1: Foundation ✅
 
-- Stub dependency analysis tool (`--analyze-stubs`)
 - RuntimeType = Type alias (matching `Il2CppReflectionType`)
 - Handle type removal (RuntimeTypeHandle/MethodHandle/FieldHandle → intptr_t)
 - AggregateException / SafeHandle / Thread.CurrentThread TLS / GCHandle weak reference
@@ -245,15 +244,27 @@ See "RuntimeProvided Type Classification" section above.
 | 3.19 | Stub budget ratchet update | Diagnostics | ✅ | stub_budget.json baseline from 3,310 → 3,147 |
 | 3.20 | KBP false positive audit | -287 | ✅ | Removed 30+ overly broad method-level KBP checks (Numerics DIM -60, DISH -35, Span/IAsyncLocal -58, CWT -23, P/Invoke/Buffers/Reflection -68 etc.). RenderedBodyError 0→90 (real codegen bugs correctly exposed) |
 
-### Pass 3.6 Strategy: Stub Body vs Full Compilation
+### Phase X: Compromise Code Removal ✅ (2026-03)
 
-> **Architecture decision** (2026-02): Pass 3.6 discovers generic types transitively from method bodies compiled in Pass 3.4/3.5. For newly discovered types, it intentionally generates **stub bodies** (declarations only) rather than fully compiling method bodies.
+> **All stub/gate/workaround infrastructure has been removed.** ~5,500 lines of compromise code deleted.
 
-**Rationale**: Compiling new method bodies → discovers new callees → callees become UndeclaredFunction stubs → net stub count increases. By generating stub bodies, methods are declared in the header (reducing UF cascade) without triggering new cascades.
+**Deleted systems**:
+- **Gate system** (5 pre-render gates, trial render, post-render validation) from Header.cs/Source.cs
+- **StubAnalyzer.cs** (634 lines) — root-cause analysis, call graph, budget checking
+- **KnownStubs.cs** (521 lines) — hand-written AOT replacement bodies
+- **`__SIMD_STUB__` sentinel** (~20 checks in IRBuilder.Emit/Methods) — dead-code propagation workaround
+- **Namespace blacklists** (non-AOT-incompatible exclusions like System.Data, Interop/*) — removed
+- **Generic filter blacklists** (FilteredGenericNamespaces, VectorScalarFallbackTypes) — deleted
+- **`--analyze-stubs` / `--stub-budget` CLI options** — deleted
 
-**Trade-off**: Some methods that could compile successfully remain as stubs. This is the correct short-term strategy while the overall stub count is decreasing through compiler bug fixes. Future improvement: selective body compilation whitelist for high-frequency BCL generics (e.g., `EqualityComparer<T>`, `Comparer<T>`).
+**Replaced by**:
+- **Demand-driven generic discovery**: types discovered on-demand when method bodies are compiled (no bulk pre-scanning)
+- **Specialized method reachability**: `_calledSpecializedMethods` HashSet tracks which methods on which generic specializations are actually called — 77% generic methods skipped
+- **Interface-dispatch-aware pruning**: non-dispatched generic interfaces not materialized — -311 types (-7.5%)
+- **FeatureSwitchResolver**: SIMD IsSupported=false dead-branch elimination via brfalse patterns
+- **Self-referential generic detection**: replaces arbitrary MaxGenericNestingDepth=5
 
-**Location**: `IRBuilder.cs` lines 565-608 (fixpoint discovery loop with FIXME annotation).
+**Impact**: HelloWorld -21% codegen, 27799 → 26248 methods, 315K → 260K lines.
 
 ---
 
@@ -286,7 +297,7 @@ See "RuntimeProvided Type Classification" section above.
 
 ### Phase A: Compiler Finalization — Fix Stub Root Causes ✅
 
-**Goal**: Translation rate > 92%, stubs < 2,000 — **Achieved** (1,478 at Phase A end; currently 1,666 after scope expansion in Phase C/audit)
+**Goal**: Translation rate > 92%, stubs < 2,000 — **Achieved** (1,478 at Phase A end; currently 1,280 after Phase X cleanup + demand-driven generics)
 
 **Results**: 2,777 → 1,478 stubs (-1,299, -46.8%) at Phase A completion
 
@@ -381,7 +392,7 @@ See "RuntimeProvided Type Classification" section above.
 | # | Task | Priority | Status | Description |
 |---|------|----------|--------|-------------|
 | H.1 | TypeCode ICall fix + IsPublic/IsNestedPublic | High | ✅ | Map TypeInfo name → TypeCode enum (17 primitives) + TypeFlags::Public/NestedPublic from Cecil metadata. Fixes `Convert.*`, `String.Format`, serializer type switches, `Type.IsPublic` |
-| H.2 | RenderedBodyError reduction | High | Pending | Fix 7 FIXME-gated codegen patterns in Header.cs (116 → target 50 RE stubs) |
+| H.2 | RenderedBodyError reduction | High | ~85% done | 116 → 17 RE stubs. Remaining 17 are real codegen edge cases. Target: 0. |
 | H.3 | Remove File ICall bypass (B.6) | High | Blocked | Debug `FileStream.Read(byte[])` hang, then delete 12 File ICalls. BCL IL handles all encoding correctly via StreamReader |
 | H.4 | Platform compatibility docs | Medium | ✅ | Support matrix with promise levels: Full / Functional / Stub / Not implemented |
 | H.5 | Reflection status docs | Medium | ✅ | Expected-vs-actual table for all 23 reflection icalls + prerequisite phase for full fix |
@@ -451,7 +462,7 @@ See "RuntimeProvided Type Classification" section above.
 
 | # | Task | Estimate | Description |
 |---|------|----------|-------------|
-| F.1 | SIMD scalar fallback path completion | High | **Must-implement.** Eliminate 333 SIMD stubs — many BCL hot paths depend on these |
+| F.1 | SIMD scalar fallback path completion | High | **Must-implement.** SIMD dead-branch elimination (FeatureSwitchResolver) handles most cases; remaining SIMD stubs in KBP category need scalar fallback paths |
 | F.2 | Task struct refactoring (from Phase 5.2-5.5) | High | **Deferred.** Reduce RuntimeProvided 32→25 (internal quality, no user-facing impact) |
 | F.3 | Incremental compilation | Medium | **Deferred.** IR/codegen caching (performance optimization) |
 | F.4 | Reflection model evaluation (from Phase 6) | Medium | **Deferred.** Evaluate QCall alternatives |
@@ -513,7 +524,7 @@ macOS support (Objective-C bridge)
 
 | Milestone | Criteria | Phase | Status |
 |-----------|---------|-------|--------|
-| **M1: Compiler Maturity** | stubs < 2,000, translation rate > 92% | A | ✅ (1,666 stubs, 94.6%) |
+| **M1: Compiler Maturity** | stubs < 2,000, translation rate > 92% | A | ✅ (1,280 stubs, ~95%+) |
 | **M2: File I/O** | FileStream/StreamReader compile from BCL IL and run | B | ✅ Windows (~90%) |
 | **M3: Networked Apps** | HttpClient HTTP GET compiles from BCL IL and runs | C.6 | ~60%: Socket+DNS+constructor ✅, full GET pending |
 | **M3.5: REST Client** | HTTP GET + `JsonSerializer.Deserialize<T>()` (via SG) end-to-end | C.6+D | Blocked — needs C.6 + D.1 + D.3 + D.5 |
@@ -527,7 +538,7 @@ macOS support (Objective-C bridge)
 
 | Metric | Definition | Current | Phase A Target | Long-term Target |
 |--------|-----------|---------|---------------|-----------------|
-| IL translation rate | (total_methods - stubs) / total_methods | **~94.6%** (1,666 stubs / ~31k methods) | >92% ✅ | >95% |
+| IL translation rate | (total_methods - stubs) / total_methods | **~95%+** (1,280 stubs / ~26k methods) | >92% ✅ | >95% |
 | RuntimeProvided count | RuntimeProvidedTypes entries | **32** (was 40, -8) | ~32 | ~25 (Phase F.2) |
 | CoreRuntime count | Methods fully provided by C++ | 22 | ~22 | ~10 (Phase F.4) |
 | ICall count | C++ internal calls | **~484** | ~400 | Stabilize (features come from BCL IL, not ICall) |
@@ -537,10 +548,9 @@ macOS support (Objective-C bridge)
 | Dimension | Value | Notes |
 |-----------|-------|-------|
 | **Assembly** | HelloWorld (primary), SocketTest (secondary) | All headline metrics use HelloWorld unless stated otherwise |
-| **Source of truth** | `tests/baselines/stub_budget.json` | Auto-ratcheted by `--stub-budget` flag during integration tests |
-| **Categories** | 7 StubRootCause enum values in `StubAnalyzer.cs` | MissingBody, KnownBrokenPattern, RenderedBodyError, ClrInternalType, UndeclaredFunction, UnknownParameterTypes, UnknownBodyReferences |
+| **Source of truth** | `tests/baselines/stub_budget.json` | Updated manually after significant changes |
+| **Categories** | 7 stub root cause categories | MissingBody, KnownBrokenPattern, RenderedBodyError, ClrInternalType, UndeclaredFunction, UnknownParameterTypes, UnknownBodyReferences |
 | **Translation rate** | `1 - (stub_total / total_methods)` | `total_methods` from IRModule after all passes |
-| **Update cadence** | Auto-ratcheted on every integration test run | Budget file updated when actual < budget (ratchet down only) |
 | **Commit binding** | Include commit hash + date when citing metrics in docs | Prevents stale numbers persisting across phases |
 
 > **Note**: Stub counts may temporarily increase when compiler improvements expand compilation scope (e.g., fixing C2362 switch gate made more methods compilable, exposing their callees as new stubs). This is positive progress — more methods compile — even though the headline number rises.

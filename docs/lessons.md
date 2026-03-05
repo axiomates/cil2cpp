@@ -224,9 +224,9 @@ KVP<BDD>> → KVP<KVP<BDD>>> → KVP<KVP<KVP<BDD>>>> → ...
 
 JIT doesn't need ahead-of-time instantiation so this never surfaces. AOT must monomorphize all reachable generics — natural fixpoint termination ("no new types") never arrives.
 
-**Fix**: Dual protection — (a) namespace filtering for known-problematic namespaces, (b) `MaxGenericNestingDepth=5` structural limit in `CollectGenericType`.
+**Fix**: Self-referential generic detection (`IsRecursiveGenericInstantiation`) — detects same open type nested ≥2 times in own args. This replaced the original dual protection (namespace filtering + arbitrary `MaxGenericNestingDepth=5`) which penalized deep but non-recursive types. `System.Text.RegularExpressions.Symbolic` is excluded in ReachabilityAnalyzer as a tree-shaking optimization.
 
-**Lesson**: AOT generic monomorphization requires a depth limit. "Set stops growing" is insufficient as a sole termination condition.
+**Lesson**: AOT generic monomorphization needs structural recursion detection, not arbitrary depth limits. "Same open type appearing ≥2 times in its own generic args" is the correct predicate.
 
 ### Cctor Cascade: Follow ECMA-335 §II.10.5.3.3
 
@@ -261,10 +261,10 @@ After implementing lazy cctor, some types' cctors were no longer seeded (e.g., `
 
 **Lesson**: IR attributes must reflect actual compilation decisions, not just metadata presence.
 
-### AOT-Excluded Namespaces Are Effective Coarse-Grained Pruning
+### AOT-Excluded Namespaces — Mostly Removed
 
-Excluded namespaces: `Symbolic`, `ComponentModel`, `Serialization`, `CodeDom`, `Resources`. These are meaningless in AOT scenarios (reflection-based serialization, dynamic code, designers).
+**Original approach**: Excluded namespaces (`Symbolic`, `ComponentModel`, `Serialization`, `CodeDom`, `Resources`) as coarse-grained pruning, with dual filtering in ReachabilityAnalyzer + IRBuilder.
 
-Dual filtering: `ReachabilityAnalyzer.IsAotExcludedNamespace` + `IRBuilder.FilteredGenericNamespaces`.
+**Phase X cleanup**: `FilteredGenericNamespaces` and most namespace blacklists were removed. Only genuinely AOT-incompatible exclusions remain (e.g., `System.Text.RegularExpressions.Symbolic` for recursive generic OOM prevention). The demand-driven generic discovery system now handles scope naturally without blacklists.
 
-**Lesson**: Namespace exclusion is effective but requires clear AOT-incompatibility justification for each entry. Don't exclude blindly.
+**Lesson**: Namespace exclusion was a temporary workaround. Proper demand-driven compilation (only compile what's actually called) is the correct solution. Blacklists mask over-eager discovery rather than fixing it.

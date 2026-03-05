@@ -34,18 +34,18 @@ CIL2CPP borrows Unity IL2CPP's core architectural approach — **compiling BCL (
 
 The goal is not limited to the BCL subset Unity supports, but rather covers the full .NET BCL as comprehensively as possible:
 - Console applications (Console I/O, environment variables, command-line arguments)
-- File system operations (File/Path/Directory, future FileStream)
+- File system operations (File/Path/Directory/FileStream/StreamReader/StreamWriter)
 - Collections & LINQ (List/Dictionary/Where/Select etc.)
 - Asynchronous programming (async/await, Task, thread pool)
 - Reflection (typeof/GetType/GetMethods/GetFields/Invoke)
-- Networking (future: Socket/HttpClient)
-- Serialization (future: System.Text.Json)
+- Networking (Socket TCP/DNS working, HttpClient construction working, full HTTP GET in progress)
+- Serialization (System.Text.Json source generator path validated)
 
 ## Core Design Principles
 
 ### 1. Unity IL2CPP Architecture: Full BCL IL Compilation
 
-All BCL methods with IL bodies are **compiled directly from IL to C++**, following the exact same compilation path as user code. Only the lowest-level `[InternalCall]` methods have hand-written C++ implementations (~243 icall mappings).
+All BCL methods with IL bodies are **compiled directly from IL to C++**, following the exact same compilation path as user code. Only the lowest-level `[InternalCall]` methods have hand-written C++ implementations (~484 icall mappings).
 
 ```
 Method call
@@ -72,14 +72,14 @@ The compiler automatically loads user assemblies + third-party dependencies + BC
 - **Runtime**: C++20, CMake build, supports Windows (MSVC), Linux (GCC/Clang), macOS (Apple Clang)
 - **Generated code**: Platform-independent C++ code + CMake project
 
-### 4. Multi-Layer Safety Net
+### 4. Safety Net
 
-Some BCL methods reference CLR internal types (RuntimeType, QCallTypeHandle, etc.) that cannot be compiled to C++. The compiler has 4 safety layers that automatically detect and stub these methods, ensuring compilation never fails:
+Some BCL methods reference CLR internal types (RuntimeType, QCallTypeHandle, etc.) that cannot be compiled to C++. The compiler automatically detects and stubs these methods:
 
-1. HasClrInternalDependencies — IR-level detection
-2. HasKnownBrokenPatterns — Pre-render detection
-3. RenderedBodyHasErrors — Trial render detection
-4. GenerateMissingMethodStubImpls — Catch-all stub
+1. HasClrInternalDependencies — IR-level detection of CLR internal type dependencies
+2. GenerateMissingMethodStubImpls — Catch-all: any declared but undefined function gets a default stub
+
+Previously there were additional gates (HasKnownBrokenPatterns, RenderedBodyHasErrors) but these were removed in Phase X cleanup — problems now surface as C++ compilation errors and are fixed at the root cause.
 
 ## Non-Goals / Fundamental AOT Limitations
 

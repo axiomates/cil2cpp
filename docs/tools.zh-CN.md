@@ -177,7 +177,7 @@ python tools/dev.py test --coverage
 
 项目包含三层测试：编译器单元测试、运行时单元测试、端到端集成测试。
 
-### C# 编译器测试（~1240 个，xUnit）
+### C# 编译器测试（~1273+ 个，xUnit）
 
 ```bash
 dotnet test compiler/CIL2CPP.Tests
