@@ -1035,9 +1035,8 @@ public class ReachabilityAnalyzer
         foreach (var instr in instructions)
         {
             bool isConstantFalse = false;
-            bool isConstantTrue = false;
 
-            // Pattern 1a: call/callvirt to SIMD IsSupported/IsHardwareAccelerated getter
+            // Pattern 1: call/callvirt to SIMD IsSupported/IsHardwareAccelerated getter
             if (instr.OpCode.Code is Code.Call or Code.Callvirt &&
                 instr.Operand is MethodReference callRef)
             {
@@ -1051,26 +1050,10 @@ public class ReachabilityAnalyzer
                         isConstantFalse = true; // IsSupported always false in AOT
                     }
                 }
-
-                // Pattern 1b: call to get_X() where "DeclaringType::X" is a known feature switch.
-                // Handles property getter patterns like GlobalizationMode.get_Invariant()
-                // which resolve to FeatureSwitchResolver entries.
-                if (!isConstantFalse && !isConstantTrue
-                    && methodName.StartsWith("get_")
-                    && _featureSwitchResolver != null)
-                {
-                    var declType = callRef.DeclaringType?.FullName ?? "";
-                    var propName = methodName.Substring(4); // strip "get_"
-                    if (_featureSwitchResolver.TryResolve(declType, propName, out bool switchValue))
-                    {
-                        if (switchValue) isConstantTrue = true;
-                        else isConstantFalse = true;
-                    }
-                }
             }
 
             // Pattern 2: ldsfld of a known feature switch (FeatureSwitchResolver entries)
-            if (!isConstantFalse && !isConstantTrue
+            if (!isConstantFalse
                 && instr.OpCode.Code == Code.Ldsfld
                 && instr.Operand is FieldReference fldRef)
             {
@@ -1079,14 +1062,13 @@ public class ReachabilityAnalyzer
                 if (_featureSwitchResolver != null &&
                     _featureSwitchResolver.TryResolve(declType, fldName, out bool switchValue))
                 {
-                    if (switchValue) isConstantTrue = true;
-                    else isConstantFalse = true;
+                    if (!switchValue) isConstantFalse = true;
                 }
             }
 
             // Pattern 3: ldsfld FeatureSwitch → ldc.i4.0/ldc.i4.1 → ceq → inverted/direct comparison
             // Handles `if (field == false)` and `if (field == true)` patterns
-            if (!isConstantFalse && !isConstantTrue && instr.OpCode.Code == Code.Ldsfld &&
+            if (!isConstantFalse && instr.OpCode.Code == Code.Ldsfld &&
                 instr.Operand is FieldReference fldRef2 &&
                 instr.Next?.OpCode.Code is Code.Ldc_I4_0 or Code.Ldc_I4_1 &&
                 instr.Next.Next?.OpCode.Code == Code.Ceq)
@@ -1105,17 +1087,14 @@ public class ReachabilityAnalyzer
                 }
             }
 
-            if (!isConstantFalse && !isConstantTrue) continue;
+            if (!isConstantFalse) continue;
 
-            // Determine branch behavior based on resolved constant value
-            // Use AddCeqDeadRange which already handles both branchTaken and !branchTaken
+            // isConstantFalse: the value on the stack is known to be false (0)
             var nextInstr = instr.Next;
             if (nextInstr == null) continue;
 
-            // The resolved value is: isConstantTrue=true means value=true, isConstantFalse=true means value=false
-            // Reuse AddCeqDeadRange: resolvedValue maps directly to ceqResult semantics
-            bool resolvedValue = isConstantTrue;
-            AddCeqDeadRange(nextInstr, resolvedValue, ref deadRanges);
+            // false value → brfalse branches (taken), brtrue does not branch
+            AddCeqDeadRange(nextInstr, false, ref deadRanges);
         }
 
         return deadRanges;

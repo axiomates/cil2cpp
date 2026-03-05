@@ -347,17 +347,6 @@ def cmd_install(args):
 
 # ===== cmd_codegen =====
 
-def _collect_feature_switches(args):
-    """Collect feature switch args from --feature-switch and --invariant-globalization."""
-    switches = list(getattr(args, "feature_switches", []))
-    if getattr(args, "invariant_globalization", False):
-        switches.append("System.Globalization.GlobalizationMode::Invariant=true")
-    result = []
-    for s in switches:
-        result += ["--feature-switch", s]
-    return result
-
-
 def cmd_codegen(args):
     """Generate C++ code from a C# project."""
     if args.sample:
@@ -379,10 +368,9 @@ def cmd_codegen(args):
     output = Path(args.output)
     config = args.config
 
-    fs_args = _collect_feature_switches(args)
     header(f"Codegen: {csproj.name} ({config})")
     run(["dotnet", "run", "--project", str(CLI_PROJECT), "--",
-         "codegen", "-i", str(csproj), "-o", str(output), "-c", config] + fs_args)
+         "codegen", "-i", str(csproj), "-o", str(output), "-c", config])
     success(f"Output: {output}")
     return 0
 
@@ -414,11 +402,10 @@ def cmd_compile(args):
     project_name = csproj.stem
 
     # 2. Codegen
-    fs_args = _collect_feature_switches(args)
     header(f"Step 1/3: Codegen ({project_name}, {config})")
     try:
         run(["dotnet", "run", "--project", str(CLI_PROJECT), "--",
-             "codegen", "-i", str(csproj), "-o", str(output), "-c", config] + fs_args)
+             "codegen", "-i", str(csproj), "-o", str(output), "-c", config])
     except subprocess.CalledProcessError:
         error("Codegen failed")
         return 1
@@ -1349,10 +1336,6 @@ def main():
     p_codegen.add_argument("-i", "--input", help="Input .csproj path")
     p_codegen.add_argument("-o", "--output", default="output", help="Output directory")
     p_codegen.add_argument("-c", "--config", default="Release", choices=["Debug", "Release"])
-    p_codegen.add_argument("--feature-switch", dest="feature_switches", action="append", default=[],
-                           help="Feature switch override (e.g., System.Globalization.GlobalizationMode::Invariant=true)")
-    p_codegen.add_argument("--invariant-globalization", action="store_true",
-                           help="Shorthand for --feature-switch System.Globalization.GlobalizationMode::Invariant=true")
 
     # compile
     p_compile = subparsers.add_parser("compile", help="One-step compile: .csproj → native executable")
@@ -1362,10 +1345,6 @@ def main():
     p_compile.add_argument("-c", "--config", default="Release", choices=["Debug", "Release"])
     p_compile.add_argument("--prefix", default=DEFAULT_PREFIX, help=f"Runtime prefix (default: {DEFAULT_PREFIX})")
     p_compile.add_argument("--run", dest="run_exe", action="store_true", help="Run the executable after building")
-    p_compile.add_argument("--feature-switch", dest="feature_switches", action="append", default=[],
-                           help="Feature switch override (e.g., System.Globalization.GlobalizationMode::Invariant=true)")
-    p_compile.add_argument("--invariant-globalization", action="store_true",
-                           help="Shorthand for --feature-switch System.Globalization.GlobalizationMode::Invariant=true")
 
     # integration
     p_integ = subparsers.add_parser("integration", help="Run integration tests")
