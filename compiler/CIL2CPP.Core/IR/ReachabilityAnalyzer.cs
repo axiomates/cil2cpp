@@ -782,8 +782,9 @@ public class ReachabilityAnalyzer
         // ResourceReader/ResourceManager. Was excluded because CIL2CPP uses SR icall
         // for resource strings, but the types themselves compile fine from IL.
 
-        // Regex symbolic engine — recursive generic types (BDD, DerivativeEffect, SymbolicRegexNode)
-        // create infinitely nested generic instantiations. These are internal implementation details.
+        // Regex symbolic engine — internal BCL implementation (BDD, DerivativeEffect, SymbolicRegexNode).
+        // Tree-shaking optimization: these types are transitively reachable but not needed by AOT consumers.
+        // (Recursive generic growth is separately handled by IsRecursiveGenericInstantiation in IRBuilder.)
         if (typeFullName.StartsWith("System.Text.RegularExpressions.Symbolic."))
             return true;
 

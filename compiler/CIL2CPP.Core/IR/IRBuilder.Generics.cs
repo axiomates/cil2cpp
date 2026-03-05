@@ -160,25 +160,36 @@ public partial class IRBuilder
         }
     }
 
-    // TODO: research correct recursive generic termination instead of arbitrary depth limit
     /// <summary>
-    /// Maximum nesting depth for generic type arguments.
-    /// Prevents infinite recursive generic instantiations (e.g., Dict&lt;KVP&lt;KVP&lt;...&gt;&gt;&gt;).
-    /// Legitimate .NET generics rarely exceed depth 4; recursive BCL types
-    /// (Regex Symbolic engine) can nest infinitely.
+    /// Detects recursive generic instantiations where the open type appears
+    /// nested within its own type arguments (e.g., DE&lt;DE&lt;DE&lt;BDD&gt;&gt;&gt;).
+    /// This causes infinite growth during fixpoint monomorphization.
+    /// Allows 1 level of self-reference (e.g., Dict&lt;string, Dict&lt;int, bool&gt;&gt;)
+    /// but blocks 2+ (the growth pattern from recursive BCL types).
     /// </summary>
-    private const int MaxGenericNestingDepth = 5;
-
-    private static int GetGenericNestingDepth(TypeReference typeRef)
+    private static bool IsRecursiveGenericInstantiation(GenericInstanceType git)
     {
-        if (typeRef is not GenericInstanceType git) return 0;
-        int maxChild = 0;
+        var openTypeName = git.ElementType.FullName;
+        int selfRefs = 0;
         foreach (var arg in git.GenericArguments)
+            selfRefs += CountOpenTypeOccurrences(arg, openTypeName);
+        return selfRefs >= 2;
+    }
+
+    private static int CountOpenTypeOccurrences(TypeReference typeRef, string openTypeName)
+    {
+        if (typeRef is GenericInstanceType innerGit)
         {
-            int childDepth = GetGenericNestingDepth(arg);
-            if (childDepth > maxChild) maxChild = childDepth;
+            int count = innerGit.ElementType.FullName == openTypeName ? 1 : 0;
+            foreach (var arg in innerGit.GenericArguments)
+                count += CountOpenTypeOccurrences(arg, openTypeName);
+            return count;
         }
-        return 1 + maxChild;
+        if (typeRef is ArrayType arr)
+            return CountOpenTypeOccurrences(arr.ElementType, openTypeName);
+        if (typeRef is ByReferenceType byRef)
+            return CountOpenTypeOccurrences(byRef.ElementType, openTypeName);
+        return 0;
     }
 
     /// <summary>
@@ -244,8 +255,8 @@ public partial class IRBuilder
         if (git.GenericArguments.Any(ContainsGenericParameter))
             return;
 
-        // Safety: prevent infinite recursive generic nesting
-        if (GetGenericNestingDepth(git) > MaxGenericNestingDepth)
+        // Safety: prevent infinite recursive generic nesting (e.g., DE<DE<DE<BDD>>>)
+        if (IsRecursiveGenericInstantiation(git))
             return;
 
         // Skip generic specializations where any type argument is a CLR-internal type.
