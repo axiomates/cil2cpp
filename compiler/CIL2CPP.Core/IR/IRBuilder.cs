@@ -369,6 +369,9 @@ public partial class IRBuilder
     private ReachabilityAnalyzer _reachabilityAnalyzer = null!;
     private List<TypeDefinitionInfo> _allTypes = null!;
 
+    // Dispatched interfaces — generic interfaces actually used for dispatch (callvirt, castclass, etc.)
+    private HashSet<string> _dispatchedInterfaces = new();
+
     // Generic type instantiation tracking
     private readonly Dictionary<string, GenericInstantiationInfo> _genericInstantiations = new();
 
@@ -423,6 +426,9 @@ public partial class IRBuilder
 
         // Pass constructed types to IRModule for TypeInfo tiering
         _module.ConstructedTypes = new HashSet<string>(reachability.ConstructedTypes.Select(t => t.FullName));
+
+        // Pass dispatched interfaces for generic interface specialization filtering
+        _dispatchedInterfaces = reachability.DispatchedInterfaces;
 
         // Collect all reachable types as TypeDefinitionInfo, with classification
         var types = new List<TypeDefinitionInfo>();

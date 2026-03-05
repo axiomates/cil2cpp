@@ -1,4 +1,5 @@
 using Mono.Cecil;
+using Mono.Cecil.Cil;
 using CIL2CPP.Core.IL;
 
 namespace CIL2CPP.Core.IR;
@@ -20,6 +21,33 @@ public partial class IRBuilder
     /// Used to skip compilation of non-virtual methods that exist on a specialization but are never called.
     /// </summary>
     private readonly HashSet<string> _calledSpecializedMethods = new();
+
+    /// <summary>
+    /// Check if any constructed type inherits from or implements the given generic type.
+    /// If so, virtual methods on this type may be needed for vtable dispatch.
+    /// Uses the IL full name of the specialization (e.g., "System.Collections.Generic.IList`1&lt;System.String&gt;").
+    /// </summary>
+    private bool HasConstructedSubtype(string openTypeName, List<string> typeArgs)
+    {
+        var fullName = $"{openTypeName}<{string.Join(",", typeArgs)}>";
+        // Check if this exact specialization is a base/interface of any constructed type
+        foreach (var (_, irType) in _typeCache)
+        {
+            if (!_module.ConstructedTypes.Contains(irType.ILFullName))
+                continue;
+            // Walk base chain
+            var baseType = irType.BaseType;
+            while (baseType != null)
+            {
+                if (baseType.ILFullName == fullName) return true;
+                baseType = baseType.BaseType;
+            }
+            // Check interfaces
+            foreach (var iface in irType.Interfaces)
+                if (iface.ILFullName == fullName) return true;
+        }
+        return false;
+    }
 
     /// <summary>
     /// Build a specialized method key from Cecil GenericInstanceType + MethodReference.
@@ -93,12 +121,23 @@ public partial class IRBuilder
     {
         foreach (var typeDef in _allTypes!)
         {
-            // Scan interface references on the type itself
+            // Scan interface references on the type itself — only collect generic interfaces
+            // that are actually dispatched on (callvirt, castclass, constrained, etc.).
+            // Non-dispatched generic interfaces (e.g., INumber<Int32> from .NET 7+ generic math)
+            // are skipped to avoid materializing hundreds of unused interface specializations.
             var cecilTypeDef = typeDef.GetCecilType();
             if (cecilTypeDef.HasInterfaces)
             {
                 foreach (var iface in cecilTypeDef.Interfaces)
+                {
+                    if (iface.InterfaceType is GenericInstanceType git)
+                    {
+                        var openName = git.ElementType.FullName;
+                        if (!_dispatchedInterfaces.Contains(openName))
+                            continue;
+                    }
                     CollectGenericType(iface.InterfaceType);
+                }
             }
 
             foreach (var methodDef in typeDef.Methods)
@@ -561,6 +600,19 @@ public partial class IRBuilder
             switch (instr.Operand)
             {
                 case MethodReference methodRef:
+                    // Late-discovery: if a method body references a generic interface via
+                    // callvirt/constrained, add it to _dispatchedInterfaces so it gets materialized
+                    if (instr.OpCode.Code == Code.Callvirt
+                        && methodRef.DeclaringType is GenericInstanceType callvirtGit)
+                    {
+                        try
+                        {
+                            var resolved = callvirtGit.ElementType.Resolve();
+                            if (resolved?.IsInterface == true)
+                                _dispatchedInterfaces.Add(callvirtGit.ElementType.FullName);
+                        }
+                        catch { /* Cecil resolve failures are handled elsewhere */ }
+                    }
                     TryCollectResolvedGenericType(methodRef.DeclaringType, typeParamMap);
                     // Track specialized method calls with resolved type params
                     if (methodRef.DeclaringType is GenericInstanceType ensureGit)
@@ -822,9 +874,27 @@ public partial class IRBuilder
                         {
                             shouldCompile = false; // open method not reachable at all
                         }
-                        else if (methodDef.IsVirtual || methodDef.IsConstructor)
+                        else if (methodDef.IsConstructor)
                         {
-                            shouldCompile = true; // conservative: vtable dispatch + construction
+                            shouldCompile = true; // constructors always compiled
+                        }
+                        else if (methodDef.IsVirtual)
+                        {
+                            // Virtual methods on constructed types must be compiled (vtable dispatch).
+                            // For non-constructed types with no constructed subtypes, virtual methods
+                            // can never be dispatched — apply specialized method tracking.
+                            if (_module.ConstructedTypes.Contains(info.OpenTypeName)
+                                || _module.ConstructedTypes.Contains(key)
+                                || HasConstructedSubtype(info.OpenTypeName, info.TypeArguments))
+                            {
+                                shouldCompile = true;
+                            }
+                            else
+                            {
+                                var specKey = GetSpecializedMethodKey(
+                                    info.OpenTypeName, info.TypeArguments, methodDef);
+                                shouldCompile = _calledSpecializedMethods.Contains(specKey);
+                            }
                         }
                         else
                         {
@@ -914,9 +984,16 @@ public partial class IRBuilder
                     TryCollectResolvedGenericType(openType.BaseType, typeParamMap);
             }
 
-            // Interfaces — auto-discover generic interface types
+            // Interfaces — auto-discover generic interface types (filtered by dispatch)
             foreach (var iface in openType.Interfaces)
             {
+                // Skip generic interfaces that are never dispatched on
+                if (iface.InterfaceType is GenericInstanceType ifaceGit)
+                {
+                    var openName = ifaceGit.ElementType.FullName;
+                    if (!_dispatchedInterfaces.Contains(openName))
+                        continue;
+                }
                 var ifaceName = ResolveGenericTypeName(iface.InterfaceType, typeParamMap);
                 if (_typeCache.TryGetValue(ifaceName, out var ifaceType))
                     irType.Interfaces.Add(ifaceType);

@@ -28,6 +28,13 @@ public class ReachabilityResult
     /// </summary>
     public HashSet<string> ReflectionTargetTypes { get; } = new();
 
+    /// <summary>
+    /// Open generic interface names that are actually dispatched on (callvirt, castclass, isinst,
+    /// constrained, ldtoken, ldftn/ldvirtftn). Generic interface specializations NOT in this set
+    /// can be skipped during monomorphization — no code ever dispatches on them.
+    /// </summary>
+    public HashSet<string> DispatchedInterfaces { get; } = new();
+
     public bool IsReachable(TypeDefinition type) => ReachableTypes.Contains(type);
     public bool IsReachable(MethodDefinition method) => ReachableMethods.Contains(method);
     public bool IsConstructed(TypeDefinition type) => ConstructedTypes.Contains(type);
@@ -864,6 +871,10 @@ public class ReachabilityAnalyzer
                         if (callMethodDef != null && callMethodDef.IsStatic)
                             SeedCctorFor(TryResolve(callRef.DeclaringType));
 
+                        // Track interface dispatch: callvirt on an interface method
+                        if (instr.OpCode.Code == Code.Callvirt)
+                            TrackDispatchedInterface(callRef.DeclaringType);
+
                         // Detect reflection API calls that require full metadata on target types
                         DetectReflectionApiCall(callRef, instr);
                     }
@@ -873,6 +884,8 @@ public class ReachabilityAnalyzer
                 case Code.Ldftn:
                 case Code.Ldvirtftn:
                     ProcessMethodRef(instr.Operand as MethodReference);
+                    if (instr.Operand is MethodReference fptrRef)
+                        TrackDispatchedInterface(fptrRef.DeclaringType);
                     break;
 
                 // RTA: newobj = object construction site → mark type as CONSTRUCTED
@@ -911,6 +924,9 @@ public class ReachabilityAnalyzer
                 // Type references (non-constructing)
                 case Code.Castclass:
                 case Code.Isinst:
+                    ProcessTypeRef(instr.Operand as TypeReference);
+                    TrackDispatchedInterface(instr.Operand as TypeReference);
+                    break;
                 case Code.Unbox:
                 case Code.Unbox_Any:
                 case Code.Initobj:
@@ -920,12 +936,17 @@ public class ReachabilityAnalyzer
                 case Code.Stelem_Any:
                 case Code.Ldelema:
                 case Code.Sizeof:
+                    ProcessTypeRef(instr.Operand as TypeReference);
+                    break;
                 case Code.Constrained:
                     ProcessTypeRef(instr.Operand as TypeReference);
                     // Also resolve explicit interface implementations on the constrained type.
                     // The next instruction is call/callvirt with the interface method — we need
                     // to find and mark the concrete implementation on the constrained type.
                     ProcessConstrainedCall(instr.Operand as TypeReference, instr.Next);
+                    // Track interface dispatch from constrained call target
+                    if (instr.Next?.Operand is MethodReference constrainedCallRef)
+                        TrackDispatchedInterface(constrainedCallRef.DeclaringType);
                     break;
 
                 // Instance field references: no cctor trigger
@@ -950,12 +971,33 @@ public class ReachabilityAnalyzer
                 // the typeof result flows to GetFields/GetMethods/etc.
                 case Code.Ldtoken:
                     if (instr.Operand is MethodReference tokenMethod)
+                    {
                         ProcessMethodRef(tokenMethod);
+                        TrackDispatchedInterface(tokenMethod.DeclaringType);
+                    }
                     else if (instr.Operand is TypeReference tokenType)
+                    {
                         ProcessTypeRef(tokenType);
+                        TrackDispatchedInterface(tokenType);
+                    }
                     else if (instr.Operand is FieldReference tokenField)
                         ProcessFieldRef(tokenField);
                     break;
+            }
+        }
+
+        // Scan exception handlers: catch clause types are in metadata, not instructions.
+        // The runtime constructs caught exception objects, so mark as CONSTRUCTED.
+        if (method.Body.HasExceptionHandlers)
+        {
+            foreach (var handler in method.Body.ExceptionHandlers)
+            {
+                if (handler.CatchType != null)
+                {
+                    var catchTypeDef = TryResolve(handler.CatchType);
+                    if (catchTypeDef != null)
+                        MarkTypeConstructed(catchTypeDef);
+                }
             }
         }
     }
@@ -993,8 +1035,9 @@ public class ReachabilityAnalyzer
         foreach (var instr in instructions)
         {
             bool isConstantFalse = false;
+            bool isConstantTrue = false;
 
-            // Pattern 1: call/callvirt to SIMD IsSupported/IsHardwareAccelerated getter
+            // Pattern 1a: call/callvirt to SIMD IsSupported/IsHardwareAccelerated getter
             if (instr.OpCode.Code is Code.Call or Code.Callvirt &&
                 instr.Operand is MethodReference callRef)
             {
@@ -1008,25 +1051,42 @@ public class ReachabilityAnalyzer
                         isConstantFalse = true; // IsSupported always false in AOT
                     }
                 }
+
+                // Pattern 1b: call to get_X() where "DeclaringType::X" is a known feature switch.
+                // Handles property getter patterns like GlobalizationMode.get_Invariant()
+                // which resolve to FeatureSwitchResolver entries.
+                if (!isConstantFalse && !isConstantTrue
+                    && methodName.StartsWith("get_")
+                    && _featureSwitchResolver != null)
+                {
+                    var declType = callRef.DeclaringType?.FullName ?? "";
+                    var propName = methodName.Substring(4); // strip "get_"
+                    if (_featureSwitchResolver.TryResolve(declType, propName, out bool switchValue))
+                    {
+                        if (switchValue) isConstantTrue = true;
+                        else isConstantFalse = true;
+                    }
+                }
             }
 
             // Pattern 2: ldsfld of a known feature switch (FeatureSwitchResolver entries)
-            if (instr.OpCode.Code == Code.Ldsfld &&
-                instr.Operand is FieldReference fldRef)
+            if (!isConstantFalse && !isConstantTrue
+                && instr.OpCode.Code == Code.Ldsfld
+                && instr.Operand is FieldReference fldRef)
             {
                 var declType = fldRef.DeclaringType?.FullName ?? "";
                 var fldName = fldRef.Name;
                 if (_featureSwitchResolver != null &&
-                    _featureSwitchResolver.TryResolve(declType, fldName, out bool switchValue) &&
-                    !switchValue)
+                    _featureSwitchResolver.TryResolve(declType, fldName, out bool switchValue))
                 {
-                    isConstantFalse = true;
+                    if (switchValue) isConstantTrue = true;
+                    else isConstantFalse = true;
                 }
             }
 
             // Pattern 3: ldsfld FeatureSwitch → ldc.i4.0/ldc.i4.1 → ceq → inverted/direct comparison
             // Handles `if (field == false)` and `if (field == true)` patterns
-            if (!isConstantFalse && instr.OpCode.Code == Code.Ldsfld &&
+            if (!isConstantFalse && !isConstantTrue && instr.OpCode.Code == Code.Ldsfld &&
                 instr.Operand is FieldReference fldRef2 &&
                 instr.Next?.OpCode.Code is Code.Ldc_I4_0 or Code.Ldc_I4_1 &&
                 instr.Next.Next?.OpCode.Code == Code.Ceq)
@@ -1045,64 +1105,17 @@ public class ReachabilityAnalyzer
                 }
             }
 
-            if (!isConstantFalse) continue;
+            if (!isConstantFalse && !isConstantTrue) continue;
 
-            // Check next instruction: must be brfalse/brtrue
+            // Determine branch behavior based on resolved constant value
+            // Use AddCeqDeadRange which already handles both branchTaken and !branchTaken
             var nextInstr = instr.Next;
             if (nextInstr == null) continue;
 
-            var nextCode = nextInstr.OpCode.Code;
-            Mono.Cecil.Cil.Instruction? branchTarget = null;
-
-            if (nextCode is Code.Brfalse or Code.Brfalse_S)
-            {
-                branchTarget = nextInstr.Operand as Mono.Cecil.Cil.Instruction;
-                if (branchTarget != null && nextInstr.Next != null)
-                {
-                    // brfalse with value=false → branch TAKEN.
-                    // Fall-through (from nextInstr.Next to branchTarget) is dead.
-                    int deadStart = nextInstr.Next.Offset;
-                    int deadEnd = branchTarget.Offset;
-                    if (deadEnd > deadStart)
-                    {
-                        deadRanges ??= new();
-                        deadRanges.Add((deadStart, deadEnd));
-                    }
-                }
-            }
-            else if (nextCode is Code.Brtrue or Code.Brtrue_S)
-            {
-                // brtrue with value=false → branch NOT taken, falls through.
-                // The branch target is the start of the SIMD (dead) path.
-                branchTarget = nextInstr.Operand as Mono.Cecil.Cil.Instruction;
-                if (branchTarget?.Previous != null)
-                {
-                    var prevInstr = branchTarget.Previous;
-                    if (prevInstr.OpCode.Code is Code.Br or Code.Br_S &&
-                        prevInstr.Operand is Mono.Cecil.Cil.Instruction mergeTarget)
-                    {
-                        // Dead range: [branchTarget, mergePoint)
-                        int deadStart = branchTarget.Offset;
-                        int deadEnd = mergeTarget.Offset;
-                        if (deadEnd > deadStart)
-                        {
-                            deadRanges ??= new();
-                            deadRanges.Add((deadStart, deadEnd));
-                        }
-                    }
-                    else if (prevInstr.OpCode.Code == Code.Ret)
-                    {
-                        // Branch target preceded by ret: the scalar path returns,
-                        // so the SIMD path (from branchTarget to end) is dead.
-                        // Find the last instruction offset to use as end of dead range.
-                        int deadStart = branchTarget.Offset;
-                        var lastInstr = instructions[instructions.Count - 1];
-                        int deadEnd = lastInstr.Offset + lastInstr.GetSize();
-                        deadRanges ??= new();
-                        deadRanges.Add((deadStart, deadEnd));
-                    }
-                }
-            }
+            // The resolved value is: isConstantTrue=true means value=true, isConstantFalse=true means value=false
+            // Reuse AddCeqDeadRange: resolvedValue maps directly to ceqResult semantics
+            bool resolvedValue = isConstantTrue;
+            AddCeqDeadRange(nextInstr, resolvedValue, ref deadRanges);
         }
 
         return deadRanges;
@@ -1319,6 +1332,22 @@ public class ReachabilityAnalyzer
         var fieldTypeDef = TryResolve(fieldRef.FieldType);
         if (fieldTypeDef != null)
             MarkTypeReachable(fieldTypeDef);
+    }
+
+    /// <summary>
+    /// Track that a generic interface is actually dispatched on (callvirt, castclass, etc.).
+    /// Records the open type name (e.g., "System.Collections.Generic.IList`1") so IRBuilder
+    /// can skip materializing generic interface specializations that are never dispatched on.
+    /// </summary>
+    private void TrackDispatchedInterface(TypeReference? typeRef)
+    {
+        if (typeRef == null) return;
+        var resolved = TryResolve(typeRef);
+        if (resolved == null || !resolved.IsInterface) return;
+        // For GenericInstanceType, use the element (open) type name
+        var openName = typeRef is GenericInstanceType git
+            ? git.ElementType.FullName : typeRef.FullName;
+        _result.DispatchedInterfaces.Add(openName);
     }
 
     // ===== D.1: [DynamicallyAccessedMembers] support =====

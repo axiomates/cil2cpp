@@ -42,19 +42,26 @@ class Program
             getDefaultValue: () => null,
             description: "Path to rd.xml runtime directives file (D.2: NuGet package type preservation)");
 
+        var compileFeatureSwitchOption = new Option<string[]>(
+            name: "--feature-switch",
+            description: "Feature switch overrides (e.g., System.Globalization.GlobalizationMode::Invariant=true)")
+        { AllowMultipleArgumentsPerToken = true };
+
         var compileCommand = new Command("compile", "Compile C# project to native executable")
         {
             inputOption,
             outputOption,
             configOption,
             runtimePrefixOption,
-            compileRdXmlOption
+            compileRdXmlOption,
+            compileFeatureSwitchOption
         };
 
-        compileCommand.SetHandler((input, output, config, runtimePrefix, rdXml) =>
+        compileCommand.SetHandler((input, output, config, runtimePrefix, rdXml, featureSwitches) =>
         {
-            Compile(input, output, config, runtimePrefix, rdXml?.FullName);
-        }, inputOption, outputOption, configOption, runtimePrefixOption, compileRdXmlOption);
+            var overrides = ParseFeatureSwitches(featureSwitches);
+            Compile(input, output, config, runtimePrefix, rdXml?.FullName, overrides);
+        }, inputOption, outputOption, configOption, runtimePrefixOption, compileRdXmlOption, compileFeatureSwitchOption);
 
         rootCommand.AddCommand(compileCommand);
 
@@ -73,15 +80,21 @@ class Program
             getDefaultValue: () => null,
             description: "Path to rd.xml runtime directives file (D.2: NuGet package type preservation)");
 
+        var codegenFeatureSwitchOption = new Option<string[]>(
+            name: "--feature-switch",
+            description: "Feature switch overrides (e.g., System.Globalization.GlobalizationMode::Invariant=true)")
+        { AllowMultipleArgumentsPerToken = true };
+
         var codegenCommand = new Command("codegen", "Generate C++ code from C# project (without compiling)")
         {
-            codegenInputOption, codegenOutputOption, codegenConfigOption, codegenRdXmlOption
+            codegenInputOption, codegenOutputOption, codegenConfigOption, codegenRdXmlOption, codegenFeatureSwitchOption
         };
 
-        codegenCommand.SetHandler((input, output, config, rdXml) =>
+        codegenCommand.SetHandler((input, output, config, rdXml, featureSwitches) =>
         {
-            GenerateCpp(input, output, config, rdXml?.FullName);
-        }, codegenInputOption, codegenOutputOption, codegenConfigOption, codegenRdXmlOption);
+            var overrides = ParseFeatureSwitches(featureSwitches);
+            GenerateCpp(input, output, config, rdXml?.FullName, overrides);
+        }, codegenInputOption, codegenOutputOption, codegenConfigOption, codegenRdXmlOption, codegenFeatureSwitchOption);
 
         rootCommand.AddCommand(codegenCommand);
 
@@ -225,7 +238,7 @@ class Program
     }
 
     static void GenerateCpp(FileInfo input, DirectoryInfo output, string configName = "Release",
-        string? rdXmlPath = null)
+        string? rdXmlPath = null, Dictionary<string, bool>? featureSwitchOverrides = null)
     {
         var prepared = PrepareBuild(input, output, configName);
         if (prepared is not var (assemblyFile, config)) return;
@@ -243,7 +256,7 @@ class Program
             sw.Restart();
 
             Console.WriteLine("[2/4] Analyzing reachability...");
-            var featureSwitchResolver = new FeatureSwitchResolver();
+            var featureSwitchResolver = new FeatureSwitchResolver(featureSwitchOverrides);
             var analyzer = new ReachabilityAnalyzer(assemblySet, featureSwitchResolver);
             // D.2: Apply rd.xml preservation rules before tree-shaking
             if (!string.IsNullOrEmpty(rdXmlPath))
@@ -289,7 +302,7 @@ class Program
     }
 
     static void Compile(FileInfo input, DirectoryInfo output, string configName = "Release",
-        string? runtimePrefix = null, string? rdXmlPath = null)
+        string? runtimePrefix = null, string? rdXmlPath = null, Dictionary<string, bool>? featureSwitchOverrides = null)
     {
         var prepared = PrepareBuild(input, output, configName);
         if (prepared is not var (assemblyFile, config)) return;
@@ -303,7 +316,7 @@ class Program
             Console.WriteLine($"      Root assembly: {assemblySet.RootAssemblyName}");
 
             Console.WriteLine("[2/6] Analyzing reachability...");
-            var featureSwitchResolver = new FeatureSwitchResolver();
+            var featureSwitchResolver = new FeatureSwitchResolver(featureSwitchOverrides);
             var analyzer = new ReachabilityAnalyzer(assemblySet, featureSwitchResolver);
             // D.2: Apply rd.xml preservation rules before tree-shaking
             if (!string.IsNullOrEmpty(rdXmlPath))
@@ -463,6 +476,33 @@ class Program
         process.WaitForExit();
 
         return process.ExitCode == 0;
+    }
+
+    /// <summary>
+    /// Parse --feature-switch arguments like "System.Globalization.GlobalizationMode::Invariant=true"
+    /// into a dictionary for FeatureSwitchResolver.
+    /// </summary>
+    static Dictionary<string, bool>? ParseFeatureSwitches(string[]? switches)
+    {
+        if (switches == null || switches.Length == 0) return null;
+
+        var result = new Dictionary<string, bool>();
+        foreach (var s in switches)
+        {
+            var eqIdx = s.LastIndexOf('=');
+            if (eqIdx < 0)
+            {
+                Console.Error.WriteLine($"Warning: Invalid feature switch format '{s}' (expected Key=true/false), skipping.");
+                continue;
+            }
+            var key = s.Substring(0, eqIdx);
+            var valStr = s.Substring(eqIdx + 1);
+            if (bool.TryParse(valStr, out bool val))
+                result[key] = val;
+            else
+                Console.Error.WriteLine($"Warning: Invalid feature switch value '{valStr}' for '{key}' (expected true/false), skipping.");
+        }
+        return result.Count > 0 ? result : null;
     }
 
     static void DumpAssembly(FileInfo input)
