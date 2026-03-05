@@ -564,10 +564,6 @@ public partial class CppCodeGenerator
                 var localBase = local.CppTypeName.TrimEnd('*').Trim();
                 if (MangledNameContainsUnresolvedGenericParam(localBase))
                     return true;
-                // SIMD Vector locals indicate dead SIMD code paths with broken control flow.
-                // These methods have FeatureSwitch-eliminated branches but residual dead code.
-                if (IsSimdVectorType(localBase))
-                    return true;
                 // void as a local type causes sizeof(void) — illegal in C++
                 // (void* is fine, only bare void is problematic)
                 if (local.CppTypeName.Trim() == "void")
@@ -575,18 +571,6 @@ public partial class CppCodeGenerator
             }
         }
         return false;
-    }
-
-    /// <summary>
-    /// Check if a C++ type name is a SIMD Vector type (Vector128/256/512).
-    /// Methods with these locals have dead SIMD code paths from FeatureSwitch elimination.
-    /// </summary>
-    private static bool IsSimdVectorType(string cppTypeName)
-    {
-        return cppTypeName.StartsWith("System_Runtime_Intrinsics_Vector128_1_")
-            || cppTypeName.StartsWith("System_Runtime_Intrinsics_Vector256_1_")
-            || cppTypeName.StartsWith("System_Runtime_Intrinsics_Vector512_1_")
-            || cppTypeName.StartsWith("System_Numerics_Vector_1_");
     }
 
     /// <summary>
@@ -702,9 +686,11 @@ public partial class CppCodeGenerator
                     && _undeclaredFunctionNames.Contains(call.FunctionName)
                     && !IsSimdIntrinsicFunction(call.FunctionName))
                     return true;
-                // Note: SIMD intrinsic calls are NOT flagged here because they're always
-                // in feature-switch-guarded dead branches. They're replaced with default
-                // values at render time in GenerateMethodImpl.
+                // Note: SIMD intrinsic calls (X86/Arm/Wasm) are NOT flagged here because
+                // they're always in feature-switch-guarded dead branches. They're replaced
+                // with default values at render time in GenerateMethodImpl.
+                // SIMD container method calls (Vector128<T>.*, etc.) ARE flagged — methods
+                // that genuinely use SIMD in live code paths should be blocked.
                 if (instr is IR.IRNewObj newObj && !string.IsNullOrEmpty(newObj.CtorName)
                     && _undeclaredFunctionNames.Contains(newObj.CtorName))
                     return true;
@@ -726,6 +712,26 @@ public partial class CppCodeGenerator
         return functionName.StartsWith("System_Runtime_Intrinsics_X86_")
             || functionName.StartsWith("System_Runtime_Intrinsics_Arm_")
             || functionName.StartsWith("System_Runtime_Intrinsics_Wasm_");
+    }
+
+    /// <summary>
+    /// All SIMD-related functions: hardware intrinsics (X86/Arm/Wasm), generic container methods
+    /// (Vector128&lt;T&gt;, Vector256&lt;T&gt;, etc.), and non-generic helper methods (Vector128.Create, etc.).
+    /// These are always in dead-code branches (IsSupported=false on AOT). Undeclared calls to
+    /// these functions are replaced with default values at render time.
+    /// </summary>
+    private static bool IsSimdDeadCodeFunction(string functionName)
+    {
+        return IsSimdIntrinsicFunction(functionName)
+            || functionName.StartsWith("System_Runtime_Intrinsics_Vector64_1_")
+            || functionName.StartsWith("System_Runtime_Intrinsics_Vector128_1_")
+            || functionName.StartsWith("System_Runtime_Intrinsics_Vector256_1_")
+            || functionName.StartsWith("System_Runtime_Intrinsics_Vector512_1_")
+            || functionName.StartsWith("System_Numerics_Vector_1_")
+            || functionName.StartsWith("System_Runtime_Intrinsics_Vector64_")
+            || functionName.StartsWith("System_Runtime_Intrinsics_Vector128_")
+            || functionName.StartsWith("System_Runtime_Intrinsics_Vector256_")
+            || functionName.StartsWith("System_Runtime_Intrinsics_Vector512_");
     }
 
     /// <summary>

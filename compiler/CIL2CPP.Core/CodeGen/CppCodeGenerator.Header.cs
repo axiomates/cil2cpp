@@ -308,6 +308,17 @@ public partial class CppCodeGenerator
                 sb.AppendLine($"struct {stubName} {{ bool f_addRefd; void* f_handle; }}; // SafeHandle marshaller stub");
                 opaqueSafeHandleMarshallerStubs.Add(stubName);
             }
+            // SIMD vector types need correct-size opaque buffers (dead code but sizeof must be correct)
+            else if (stubName.StartsWith("System_Runtime_Intrinsics_Vector512_1_"))
+                sb.AppendLine($"struct {stubName} {{ uint8_t __opaque[64]; }}; // SIMD Vector512 opaque");
+            else if (stubName.StartsWith("System_Runtime_Intrinsics_Vector256_1_"))
+                sb.AppendLine($"struct {stubName} {{ uint8_t __opaque[32]; }}; // SIMD Vector256 opaque");
+            else if (stubName.StartsWith("System_Runtime_Intrinsics_Vector128_1_"))
+                sb.AppendLine($"struct {stubName} {{ uint8_t __opaque[16]; }}; // SIMD Vector128 opaque");
+            else if (stubName.StartsWith("System_Runtime_Intrinsics_Vector64_1_"))
+                sb.AppendLine($"struct {stubName} {{ uint8_t __opaque[8]; }}; // SIMD Vector64 opaque");
+            else if (stubName.StartsWith("System_Numerics_Vector_1_"))
+                sb.AppendLine($"struct {stubName} {{ uint8_t __opaque[16]; }}; // SIMD Vector<T> opaque");
             else
                 sb.AppendLine($"struct {stubName} {{ }}; // opaque BCL internal type");
             emittedStructs.Add(stubName);

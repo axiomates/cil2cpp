@@ -991,10 +991,10 @@ public partial class CppCodeGenerator
 
                 var code = instr.ToCpp();
 
-                // Replace calls to undeclared SIMD intrinsic functions with default values.
+                // Replace calls to undeclared SIMD functions with default values.
                 // These calls are always in feature-switch-guarded dead branches
                 // (IsSupported = false on AOT), so replacing with {} is safe.
-                if (instr is IRCall simdCall && IsSimdIntrinsicFunction(simdCall.FunctionName)
+                if (instr is IRCall simdCall && IsSimdDeadCodeFunction(simdCall.FunctionName)
                     && _undeclaredFunctionNames.Contains(simdCall.FunctionName))
                 {
                     if (simdCall.ResultVar != null)
