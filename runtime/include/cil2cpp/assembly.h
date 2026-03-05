@@ -28,12 +28,10 @@ struct ManagedAssembly : Object {
 };
 
 /**
- * Managed System.Reflection.PropertyInfo — minimal stub.
- * TODO: Populate with real property metadata when full reflection is needed.
+ * Managed System.Reflection.PropertyInfo — wraps a native PropertyInfo pointer.
  */
 struct ManagedPropertyInfo : Object {
-    const char* name;       // Property name
-    TypeInfo* prop_type;    // Property type
+    PropertyInfo* native_info;
 };
 
 } // namespace cil2cpp

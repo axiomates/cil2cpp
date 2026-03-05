@@ -22,7 +22,8 @@ static TypeInfo ReflObject = {
     .instance_size = sizeof(Object), .element_size = 0,
     .flags = TypeFlags::None, .vtable = nullptr,
     .fields = nullptr, .field_count = 0, .methods = nullptr, .method_count = 0,
-    .default_ctor = nullptr, .finalizer = nullptr,
+   .properties = nullptr, .property_count = 0,
+        .default_ctor = nullptr, .finalizer = nullptr,
     .interface_vtables = nullptr, .interface_vtable_count = 0,
 };
 
@@ -32,7 +33,8 @@ static TypeInfo ReflAnimal = {
     .instance_size = sizeof(Object) + 8, .element_size = 0,
     .flags = TypeFlags::None, .vtable = nullptr,
     .fields = nullptr, .field_count = 0, .methods = nullptr, .method_count = 0,
-    .default_ctor = nullptr, .finalizer = nullptr,
+   .properties = nullptr, .property_count = 0,
+        .default_ctor = nullptr, .finalizer = nullptr,
     .interface_vtables = nullptr, .interface_vtable_count = 0,
 };
 
@@ -42,7 +44,8 @@ static TypeInfo ReflDog = {
     .instance_size = sizeof(Object) + 8, .element_size = 0,
     .flags = TypeFlags::Sealed, .vtable = nullptr,
     .fields = nullptr, .field_count = 0, .methods = nullptr, .method_count = 0,
-    .default_ctor = nullptr, .finalizer = nullptr,
+   .properties = nullptr, .property_count = 0,
+        .default_ctor = nullptr, .finalizer = nullptr,
     .interface_vtables = nullptr, .interface_vtable_count = 0,
 };
 
@@ -52,7 +55,8 @@ static TypeInfo ReflValueType = {
     .instance_size = sizeof(Int32), .element_size = 0,
     .flags = TypeFlags::ValueType | TypeFlags::Primitive, .vtable = nullptr,
     .fields = nullptr, .field_count = 0, .methods = nullptr, .method_count = 0,
-    .default_ctor = nullptr, .finalizer = nullptr,
+   .properties = nullptr, .property_count = 0,
+        .default_ctor = nullptr, .finalizer = nullptr,
     .interface_vtables = nullptr, .interface_vtable_count = 0,
 };
 
@@ -62,7 +66,8 @@ static TypeInfo ReflInterface = {
     .instance_size = 0, .element_size = 0,
     .flags = TypeFlags::Interface | TypeFlags::Abstract, .vtable = nullptr,
     .fields = nullptr, .field_count = 0, .methods = nullptr, .method_count = 0,
-    .default_ctor = nullptr, .finalizer = nullptr,
+   .properties = nullptr, .property_count = 0,
+        .default_ctor = nullptr, .finalizer = nullptr,
     .interface_vtables = nullptr, .interface_vtable_count = 0,
 };
 
@@ -72,7 +77,8 @@ static TypeInfo ReflEnum = {
     .instance_size = sizeof(Int32), .element_size = 0,
     .flags = TypeFlags::ValueType | TypeFlags::Enum, .vtable = nullptr,
     .fields = nullptr, .field_count = 0, .methods = nullptr, .method_count = 0,
-    .default_ctor = nullptr, .finalizer = nullptr,
+   .properties = nullptr, .property_count = 0,
+        .default_ctor = nullptr, .finalizer = nullptr,
     .interface_vtables = nullptr, .interface_vtable_count = 0,
 };
 
@@ -82,7 +88,8 @@ static TypeInfo ReflGeneric = {
     .instance_size = sizeof(Object) + 8, .element_size = 0,
     .flags = TypeFlags::Generic, .vtable = nullptr,
     .fields = nullptr, .field_count = 0, .methods = nullptr, .method_count = 0,
-    .default_ctor = nullptr, .finalizer = nullptr,
+   .properties = nullptr, .property_count = 0,
+        .default_ctor = nullptr, .finalizer = nullptr,
     .interface_vtables = nullptr, .interface_vtable_count = 0,
 };
 
@@ -92,7 +99,8 @@ static TypeInfo ReflArray = {
     .instance_size = sizeof(Object) + 8, .element_size = sizeof(Int32),
     .flags = TypeFlags::Array, .vtable = nullptr,
     .fields = nullptr, .field_count = 0, .methods = nullptr, .method_count = 0,
-    .default_ctor = nullptr, .finalizer = nullptr,
+   .properties = nullptr, .property_count = 0,
+        .default_ctor = nullptr, .finalizer = nullptr,
     .interface_vtables = nullptr, .interface_vtable_count = 0,
 };
 
@@ -103,7 +111,8 @@ static TypeInfo ReflString = {
     .instance_size = sizeof(Object) + 8, .element_size = 0,
     .flags = TypeFlags::Sealed, .vtable = nullptr,
     .fields = nullptr, .field_count = 0, .methods = nullptr, .method_count = 0,
-    .default_ctor = nullptr, .finalizer = nullptr,
+   .properties = nullptr, .property_count = 0,
+        .default_ctor = nullptr, .finalizer = nullptr,
     .interface_vtables = nullptr, .interface_vtable_count = 0,
 };
 
@@ -113,7 +122,8 @@ static TypeInfo ReflBoolean = {
     .instance_size = sizeof(Boolean), .element_size = 0,
     .flags = TypeFlags::ValueType | TypeFlags::Primitive, .vtable = nullptr,
     .fields = nullptr, .field_count = 0, .methods = nullptr, .method_count = 0,
-    .default_ctor = nullptr, .finalizer = nullptr,
+   .properties = nullptr, .property_count = 0,
+        .default_ctor = nullptr, .finalizer = nullptr,
     .interface_vtables = nullptr, .interface_vtable_count = 0,
 };
 
@@ -123,7 +133,8 @@ static TypeInfo ReflDouble = {
     .instance_size = sizeof(Double), .element_size = 0,
     .flags = TypeFlags::ValueType | TypeFlags::Primitive, .vtable = nullptr,
     .fields = nullptr, .field_count = 0, .methods = nullptr, .method_count = 0,
-    .default_ctor = nullptr, .finalizer = nullptr,
+   .properties = nullptr, .property_count = 0,
+        .default_ctor = nullptr, .finalizer = nullptr,
     .interface_vtables = nullptr, .interface_vtable_count = 0,
 };
 

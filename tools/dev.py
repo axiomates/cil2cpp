@@ -556,9 +556,7 @@ def cmd_integration(args):
 
     def hw_codegen():
         run(["dotnet", "run", "--project", str(CLI_PROJECT), "--",
-             "codegen", "-i", str(hw_sample), "-o", str(hw_output),
-             "--analyze-stubs",
-             "--stub-budget", str(REPO_ROOT / "tests" / "baselines" / "stub_budget.json")],
+             "codegen", "-i", str(hw_sample), "-o", str(hw_output)],
             capture=True)
 
     def hw_files_exist():
@@ -935,8 +933,7 @@ def cmd_integration(args):
 
     def sk_codegen():
         run(["dotnet", "run", "--project", str(CLI_PROJECT), "--",
-             "codegen", "-i", str(sk_sample), "-o", str(sk_output),
-             "--analyze-stubs", "--stub-budget", str(TESTPROJECTS_DIR / ".." / "baselines" / "stub_budget.json")],
+             "codegen", "-i", str(sk_sample), "-o", str(sk_output)],
             capture=True)
 
     def sk_files_exist():

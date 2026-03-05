@@ -15,6 +15,57 @@ public partial class IRBuilder
         _deferredGenericBodies = new();
 
     /// <summary>
+    /// Tracks which methods on which generic specializations are actually called.
+    /// Key format: "{OpenTypeName}&lt;{arg1},{arg2}&gt;::{MethodName}/{ParamCount}"
+    /// Used to skip compilation of non-virtual methods that exist on a specialization but are never called.
+    /// </summary>
+    private readonly HashSet<string> _calledSpecializedMethods = new();
+
+    /// <summary>
+    /// Build a specialized method key from Cecil GenericInstanceType + MethodReference.
+    /// Used in Pass 0 (ScanGenericInstantiations) to record which specialized methods are called.
+    /// </summary>
+    private static string GetSpecializedMethodKey(GenericInstanceType git, MethodReference methodRef)
+    {
+        var openName = git.ElementType.FullName;
+        var args = string.Join(",", git.GenericArguments.Select(a => a.FullName));
+        return $"{openName}<{args}>::{methodRef.Name}/{methodRef.Parameters.Count}";
+    }
+
+    /// <summary>
+    /// Build a specialized method key from IRBuilder internal state.
+    /// Used in CreateGenericSpecializations to check if a method should be compiled.
+    /// </summary>
+    private static string GetSpecializedMethodKey(string openTypeName, List<string> typeArgs, MethodDefinition methodDef)
+    {
+        var args = string.Join(",", typeArgs);
+        return $"{openTypeName}<{args}>::{methodDef.Name}/{methodDef.Parameters.Count}";
+    }
+
+    /// <summary>
+    /// Build a specialized method key with generic type param resolution.
+    /// Used in EnsureBodyReferencedTypesExist where type args may contain generic parameters
+    /// that need to be resolved through the typeParamMap.
+    /// Returns null if any type argument cannot be fully resolved.
+    /// </summary>
+    private string? GetResolvedSpecializedMethodKey(
+        GenericInstanceType git, MethodReference methodRef, Dictionary<string, string> typeParamMap)
+    {
+        var openName = git.ElementType.FullName;
+        var resolvedArgs = new List<string>();
+        foreach (var arg in git.GenericArguments)
+        {
+            var resolved = ResolveGenericTypeName(arg, typeParamMap);
+            // If still contains unresolved generic params, skip — conservative
+            if (resolved.Contains('!') || resolved.StartsWith("T") && resolved.Length <= 2)
+                return null;
+            resolvedArgs.Add(resolved);
+        }
+        var args = string.Join(",", resolvedArgs);
+        return $"{openName}<{args}>::{methodRef.Name}/{methodRef.Parameters.Count}";
+    }
+
+    /// <summary>
     /// Construct a unique key for a generic method instantiation.
     /// Includes parameter types to distinguish overloads (e.g. GetReference(Span) vs GetReference(ReadOnlySpan)).
     /// Shared between scanning (CollectGenericMethod) and call emission (EmitMethodCall).
@@ -81,6 +132,13 @@ public partial class IRBuilder
                     {
                         case MethodReference methodRef:
                             CollectGenericType(methodRef.DeclaringType);
+                            // Track which methods on which specializations are called
+                            if (methodRef.DeclaringType is GenericInstanceType calledGit
+                                && !calledGit.GenericArguments.Any(ContainsGenericParameter))
+                            {
+                                _calledSpecializedMethods.Add(
+                                    GetSpecializedMethodKey(calledGit, methodRef));
+                            }
                             if (methodRef.ReturnType is GenericInstanceType)
                                 CollectGenericType(methodRef.ReturnType);
                             foreach (var p in methodRef.Parameters)
@@ -102,89 +160,7 @@ public partial class IRBuilder
         }
     }
 
-    /// <summary>
-    /// Namespaces whose generic specializations should be skipped (BCL internal).
-    /// These types can't be usefully compiled to C++.
-    /// </summary>
-    /// <summary>
-    /// Namespaces whose generic specializations should be skipped.
-    /// Only filter namespaces with types that truly can't compile to C++
-    /// (JIT intrinsics, COM interop, runtime internals).
-    /// Removed: System.Globalization (needed for number/string formatting),
-    ///          System.IO (needed for Console BCL chain),
-    ///          System.Net (needed for Socket BCL IL chain — P/Invoke to ws2_32.dll).
-    /// </summary>
-    private static readonly HashSet<string> FilteredGenericNamespaces =
-    [
-        "System.Runtime.Intrinsics",
-        "System.Runtime.InteropServices",
-        "System.Runtime.Loader",
-        "System.Reflection",
-        "System.Diagnostics",
-        "System.Diagnostics.Tracing",
-        "System.Resources",
-        "System.Security",
-        "System.Buffers.IndexOfAnyAsciiSearcher",  // SIMD-dependent search internals
-        "System.Text.RegularExpressions.Symbolic",  // Recursive generic types (BDD/DerivativeEffect) cause infinite nesting
-        "System.Linq.Expressions",                   // Expression tree compilation is JIT-only, AOT-incompatible
-        "System.Xml.Serialization",                  // XmlSerializer uses runtime IL emit, AOT-incompatible
-        "System.Xml.Schema",                         // Heavy XML schema validation, pulls in expression evaluators
-        "System.Data",                               // ADO.NET DataSet/DataTable uses runtime type generation
-        "System.Dynamic",                            // DLR dynamic dispatch requires JIT
-        "Internal",
-    ];
-
-    /// <summary>
-    /// Vector types in System.Runtime.Intrinsics that should be allowed through
-    /// generic specialization despite the namespace filter. These are value types
-    /// used as fields/locals in BCL code (String, Span, Number operations).
-    /// Their IsSupported returns 0, forcing BCL to use scalar fallback paths.
-    /// Only the struct definition is needed — method bodies are already SIMD-stubbed.
-    /// </summary>
-    private static readonly HashSet<string> VectorScalarFallbackTypes =
-    [
-        "System.Runtime.Intrinsics.Vector64`1",
-        "System.Runtime.Intrinsics.Vector128`1",
-        "System.Runtime.Intrinsics.Vector256`1",
-        "System.Runtime.Intrinsics.Vector512`1",
-        "System.Runtime.Intrinsics.Vector64",
-        "System.Runtime.Intrinsics.Vector128",
-        "System.Runtime.Intrinsics.Vector256",
-        "System.Runtime.Intrinsics.Vector512",
-    ];
-
-    /// <summary>
-    /// Check if an IL type full name is a Vector scalar fallback type (open or closed generic).
-    /// Matches Vector64/128/256/512 base types but NOT X86/Arm/Wasm platform intrinsics.
-    /// </summary>
-    internal static bool IsVectorScalarFallbackILType(string ilFullName)
-    {
-        if (ilFullName.StartsWith("System.Runtime.Intrinsics.X86.") ||
-            ilFullName.StartsWith("System.Runtime.Intrinsics.Arm.") ||
-            ilFullName.StartsWith("System.Runtime.Intrinsics.Wasm."))
-            return false;
-
-        return ilFullName.StartsWith("System.Runtime.Intrinsics.Vector64") ||
-               ilFullName.StartsWith("System.Runtime.Intrinsics.Vector128") ||
-               ilFullName.StartsWith("System.Runtime.Intrinsics.Vector256") ||
-               ilFullName.StartsWith("System.Runtime.Intrinsics.Vector512");
-    }
-
-    /// <summary>
-    /// Types that should be filtered from generic specialization arguments only.
-    /// More aggressive than ClrInternalTypeNames — these types may still compile as types,
-    /// but creating generic specializations like List&lt;TimeZoneInfo&gt; produces stubs.
-    /// NOTE: Removed System.Attribute, System.AttributeUsageAttribute,
-    /// System.Runtime.ExceptionServices.ExceptionDispatchInfo — they caused cascade
-    /// UndeclaredFunction stubs (ListBuilder&lt;Attribute&gt;, Dictionary&lt;Type, AttributeUsageAttribute&gt;,
-    /// List&lt;ExceptionDispatchInfo&gt;) that are more harmful than the few extra stubs from compilation.
-    /// </summary>
-    private static readonly HashSet<string> FilteredGenericArgTypes =
-    [
-        "System.TimeZoneInfo",
-        "Internal.Win32.RegistryKey",
-    ];
-
+    // TODO: research correct recursive generic termination instead of arbitrary depth limit
     /// <summary>
     /// Maximum nesting depth for generic type arguments.
     /// Prevents infinite recursive generic instantiations (e.g., Dict&lt;KVP&lt;KVP&lt;...&gt;&gt;&gt;).
@@ -205,6 +181,60 @@ public partial class IRBuilder
         return 1 + maxChild;
     }
 
+    /// <summary>
+    /// SIMD container types that only accept numeric primitive type arguments.
+    /// Specializing these with reference types (e.g., Vector64&lt;RuntimeMethodInfo&gt;)
+    /// is semantically invalid — they represent hardware SIMD registers.
+    /// </summary>
+    private static bool IsSimdContainerType(string openTypeName) =>
+        openTypeName.StartsWith("System.Runtime.Intrinsics.Vector") ||
+        openTypeName == "System.Numerics.Vector`1" ||
+        openTypeName.StartsWith("System.Numerics.Vector`");
+
+    /// <summary>
+    /// Valid type arguments for SIMD container types.
+    /// Matches .NET runtime constraint: only blittable primitive numeric types.
+    /// </summary>
+    private static readonly HashSet<string> ValidSimdElementTypes = new()
+    {
+        "System.Byte", "System.SByte",
+        "System.Int16", "System.UInt16",
+        "System.Int32", "System.UInt32",
+        "System.Int64", "System.UInt64",
+        "System.Single", "System.Double",
+        "System.IntPtr", "System.UIntPtr",
+    };
+
+    /// <summary>
+    /// Checks if a generic instantiation is a SIMD type with invalid (non-primitive) type arguments.
+    /// Returns true if the specialization should be skipped.
+    /// </summary>
+    private static bool IsInvalidSimdSpecialization(string openTypeName, IEnumerable<string> typeArgNames)
+    {
+        if (!IsSimdContainerType(openTypeName)) return false;
+        return typeArgNames.Any(arg => !ValidSimdElementTypes.Contains(arg));
+    }
+
+    /// <summary>
+    /// Checks if a generic method's declaring type is a SIMD type and its method-level type arguments
+    /// are non-primitive. E.g., Vector64.GetElementUnsafe&lt;RuntimeMethodInfo&gt; is invalid.
+    /// </summary>
+    private static bool IsInvalidSimdMethodSpecialization(string declaringType, IEnumerable<string> typeArgNames)
+    {
+        // Methods on SIMD types or in SIMD helper classes (Vector64, Vector128, Vector256, ThrowHelper)
+        if (declaringType.StartsWith("System.Runtime.Intrinsics.") ||
+            declaringType.StartsWith("System.Numerics.Vector"))
+        {
+            return typeArgNames.Any(arg => !ValidSimdElementTypes.Contains(arg));
+        }
+        // ThrowHelper.ThrowForUnsupportedIntrinsicsVector* methods
+        if (declaringType == "System.ThrowHelper")
+        {
+            return typeArgNames.Any(arg => !ValidSimdElementTypes.Contains(arg));
+        }
+        return false;
+    }
+
     private void CollectGenericType(TypeReference typeRef)
     {
         if (typeRef is not GenericInstanceType git) return;
@@ -218,51 +248,30 @@ public partial class IRBuilder
         if (GetGenericNestingDepth(git) > MaxGenericNestingDepth)
             return;
 
-        // Skip generic types from BCL internal namespaces
-        // Exception: Vector64/128/256/512<T> and ReflectionAllowedGenericTypes are allowed through.
-        var elemNs = git.ElementType.Namespace;
-        if (!string.IsNullOrEmpty(elemNs) &&
-            FilteredGenericNamespaces.Any(f => elemNs.StartsWith(f)))
-        {
-            if (!VectorScalarFallbackTypes.Contains(git.ElementType.FullName))
-                return;
-        }
-
-        // Skip generic specializations where any type argument is from a filtered namespace
-        // or is a CLR-internal type. Prevents creating List<RuntimePropertyInfo>,
-        // Dictionary<String, RuntimeType>, etc. that can never compile.
+        // Skip generic specializations where any type argument is a CLR-internal type.
+        // Prevents creating List<RuntimePropertyInfo>, Dictionary<String, RuntimeType>, etc.
         foreach (var arg in git.GenericArguments)
         {
             var argFullName = arg.FullName;
-            // Strip nested type references (e.g., "Foo/Bar" → "Foo")
-            var argNs = arg.Namespace;
-            if (string.IsNullOrEmpty(argNs) && arg is TypeDefinition td)
-                argNs = td.Namespace;
-            if (string.IsNullOrEmpty(argNs) && argFullName.Contains('.'))
-                argNs = argFullName[..argFullName.LastIndexOf('.')];
 
-            if (!string.IsNullOrEmpty(argNs) &&
-                FilteredGenericNamespaces.Any(f => argNs.StartsWith(f)))
-            {
-                if (!IsVectorScalarFallbackILType(argFullName))
-                    return;
-            }
-
-            if (ClrInternalTypeNames.Contains(argFullName) ||
-                FilteredGenericArgTypes.Contains(argFullName))
+            if (ClrInternalTypeNames.Contains(argFullName))
                 return;
 
             // Also check nested types: "Outer/Inner" should match if "Outer" is CLR-internal
             if (argFullName.Contains('/'))
             {
                 var outerTypeName = argFullName[..argFullName.IndexOf('/')];
-                if (ClrInternalTypeNames.Contains(outerTypeName) ||
-                    FilteredGenericArgTypes.Contains(outerTypeName))
+                if (ClrInternalTypeNames.Contains(outerTypeName))
                     return;
             }
         }
 
         var openTypeName = git.ElementType.FullName;
+
+        // All SIMD code is dead: IsHardwareAccelerated=false, IsSupported=false.
+        // Skip ALL SIMD type instantiations, not just invalid ones.
+        if (IsSimdContainerType(openTypeName))
+            return;
         var typeArgs = git.GenericArguments.Select(a => a.FullName).ToList();
         var key = $"{openTypeName}<{string.Join(",", typeArgs)}>";
 
@@ -324,6 +333,12 @@ public partial class IRBuilder
             return;
 
         var typeArgs = gim.GenericArguments.Select(a => a.FullName).ToList();
+
+        // All SIMD code is dead (IsHardwareAccelerated=false) — skip all SIMD methods
+        if (IsSimdContainerType(declaringType) ||
+            declaringType.StartsWith("System.Runtime.Intrinsics.") ||
+            declaringType == "System.ThrowHelper")
+            return;
         // Include parameter types in key to distinguish overloads
         // (e.g. GetReference<T>(Span<T>) vs GetReference<T>(ReadOnlySpan<T>))
         var paramSig = string.Join(",", elementMethod.Parameters.Select(p => p.ParameterType.FullName));
@@ -395,6 +410,12 @@ public partial class IRBuilder
     private void ProcessGenericMethodSpecialization(string key, GenericMethodInstantiationInfo info)
     {
         var cecilMethod = info.CecilMethod;
+
+        // Skip all SIMD method specializations — all SIMD code is dead (IsHardwareAccelerated=false)
+        if (IsSimdContainerType(info.DeclaringTypeName) ||
+            info.DeclaringTypeName.StartsWith("System.Runtime.Intrinsics.") ||
+            info.DeclaringTypeName == "System.ThrowHelper")
+            return;
 
         // Find the declaring IRType
         if (!_typeCache.TryGetValue(info.DeclaringTypeName, out var declaringIrType))
@@ -530,6 +551,13 @@ public partial class IRBuilder
             {
                 case MethodReference methodRef:
                     TryCollectResolvedGenericType(methodRef.DeclaringType, typeParamMap);
+                    // Track specialized method calls with resolved type params
+                    if (methodRef.DeclaringType is GenericInstanceType ensureGit)
+                    {
+                        var resolvedKey = GetResolvedSpecializedMethodKey(ensureGit, methodRef, typeParamMap);
+                        if (resolvedKey != null)
+                            _calledSpecializedMethods.Add(resolvedKey);
+                    }
                     TryCollectResolvedGenericType(methodRef.ReturnType, typeParamMap);
                     foreach (var p in methodRef.Parameters)
                         TryCollectResolvedGenericType(p.ParameterType, typeParamMap);
@@ -547,20 +575,29 @@ public partial class IRBuilder
             }
         }
 
-        // If new types were discovered, create them immediately
+        // Scan local variables — demand-driven needs this since Pass 0.5 is removed
+        foreach (var local in cecilMethod.Body.Variables)
+            TryCollectResolvedGenericType(local.VariableType, typeParamMap);
+
+        // Fixpoint: create types → base chain/interface auto-discovery may find more → iterate
         if (_genericInstantiations.Count > prevCount)
         {
-            CreateGenericSpecializations();
-            // Also create nested types (Entry, Enumerator, etc.)
-            int prevNested;
+            int fixpointCount;
             do
             {
-                prevNested = _genericInstantiations.Count;
-                CreateNestedGenericSpecializations();
-            } while (_genericInstantiations.Count > prevNested);
+                fixpointCount = _genericInstantiations.Count;
+                CreateGenericSpecializations();
+                int prevNested;
+                do
+                {
+                    prevNested = _genericInstantiations.Count;
+                    CreateNestedGenericSpecializations();
+                } while (_genericInstantiations.Count > prevNested);
+            } while (_genericInstantiations.Count > fixpointCount);
         }
     }
 
+    /// <summary>
     /// <summary>
     /// Create specialized IRTypes for each generic instantiation found in Pass 0.
     /// All generic types (user + BCL) are monomorphized from their Cecil definitions.
@@ -574,7 +611,8 @@ public partial class IRBuilder
         foreach (var (_, info) in snapshot)
             EnsureComparerCompanionType(info.OpenTypeName, info.TypeArguments);
 
-        foreach (var (key, info) in _genericInstantiations)
+        // Use snapshot — base chain / interface auto-discovery may add to _genericInstantiations
+        foreach (var (key, info) in snapshot)
         {
             // Skip types already created (e.g., by BCL proxy system or reachability)
             if (_typeCache.ContainsKey(key))
@@ -693,17 +731,16 @@ public partial class IRBuilder
             _module.Types.Add(irType);
             _typeCache[key] = irType;
 
-            // Skip method specialization for Vector scalar fallback types.
-            // We only need their struct definitions (for sizeof/locals in BCL methods).
-            // Vector method call sites are already intercepted in IRBuilder.Emit.cs.
-            if (IsVectorScalarFallbackILType(info.OpenTypeName))
-                continue;
-
-            // Create method specializations from Cecil definition
+            // Create method specializations from Cecil definition — skip unreachable non-virtual, non-ctor
             if (openType != null)
             {
                 foreach (var methodDef in openType.Methods)
                 {
+                    // Skip unreachable methods that aren't needed for vtable or construction.
+                    // Their empty shells would only add overhead (forward declarations, stub candidates).
+                    if (!methodDef.IsVirtual && !methodDef.IsConstructor
+                        && !_reachability.IsReachable(methodDef))
+                        continue;
                     var returnTypeName = ResolveGenericTypeName(methodDef.ReturnType, typeParamMap);
                     var cppName = CppNameMapper.MangleMethodName(info.MangledName, methodDef.Name);
                     // op_Explicit/op_Implicit: disambiguate by return type (C++ can't overload by return type)
@@ -767,25 +804,39 @@ public partial class IRBuilder
                     // pre-disambiguation names, leading to undeclared/mismatched function calls.
                     // Only convert reachable methods — same check as Pass 3.
                     // Unreachable methods keep BasicBlocks empty → not declared in header.
-                    // Exception: for fundamental BCL value types (Span, ReadOnlySpan) that are
-                    // used as struct locals throughout the BCL, their methods may not be in the
-                    // reachability set but are called via compiled BCL code paths. Always compile
-                    // their bodies when the specialization type is created.
-                    var isAlwaysCompile = openType.FullName.StartsWith("System.Span`1")
-                        || openType.FullName.StartsWith("System.ReadOnlySpan`1");
-                    if (methodDef.HasBody && !methodDef.IsAbstract
-                        && (isAlwaysCompile || _reachability.IsReachable(methodDef)))
+                    if (methodDef.HasBody && !methodDef.IsAbstract)
                     {
-                        // Skip methods with CLR-internal dependencies — generate stub instead
-                        if (HasClrInternalDependencies(methodDef))
+                        bool shouldCompile;
+                        if (!_reachability.IsReachable(methodDef))
                         {
-                            GenerateStubBody(irMethod);
+                            shouldCompile = false; // open method not reachable at all
+                        }
+                        else if (methodDef.IsVirtual || methodDef.IsConstructor)
+                        {
+                            shouldCompile = true; // conservative: vtable dispatch + construction
                         }
                         else
                         {
-                            // Clone typeParamMap since the outer loop reuses it
-                            _deferredGenericBodies.Add((methodDef, irMethod,
-                                new Dictionary<string, string>(typeParamMap)));
+                            // Non-virtual, non-constructor, reachable open method:
+                            // only compile if THIS specific specialization has the method called
+                            var specKey = GetSpecializedMethodKey(
+                                info.OpenTypeName, info.TypeArguments, methodDef);
+                            shouldCompile = _calledSpecializedMethods.Contains(specKey);
+                        }
+
+                        if (shouldCompile)
+                        {
+                            // Skip methods with CLR-internal dependencies — generate stub instead
+                            if (HasClrInternalDependencies(methodDef))
+                            {
+                                GenerateStubBody(irMethod);
+                            }
+                            else
+                            {
+                                // Clone typeParamMap since the outer loop reuses it
+                                _deferredGenericBodies.Add((methodDef, irMethod,
+                                    new Dictionary<string, string>(typeParamMap)));
+                            }
                         }
                     }
                 }
@@ -807,8 +858,10 @@ public partial class IRBuilder
         // Done after all specializations are in the cache so cross-references work
         // (e.g., SpecialWrapper<int> : Wrapper<int> needs Wrapper<int> already cached).
         // Uses _resolvedGenericTypeKeys to skip already-resolved types on re-invocation
-        // (e.g., from Pass 3.6), preventing duplicate interface entries.
-        foreach (var (key, info) in _genericInstantiations)
+        // (e.g., from demand-driven re-creation), preventing duplicate interface entries.
+        // Use snapshot — base chain / interface auto-discovery may add to _genericInstantiations.
+        var secondPassSnapshot = _genericInstantiations.ToList();
+        foreach (var (key, info) in secondPassSnapshot)
         {
             bool alreadyResolved = _resolvedGenericTypeKeys.Contains(key);
             if (!alreadyResolved)
@@ -840,20 +893,24 @@ public partial class IRBuilder
             for (int i = 0; i < openType.GenericParameters.Count && i < info.TypeArguments.Count; i++)
                 typeParamMap[openType.GenericParameters[i].Name] = info.TypeArguments[i];
 
-            // Base type
+            // Base type — auto-discover generic base types for demand-driven pipeline
             if (openType.BaseType != null && !irType.IsValueType)
             {
                 var baseName = ResolveGenericTypeName(openType.BaseType, typeParamMap);
                 if (_typeCache.TryGetValue(baseName, out var baseType))
                     irType.BaseType = baseType;
+                else if (openType.BaseType is GenericInstanceType)
+                    TryCollectResolvedGenericType(openType.BaseType, typeParamMap);
             }
 
-            // Interfaces (Cecil flattens the list)
+            // Interfaces — auto-discover generic interface types
             foreach (var iface in openType.Interfaces)
             {
                 var ifaceName = ResolveGenericTypeName(iface.InterfaceType, typeParamMap);
                 if (_typeCache.TryGetValue(ifaceName, out var ifaceType))
                     irType.Interfaces.Add(ifaceType);
+                else if (iface.InterfaceType is GenericInstanceType)
+                    TryCollectResolvedGenericType(iface.InterfaceType, typeParamMap);
             }
 
             // Static constructor flag — set if cctor body was converted OR is deferred.
@@ -898,6 +955,12 @@ public partial class IRBuilder
                 // We only handle nested types that inherit the parent's generic params exactly
                 if (nestedTypeDef.HasGenericParameters &&
                     nestedTypeDef.GenericParameters.Count != info.CecilOpenType.GenericParameters.Count)
+                    continue;
+
+                // Only create nested types that are referenced by reachable parent methods.
+                // Value types are always kept (may be embedded as fields/array elements).
+                if (!nestedTypeDef.IsValueType &&
+                    !IsNestedTypeReferencedByReachableMethods(info.CecilOpenType, nestedTypeDef))
                     continue;
 
                 var nestedOpenName = nestedTypeDef.FullName; // e.g. "System.Collections.Generic.Dictionary`2/Entry"
@@ -1003,6 +1066,10 @@ public partial class IRBuilder
             // Same pattern as CreateGenericSpecializations: reachability + CLR gate → defer.
             foreach (var methodDef in openType.Methods)
             {
+                // Skip unreachable non-virtual, non-ctor methods (same as CreateGenericSpecializations)
+                if (!methodDef.IsVirtual && !methodDef.IsConstructor
+                    && !_reachability.IsReachable(methodDef))
+                    continue;
                 var returnTypeName = ResolveGenericTypeName(methodDef.ReturnType, typeParamMap);
                 var cppName = CppNameMapper.MangleMethodName(info.MangledName, methodDef.Name);
                 // op_Explicit/op_Implicit: disambiguate by return type (C++ can't overload by return type)
@@ -1083,196 +1150,37 @@ public partial class IRBuilder
     }
 
     /// <summary>
-    /// Discover generic types transitively referenced from existing generic specialization bodies.
-    /// When Array.Sort&lt;Object&gt; is created, its Cecil body references ArraySortHelper&lt;T&gt;
-    /// with T as a GenericParameter. We resolve T→Object using the parent type's param map
-    /// and collect ArraySortHelper&lt;Object&gt; as a new generic instantiation.
-    /// Only scans reachable, non-abstract, non-CLR-internal methods to avoid pulling in
-    /// too many uncompilable types.
+    /// Check if a nested type is referenced by any reachable method of the parent type.
+    /// Used to skip creating unnecessary nested type specializations (e.g., Dictionary.KeyCollection
+    /// when only Dictionary.Add/ContainsKey are used).
     /// </summary>
-    private void DiscoverTransitiveGenericTypes(HashSet<string> scannedKeys)
+    private bool IsNestedTypeReferencedByReachableMethods(TypeDefinition parentOpen, TypeDefinition nestedDef)
     {
-        var snapshot = _genericInstantiations.ToList();
-
-        foreach (var (key, info) in snapshot)
+        var nestedName = nestedDef.Name;
+        foreach (var method in parentOpen.Methods)
         {
-            if (scannedKeys.Contains(key)) continue;
-            scannedKeys.Add(key);
-            if (info.CecilOpenType == null) continue;
-            var openType = info.CecilOpenType;
-            if (!openType.HasGenericParameters) continue;
-
-            // Build type parameter name → resolved type name map
-            var nameMap = new Dictionary<string, string>();
-            for (int i = 0; i < openType.GenericParameters.Count && i < info.TypeArguments.Count; i++)
-                nameMap[openType.GenericParameters[i].Name] = info.TypeArguments[i];
-
-            // Scan method signatures for type discovery (all methods, no reachability gate).
-            // This catches types like ArraySegment<T> referenced in signatures of methods
-            // that may be called from compiled generic specialization bodies.
-            // shallowOnly: skip types with nested generic arguments (e.g., ArraySegment<KVP<X,Y>>)
-            // to avoid MangleTypeName/MangleTypeNameClean naming inconsistency.
-            foreach (var method in openType.Methods)
-            {
-                if (!method.IsAbstract)
-                {
-                    TryCollectResolvedGenericType(method.ReturnType, nameMap, shallowOnly: true);
-                    foreach (var p in method.Parameters)
-                        TryCollectResolvedGenericType(p.ParameterType, nameMap, shallowOnly: true);
-                }
-            }
-
-            // Scan base type chain: if UnionIterator2<T> extends UnionIterator<T> extends
-            // Iterator<T>, discovering UnionIterator2<Char> must also discover UnionIterator<Char>
-            // and Iterator<Char> so their methods get compiled in Pass 3.4 (not stubbed in 3.6).
-            {
-                var baseType = openType.BaseType;
-                var btNameMap = new Dictionary<string, string>(nameMap);
-                while (baseType != null)
-                {
-                    TryCollectResolvedGenericType(baseType, btNameMap);
-                    var baseDef = baseType is GenericInstanceType git
-                        ? git.ElementType.Resolve() : baseType.Resolve();
-                    baseType = baseDef?.BaseType;
-                    if (baseDef != null && baseDef.HasGenericParameters && baseType is GenericInstanceType baseGit)
-                    {
-                        // Remap: if UnionIterator<T> : Iterator<T>, and Iterator has param U,
-                        // we need to map U to the resolved T from the current nameMap
-                        var innerMap = new Dictionary<string, string>(nameMap);
-                        for (int gi = 0; gi < baseDef.GenericParameters.Count && gi < baseGit.GenericArguments.Count; gi++)
-                        {
-                            var arg = baseGit.GenericArguments[gi];
-                            if (arg is Mono.Cecil.GenericParameter gp2 && nameMap.TryGetValue(gp2.Name, out var resolved))
-                                innerMap[baseDef.GenericParameters[gi].Name] = resolved;
-                        }
-                        TryCollectResolvedGenericType(baseType, innerMap);
-                        baseType = baseDef.BaseType;
-                        nameMap = innerMap;
-                    }
-                    else
-                    {
-                        break;
-                    }
-                }
-            }
-
-            // Scan method bodies for generic type references with unresolved params.
-            // Body scanning is gated on reachability to avoid pulling in deep reflection
-            // type cascades from unreachable BCL methods.
-            foreach (var method in openType.Methods)
-            {
-                if (!method.HasBody || method.IsAbstract) continue;
-                if (!_reachability.IsReachable(method)) continue;
-                if (HasClrInternalDependencies(method)) continue;
-
-                // Scan local variables
-                foreach (var local in method.Body.Variables)
-                    TryCollectResolvedGenericType(local.VariableType, nameMap);
-
-                // Scan instructions
-                foreach (var instr in method.Body.Instructions)
-                {
-                    switch (instr.Operand)
-                    {
-                        case MethodReference methodRef:
-                            TryCollectResolvedGenericType(methodRef.DeclaringType, nameMap);
-                            TryCollectResolvedGenericType(methodRef.ReturnType, nameMap);
-                            foreach (var p in methodRef.Parameters)
-                                TryCollectResolvedGenericType(p.ParameterType, nameMap);
-                            // Scan generic method arguments (e.g., call IndexOfAny<T, DontNegate<T>>)
-                            if (methodRef is GenericInstanceMethod gim)
-                                foreach (var ga in gim.GenericArguments)
-                                    TryCollectResolvedGenericType(ga, nameMap);
-                            break;
-                        case FieldReference fieldRef:
-                            TryCollectResolvedGenericType(fieldRef.DeclaringType, nameMap);
-                            TryCollectResolvedGenericType(fieldRef.FieldType, nameMap);
-                            break;
-                        case TypeReference typeRef:
-                            TryCollectResolvedGenericType(typeRef, nameMap);
-                            break;
-                    }
-                }
-            }
-        }
-    }
-
-    /// <summary>
-    /// Discover generic types referenced by generic method specialization bodies.
-    /// Complements DiscoverTransitiveGenericTypes (which only scans generic TYPE bodies).
-    /// E.g., SpanHelpers.IndexOf&lt;Byte, DontNegate&lt;Byte&gt;&gt; body references DontNegate&lt;Byte&gt;
-    /// which needs to be created as an IRType before Pass 1.5.
-    /// </summary>
-    private void DiscoverTransitiveGenericTypesFromMethods(HashSet<string> scannedKeys)
-    {
-        var snapshot = _genericMethodInstantiations.ToList();
-
-        foreach (var (key, info) in snapshot)
-        {
-            if (scannedKeys.Contains(key)) continue;
-            scannedKeys.Add(key);
-
-            var cecilMethod = info.CecilMethod;
-            if (cecilMethod == null || !cecilMethod.HasBody) continue;
-            if (HasClrInternalDependencies(cecilMethod)) continue;
-
-            // Build method-level type parameter map (!!0, !!1, etc.)
-            var nameMap = new Dictionary<string, string>();
-            for (int i = 0; i < cecilMethod.GenericParameters.Count && i < info.TypeArguments.Count; i++)
-                nameMap[cecilMethod.GenericParameters[i].Name] = info.TypeArguments[i];
-
-            // Also add declaring type's generic params if it's a generic type
-            var declaringType = cecilMethod.DeclaringType;
-            if (declaringType.HasGenericParameters)
-            {
-                // Look up the declaring type's instantiation to get resolved type args
-                // For generic types like List<T>, the method might be List<T>.Sort<TComparer>()
-                // We need T resolved too. Check if _genericInstantiations has the declaring type.
-                foreach (var (typeKey, typeInfo) in _genericInstantiations)
-                {
-                    if (typeInfo.CecilOpenType == declaringType)
-                    {
-                        for (int i = 0; i < declaringType.GenericParameters.Count && i < typeInfo.TypeArguments.Count; i++)
-                        {
-                            var paramName = declaringType.GenericParameters[i].Name;
-                            if (!nameMap.ContainsKey(paramName))
-                                nameMap[paramName] = typeInfo.TypeArguments[i];
-                        }
-                        break;
-                    }
-                }
-            }
-
-            // Scan local variables
-            foreach (var local in cecilMethod.Body.Variables)
-                TryCollectResolvedGenericType(local.VariableType, nameMap);
-
-            // Scan instructions
-            foreach (var instr in cecilMethod.Body.Instructions)
+            if (!_reachability.IsReachable(method)) continue;
+            if (!method.HasBody) continue;
+            foreach (var instr in method.Body.Instructions)
             {
                 switch (instr.Operand)
                 {
-                    case MethodReference methodRef:
-                        TryCollectResolvedGenericType(methodRef.DeclaringType, nameMap);
-                        TryCollectResolvedGenericType(methodRef.ReturnType, nameMap);
-                        foreach (var p in methodRef.Parameters)
-                            TryCollectResolvedGenericType(p.ParameterType, nameMap);
-                        // Scan generic method arguments (e.g., call IndexOfAny<T, DontNegate<T>>)
-                        if (methodRef is GenericInstanceMethod gim)
-                            foreach (var ga in gim.GenericArguments)
-                                TryCollectResolvedGenericType(ga, nameMap);
-                        break;
-                    case FieldReference fieldRef:
-                        TryCollectResolvedGenericType(fieldRef.DeclaringType, nameMap);
-                        TryCollectResolvedGenericType(fieldRef.FieldType, nameMap);
-                        break;
-                    case TypeReference typeRef:
-                        TryCollectResolvedGenericType(typeRef, nameMap);
-                        break;
+                    case TypeReference tr when tr.Name == nestedName || tr.FullName.Contains($"/{nestedName}"):
+                        return true;
+                    case MethodReference mr when mr.DeclaringType.Name == nestedName || mr.DeclaringType.FullName.Contains($"/{nestedName}"):
+                        return true;
+                    case FieldReference fr when fr.DeclaringType.Name == nestedName || fr.DeclaringType.FullName.Contains($"/{nestedName}"):
+                        return true;
                 }
             }
         }
+        return false;
     }
+
+    // REMOVED: DiscoverTransitiveGenericTypes and DiscoverTransitiveGenericTypesFromMethods
+    // These bulk pre-scanning methods were used by Pass 0.5 (now removed).
+    // Demand-driven discovery via EnsureBodyReferencedTypesExist in ConvertDeferredGenericBodies
+    // replaces their functionality — types are discovered when method bodies are compiled.
 
     /// <summary>
     /// Attempt to resolve a GenericInstanceType's generic parameters using a name map
@@ -1323,35 +1231,25 @@ public partial class IRBuilder
             return;
 
         var openTypeName = git.ElementType.FullName;
+
+        // All SIMD code is dead (IsHardwareAccelerated=false)
+        if (IsSimdContainerType(openTypeName))
+            return;
+
         var instKey = $"{openTypeName}<{string.Join(",", resolvedArgs)}>";
 
         if (_genericInstantiations.ContainsKey(instKey)) return;
         if (_typeCache.ContainsKey(instKey)) return;
 
-        // Apply the same filters as CollectGenericType
-        var elemNs = git.ElementType.Namespace;
-        if (!string.IsNullOrEmpty(elemNs) &&
-            FilteredGenericNamespaces.Any(f => elemNs.StartsWith(f)))
-        {
-            if (!VectorScalarFallbackTypes.Contains(openTypeName))
-                return;
-        }
-
+        // Skip generic specializations where any type argument is a CLR-internal type.
         foreach (var argName in resolvedArgs)
         {
-            var argNs = argName.Contains('.') ? argName[..argName.LastIndexOf('.')] : "";
-            if (!string.IsNullOrEmpty(argNs) &&
-                FilteredGenericNamespaces.Any(f => argNs.StartsWith(f)))
-            {
-                if (!IsVectorScalarFallbackILType(argName))
-                    return;
-            }
-            if (ClrInternalTypeNames.Contains(argName) || FilteredGenericArgTypes.Contains(argName))
+            if (ClrInternalTypeNames.Contains(argName))
                 return;
             if (argName.Contains('/'))
             {
                 var outerTypeName = argName[..argName.IndexOf('/')];
-                if (ClrInternalTypeNames.Contains(outerTypeName) || FilteredGenericArgTypes.Contains(outerTypeName))
+                if (ClrInternalTypeNames.Contains(outerTypeName))
                     return;
             }
         }
@@ -1401,31 +1299,16 @@ public partial class IRBuilder
         if (_genericInstantiations.ContainsKey(instKey)) return;
         if (_typeCache.ContainsKey(instKey)) return;
 
-        // Apply namespace filter on the open type
-        var openNs = openTypeName.Contains('.') ? openTypeName[..openTypeName.LastIndexOf('.')] : "";
-        // Handle nested types: "System.SpanHelpers/DontNegate`1" → ns = "System"
-        if (openNs.Contains('/'))
-            openNs = openNs[..openNs.IndexOf('/')];
-        if (!string.IsNullOrEmpty(openNs) &&
-            FilteredGenericNamespaces.Any(f => openNs.StartsWith(f)))
+        // Skip generic specializations where any type argument is a CLR-internal type.
+        foreach (var argName in args)
         {
-            if (!VectorScalarFallbackTypes.Contains(openTypeName))
+            if (ClrInternalTypeNames.Contains(argName))
                 return;
         }
 
-        // Apply filters on type arguments
-        foreach (var argName in args)
-        {
-            var argNs = argName.Contains('.') ? argName[..argName.LastIndexOf('.')] : "";
-            if (!string.IsNullOrEmpty(argNs) &&
-                FilteredGenericNamespaces.Any(f => argNs.StartsWith(f)))
-            {
-                if (!IsVectorScalarFallbackILType(argName))
-                    return;
-            }
-            if (ClrInternalTypeNames.Contains(argName) || FilteredGenericArgTypes.Contains(argName))
-                return;
-        }
+        // SIMD container types only accept numeric primitive type arguments.
+        if (IsInvalidSimdSpecialization(openTypeName, args))
+            return;
 
         // Resolve the Cecil open type definition
         TypeDefinition? cecilOpenType = null;
@@ -1466,23 +1349,6 @@ public partial class IRBuilder
     /// </summary>
     private void TryCollectResolvedGenericMethod(GenericInstanceMethod gim, Dictionary<string, string> nameMap)
     {
-        // Skip methods whose declaring type is in a filtered namespace.
-        // This check is done early (before resolution) to avoid discovering
-        // SIMD, reflection, and other internal generic methods that cascade into stubs.
-        var earlyDeclNs = gim.ElementMethod.DeclaringType.Namespace;
-        if (string.IsNullOrEmpty(earlyDeclNs))
-        {
-            var declFullName = gim.ElementMethod.DeclaringType.FullName;
-            if (declFullName.Contains('.'))
-                earlyDeclNs = declFullName[..declFullName.LastIndexOf('.')];
-        }
-        if (!string.IsNullOrEmpty(earlyDeclNs) &&
-            FilteredGenericNamespaces.Any(f => earlyDeclNs.StartsWith(f)))
-        {
-            if (!IsVectorScalarFallbackILType(gim.ElementMethod.DeclaringType.FullName))
-                return;
-        }
-
         // If already fully resolved (no generic params), delegate to normal collection
         if (!gim.GenericArguments.Any(ContainsGenericParameter))
         {
@@ -1503,20 +1369,6 @@ public partial class IRBuilder
         var declaringType = elementMethod.DeclaringType.FullName;
         var methodName = elementMethod.Name;
 
-        // Skip methods whose declaring type is in a filtered namespace.
-        // This prevents transitive discovery of SIMD, reflection, and other
-        // internal generic methods that cascade into thousands of stubs.
-        var declNs = elementMethod.DeclaringType.Namespace;
-        // For nested types, Namespace may be empty — use outer type's namespace
-        if (string.IsNullOrEmpty(declNs) && declaringType.Contains('.'))
-            declNs = declaringType[..declaringType.LastIndexOf('.')];
-        if (!string.IsNullOrEmpty(declNs) &&
-            FilteredGenericNamespaces.Any(f => declNs.StartsWith(f)))
-        {
-            if (!IsVectorScalarFallbackILType(declaringType))
-                return;
-        }
-
         var paramSig = string.Join(",", elementMethod.Parameters.Select(p => p.ParameterType.FullName));
         var key = MakeGenericMethodKey(declaringType, methodName, resolvedArgs, paramSig);
         if (_genericMethodInstantiations.ContainsKey(key)) return;
@@ -1524,19 +1376,18 @@ public partial class IRBuilder
         var cecilMethod = elementMethod.Resolve();
         if (cecilMethod == null) return;
 
-        // Apply the same namespace/type filters as CollectGenericType for type args
+        // Skip generic specializations where any type argument is a CLR-internal type.
         foreach (var argName in resolvedArgs)
         {
-            var argNs = argName.Contains('.') ? argName[..argName.LastIndexOf('.')] : "";
-            if (!string.IsNullOrEmpty(argNs) &&
-                FilteredGenericNamespaces.Any(f => argNs.StartsWith(f)))
-            {
-                if (!IsVectorScalarFallbackILType(argName))
-                    return;
-            }
-            if (ClrInternalTypeNames.Contains(argName) || FilteredGenericArgTypes.Contains(argName))
+            if (ClrInternalTypeNames.Contains(argName))
                 return;
         }
+
+        // All SIMD code is dead (IsHardwareAccelerated=false) — skip all SIMD methods
+        if (IsSimdContainerType(declaringType) ||
+            declaringType.StartsWith("System.Runtime.Intrinsics.") ||
+            declaringType == "System.ThrowHelper")
+            return;
 
         var mangledName = MangleGenericMethodName(declaringType, methodName, resolvedArgs);
 
@@ -1772,19 +1623,44 @@ public partial class IRBuilder
     /// </summary>
     private void ConvertDeferredGenericBodies()
     {
-        foreach (var (cecilMethod, irMethod, typeParamMap) in _deferredGenericBodies)
+        // Draining-queue fixpoint: compile a batch of deferred bodies → EnsureBody may
+        // discover new generic types → CreateGenericSpecializations adds new deferred
+        // bodies → process next batch until empty.
+        var processed = new HashSet<IRMethod>();
+        while (_deferredGenericBodies.Count > 0)
         {
-            // Skip record compiler-generated methods — Pass 7 synthesizes replacements
-            if (irMethod.DeclaringType?.IsRecord == true && IsRecordSynthesizedMethod(irMethod.Name))
-                continue;
+            var batch = new List<(MethodDefinition CecilMethod, IRMethod IrMethod,
+                Dictionary<string, string> TypeParamMap)>(_deferredGenericBodies);
+            _deferredGenericBodies.Clear();
 
-            // Skip ICall-mapped methods — dead code (callers redirected to ICall function)
-            if (irMethod.HasICallMapping) continue;
+            foreach (var (cecilMethod, irMethod, typeParamMap) in batch)
+            {
+                if (!processed.Add(irMethod)) continue;
 
-            var methodInfo = new IL.MethodInfo(cecilMethod);
-            ConvertMethodBodyWithGenerics(methodInfo, irMethod, typeParamMap);
+                // Skip record compiler-generated methods — Pass 7 synthesizes replacements
+                if (irMethod.DeclaringType?.IsRecord == true && IsRecordSynthesizedMethod(irMethod.Name))
+                    continue;
+
+                // Skip ICall-mapped methods — dead code (callers redirected to ICall function)
+                if (irMethod.HasICallMapping) continue;
+
+                // Demand-driven: discover types referenced in this body BEFORE compiling.
+                // Without Pass 0.5, transitive generic types are only found here.
+                EnsureBodyReferencedTypesExist(cecilMethod, typeParamMap);
+
+                var methodInfo = new IL.MethodInfo(cecilMethod);
+                ConvertMethodBodyWithGenerics(methodInfo, irMethod, typeParamMap);
+            }
+
+            // If new types were discovered during body compilation, build VTables
+            // and disambiguate before the next batch (needed for callvirt resolution)
+            if (_deferredGenericBodies.Count > 0)
+            {
+                foreach (var irType in _module.Types)
+                    BuildVTableRecursive(irType, _vtableBuilt);
+                DisambiguateOverloadedMethods();
+            }
         }
-        _deferredGenericBodies.Clear();
     }
 
     /// <summary>

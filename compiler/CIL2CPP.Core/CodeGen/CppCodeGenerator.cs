@@ -63,6 +63,8 @@ public partial class CppCodeGenerator
     /// </summary>
     private static bool IsUnresolvedGenericParam(string typeName)
     {
+        // Single-letter "T" is a valid generic parameter name
+        if (typeName == "T") return true;
         if (typeName.Length < 2) return false;
         if (typeName[0] != 'T' || !char.IsUpper(typeName[1])) return false;
         if (typeName.Contains('_')) return false;
@@ -127,6 +129,13 @@ public partial class CppCodeGenerator
     private HashSet<string> _declaredFunctionNames = new();
 
     /// <summary>
+    /// Function names called from method bodies but not declared (NOT_IN_MODULE or INVALID_SIGNATURE).
+    /// Populated during header generation by GenerateMissingMethodStubs.
+    /// Used by source generation to skip methods that call undeclared functions.
+    /// </summary>
+    private HashSet<string> _undeclaredFunctionNames = new();
+
+    /// <summary>
     /// Map of function name → set of declared parameter counts (populated during header generation).
     /// Used to detect overload mismatches (calling a function with wrong number of arguments).
     /// </summary>
@@ -158,38 +167,10 @@ public partial class CppCodeGenerator
     /// </summary>
     private HashSet<string> _emittedStructDefs = new();
 
-    /// <summary>
-    /// Tracks all methods that were stubbed during code generation, with reasons.
-    /// Used to generate a diagnostic report (stubbed_methods.txt).
-    /// </summary>
-    private readonly List<StubbedMethodInfo> _stubbedMethods = new();
-
-    /// <summary>
-    /// Optional stub analyzer for detailed root-cause analysis (--analyze-stubs).
-    /// When non-null, stubs are tracked with detailed causes and call graph edges.
-    /// </summary>
-    private StubAnalyzer? _stubAnalyzer;
-
-    /// <summary>
-    /// The analysis result after Generate() completes. Non-null only if analysis was enabled.
-    /// </summary>
-    public StubAnalysisResult? AnalysisResult { get; private set; }
-
-    public CppCodeGenerator(IRModule module, BuildConfiguration? config = null, bool analyzeStubs = false)
+    public CppCodeGenerator(IRModule module, BuildConfiguration? config = null)
     {
         _module = module;
         _config = config ?? BuildConfiguration.Release;
-        if (analyzeStubs)
-            _stubAnalyzer = new StubAnalyzer();
-    }
-
-    /// <summary>
-    /// Generate analysis report text. Only valid after Generate() with analyzeStubs=true.
-    /// </summary>
-    public string? GetAnalysisReport()
-    {
-        if (_stubAnalyzer == null || AnalysisResult == null) return null;
-        return _stubAnalyzer.GenerateReport(AnalysisResult, _module.Name);
     }
 
     /// <summary>
@@ -283,11 +264,13 @@ public partial class CppCodeGenerator
             _knownTypeNames.Add(name);
         // NOTE: _headerForwardDeclared types are NOT added to _knownTypeNames here.
         // Forward-declared types only support pointer usage (Type*), not value usage (sizeof/locals).
-        // The HasUnknownBodyReferences gate checks _headerForwardDeclared separately for pointer locals.
 
         // Generate split source files
         output.DataFile = GenerateDataFile();
         output.MethodFiles = GenerateMethodFiles();
+        // CoreRuntimeTypes method bodies are provided by the runtime library (core_methods.cpp).
+        // No runtime_glue.cpp is generated — the compiler only generates stubs for
+        // non-CoreRuntimeTypes methods that couldn't be compiled from IL.
         output.StubFile = GenerateStubFile();
 
         // Generate main entry point only for executable projects (with entry point)
@@ -298,21 +281,6 @@ public partial class CppCodeGenerator
 
         // Generate CMakeLists.txt
         output.CMakeFile = GenerateCMakeLists(output);
-
-        // Feed IR-level stubs (CLR-internal dependencies) into the analyzer
-        if (_stubAnalyzer != null)
-        {
-            FeedIrStubsToAnalyzer();
-            CollectCallGraphEdges();
-            AnalysisResult = _stubAnalyzer.Analyze();
-        }
-
-        // Generate stub diagnostics report
-        if (_stubbedMethods.Count > 0)
-        {
-            output.StubReportFile = GenerateStubReport();
-            PrintStubSummary();
-        }
 
         return output;
     }
@@ -550,127 +518,241 @@ public partial class CppCodeGenerator
         return sb.ToString();
     }
 
-    private GeneratedFile GenerateStubReport()
+    /// <summary>
+    /// Check if a method's C++ signature contains types that are not valid C++ identifiers.
+    /// This catches unresolved generic params (TOther, TKey) and IL function pointer types (method...ptr).
+    /// Methods with invalid signatures should not be declared or compiled — the root cause
+    /// is either a tree-shaking issue (shouldn't be reachable) or a missing compiler feature.
+    /// </summary>
+    private static bool HasInvalidCppSignature(IR.IRMethod method)
     {
-        var sb = new StringBuilder();
-        sb.AppendLine($"// CIL2CPP Stub Report — {_stubbedMethods.Count} methods stubbed");
-        sb.AppendLine($"// Assembly: {_module.Name}");
-        sb.AppendLine();
+        // Check method name for unresolved generic params (e.g., MemoryMarshal_Cast_Byte_TResult)
+        if (MangledNameContainsUnresolvedGenericParam(method.CppName))
+            return true;
 
-        // Group by reason
-        var groups = _stubbedMethods
-            .GroupBy(m => m.Reason)
-            .OrderByDescending(g => g.Count());
-
-        foreach (var group in groups)
+        // Check all parameter types and return type
+        foreach (var param in method.Parameters)
         {
-            sb.AppendLine($"// === {group.Key} ({group.Count()}) ===");
-            foreach (var m in group.OrderBy(m => m.TypeName).ThenBy(m => m.MethodName))
+            if (IsInvalidCppType(param.CppTypeName)) return true;
+        }
+        if (!string.IsNullOrEmpty(method.ReturnTypeCpp) && IsInvalidCppType(method.ReturnTypeCpp))
+            return true;
+        // Check return type for unresolved generic params in compound names
+        if (!string.IsNullOrEmpty(method.ReturnTypeCpp))
+        {
+            var retBase = method.ReturnTypeCpp.TrimEnd('*').Trim();
+            if (MangledNameContainsUnresolvedGenericParam(retBase))
+                return true;
+        }
+        // Check parameter types for unresolved generic params in compound names
+        foreach (var param in method.Parameters)
+        {
+            if (!string.IsNullOrEmpty(param.CppTypeName))
             {
-                sb.AppendLine($"  {m.TypeName}::{m.MethodName}");
+                var paramBase = param.CppTypeName.TrimEnd('*').Trim();
+                if (MangledNameContainsUnresolvedGenericParam(paramBase))
+                    return true;
             }
-            sb.AppendLine();
         }
-
-        return new GeneratedFile
+        // Check local variable types for unresolved generic params
+        // (e.g., DefaultBinder.BindToMethod has locals of type T)
+        foreach (var local in method.Locals)
         {
-            FileName = "stubbed_methods.txt",
-            Content = sb.ToString()
-        };
-    }
-
-    private void PrintStubSummary()
-    {
-        var groups = _stubbedMethods
-            .GroupBy(m => m.Reason)
-            .OrderByDescending(g => g.Count());
-
-        Console.Error.WriteLine($"[CIL2CPP] {_stubbedMethods.Count} methods stubbed:");
-        foreach (var group in groups)
-        {
-            Console.Error.WriteLine($"  {group.Key}: {group.Count()}");
-        }
-        Console.Error.WriteLine("  Details: stubbed_methods.txt");
-    }
-
-    private void TrackStub(IRMethod method, string reason)
-    {
-        _stubbedMethods.Add(new StubbedMethodInfo(
-            method.DeclaringType?.ILFullName ?? "?",
-            method.Name,
-            method.CppName,
-            reason
-        ));
-    }
-
-    /// <summary>
-    /// Track a stub with detailed root-cause information for the analyzer.
-    /// Falls back to simple TrackStub when analyzer is not active.
-    /// </summary>
-    private void TrackStubDetailed(IRMethod method, string reason,
-        StubRootCause rootCause, string detail)
-    {
-        TrackStub(method, reason);
-        _stubAnalyzer?.AddStub(
-            method.DeclaringType?.ILFullName ?? "?",
-            method.Name,
-            method.CppName,
-            rootCause,
-            detail
-        );
-    }
-
-    /// <summary>
-    /// Feed IR-level stubs (CLR-internal dependencies detected at IRBuilder Pass 6)
-    /// into the StubAnalyzer. These stubs have IrStubReason set on the IRMethod.
-    /// </summary>
-    private void FeedIrStubsToAnalyzer()
-    {
-        if (_stubAnalyzer == null) return;
-
-        foreach (var type in _module.Types)
-        {
-            foreach (var method in type.Methods)
+            if (!string.IsNullOrEmpty(local.CppTypeName))
             {
-                if (method.IrStubReason != null)
+                if (IsInvalidCppType(local.CppTypeName)) return true;
+                var localBase = local.CppTypeName.TrimEnd('*').Trim();
+                if (MangledNameContainsUnresolvedGenericParam(localBase))
+                    return true;
+                // SIMD Vector locals indicate dead SIMD code paths with broken control flow.
+                // These methods have FeatureSwitch-eliminated branches but residual dead code.
+                if (IsSimdVectorType(localBase))
+                    return true;
+                // void as a local type causes sizeof(void) — illegal in C++
+                // (void* is fine, only bare void is problematic)
+                if (local.CppTypeName.Trim() == "void")
+                    return true;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Check if a C++ type name is a SIMD Vector type (Vector128/256/512).
+    /// Methods with these locals have dead SIMD code paths from FeatureSwitch elimination.
+    /// </summary>
+    private static bool IsSimdVectorType(string cppTypeName)
+    {
+        return cppTypeName.StartsWith("System_Runtime_Intrinsics_Vector128_1_")
+            || cppTypeName.StartsWith("System_Runtime_Intrinsics_Vector256_1_")
+            || cppTypeName.StartsWith("System_Runtime_Intrinsics_Vector512_1_")
+            || cppTypeName.StartsWith("System_Numerics_Vector_1_");
+    }
+
+    /// <summary>
+    /// Detect methods on generic type specializations where the method body uses
+    /// a different specialization's functions/types than what the parent type's
+    /// generic parameter would suggest.
+    /// E.g., MemberInfoCache&lt;RuntimePropertyInfo&gt;.PopulateMethods() creates
+    /// RuntimeMethodInfo objects and calls ListBuilder&lt;RuntimeMethodInfo&gt;.Add(),
+    /// but the casts use RuntimePropertyInfo (from generic substitution) — causing C2664.
+    /// </summary>
+    private static bool HasGenericBodyTypeConflict(IR.IRType type, IR.IRMethod method)
+    {
+        // Only check generic types (CppName contains arity marker like _1_)
+        if (!type.IsGenericInstance) return false;
+        if (method.BasicBlocks.Count == 0) return false;
+
+        // Extract the generic arg(s) from the type's CppName
+        // E.g., "MemberInfoCache_1_System_Reflection_RuntimePropertyInfo" → "RuntimePropertyInfo"
+        var typeCppName = type.CppName;
+        var typeIlName = type.ILFullName;
+
+        // Get the generic args from ILFullName (e.g., from angle brackets)
+        var typeArgs = new List<string>();
+        var angleBracket = typeIlName.IndexOf('<');
+        if (angleBracket > 0 && typeIlName.EndsWith(">"))
+        {
+            var argsStr = typeIlName[(angleBracket + 1)..^1];
+            typeArgs = CppNameMapper.ParseGenericArgs(argsStr);
+        }
+        if (typeArgs.Count == 0) return false;
+
+        // For each IRCall/IRNewObj in the body, check if a different specialization
+        // of the same generic base type is used, creating type conflicts
+        var typeArgCppNames = typeArgs.Select(CppNameMapper.MangleTypeName).ToHashSet();
+
+        // Collect all MemberInfo subtypes referenced in method body (newobj, call targets)
+        var bodyMemberInfoTypes = new HashSet<string>();
+        foreach (var block in method.BasicBlocks)
+        {
+            foreach (var instr in block.Instructions)
+            {
+                if (instr is IR.IRNewObj newObj && IsMemberInfoSubtype(newObj.TypeCppName))
                 {
-                    _stubAnalyzer.AddStub(
-                        type.ILFullName,
-                        method.Name,
-                        method.CppName,
-                        StubRootCause.ClrInternalType,
-                        method.IrStubReason
-                    );
+                    bodyMemberInfoTypes.Add(newObj.TypeCppName);
                 }
-            }
-        }
-    }
-
-    /// <summary>
-    /// Collect call graph edges from all method bodies for cascade analysis.
-    /// Each IRCall instruction creates an edge: caller → callee.
-    /// </summary>
-    private void CollectCallGraphEdges()
-    {
-        if (_stubAnalyzer == null) return;
-
-        foreach (var type in _module.Types)
-        {
-            foreach (var method in type.Methods)
-            {
-                foreach (var block in method.BasicBlocks)
+                else if (instr is IR.IRCall call && !string.IsNullOrEmpty(call.FunctionName))
                 {
-                    foreach (var instr in block.Instructions)
+                    // Check if the call target uses a specific MemberInfo specialization
+                    // E.g., "ListBuilder_1_RuntimeMethodInfo_Add" → uses RuntimeMethodInfo
+                    foreach (var memberType in MemberInfoSubtypeNames)
                     {
-                        if (instr is IR.IRCall call && !string.IsNullOrEmpty(call.FunctionName))
+                        if (call.FunctionName.Contains(memberType))
                         {
-                            _stubAnalyzer.AddCallEdge(method.CppName, call.FunctionName);
+                            bodyMemberInfoTypes.Add(memberType);
                         }
                     }
                 }
             }
         }
+
+        // If the body references MemberInfo subtypes that differ from the generic arg,
+        // this method has type conflicts from generic substitution
+        foreach (var bodyType in bodyMemberInfoTypes)
+        {
+            foreach (var argCpp in typeArgCppNames)
+            {
+                if (IsMemberInfoSubtype(argCpp) && argCpp != bodyType)
+                    return true;
+            }
+        }
+
+        return false;
     }
+
+    /// <summary>
+    /// Known MemberInfo subtype C++ names — used for generic body conflict detection.
+    /// </summary>
+    private static readonly string[] MemberInfoSubtypeNames =
+    {
+        "System_Reflection_RuntimeMethodInfo",
+        "System_Reflection_RuntimeConstructorInfo",
+        "System_Reflection_RuntimeFieldInfo",
+        "System_Reflection_RuntimePropertyInfo",
+        "System_Reflection_RuntimeEventInfo",
+        "System_RuntimeType",
+    };
+
+    /// <summary>
+    /// Check if a C++ type name is a System.Reflection MemberInfo subtype.
+    /// Used for generic body conflict detection.
+    /// </summary>
+    private static bool IsMemberInfoSubtype(string cppTypeName)
+    {
+        return cppTypeName.StartsWith("System_Reflection_Runtime") ||
+               cppTypeName == "System_RuntimeType";
+    }
+
+    /// <summary>
+    /// Check if a method body calls any function that is NOT_IN_MODULE or INVALID_SIGNATURE.
+    /// These methods can't compile because the called functions don't have C++ declarations.
+    /// Populated during header generation by GenerateMissingMethodStubs.
+    /// </summary>
+    private bool CallsUndeclaredFunction(IR.IRMethod method)
+    {
+        if (_undeclaredFunctionNames.Count == 0) return false;
+        if (method.BasicBlocks.Count == 0) return false;
+
+        foreach (var block in method.BasicBlocks)
+        {
+            foreach (var instr in block.Instructions)
+            {
+                if (instr is IR.IRCall call && !string.IsNullOrEmpty(call.FunctionName)
+                    && _undeclaredFunctionNames.Contains(call.FunctionName)
+                    && !IsSimdIntrinsicFunction(call.FunctionName))
+                    return true;
+                // Note: SIMD intrinsic calls are NOT flagged here because they're always
+                // in feature-switch-guarded dead branches. They're replaced with default
+                // values at render time in GenerateMethodImpl.
+                if (instr is IR.IRNewObj newObj && !string.IsNullOrEmpty(newObj.CtorName)
+                    && _undeclaredFunctionNames.Contains(newObj.CtorName))
+                    return true;
+                if (instr is IR.IRLoadFunctionPointer ldftn && !string.IsNullOrEmpty(ldftn.MethodCppName)
+                    && _undeclaredFunctionNames.Contains(ldftn.MethodCppName))
+                    return true;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// SIMD intrinsic functions (X86/Arm/Wasm) are always in feature-switch-guarded dead-code
+    /// branches. Their IRCall instructions exist in the IR but are unreachable at runtime
+    /// (IsSupported always returns false on AOT). Don't block method emission for these.
+    /// </summary>
+    private static bool IsSimdIntrinsicFunction(string functionName)
+    {
+        return functionName.StartsWith("System_Runtime_Intrinsics_X86_")
+            || functionName.StartsWith("System_Runtime_Intrinsics_Arm_")
+            || functionName.StartsWith("System_Runtime_Intrinsics_Wasm_");
+    }
+
+    /// <summary>
+    /// Check if a C++ type name is invalid — either an unresolved generic param or a function pointer type.
+    /// </summary>
+    private static bool IsInvalidCppType(string typeName)
+    {
+        if (string.IsNullOrEmpty(typeName)) return false;
+        var baseType = typeName.TrimEnd('*').Trim();
+        if (string.IsNullOrEmpty(baseType)) return false;
+
+        // Function pointer types: IL function pointers produce "method..." names
+        if (baseType.StartsWith("method") && !baseType.Contains('_'))
+            return true;
+        if (typeName.Contains("method") && typeName.Contains("ptr"))
+            return true;
+
+        // Unresolved generic params: bare PascalCase identifiers without underscores
+        // (e.g., TOther, TKey, TValue, TResult, TFrom, TTo)
+        // Valid mangled .NET names always contain underscores (System_Int32, etc.)
+        if (baseType.Length >= 2 && baseType[0] == 'T' && char.IsUpper(baseType[1])
+            && !baseType.Contains('_') && !baseType.StartsWith("cil2cpp::"))
+            return true;
+
+        return false;
+    }
+
 }
 
 public class GeneratedOutput
@@ -689,7 +771,8 @@ public class GeneratedOutput
     public List<GeneratedFile> MethodFiles { get; set; } = new();
 
     /// <summary>
-    /// Stub file: fallback implementations for methods called but not compiled.
+    /// Stub file: placeholders for methods that should be eliminated by tree-shaking.
+    /// CoreRuntimeTypes methods are NOT included — the runtime library provides them.
     /// </summary>
     public GeneratedFile StubFile { get; set; } = new();
 
@@ -731,7 +814,6 @@ public class GeneratedOutput
 
     public GeneratedFile? MainFile { get; set; }
     public GeneratedFile? CMakeFile { get; set; }
-    public GeneratedFile? StubReportFile { get; set; }
 
     /// <summary>
     /// Write all generated files to a directory.
@@ -747,8 +829,6 @@ public class GeneratedOutput
         foreach (var sf in AllSourceFiles) generatedFileNames.Add(sf.FileName);
         if (MainFile != null) generatedFileNames.Add(MainFile.FileName);
         if (CMakeFile != null) generatedFileNames.Add(CMakeFile.FileName);
-        if (StubReportFile != null) generatedFileNames.Add(StubReportFile.FileName);
-
         foreach (var existing in Directory.GetFiles(outputDir, "*.cpp")
             .Concat(Directory.GetFiles(outputDir, "*.h")))
         {
@@ -770,14 +850,8 @@ public class GeneratedOutput
         {
             File.WriteAllText(Path.Combine(outputDir, CMakeFile.FileName), CMakeFile.Content);
         }
-        if (StubReportFile != null)
-        {
-            File.WriteAllText(Path.Combine(outputDir, StubReportFile.FileName), StubReportFile.Content);
-        }
     }
 }
-
-public record StubbedMethodInfo(string TypeName, string MethodName, string CppName, string Reason);
 
 public class GeneratedFile
 {

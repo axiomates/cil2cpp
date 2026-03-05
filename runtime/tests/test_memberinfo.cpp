@@ -22,6 +22,7 @@ static TypeInfo MemberInfoTest_Int32Type = {
     .instance_size = sizeof(Int32), .element_size = 0,
     .flags = TypeFlags::ValueType | TypeFlags::Primitive, .vtable = nullptr,
     .fields = nullptr, .field_count = 0, .methods = nullptr, .method_count = 0,
+.properties = nullptr, .property_count = 0,
 };
 
 static TypeInfo* MemberInfoTest_Ctor_ParamTypes[] = { &System_String_TypeInfo };
@@ -83,6 +84,7 @@ static TypeInfo MemberInfoTest_Animal = {
     .flags = TypeFlags::None, .vtable = nullptr,
     .fields = MemberInfoTest_Fields, .field_count = 2,
     .methods = MemberInfoTest_Methods, .method_count = 3,
+.properties = nullptr, .property_count = 0,
 };
 
 class MemberInfoTestFixture : public ::testing::Test {

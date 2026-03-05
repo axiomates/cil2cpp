@@ -38,6 +38,7 @@ static TypeInfo MonitorTestType = {
     .field_count = 0,
     .methods = nullptr,
     .method_count = 0,
+    .properties = nullptr, .property_count = 0,
     .finalizer = nullptr,
 };
 
@@ -206,6 +207,7 @@ static TypeInfo DelegateTestType = {
     .field_count = 0,
     .methods = nullptr,
     .method_count = 0,
+    .properties = nullptr, .property_count = 0,
     .finalizer = nullptr,
 };
 

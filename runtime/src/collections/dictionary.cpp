@@ -84,6 +84,7 @@ static TypeInfo& get_int32_type() {
         .flags = TypeFlags::ValueType | TypeFlags::Primitive,
         .vtable = nullptr, .fields = nullptr, .field_count = 0,
         .methods = nullptr, .method_count = 0,
+        .properties = nullptr, .property_count = 0,
         .default_ctor = nullptr, .finalizer = nullptr,
         .interface_vtables = nullptr, .interface_vtable_count = 0,
     };

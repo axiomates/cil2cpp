@@ -148,6 +148,11 @@ public static class CppNameMapper
         if (modIdx < 0) modIdx = ilTypeName.IndexOf(" modopt(", StringComparison.Ordinal);
         if (modIdx >= 0) ilTypeName = ilTypeName[..modIdx];
 
+        // IL function pointer types: "method System.Void *(System.Object)" etc.
+        // Map to void* — function pointers are opaque handles cast at call sites via reinterpret_cast
+        if (ilTypeName.StartsWith("method ") || ilTypeName.StartsWith("method("))
+            return "void*";
+
         // Handle pointer/ref types
         if (ilTypeName.EndsWith("&"))
         {
@@ -219,6 +224,10 @@ public static class CppNameMapper
         if (modIdx < 0) modIdx = ilTypeName.IndexOf(" modopt(", StringComparison.Ordinal);
         if (modIdx >= 0) ilTypeName = ilTypeName[..modIdx];
 
+        // IL function pointer types → void*
+        if (ilTypeName.StartsWith("method ") || ilTypeName.StartsWith("method("))
+            return "void*";
+
         if (ilTypeName == "System.Void") return "void";
 
         // Handle ByReference types (ref/out) — recurse on element type + add pointer.
@@ -246,6 +255,10 @@ public static class CppNameMapper
     /// </summary>
     public static string MangleTypeName(string ilFullName)
     {
+        // IL function pointer types → void_ptr (opaque handle)
+        if (ilFullName.StartsWith("method ") || ilFullName.StartsWith("method("))
+            return "void_ptr";
+
         // Check if this is a nested type (contains / or +) before mangling
         bool isNested = ilFullName.Contains('/') || ilFullName.Contains('+');
         var result = ilFullName

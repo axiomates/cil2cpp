@@ -15,6 +15,7 @@ cil2cpp::TypeInfo System_RuntimeType_TypeInfo = {
     .instance_size = sizeof(cil2cpp::Object) + 24, .element_size = 0,
     .flags = cil2cpp::TypeFlags::Sealed, .vtable = nullptr,
     .fields = nullptr, .field_count = 0, .methods = nullptr, .method_count = 0,
-    .default_ctor = nullptr, .finalizer = nullptr,
+   .properties = nullptr, .property_count = 0,
+        .default_ctor = nullptr, .finalizer = nullptr,
     .interface_vtables = nullptr, .interface_vtable_count = 0,
 };

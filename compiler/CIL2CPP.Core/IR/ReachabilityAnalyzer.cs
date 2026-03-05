@@ -197,26 +197,26 @@ public class ReachabilityAnalyzer
     /// </summary>
     private void SeedImplicitlyConstructedTypes()
     {
-        // Well-known BCL types created by runtime internals
+        // Tier 1: Types unconditionally created by runtime internals (no IL newobj).
+        // These are ALWAYS needed regardless of what user code does.
         var implicitTypes = new[]
         {
             "System.String", "System.Object", "System.Type", "System.RuntimeType",
+            // Exceptions thrown by runtime itself (null deref, bad cast, array bounds, stack overflow, OOM)
             "System.Exception", "System.NullReferenceException", "System.InvalidCastException",
             "System.IndexOutOfRangeException", "System.ArrayTypeMismatchException",
             "System.StackOverflowException", "System.OutOfMemoryException",
-            "System.OverflowException", "System.InvalidOperationException",
-            "System.ArgumentException", "System.ArgumentNullException",
-            "System.ArgumentOutOfRangeException", "System.NotSupportedException",
-            "System.NotImplementedException", "System.FormatException",
-            "System.TypeInitializationException", "System.PlatformNotSupportedException",
+            "System.TypeInitializationException",
             // Primitive types (implicitly constructed via boxing, literals, arithmetic)
             "System.Boolean", "System.Byte", "System.SByte",
             "System.Int16", "System.UInt16", "System.Int32", "System.UInt32",
             "System.Int64", "System.UInt64", "System.Single", "System.Double",
             "System.Char", "System.IntPtr", "System.UIntPtr", "System.Decimal",
-            // Commonly constructed by runtime without explicit newobj
-            "System.Text.StringBuilder",
         };
+        // Tier 2: Exception types only constructed if reachable code throws/catches them.
+        // Moved from unconditional to demand-driven — reduces virtual dispatch overhead.
+        // These are constructed by BCL code (ArgumentNullException in parameter validation, etc.)
+        // and will be discovered via newobj/catch in ProcessMethod when they're actually used.
 
         foreach (var typeName in implicitTypes)
         {
@@ -329,10 +329,8 @@ public class ReachabilityAnalyzer
         // Seeding cctor unconditionally here caused exponential cascade explosion
         // (e.g., NuGetSimpleTest: 2 JSON calls → 30K methods → 21GB OOM).
 
-        // Mark finalizer reachable
-        var finalizer = type.Methods.FirstOrDefault(m => m.Name == "Finalize" && m.IsVirtual);
-        if (finalizer != null)
-            SeedMethod(finalizer);
+        // Finalizer NOT seeded here — only seed when type is constructed (MarkTypeConstructed).
+        // GC can only finalize objects that were actually allocated.
 
         // Field type cascade: lightweight — only value types need struct layout.
         // Reference-type fields are pointers in C++ (8 bytes, forward-declared).
@@ -431,6 +429,11 @@ public class ReachabilityAnalyzer
         // Only NOW dispatch virtual overrides — the core RTA distinction.
         // Types that are merely reachable (field types, cast targets) don't dispatch.
         MarkDispatchedOverrides(type);
+
+        // Seed finalizer only for constructed types — GC can only finalize allocated objects.
+        var finalizer = type.Methods.FirstOrDefault(m => m.Name == "Finalize" && m.IsVirtual);
+        if (finalizer != null)
+            SeedMethod(finalizer);
 
         // Mark base types as constructed too: a Derived instance IS-A Base instance.
         // Without this, virtual dispatch on Base references wouldn't find Derived overrides.
@@ -706,9 +709,8 @@ public class ReachabilityAnalyzer
         // Note: <PrivateImplementationDetails> is NOT filtered — BCL code uses it for
         // static array initialization data, and we need its statics in generated code.
 
-        // Exclude CLR-internal / AOT-incompatible namespaces.
-        // These types require JIT or CLR-internal infrastructure that cannot work in AOT.
-        // Excluding them prevents cascading generic specializations (e.g., List<EventSource>).
+        // Exclude genuinely AOT-incompatible namespaces (require JIT/dynamic features)
+        // and namespaces that cause compiler issues (infinite generic recursion).
         if (IsAotExcludedNamespace(fullName))
             return true;
 
@@ -717,11 +719,14 @@ public class ReachabilityAnalyzer
     }
 
     /// <summary>
-    /// Types/namespaces that are CLR-internal or require JIT — useless in AOT.
-    /// Excluding these prevents cascading generic specializations (e.g., List&lt;EventSource&gt;).
+    /// Types/namespaces that are genuinely AOT-incompatible (require JIT/dynamic features)
+    /// or cause compiler issues (infinite generic recursion).
+    /// Only namespaces that NativeAOT also cannot support belong here.
+    /// Do NOT add namespaces just because we haven't implemented them yet.
     /// </summary>
     private static bool IsAotExcludedNamespace(string typeFullName)
     {
+        // TODO: Investigate whether tree-shaking can handle Tracing types without blanket exclusion.
         // EventSource/EventPipe/ETW — CLR event tracing infrastructure, requires CLR runtime
         if (typeFullName.StartsWith("System.Diagnostics.Tracing."))
             return true;
@@ -734,10 +739,12 @@ public class ReachabilityAnalyzer
         if (typeFullName.StartsWith("System.Runtime.Loader."))
             return true;
 
+        // TODO: Investigate whether tree-shaking can handle PortableThreadPool without blanket exclusion.
         // PortableThreadPool — CLR managed thread pool internals; CIL2CPP has its own thread pool
         if (typeFullName.StartsWith("System.Threading.PortableThreadPool"))
             return true;
 
+        // TODO: Investigate whether tree-shaking can handle StackFrame without blanket exclusion.
         // StackFrame/StackFrameHelper — CLR-internal stack walking; CIL2CPP runtime
         // provides its own stack trace via DbgHelp (Windows) / backtrace (Linux)
         if (typeFullName.StartsWith("System.Diagnostics.StackFrame"))
@@ -750,93 +757,53 @@ public class ReachabilityAnalyzer
             typeFullName.StartsWith("System.Runtime.Intrinsics.Wasm."))
             return true;
 
-        // Interop P/Invoke wrappers for OS-specific subsystems
-        // Note: Interop/Kernel32 NOT excluded (LowLevelMonitor embeds CRITICAL_SECTION)
-        // Note: Top-level Interop types NOT excluded (INPUT_RECORD embedded in ConsolePal)
-        if (typeFullName.StartsWith("Interop/Advapi32") ||
-            typeFullName.StartsWith("Interop/NtDll") ||
-            typeFullName.StartsWith("Interop/Ucrtbase") ||
-            typeFullName.StartsWith("Interop/BCrypt") ||
-            typeFullName.StartsWith("Interop/Ole32") ||
-            typeFullName.StartsWith("Interop/Globalization") ||
-            typeFullName.StartsWith("Interop/User32"))
-            return true;
+        // REMOVED: Interop/* (Advapi32, NtDll, Ucrtbase, BCrypt, Ole32, Globalization, User32)
+        // These are NOT AOT-incompatible — NativeAOT supports P/Invoke wrappers.
+        // They were excluded to reduce codegen volume, but tree-shaking should handle them.
 
-        // Internal.Win32 — Windows registry/interop, not useful in AOT
-        if (typeFullName.StartsWith("Internal.Win32."))
-            return true;
+        // REMOVED: Internal.Win32 — not AOT-incompatible, NativeAOT compiles these.
 
-        // COM interop — requires COM runtime infrastructure
-        if (typeFullName.StartsWith("System.ComAwareWeakReference"))
-            return true;
+        // REMOVED: System.ComAwareWeakReference — not AOT-incompatible, NativeAOT supports it.
 
-        // Design-time infrastructure — TypeConverter, TypeDescriptor, etc.
-        // Runtime type inspection/conversion used by designers, not AOT
-        // Exception: Win32Exception is a base class for SocketException, HttpRequestException, etc.
-        if (typeFullName.StartsWith("System.ComponentModel.") &&
-            !typeFullName.StartsWith("System.ComponentModel.Win32Exception"))
-            return true;
+        // REMOVED: System.ComponentModel — not AOT-incompatible, NativeAOT compiles
+        // TypeConverter, TypeDescriptor, etc. Win32Exception (base for SocketException,
+        // HttpRequestException) no longer needs special whitelisting since the whole
+        // namespace is now allowed through.
 
-        // Legacy serialization — BinaryFormatter, IFormatter, DataContract
-        // Deprecated, security risk, requires runtime reflection.
-        // Exception: StreamingContext, SerializationInfo, and related callback types are
-        // needed as parameter types by Newtonsoft.Json contract creation methods.
-        if (typeFullName.StartsWith("System.Runtime.Serialization."))
-        {
-            if (typeFullName == "System.Runtime.Serialization.StreamingContext" ||
-                typeFullName == "System.Runtime.Serialization.SerializationInfo" ||
-                typeFullName == "System.Runtime.Serialization.ISerializable" ||
-                typeFullName == "System.Runtime.Serialization.ISerializationCallback" ||
-                typeFullName == "System.Runtime.Serialization.IDeserializationCallback" ||
-                typeFullName == "System.Runtime.Serialization.SerializationException" ||
-                typeFullName == "System.Runtime.Serialization.SerializationEntry" ||
-                typeFullName == "System.Runtime.Serialization.SerializationInfoEnumerator")
-                return false;
-            return true;
-        }
+        // REMOVED: System.Runtime.Serialization — not AOT-incompatible, NativeAOT supports it.
+        // StreamingContext, SerializationInfo, ISerializable, etc. no longer need
+        // special whitelisting since the whole namespace is now allowed through.
 
         // Runtime code compilation — requires JIT, fundamentally AOT-incompatible
         if (typeFullName.StartsWith("System.CodeDom"))
             return true;
 
-        // .resx resource loading — ResourceReader/ResourceManager require assembly metadata
-        // CIL2CPP uses SR icall for resource strings instead
-        if (typeFullName.StartsWith("System.Resources."))
-            return true;
+        // REMOVED: System.Resources — not AOT-incompatible, NativeAOT supports
+        // ResourceReader/ResourceManager. Was excluded because CIL2CPP uses SR icall
+        // for resource strings, but the types themselves compile fine from IL.
 
         // Regex symbolic engine — recursive generic types (BDD, DerivativeEffect, SymbolicRegexNode)
         // create infinitely nested generic instantiations. These are internal implementation details.
         if (typeFullName.StartsWith("System.Text.RegularExpressions.Symbolic."))
             return true;
 
-        // Expression tree interpreter — JIT fallback for evaluating expression trees.
-        // AOT compiles expression trees ahead-of-time; the interpreter is never used.
-        // Prevents ~10K types from cascading via generic specializations.
-        if (typeFullName.StartsWith("System.Linq.Expressions.Interpreter."))
-            return true;
-
-        // XML serialization internals — XmlSerializer uses runtime IL emit (AOT-incompatible).
-        // Basic Xml.Linq types (XDocument, XElement) are not affected.
-        if (typeFullName.StartsWith("System.Xml.Serialization."))
-            return true;
-
         // LINQ Expression trees — require JIT compilation (Expression.Compile()).
         // Full namespace excluded (not just .Interpreter) because expression tree
         // compilation is fundamentally JIT-dependent. LambdaExpression, MethodCallExpression,
         // etc. are tree nodes that only matter for runtime compilation.
+        // Note: The .Interpreter sub-namespace is subsumed by this broader exclusion.
         if (typeFullName.StartsWith("System.Linq.Expressions."))
             return true;
 
-        // System.Data — ADO.NET DataSet/DataTable/DataColumn infrastructure.
-        // Uses runtime type generation for data binding, AOT-incompatible.
-        // Pulled in by Newtonsoft.Json's DataSet serialization support.
-        if (typeFullName.StartsWith("System.Data."))
-            return true;
+        // REMOVED: System.Xml.Serialization — not AOT-incompatible, NativeAOT supports it.
+        // XmlSerializer source generation works in AOT. Was excluded because the older
+        // runtime IL emit path is AOT-incompatible, but the types themselves are fine.
 
-        // System.Xml.Schema — XML Schema validation engine.
-        // Pulls in expression evaluators, regex interpreters, XmlSerializer.
-        if (typeFullName.StartsWith("System.Xml.Schema."))
-            return true;
+        // REMOVED: System.Data — not AOT-incompatible, NativeAOT supports ADO.NET
+        // DataSet/DataTable. Was excluded to reduce codegen volume.
+
+        // REMOVED: System.Xml.Schema — not AOT-incompatible, NativeAOT supports XML
+        // Schema validation. Was excluded to reduce codegen volume.
 
         // Dynamic Language Runtime — requires JIT for dynamic dispatch.
         // DynamicObject, ExpandoObject, CallSite etc. are JIT-only.
@@ -993,6 +960,25 @@ public class ReachabilityAnalyzer
     }
 
     /// <summary>
+    /// Compute dead code ranges for a method body using feature-switch guards.
+    /// Used by IRBuilder to skip dead SIMD branches during method body compilation.
+    /// </summary>
+    public List<(int Start, int End)>? GetDeadRangesForMethod(MethodDefinition method)
+    {
+        if (!method.HasBody) return null;
+        return ComputeFeatureSwitchDeadRanges(method.Body.Instructions);
+    }
+
+    /// <summary>
+    /// Check if an instruction offset falls within any dead code range.
+    /// </summary>
+    public static bool IsOffsetInDeadRange(List<(int Start, int End)>? deadRanges, int offset)
+    {
+        if (deadRanges == null) return false;
+        return IsInDeadRange(deadRanges, offset);
+    }
+
+    /// <summary>
     /// F.1: Compute dead code ranges from feature-switch guards (SIMD IsSupported, etc.).
     /// Detects pattern: call Type.get_IsSupported → brfalse target.
     /// When IsSupported=false, brfalse TAKES the branch, so fall-through to target is dead.
@@ -1087,8 +1073,6 @@ public class ReachabilityAnalyzer
             {
                 // brtrue with value=false → branch NOT taken, falls through.
                 // The branch target is the start of the SIMD (dead) path.
-                // Dead range: [branchTarget, mergePoint).
-                // mergePoint = target of the unconditional `br` just before branchTarget.
                 branchTarget = nextInstr.Operand as Mono.Cecil.Cil.Instruction;
                 if (branchTarget?.Previous != null)
                 {
@@ -1096,6 +1080,7 @@ public class ReachabilityAnalyzer
                     if (prevInstr.OpCode.Code is Code.Br or Code.Br_S &&
                         prevInstr.Operand is Mono.Cecil.Cil.Instruction mergeTarget)
                     {
+                        // Dead range: [branchTarget, mergePoint)
                         int deadStart = branchTarget.Offset;
                         int deadEnd = mergeTarget.Offset;
                         if (deadEnd > deadStart)
@@ -1103,6 +1088,17 @@ public class ReachabilityAnalyzer
                             deadRanges ??= new();
                             deadRanges.Add((deadStart, deadEnd));
                         }
+                    }
+                    else if (prevInstr.OpCode.Code == Code.Ret)
+                    {
+                        // Branch target preceded by ret: the scalar path returns,
+                        // so the SIMD path (from branchTarget to end) is dead.
+                        // Find the last instruction offset to use as end of dead range.
+                        int deadStart = branchTarget.Offset;
+                        var lastInstr = instructions[instructions.Count - 1];
+                        int deadEnd = lastInstr.Offset + lastInstr.GetSize();
+                        deadRanges ??= new();
+                        deadRanges.Add((deadStart, deadEnd));
                     }
                 }
             }

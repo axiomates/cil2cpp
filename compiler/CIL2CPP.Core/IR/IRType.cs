@@ -44,6 +44,9 @@ public class IRType
     /// <summary>All methods</summary>
     public List<IRMethod> Methods { get; } = new();
 
+    /// <summary>Properties (for reflection metadata emission)</summary>
+    public List<IRProperty> Properties { get; } = new();
+
     /// <summary>Virtual method table</summary>
     public List<IRVTableEntry> VTable { get; } = new();
 
@@ -138,6 +141,19 @@ public class IRField
 
     /// <summary>Custom attributes applied to this field</summary>
     public List<IRCustomAttribute> CustomAttributes { get; } = new();
+}
+
+/// <summary>
+/// Represents a property in the IR (for reflection metadata).
+/// </summary>
+public class IRProperty
+{
+    public string Name { get; set; } = "";
+    public string PropertyTypeName { get; set; } = "";  // IL full type name
+    public IRMethod? Getter { get; set; }
+    public IRMethod? Setter { get; set; }
+    public uint Attributes { get; set; }
+    public IRType? DeclaringType { get; set; }
 }
 
 /// <summary>

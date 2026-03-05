@@ -26,6 +26,7 @@ TypeInfo System_Object_TypeInfo = {
     .instance_size = sizeof(Object), .element_size = 0,
     .flags = TypeFlags::None, .vtable = nullptr,
     .fields = nullptr, .field_count = 0, .methods = nullptr, .method_count = 0,
+    .properties = nullptr, .property_count = 0,
     .default_ctor = nullptr, .finalizer = nullptr,
     .interface_vtables = nullptr, .interface_vtable_count = 0,
 };
@@ -36,6 +37,7 @@ TypeInfo System_String_TypeInfo = {
     .instance_size = sizeof(String), .element_size = 0,  // Reference type: arrays use pointer-sized elements
     .flags = TypeFlags::Sealed, .vtable = nullptr,
     .fields = nullptr, .field_count = 0, .methods = nullptr, .method_count = 0,
+    .properties = nullptr, .property_count = 0,
     .default_ctor = nullptr, .finalizer = nullptr,
     .interface_vtables = nullptr, .interface_vtable_count = 0,
 };
@@ -84,6 +86,8 @@ TypeInfo System_Type_TypeInfo = {
     .field_count = 0,
     .methods = nullptr,
     .method_count = 0,
+    .properties = nullptr,
+    .property_count = 0,
     .default_ctor = nullptr,
     .finalizer = nullptr,
     .interface_vtables = nullptr,

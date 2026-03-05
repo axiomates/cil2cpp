@@ -19,7 +19,8 @@ static TypeInfo ListIntTypeInfo = {
     .flags = TypeFlags::None,
     .vtable = nullptr, .fields = nullptr, .field_count = 0,
     .methods = nullptr, .method_count = 0,
-    .default_ctor = nullptr, .finalizer = nullptr,
+   .properties = nullptr, .property_count = 0,
+        .default_ctor = nullptr, .finalizer = nullptr,
     .interface_vtables = nullptr, .interface_vtable_count = 0,
 };
 
@@ -30,7 +31,8 @@ static TypeInfo Int32ElemTypeInfo = {
     .flags = TypeFlags::ValueType | TypeFlags::Primitive,
     .vtable = nullptr, .fields = nullptr, .field_count = 0,
     .methods = nullptr, .method_count = 0,
-    .default_ctor = nullptr, .finalizer = nullptr,
+   .properties = nullptr, .property_count = 0,
+        .default_ctor = nullptr, .finalizer = nullptr,
     .interface_vtables = nullptr, .interface_vtable_count = 0,
 };
 
@@ -44,7 +46,8 @@ static TypeInfo ListStringTypeInfo = {
     .flags = TypeFlags::None,
     .vtable = nullptr, .fields = nullptr, .field_count = 0,
     .methods = nullptr, .method_count = 0,
-    .default_ctor = nullptr, .finalizer = nullptr,
+   .properties = nullptr, .property_count = 0,
+        .default_ctor = nullptr, .finalizer = nullptr,
     .interface_vtables = nullptr, .interface_vtable_count = 0,
 };
 
@@ -58,7 +61,8 @@ static TypeInfo DictStringIntTypeInfo = {
     .flags = TypeFlags::None,
     .vtable = nullptr, .fields = nullptr, .field_count = 0,
     .methods = nullptr, .method_count = 0,
-    .default_ctor = nullptr, .finalizer = nullptr,
+   .properties = nullptr, .property_count = 0,
+        .default_ctor = nullptr, .finalizer = nullptr,
     .interface_vtables = nullptr, .interface_vtable_count = 0,
 };
 
@@ -399,7 +403,8 @@ static TypeInfo DictIntIntTypeInfo = {
     .flags = TypeFlags::None,
     .vtable = nullptr, .fields = nullptr, .field_count = 0,
     .methods = nullptr, .method_count = 0,
-    .default_ctor = nullptr, .finalizer = nullptr,
+   .properties = nullptr, .property_count = 0,
+        .default_ctor = nullptr, .finalizer = nullptr,
     .interface_vtables = nullptr, .interface_vtable_count = 0,
 };
 

@@ -9,14 +9,6 @@ public partial class IRBuilder
     private void EmitStoreLocal(IRBasicBlock block, Stack<StackEntry> stack, IRMethod method, int index)
     {
         var val = stack.PopExpr();
-        // SIMD stub: skip the store entirely. SIMD code paths are dead (guarded by
-        // IsSupported==false). Emitting the assignment would cause type mismatches
-        // when SIMD and scalar paths share the same local variable.
-        if (val == "__SIMD_STUB__")
-        {
-            block.Instructions.Add(new IRRawCpp { Code = $"// SIMD stub store to loc_{index} skipped (dead code)" });
-            return;
-        }
         // For pointer-type locals, add explicit cast to handle implicit upcasts
         // (e.g., Dog* → Animal*) since generated C++ structs don't use C++ inheritance.
         // Also handles void* locals: in .NET, IntPtr/UIntPtr and void* are interchangeable
@@ -172,12 +164,6 @@ public partial class IRBuilder
     {
         var rightEntry = stack.PopEntry();
         var leftEntry = stack.PopEntry();
-        // SIMD stub: propagate stub through binary ops (dead code in SIMD branch)
-        if (rightEntry.Expr == "__SIMD_STUB__" || leftEntry.Expr == "__SIMD_STUB__")
-        {
-            stack.Push("__SIMD_STUB__");
-            return;
-        }
         var right = rightEntry.Expr;
         var left = leftEntry.Expr;
 
@@ -268,23 +254,18 @@ public partial class IRBuilder
     }
 
     private void EmitComparisonBranch(IRBasicBlock block, Stack<StackEntry> stack, string op, ILInstruction instr,
-        bool isUnsigned = false, Dictionary<int, StackEntry[]>? branchTargetStacks = null, IRMethod? method = null)
+        bool isUnsigned = false, Dictionary<int, StackEntry[]>? branchTargetStacks = null, IRMethod? method = null,
+        List<(int Start, int End)>? deadRanges = null)
     {
         var rightEntry = stack.PopEntry();
         var leftEntry = stack.PopEntry();
-        // SIMD stub: emit branch with false condition (dead code, branch not taken)
-        if (rightEntry.Expr == "__SIMD_STUB__" || leftEntry.Expr == "__SIMD_STUB__")
-        {
-            var stubTarget = (Instruction)instr.Operand!;
-            block.Instructions.Add(new IRConditionalBranch
-            {
-                Condition = "0",
-                TrueLabel = $"IL_{stubTarget.Offset:X4}"
-            });
-            return;
-        }
         var right = rightEntry.Expr;
         var left = leftEntry.Expr;
+
+        // Skip branches to dead code ranges (SIMD dead branches)
+        var target = (Instruction)instr.Operand!;
+        if (ReachabilityAnalyzer.IsOffsetInDeadRange(deadRanges, target.Offset))
+            return;
 
         // Unsigned branch with nullptr → rewrite to != (null check idiom)
         if (isUnsigned && (right == "nullptr" || left == "nullptr"))
@@ -305,8 +286,6 @@ public partial class IRBuilder
             left = $"(void*){left}";
             right = $"(void*){right}";
         }
-
-        var target = (Instruction)instr.Operand!;
         // Save full stack snapshot for branch target (ternary pattern support)
         if (branchTargetStacks != null && stack.Count > 0 && !branchTargetStacks.ContainsKey(target.Offset))
             branchTargetStacks[target.Offset] = stack.Reverse().ToArray();
@@ -393,30 +372,6 @@ public partial class IRBuilder
     private void EmitMethodCall(IRBasicBlock block, Stack<StackEntry> stack, MethodReference methodRef,
         bool isVirtual, ref int tempCounter, TypeReference? constrainedType = null)
     {
-        // Early SIMD stub check: if any argument on the stack is __SIMD_STUB__,
-        // skip the entire call (including intrinsic handlers). This prevents SIMD stub
-        // values from leaking into WriteUnaligned/Add/CopyBlock and other Unsafe intrinsics.
-        {
-            var paramCount = methodRef.Parameters.Count + (methodRef.HasThis ? 1 : 0);
-            var stackArr = stack.ToArray(); // top of stack is index 0
-            bool hasSimdStub = false;
-            for (int si = 0; si < paramCount && si < stackArr.Length; si++)
-            {
-                if (stackArr[si].Expr == "__SIMD_STUB__") { hasSimdStub = true; break; }
-            }
-            if (hasSimdStub)
-            {
-                // Pop all arguments
-                for (int si = 0; si < paramCount && stack.Count > 0; si++)
-                    stack.Pop();
-                // Push SIMD stub for non-void return
-                if (!IsVoidReturnType(methodRef.ReturnType))
-                    stack.Push("__SIMD_STUB__");
-                block.Instructions.Add(new IRComment { Text = $"SIMD stub call to {methodRef.Name} skipped (dead code)" });
-                return;
-            }
-        }
-
         // ===== Compiler Intrinsics — emit inline C++ instead of function calls =====
 
         // INumber<T>.CreateTruncating<TOther>(TOther) — numeric cast intrinsic
@@ -813,21 +768,6 @@ public partial class IRBuilder
                 var tmp = $"__t{tempCounter++}";
                 block.Instructions.Add(new IRRawCpp { Code = $"int32_t {tmp} = 0;", ResultVar = tmp, ResultTypeCpp = "int32_t" });
                 stack.Push(tmp);
-                return;
-            }
-
-            // SIMD operations → stub as no-ops (unreachable: guarded by IsSupported==false)
-            // Push a tagged "SIMD_STUB" value so stloc/stfld can skip the assignment
-            // instead of creating type mismatches between SIMD and scalar code paths.
-            if (isSimdType)
-            {
-                for (int i = 0; i < methodRef.Parameters.Count; i++)
-                    if (stack.Count > 0) stack.Pop();
-                if (methodRef.HasThis && stack.Count > 0) stack.Pop();
-                if (!IsVoidReturnType(methodRef.ReturnType))
-                {
-                    stack.Push("__SIMD_STUB__");
-                }
                 return;
             }
         }
@@ -1405,17 +1345,6 @@ public partial class IRBuilder
             args.Add(stack.PopExpr());
         }
         args.Reverse();
-
-        // SIMD stub: if any argument is __SIMD_STUB__, this call is in dead SIMD code.
-        // Skip the call entirely and propagate the stub to avoid type mismatches.
-        if (args.Any(a => a == "__SIMD_STUB__"))
-        {
-            // Also consume 'this' from stack if instance call
-            if (methodRef.HasThis && stack.Count > 0) stack.Pop();
-            if (!IsVoidReturnType(methodRef.ReturnType))
-                stack.Push("__SIMD_STUB__");
-            return;
-        }
 
         // Handle varargs call sites: package extra arguments into VarArgHandle.
         // The handle is stored separately to avoid CastArgumentsToParameterTypes
@@ -2269,13 +2198,6 @@ public partial class IRBuilder
         }
         args.Reverse();
 
-        // SIMD stub: if any constructor argument is __SIMD_STUB__, this is dead SIMD code.
-        if (args.Any(a => a == "__SIMD_STUB__"))
-        {
-            stack.Push("__SIMD_STUB__");
-            return;
-        }
-
         // Cast constructor arguments to expected parameter types
         // (handles derived→base pointer casts in flat struct model)
         CastArgumentsToParameterTypes(args, ctorRef);
@@ -2688,14 +2610,14 @@ public partial class IRBuilder
         if (typeRef is PinnedType pnt)
             return ResolveGenericTypeRef(pnt.ElementType, declaringType);
 
-        // Resolve generic parameters — first check method-level map, then type-level
+        // Resolve generic parameters — type-level from declaring type, method-level from method map
         if (typeRef is GenericParameter gp)
         {
-            // Method-level generic param (from ConvertMethodBodyWithGenerics)
-            if (_activeTypeParamMap != null && _activeTypeParamMap.TryGetValue(gp.Name, out var mapped))
-                return mapped;
-            // Type-level generic param (from GenericInstanceType declaring type)
-            if (declaringType is GenericInstanceType git && gp.Position < git.GenericArguments.Count)
+            // Type-level generic param (!0, !1) — resolve from declaring type FIRST.
+            // This avoids name collision when both the type and method define a param named "T"
+            // (e.g., Span<bool>.op_Implicit returns Span<!0> where !0 should be bool, not !!T=char)
+            if (gp.Type == GenericParameterType.Type
+                && declaringType is GenericInstanceType git && gp.Position < git.GenericArguments.Count)
             {
                 var resolved = git.GenericArguments[gp.Position];
                 // Recursively resolve if the type arg is itself a GenericParameter
@@ -2703,6 +2625,18 @@ public partial class IRBuilder
                 if (resolved is GenericParameter gp3 && _activeTypeParamMap != null
                     && _activeTypeParamMap.TryGetValue(gp3.Name, out var mapped3))
                     return mapped3;
+                return resolved.FullName;
+            }
+            // Method-level generic param (!!0, !!1) or type-level without declaring type context
+            if (_activeTypeParamMap != null && _activeTypeParamMap.TryGetValue(gp.Name, out var mapped))
+                return mapped;
+            // Final fallback: try declaring type by position
+            if (declaringType is GenericInstanceType git2 && gp.Position < git2.GenericArguments.Count)
+            {
+                var resolved = git2.GenericArguments[gp.Position];
+                if (resolved is GenericParameter gp4 && _activeTypeParamMap != null
+                    && _activeTypeParamMap.TryGetValue(gp4.Name, out var mapped4))
+                    return mapped4;
                 return resolved.FullName;
             }
             return typeRef.FullName;
@@ -2717,13 +2651,9 @@ public partial class IRBuilder
             {
                 if (arg is GenericParameter gp2)
                 {
-                    if (_activeTypeParamMap != null && _activeTypeParamMap.TryGetValue(gp2.Name, out var mapped2))
-                    {
-                        argNames.Add(mapped2);
-                        anyResolved = true;
-                        continue;
-                    }
-                    if (declaringType is GenericInstanceType git2 && gp2.Position < git2.GenericArguments.Count)
+                    // Type-level param: resolve from declaring type FIRST (same fix as simple GenericParameter)
+                    if (gp2.Type == GenericParameterType.Type
+                        && declaringType is GenericInstanceType git2 && gp2.Position < git2.GenericArguments.Count)
                     {
                         var resolvedArg = git2.GenericArguments[gp2.Position];
                         // Recursively resolve nested GenericParameter
@@ -2732,6 +2662,13 @@ public partial class IRBuilder
                             argNames.Add(mapped4);
                         else
                             argNames.Add(resolvedArg.FullName);
+                        anyResolved = true;
+                        continue;
+                    }
+                    // Method-level param or type-level without declaring type: check method map
+                    if (_activeTypeParamMap != null && _activeTypeParamMap.TryGetValue(gp2.Name, out var mapped2))
+                    {
+                        argNames.Add(mapped2);
                         anyResolved = true;
                         continue;
                     }
@@ -2915,6 +2852,46 @@ public partial class IRBuilder
     }
 
     /// <summary>
+    /// Look up the actual C++ type of a field from our IRType model.
+    /// Used to cross-check against Cecil's FieldReference type, which may differ for inherited fields
+    /// when accessed through a derived class (e.g., Dictionary&lt;string,ResourceLocator&gt; in IL
+    /// vs Dictionary&lt;string,object&gt; in the struct declaration).
+    /// </summary>
+    private string? LookupIRFieldTypeCpp(FieldReference fieldRef)
+    {
+        // Resolve the type from _typeCache
+        var declTypeName = fieldRef.DeclaringType.FullName;
+        IRType? irType;
+        if (!_typeCache.TryGetValue(declTypeName, out irType))
+        {
+            // Fallback: try ResolveCacheKey for GenericInstanceType keys
+            var cacheKey = ResolveCacheKey(fieldRef.DeclaringType);
+            if (cacheKey == declTypeName || !_typeCache.TryGetValue(cacheKey, out irType))
+                return null;
+        }
+        // Walk from furthest ancestor to the declaring type, matching C++ struct layout:
+        // inherited fields are emitted first, own fields with same name are skipped.
+        // First match wins (inherited field takes precedence for same-name fields).
+        var chain = new List<IRType>();
+        var cur = irType;
+        while (cur != null && cur.ILFullName != "System.Object")
+        {
+            chain.Add(cur);
+            cur = cur.BaseType;
+        }
+        chain.Reverse(); // furthest ancestor first
+        foreach (var type in chain)
+        {
+            foreach (var f in type.Fields)
+            {
+                if (f.Name == fieldRef.Name && !string.IsNullOrEmpty(f.FieldTypeName))
+                    return CppNameMapper.GetCppTypeForDecl(f.FieldTypeName);
+            }
+        }
+        return null;
+    }
+
+    /// <summary>
     /// Determines whether a field access should use '.' (value) vs '->' (pointer).
     /// Value type locals accessed directly (ldloc) use '.'; addresses (&amp;loc) use '->'.
     /// </summary>
@@ -2990,8 +2967,6 @@ public partial class IRBuilder
     private void EmitConversion(IRBasicBlock block, Stack<StackEntry> stack, string targetType, ref int tempCounter)
     {
         var entry = stack.PopEntry();
-        // SIMD stub: propagate stub through conversions (dead code in SIMD branch)
-        if (entry.Expr == "__SIMD_STUB__") { stack.Push("__SIMD_STUB__"); return; }
         var tmp = $"__t{tempCounter++}";
         block.Instructions.Add(new IRConversion
         {

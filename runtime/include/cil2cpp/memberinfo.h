@@ -1,8 +1,8 @@
 /**
  * CIL2CPP Runtime - Managed Reflection Member Types
  *
- * System.Reflection.MethodInfo and System.Reflection.FieldInfo wrappers.
- * These managed objects wrap native MethodInfo/FieldInfo metadata structs
+ * System.Reflection.MethodInfo, FieldInfo, and PropertyInfo wrappers.
+ * These managed objects wrap native metadata structs
  * and expose them through the .NET reflection API.
  */
 
@@ -10,6 +10,7 @@
 
 #include "object.h"
 #include "type_info.h"
+#include "assembly.h"
 
 namespace cil2cpp {
 
@@ -108,6 +109,24 @@ Object* fieldinfo_get_value(ManagedFieldInfo* fi, Object* obj);
  * Sets the field value. For value types, unboxes the value.
  */
 void fieldinfo_set_value(ManagedFieldInfo* fi, Object* obj, Object* value);
+
+// ===== Type → GetProperties API =====
+
+Array* type_get_properties(Type* t);
+ManagedPropertyInfo* type_get_property(Type* t, String* name);
+
+// ===== PropertyInfo Property Accessors =====
+
+String*  propertyinfo_get_name(ManagedPropertyInfo* pi);
+Type*    propertyinfo_get_declaring_type(ManagedPropertyInfo* pi);
+Type*    propertyinfo_get_property_type(ManagedPropertyInfo* pi);
+ManagedMethodInfo* propertyinfo_get_get_method(ManagedPropertyInfo* pi);
+ManagedMethodInfo* propertyinfo_get_set_method(ManagedPropertyInfo* pi);
+Boolean  propertyinfo_can_read(ManagedPropertyInfo* pi);
+Boolean  propertyinfo_can_write(ManagedPropertyInfo* pi);
+Object*  propertyinfo_get_value(ManagedPropertyInfo* pi, Object* obj, Array* index);
+void     propertyinfo_set_value(ManagedPropertyInfo* pi, Object* obj, Object* value, Array* index);
+String*  propertyinfo_to_string(ManagedPropertyInfo* pi);
 
 // ===== ParameterInfo Property Accessors =====
 

@@ -177,6 +177,18 @@ struct MethodInfo {
 };
 
 /**
+ * Property information for reflection.
+ */
+struct PropertyInfo {
+    const char* name;
+    TypeInfo* declaring_type;
+    TypeInfo* property_type;
+    void* getter;               // Function pointer to get method (nullptr if write-only)
+    void* setter;               // Function pointer to set method (nullptr if read-only)
+    UInt32 flags;               // ECMA-335 PropertyAttributes
+};
+
+/**
  * Field information for reflection.
  */
 struct FieldInfo {
@@ -236,6 +248,8 @@ struct TypeInfo {
     UInt32 field_count;
     MethodInfo* methods;
     UInt32 method_count;
+    PropertyInfo* properties;
+    UInt32 property_count;
 
     // Constructor
     void (*default_ctor)(Object*);

@@ -121,6 +121,9 @@ public partial class IRBuilder
         "System.Reflection.FieldInfo",
         "System.Reflection.ParameterInfo",
         // Phase II.3: Runtime reflection subtypes
+        // FIXME: RuntimeMethodInfo/RuntimeConstructorInfo are aliased to ManagedMethodInfo
+        // but their IL fields (f_m_invoker, f_m_handle, etc.) don't match the runtime struct.
+        // Proper fix: generate these as real C++ structs with BCL fields.
         "System.Reflection.RuntimeMethodInfo",
         "System.Reflection.RuntimeFieldInfo",
         "System.Reflection.RuntimeConstructorInfo",
@@ -129,6 +132,31 @@ public partial class IRBuilder
         "System.Reflection.RuntimePropertyInfo",
         "System.Reflection.Assembly",
         "System.Reflection.RuntimeAssembly",
+        // TypedReference + ArgIterator: all methods handled by runtime / icall
+        "System.TypedReference",
+        "System.ArgIterator",
+        // Thread: instance methods access CLR-internal fields (f_DONT_USE_InternalThread, f_priority)
+        // that don't exist on cil2cpp::ManagedThread runtime struct
+        "System.Threading.Thread",
+        "System.Threading.CancellationTokenSource",
+        // RuntimeType: aliased to cil2cpp::Type but IL methods reference internal CLR fields
+        "System.RuntimeType",
+        // DefaultBinder: reflection binder methods have array type mismatches (Object* vs Array*)
+        // from generic IL patterns that don't translate cleanly to C++
+        "System.DefaultBinder",
+        // RuntimeTypeHandle: methods have pointer level mismatches (void* vs void**)
+        "System.RuntimeTypeHandle",
+    };
+
+    /// <summary>
+    /// Types where ALL methods (instance AND static) should be skipped.
+    /// These types' methods are thin wrappers around QCalls or CLR-internal infrastructure
+    /// that cannot be compiled to C++.
+    /// </summary>
+    internal static readonly HashSet<string> SkipAllMethodsTypes = new()
+    {
+        // RuntimeTypeHandle: static methods are QCall wrappers (ObjectHandleOnStack, void** pointer levels)
+        "System.RuntimeTypeHandle",
         // TypedReference + ArgIterator: all methods handled by runtime / icall
         "System.TypedReference",
         "System.ArgIterator",
@@ -153,6 +181,8 @@ public partial class IRBuilder
         // CLR-internal reflection types (still blocked)
         "System.Reflection.MetadataImport",
         "System.Reflection.RuntimeCustomAttributeData",
+        // RuntimeMethodHandleInternal: CLR-internal struct wrapping method pointer
+        "System.RuntimeMethodHandleInternal",
         // Phase II.2: DefaultBinder/DBNull/Signature/ThreadInt64PersistentCounter/IAsyncLocal/PosixSignalRegistration removed — BCL IL compiles
         // Phase II.1: CalendarId/EraInfo removed — BCL enums/structs compile from IL
         // Phase II.5: WaitHandle removed — RuntimeProvided with OS primitive ICalls
@@ -285,6 +315,20 @@ public partial class IRBuilder
     }
 
     /// <summary>
+    /// Check if a type is a non-generic SIMD helper type (Vector128, Vector256, etc.).
+    /// These static classes have methods that access fields on SIMD generic structs (f_lower, f_upper)
+    /// which are opaque since we skip all SIMD generic type instantiation (IsHardwareAccelerated=false).
+    /// </summary>
+    private static bool IsNonGenericSimdHelperType(string typeFullName)
+    {
+        // Non-generic static helper types in System.Runtime.Intrinsics namespace
+        // e.g., "System.Runtime.Intrinsics.Vector256" (NOT "Vector256`1" which is the generic struct)
+        if (!typeFullName.StartsWith("System.Runtime.Intrinsics.Vector")) return false;
+        // Must NOT contain '`' (that indicates the generic struct version like Vector128`1)
+        return !typeFullName.Contains('`');
+    }
+
+    /// <summary>
     /// Generate a no-op method body (just returns default).
     /// Unlike GenerateStubBody, this does NOT call stub_called — the method is intentionally
     /// a no-op (e.g., EventSource diagnostics) rather than a missing implementation.
@@ -322,6 +366,7 @@ public partial class IRBuilder
     // Set by Build() before BuildInternal()
     private AssemblySet _assemblySet = null!;
     private ReachabilityResult _reachability = null!;
+    private ReachabilityAnalyzer _reachabilityAnalyzer = null!;
     private List<TypeDefinitionInfo> _allTypes = null!;
 
     // Generic type instantiation tracking
@@ -342,6 +387,7 @@ public partial class IRBuilder
     private readonly HashSet<string> _resolvedGenericTypeKeys = new();
     // Types already processed by DisambiguateOverloadedMethods — prevents re-disambiguation
     private readonly HashSet<IRType> _disambiguatedTypes = new();
+    private readonly HashSet<IRType> _vtableBuilt = new();
 
     private record GenericMethodInstantiationInfo(
         string DeclaringTypeName,
@@ -363,10 +409,12 @@ public partial class IRBuilder
     /// Build the IR module from assemblies, filtered by reachability analysis.
     /// All BCL types with IL bodies compile to C++ (Unity IL2CPP model).
     /// </summary>
-    public IRModule Build(AssemblySet assemblySet, ReachabilityResult reachability)
+    public IRModule Build(AssemblySet assemblySet, ReachabilityResult reachability,
+        ReachabilityAnalyzer? analyzer = null)
     {
         _assemblySet = assemblySet;
         _reachability = reachability;
+        _reachabilityAnalyzer = analyzer!;
 
         _module.Name = assemblySet.RootAssemblyName;
 
@@ -428,7 +476,11 @@ public partial class IRBuilder
         PreRegisterAllValueTypes();
 
         // Pass 0: Scan for generic instantiations in all method bodies
+        var pass0sw = System.Diagnostics.Stopwatch.StartNew();
         ScanGenericInstantiations();
+        pass0sw.Stop();
+        Console.Error.WriteLine($"[perf] Pass 0 ScanGenericInstantiations: {pass0sw.ElapsedMilliseconds}ms, " +
+            $"types={_genericInstantiations.Count}, specMethodKeys={_calledSpecializedMethods.Count}");
 
         // Pass 1: Create all type shells (no fields/methods yet)
         // Skip open generic types — they are templates, not concrete types
@@ -455,29 +507,14 @@ public partial class IRBuilder
             _typeCache[typeDef.FullName] = irType;
         }
 
-        // Pass 0.5: Discover transitive generic types AND methods from method bodies.
-        // When Dictionary<Int32,Task> is discovered, its open body calls EqualityComparer<TKey>.Default
-        // — resolve TKey→Int32 to discover EqualityComparer<Int32> as a new instantiation.
-        // Also scan generic METHOD specialization bodies (e.g., SpanHelpers.IndexOf<Byte, DontNegate<Byte>>
-        // references DontNegate<Byte> which needs to be created before Pass 1.5).
-        // Transitive generic method discovery: when IndexOf<T,TNegator> calls FindValue<!!T,!!TNegator>,
-        // resolve the type args to discover FindValue<Byte,DontNegate<Byte>> as a new method instantiation,
-        // which in turn may reference new generic types (INegator<Byte>) in its body.
-        // Fixpoint loop: newly discovered types may reference further generic types.
-        {
-            var scannedTypeKeys = new HashSet<string>();
-            var scannedMethodKeys = new HashSet<string>();
-            int prevCount;
-            do
-            {
-                prevCount = _genericInstantiations.Count;
-                DiscoverTransitiveGenericTypes(scannedTypeKeys);
-                DiscoverTransitiveGenericTypesFromMethods(scannedMethodKeys);
-            } while (_genericInstantiations.Count > prevCount);
-        }
+        // Pass 0.5: REMOVED — demand-driven discovery replaces bulk pre-scanning.
+        // Generic types are now discovered on-demand when method bodies are compiled
+        // (via EnsureBodyReferencedTypesExist in ConvertDeferredGenericBodies fixpoint).
+        // This avoids the exponential blowup from scanning all methods of all discovered types.
 
         // Pass 1.5: Create specialized types for each generic instantiation
         CreateGenericSpecializations();
+        Console.Error.WriteLine($"[tree-shaking] Specialized method keys tracked: {_calledSpecializedMethods.Count}");
 
         // Pass 2: Fill in fields, base types, interfaces
         foreach (var typeDef in _allTypes)
@@ -572,6 +609,30 @@ public partial class IRBuilder
                     && irType.Methods.Any(m => m.Name == "PrintMembers");
                 if (isRefRecord || isValRecord)
                     irType.IsRecord = true;
+
+                // Collect properties (for reflection metadata)
+                var cecilType = typeDef.GetCecilType();
+                if (cecilType.HasProperties)
+                {
+                    foreach (var prop in cecilType.Properties)
+                    {
+                        var irProp = new IRProperty
+                        {
+                            Name = prop.Name,
+                            PropertyTypeName = prop.PropertyType.FullName,
+                            Attributes = (uint)prop.Attributes,
+                            DeclaringType = irType,
+                        };
+                        // Resolve getter/setter to IRMethod (methods just created above)
+                        if (prop.GetMethod != null)
+                            irProp.Getter = irType.Methods.FirstOrDefault(
+                                m => m.Name == prop.GetMethod.Name);
+                        if (prop.SetMethod != null)
+                            irProp.Setter = irType.Methods.FirstOrDefault(
+                                m => m.Name == prop.SetMethod.Name);
+                        irType.Properties.Add(irProp);
+                    }
+                }
             }
         }
 
@@ -590,61 +651,51 @@ public partial class IRBuilder
         // and fall back to direct calls, breaking polymorphic dispatch (e.g., Iterator_1.ToArray).
         // BuildVTable is idempotent (skips if already built), so Pass 4 safely handles
         // any new types created in Pass 3.6.
-        var vtableBuilt = new HashSet<IRType>();
         foreach (var irType in _module.Types)
         {
-            BuildVTableRecursive(irType, vtableBuilt);
+            BuildVTableRecursive(irType, _vtableBuilt);
         }
 
         // Pass 3.4: Convert deferred generic specialization bodies.
         // Must happen AFTER disambiguation (Pass 3.3) so that call sites in generic method
         // bodies resolve to the correct disambiguated function names.
+        var pass34sw = System.Diagnostics.Stopwatch.StartNew();
         ConvertDeferredGenericBodies();
+        pass34sw.Stop();
+
+        // Log generic method compilation stats
+        {
+            var genericMethods = _module.Types.Where(t => t.IsGenericInstance)
+                .SelectMany(t => t.Methods).ToList();
+            var compiled = genericMethods.Count(m => m.BasicBlocks.Count > 0);
+            var total = genericMethods.Count;
+            Console.Error.WriteLine($"[tree-shaking] Generic methods: {compiled} compiled, {total - compiled} skipped (of {total} total)");
+            Console.Error.WriteLine($"[perf] Pass 3.4 ConvertDeferredGenericBodies: {pass34sw.ElapsedMilliseconds}ms, " +
+                $"specMethodKeys={_calledSpecializedMethods.Count}");
+        }
+
+        // Post-3.4: Re-evaluate HasCctor for GENERIC types whose cctor body was never compiled.
+        // CreateGenericSpecializations sets HasCctor=true when the cctor is in _deferredGenericBodies,
+        // but body compilation may have been skipped (not reachable, broken patterns, etc.).
+        // Only check generic instances — non-generic types' cctor bodies are compiled in Pass 6.
+        foreach (var irType in _module.Types)
+        {
+            if (irType.HasCctor && irType.IsGenericInstance)
+            {
+                var cctorMethod = irType.Methods.FirstOrDefault(m => m.IsStaticConstructor);
+                if (cctorMethod != null && cctorMethod.BasicBlocks.Count == 0)
+                    irType.HasCctor = false;
+            }
+        }
 
         // Pass 3.5: Create specialized methods for each generic method instantiation
         CreateGenericMethodSpecializations();
 
-        // Pass 3.6: Re-discover generic types from Pass 3.4/3.5 body conversions.
-        // Method bodies compiled in Pass 3.4 (deferred generic type bodies) and Pass 3.5
-        // (generic method specializations) may reference generic types that were not
-        // discovered in Pass 0.5 (before those bodies existed).
-        //
-        // This pass creates type shells and method DECLARATIONS only — no body compilation.
-        // Stub bodies are generated so methods are declared in the header (reducing
-        // UndeclaredFunction stubs). Full body compilation is intentionally skipped because
-        // compiled bodies discover new callees → CodeGen creates cascade stubs → net increase.
-        // FIXME: selective body compilation could reduce UF further if cascade is controlled
-        {
-            var scannedTypeKeys = new HashSet<string>();
-            var scannedMethodKeys = new HashSet<string>();
-            int prevTypeCount;
-            do
-            {
-                prevTypeCount = _genericInstantiations.Count;
-
-                DiscoverTransitiveGenericTypes(scannedTypeKeys);
-                DiscoverTransitiveGenericTypesFromMethods(scannedMethodKeys);
-
-                if (_genericInstantiations.Count > prevTypeCount)
-                {
-                    CreateGenericSpecializations();
-                    // Create nested type specializations for newly discovered parent types
-                    int prevNestedCount;
-                    do
-                    {
-                        prevNestedCount = _genericInstantiations.Count;
-                        CreateNestedGenericSpecializations();
-                    } while (_genericInstantiations.Count > prevNestedCount);
-                    // Re-run disambiguation for newly created types — their methods may
-                    // have C++ name collisions (e.g., overloads with scalar vs SIMD params).
-                    DisambiguateOverloadedMethods();
-                    // Compile late-discovered generic type method bodies.
-                    // Uses per-method error handling: if body compilation throws,
-                    // fall back to stub body to avoid cascade failures.
-                    ConvertDeferredGenericBodies();
-                }
-            } while (_genericInstantiations.Count > prevTypeCount);
-        }
+        // Pass 3.6: Post-specialization cleanup (demand-driven replaced bulk scanning).
+        // ConvertDeferredGenericBodies (Pass 3.4) already handles demand-driven discovery
+        // via EnsureBodyReferencedTypesExist draining-queue fixpoint.
+        // Just ensure disambiguation is up to date for types created during 3.4/3.5.
+        DisambiguateOverloadedMethods();
 
         // Pass 3.7: Fix up undisambiguated call sites in already-compiled method bodies.
         // Generic method specializations (Pass 3.5) may call methods on types that are only
@@ -667,7 +718,7 @@ public partial class IRBuilder
         // Types from Pass 3.3b already have VTables (BuildVTable is idempotent).
         foreach (var irType in _module.Types)
         {
-            BuildVTableRecursive(irType, vtableBuilt);
+            BuildVTableRecursive(irType, _vtableBuilt);
         }
 
         // Pass 5: Build interface implementation maps
@@ -705,6 +756,16 @@ public partial class IRBuilder
             // EventData, WriteEventCore, ActivityTracker etc. which are in the excluded
             // System.Diagnostics.Tracing namespace, causing UBR/UF stubs.
             if (IsEventSourceDerived(methodDef.GetCecilMethod().DeclaringType))
+            {
+                GenerateNoOpBody(irMethod);
+                continue;
+            }
+
+            // Non-generic SIMD helper types (Vector128, Vector256, Vector512, Vector64):
+            // Their static methods access fields on SIMD generic structs (f_lower, f_upper)
+            // which are opaque since we skip all SIMD generic type instantiation.
+            // Generate no-op bodies to avoid MSVC field access errors on empty structs.
+            if (IsNonGenericSimdHelperType(methodDef.GetCecilMethod().DeclaringType.FullName))
             {
                 GenerateNoOpBody(irMethod);
                 continue;

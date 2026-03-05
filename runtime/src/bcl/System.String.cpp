@@ -37,6 +37,8 @@ TypeInfo String_TypeInfo = {
     .field_count = 0,
     .methods = nullptr,
     .method_count = 0,
+    .properties = nullptr,
+    .property_count = 0,
     .default_ctor = nullptr,
     .finalizer = nullptr,
     .interface_vtables = nullptr,
@@ -212,6 +214,7 @@ Array* string_to_char_array(String* str) {
         .instance_size = sizeof(Char), .element_size = sizeof(Char),
         .flags = TypeFlags::ValueType | TypeFlags::Primitive, .vtable = nullptr,
         .fields = nullptr, .field_count = 0, .methods = nullptr, .method_count = 0,
+        .properties = nullptr, .property_count = 0,
         .default_ctor = nullptr, .finalizer = nullptr,
         .interface_vtables = nullptr, .interface_vtable_count = 0,
     };

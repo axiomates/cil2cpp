@@ -101,6 +101,7 @@ set(RUNTIME_SOURCES
     src/bcl/System.Array.cpp
     src/bcl/System.MdArray.cpp
     src/bcl/System.Delegate.cpp
+    src/bcl/core_methods.cpp
     src/icall/icall.cpp
     src/icall/math.cpp
     src/icall/throw_helper.cpp

@@ -5,6 +5,7 @@
  */
 
 #include <cil2cpp/memberinfo.h>
+#include <cil2cpp/assembly.h>
 #include <cil2cpp/reflection.h>
 #include <cil2cpp/gc.h>
 #include <cil2cpp/string.h>
@@ -49,6 +50,7 @@ TypeInfo System_Reflection_MethodInfo_TypeInfo = {
     .vtable = &System_Reflection_MethodInfo_VTable,
     .fields = nullptr, .field_count = 0,
     .methods = nullptr, .method_count = 0,
+    .properties = nullptr, .property_count = 0,
     .default_ctor = nullptr, .finalizer = nullptr,
     .interface_vtables = nullptr, .interface_vtable_count = 0,
 };
@@ -79,6 +81,7 @@ TypeInfo System_Reflection_FieldInfo_TypeInfo = {
     .vtable = &System_Reflection_FieldInfo_VTable,
     .fields = nullptr, .field_count = 0,
     .methods = nullptr, .method_count = 0,
+    .properties = nullptr, .property_count = 0,
     .default_ctor = nullptr, .finalizer = nullptr,
     .interface_vtables = nullptr, .interface_vtable_count = 0,
 };
@@ -94,6 +97,7 @@ TypeInfo System_Reflection_ParameterInfo_TypeInfo = {
     .vtable = nullptr,
     .fields = nullptr, .field_count = 0,
     .methods = nullptr, .method_count = 0,
+    .properties = nullptr, .property_count = 0,
     .default_ctor = nullptr, .finalizer = nullptr,
     .interface_vtables = nullptr, .interface_vtable_count = 0,
 };
@@ -112,6 +116,13 @@ static ManagedFieldInfo* create_managed_field_info(FieldInfo* native) {
         gc::alloc(sizeof(ManagedFieldInfo), &System_Reflection_FieldInfo_TypeInfo));
     fi->native_info = native;
     return fi;
+}
+
+static ManagedPropertyInfo* create_managed_property_info(PropertyInfo* native) {
+    auto* pi = static_cast<ManagedPropertyInfo*>(
+        gc::alloc(sizeof(ManagedPropertyInfo), &System_Reflection_PropertyInfo_TypeInfo));
+    pi->native_info = native;
+    return pi;
 }
 
 // ===== Type → GetMethods/GetFields =====
@@ -472,6 +483,138 @@ static Int32 FieldInfo_GetHashCode_vtable(Object* obj) {
         ? static_cast<Int32>(reinterpret_cast<uintptr_t>(fi->native_info) >> 3) : 0;
 }
 
+// ===== Type → GetProperties =====
+
+Array* type_get_properties(Type* t) {
+    if (!t || !t->type_info) throw_null_reference();
+
+    auto* info = t->type_info;
+    UInt32 count = info->properties ? info->property_count : 0;
+
+    auto* arr = array_create(&System_Reflection_PropertyInfo_TypeInfo,
+                             static_cast<Int32>(count));
+    auto** data = static_cast<ManagedPropertyInfo**>(array_data(arr));
+    for (UInt32 i = 0; i < count; i++) {
+        data[i] = create_managed_property_info(&info->properties[i]);
+    }
+    return arr;
+}
+
+ManagedPropertyInfo* type_get_property(Type* t, String* name) {
+    if (!t || !t->type_info) throw_null_reference();
+    if (!name) throw_null_reference();
+
+    auto* info = t->type_info;
+    if (!info->properties) return nullptr;
+    auto* name_utf8 = string_to_utf8(name);
+
+    for (UInt32 i = 0; i < info->property_count; i++) {
+        if (std::strcmp(info->properties[i].name, name_utf8) == 0) {
+            return create_managed_property_info(&info->properties[i]);
+        }
+    }
+    return nullptr;
+}
+
+// ===== PropertyInfo Property Accessors =====
+
+String* propertyinfo_get_name(ManagedPropertyInfo* pi) {
+    if (!pi || !pi->native_info) throw_null_reference();
+    return string_literal(pi->native_info->name);
+}
+
+Type* propertyinfo_get_declaring_type(ManagedPropertyInfo* pi) {
+    if (!pi || !pi->native_info) throw_null_reference();
+    if (!pi->native_info->declaring_type) return nullptr;
+    return type_get_type_object(pi->native_info->declaring_type);
+}
+
+Type* propertyinfo_get_property_type(ManagedPropertyInfo* pi) {
+    if (!pi || !pi->native_info) throw_null_reference();
+    if (!pi->native_info->property_type) return nullptr;
+    return type_get_type_object(pi->native_info->property_type);
+}
+
+ManagedMethodInfo* propertyinfo_get_get_method(ManagedPropertyInfo* pi) {
+    if (!pi || !pi->native_info) throw_null_reference();
+    if (!pi->native_info->getter) return nullptr;
+    // Find the MethodInfo in declaring type's methods that matches the getter pointer
+    auto* decl = pi->native_info->declaring_type;
+    if (decl && decl->methods) {
+        for (UInt32 i = 0; i < decl->method_count; i++) {
+            if (decl->methods[i].method_pointer == pi->native_info->getter) {
+                return create_managed_method_info(&decl->methods[i]);
+            }
+        }
+    }
+    // Fallback: create a minimal MethodInfo with just the function pointer
+    // This covers the case where reflection metadata is stripped
+    static MethodInfo getter_stub = {};
+    getter_stub.name = "get_";
+    getter_stub.method_pointer = pi->native_info->getter;
+    return create_managed_method_info(&getter_stub);
+}
+
+ManagedMethodInfo* propertyinfo_get_set_method(ManagedPropertyInfo* pi) {
+    if (!pi || !pi->native_info) throw_null_reference();
+    if (!pi->native_info->setter) return nullptr;
+    auto* decl = pi->native_info->declaring_type;
+    if (decl && decl->methods) {
+        for (UInt32 i = 0; i < decl->method_count; i++) {
+            if (decl->methods[i].method_pointer == pi->native_info->setter) {
+                return create_managed_method_info(&decl->methods[i]);
+            }
+        }
+    }
+    static MethodInfo setter_stub = {};
+    setter_stub.name = "set_";
+    setter_stub.method_pointer = pi->native_info->setter;
+    return create_managed_method_info(&setter_stub);
+}
+
+Boolean propertyinfo_can_read(ManagedPropertyInfo* pi) {
+    if (!pi || !pi->native_info) throw_null_reference();
+    return pi->native_info->getter != nullptr;
+}
+
+Boolean propertyinfo_can_write(ManagedPropertyInfo* pi) {
+    if (!pi || !pi->native_info) throw_null_reference();
+    return pi->native_info->setter != nullptr;
+}
+
+Object* propertyinfo_get_value(ManagedPropertyInfo* pi, Object* obj, Array* /*index*/) {
+    if (!pi || !pi->native_info) throw_null_reference();
+    if (!pi->native_info->getter)
+        throw_invalid_operation();
+
+    // Call the getter: instance method with obj as first param, returns Object*
+    auto fn = reinterpret_cast<Object*(*)(Object*)>(pi->native_info->getter);
+    return fn(obj);
+}
+
+void propertyinfo_set_value(ManagedPropertyInfo* pi, Object* obj, Object* value, Array* /*index*/) {
+    if (!pi || !pi->native_info) throw_null_reference();
+    if (!pi->native_info->setter)
+        throw_invalid_operation();
+
+    // Call the setter: instance method with (obj, value)
+    auto fn = reinterpret_cast<void(*)(Object*, Object*)>(pi->native_info->setter);
+    fn(obj, value);
+}
+
+String* propertyinfo_to_string(ManagedPropertyInfo* pi) {
+    if (!pi || !pi->native_info) throw_null_reference();
+    auto* native = pi->native_info;
+    std::string result;
+    if (native->property_type)
+        result += native->property_type->name;
+    else
+        result += "?";
+    result += " ";
+    result += native->name;
+    return string_literal(result.c_str());
+}
+
 // ===== Universal MemberInfo dispatchers =====
 
 String* memberinfo_get_name(Object* obj) {
@@ -483,6 +626,8 @@ String* memberinfo_get_name(Object* obj) {
         return methodinfo_get_name(static_cast<ManagedMethodInfo*>(obj));
     if (obj->__type_info == &System_Reflection_FieldInfo_TypeInfo)
         return fieldinfo_get_name(static_cast<ManagedFieldInfo*>(obj));
+    if (obj->__type_info == &System_Reflection_PropertyInfo_TypeInfo)
+        return propertyinfo_get_name(static_cast<ManagedPropertyInfo*>(obj));
     // Fallback: return type name
     return string_literal(obj->__type_info ? obj->__type_info->name : "?");
 }
@@ -493,6 +638,8 @@ Type* memberinfo_get_declaring_type(Object* obj) {
         return methodinfo_get_declaring_type(static_cast<ManagedMethodInfo*>(obj));
     if (obj->__type_info == &System_Reflection_FieldInfo_TypeInfo)
         return fieldinfo_get_declaring_type(static_cast<ManagedFieldInfo*>(obj));
+    if (obj->__type_info == &System_Reflection_PropertyInfo_TypeInfo)
+        return propertyinfo_get_declaring_type(static_cast<ManagedPropertyInfo*>(obj));
     // Type doesn't have DeclaringType in our model — return nullptr
     return nullptr;
 }
