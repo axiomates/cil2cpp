@@ -591,6 +591,12 @@ public static class ICallRegistry
             "cil2cpp::icall::ActivityTracker_get_Instance");
 
         // ===== System.Type (reflection introspection) =====
+        RegisterICall("System.Type", "GetMethods", 0, "cil2cpp::icall::Type_GetMethods");
+        RegisterICallTyped("System.Type", "GetMethod", 1, "System.String",
+            "cil2cpp::icall::Type_GetMethod");
+        RegisterICall("System.Type", "GetFields", 0, "cil2cpp::icall::Type_GetFields");
+        RegisterICallTyped("System.Type", "GetField", 1, "System.String",
+            "cil2cpp::icall::Type_GetField");
         RegisterICall("System.Type", "GetEnumUnderlyingType", 0, "cil2cpp::icall::Type_GetEnumUnderlyingType");
         RegisterICall("System.Type", "get_IsPublic", 0, "cil2cpp::icall::Type_get_IsPublic");
         RegisterICall("System.Type", "get_IsValueType", 0, "cil2cpp::icall::Type_get_IsValueType");
@@ -636,6 +642,10 @@ public static class ICallRegistry
         RegisterICall("System.Reflection.TypeInfo", "AsType", 0, "cil2cpp::icall::TypeInfo_AsType");
         RegisterICall("System.Reflection.MethodBase", "get_IsVirtual", 0,
             "cil2cpp::icall::MethodBase_get_IsVirtual");
+        RegisterICall("System.Reflection.MethodBase", "get_IsPublic", 0,
+            "cil2cpp::icall::MethodBase_get_IsPublic");
+        RegisterICall("System.Reflection.MethodBase", "get_IsStatic", 0,
+            "cil2cpp::icall::MethodBase_get_IsStatic");
         RegisterICall("System.Reflection.RuntimeMethodInfo", "get_BindingFlags", 0,
             "cil2cpp::icall::RuntimeMethodInfo_get_BindingFlags");
         RegisterICall("System.Reflection.RuntimeMethodInfo", "GetGenericArgumentsInternal", 0,

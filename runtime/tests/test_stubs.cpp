@@ -6,6 +6,7 @@
  */
 
 #include <cil2cpp/cil2cpp.h>
+#include <cil2cpp/task.h>
 
 // System_RuntimeType_TypeInfo is defined as extern in type.cpp
 // (normally provided by generated code). Tests need a stub.
@@ -19,3 +20,7 @@ cil2cpp::TypeInfo System_RuntimeType_TypeInfo = {
         .default_ctor = nullptr, .finalizer = nullptr,
     .interface_vtables = nullptr, .interface_vtable_count = 0,
 };
+
+// Task_FinishContinuations is defined in generated code (BCL IL).
+// Tests need a no-op stub.
+void System_Threading_Tasks_Task_FinishContinuations(cil2cpp::Task*) {}

@@ -2840,6 +2840,14 @@ public partial class CppCodeGenerator
         sb.AppendLine("// ===== Runtime TypeInfo VTable Patching =====");
         sb.AppendLine("void __init_runtime_vtables() {");
 
+        // Register Task TypeInfo so runtime-created tasks (task_delay, etc.) have proper vtable
+        var taskType = _userTypes.FirstOrDefault(t => t.ILFullName == "System.Threading.Tasks.Task");
+        if (taskType != null)
+        {
+            sb.AppendLine("    // Register Task TypeInfo for runtime task creation");
+            sb.AppendLine($"    cil2cpp::task_set_typeinfo(&{taskType.CppName}_TypeInfo);");
+        }
+
         if (hasStringVTable)
         {
             // Patch BCL TypeInfo (cil2cpp::System::String_TypeInfo) — used by string_literal/string_create_utf8

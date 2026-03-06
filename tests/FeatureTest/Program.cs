@@ -711,12 +711,12 @@ public class Program
         TestListInt();
         TestListString();
         TestDictionaryStringInt();
-        // TEMP: TestAsyncConcurrency + TestAsyncEnumerable skipped — async Task.Delay crash needs investigation
-        // TestAsyncConcurrency();
+        TestAsyncConcurrency();
+        // TODO: TestAsyncEnumerable — IAsyncEnumerator.GetAsyncEnumerator returns null
         // TestAsyncEnumerable();
-        // TEMP: skipped — need investigation
+        // TODO: TestReflectionAdvanced — needs RuntimeMethodInfo BCL struct compatibility
         // TestReflectionAdvanced();
-        // TestNestedExceptionHandling();
+        TestNestedExceptionHandling();
     }
 
     static void TestAsyncEnumerable()

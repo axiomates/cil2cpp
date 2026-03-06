@@ -13,6 +13,7 @@
 #include <cil2cpp/exception.h>
 #include <cil2cpp/threading.h>
 #include <cil2cpp/reflection.h>
+#include <cil2cpp/memberinfo.h>
 
 #include <atomic>
 #include <chrono>
@@ -623,6 +624,22 @@ Int32 Type_get_GenericParameterAttributes(void* __this) {
     return 0; // GenericParameterAttributes.None
 }
 
+Array* Type_GetMethods(void* __this) {
+    return type_get_methods(get_type_from_this(__this));
+}
+
+void* Type_GetMethod(void* __this, String* name) {
+    return type_get_method(get_type_from_this(__this), name);
+}
+
+Array* Type_GetFields(void* __this) {
+    return type_get_fields(get_type_from_this(__this));
+}
+
+void* Type_GetField(void* __this, String* name) {
+    return type_get_field(get_type_from_this(__this), name);
+}
+
 // ===== System.RuntimeTypeHandle (additional) =====
 
 Object* RuntimeTypeHandle_GetElementType(void* /*handle*/) {
@@ -661,10 +678,31 @@ void* RuntimeType_CreateEnum(void* /*__this*/, Int64 /*value*/) {
 
 // ===== System.Reflection =====
 
+static MethodInfo* get_native_method_info(void* __this) {
+    if (!__this) return nullptr;
+    auto* mi = reinterpret_cast<ManagedMethodInfo*>(__this);
+    return mi->native_info;
+}
+
 Boolean MethodBase_get_IsVirtual(void* __this) {
-    // Read flags from ManagedMethodInfo if available
-    (void)__this;
-    return false; // HACK: simplified
+    auto* ni = get_native_method_info(__this);
+    return ni && (ni->flags & 0x0040); // MethodAttributes.Virtual
+}
+
+Boolean MethodBase_get_IsPublic(void* __this) {
+    auto* ni = get_native_method_info(__this);
+    return ni && (ni->flags & 0x0007) == 0x0006; // MemberAccessMask == Public
+}
+
+Boolean MethodBase_get_IsStatic(void* __this) {
+    auto* ni = get_native_method_info(__this);
+    return ni && (ni->flags & 0x0010); // MethodAttributes.Static
+}
+
+String* MemberInfo_get_Name(void* __this) {
+    auto* ni = get_native_method_info(__this);
+    if (ni && ni->name) return string_literal(ni->name);
+    return string_literal("?");
 }
 
 Int32 RuntimeMethodInfo_get_BindingFlags(void* __this) {

@@ -56,6 +56,10 @@ Boolean Type_IsEnumDefined(void* __this, void* value);
 Boolean Type_IsEquivalentTo(void* __this, void* other);
 Int32 Type_GetTypeCodeImpl(void* __this);
 Int32 Type_get_GenericParameterAttributes(void* __this);
+Array* Type_GetMethods(void* __this);
+void* Type_GetMethod(void* __this, String* name);
+Array* Type_GetFields(void* __this);
+void* Type_GetField(void* __this, String* name);
 
 // System.RuntimeTypeHandle
 Object* RuntimeTypeHandle_GetElementType(void* handle);
@@ -77,6 +81,9 @@ void* RuntimeType_CreateEnum(void* __this, Int64 value);
 // System.Reflection
 inline void* TypeInfo_AsType(void* __this) { return __this; }
 Boolean MethodBase_get_IsVirtual(void* __this);
+Boolean MethodBase_get_IsPublic(void* __this);
+Boolean MethodBase_get_IsStatic(void* __this);
+String* MemberInfo_get_Name(void* __this);
 Int32 RuntimeMethodInfo_get_BindingFlags(void* __this);
 void* RuntimeMethodInfo_GetGenericArgumentsInternal(void* __this);
 void* RuntimeMethodInfo_GetDeclaringTypeInternal(void* __this);

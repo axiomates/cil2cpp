@@ -44,8 +44,8 @@ struct Task {
     void* f_m_stateObject;             // Task.m_stateObject (object)
     void* f_m_taskScheduler;           // Task.m_taskScheduler (TaskScheduler)
     volatile Int32 f_m_stateFlags;      // Task.m_stateFlags (int, volatile)
-    void* f_m_contingentProperties;    // Task.m_contingentProperties (ContingentProperties)
     void* f_m_continuationObject;      // Task.m_continuationObject (object)
+    void* f_m_contingentProperties;    // Task.m_contingentProperties (ContingentProperties)
 };
 
 /**
@@ -75,6 +75,13 @@ struct TaskAwaiter {
 struct AsyncTaskMethodBuilder {
     void* f_m_task;
 };
+
+/**
+ * Register the generated Task TypeInfo so runtime-created tasks
+ * have proper vtable/interface support for BCL virtual calls.
+ * Must be called before any runtime task creation (task_delay, etc.).
+ */
+void task_set_typeinfo(TypeInfo* ti);
 
 /** Create a new completed Task (non-generic only). */
 Task* task_create_completed();

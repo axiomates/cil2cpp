@@ -37,7 +37,8 @@ static void task_finalizer(Object* raw) {
     }
 }
 
-static TypeInfo Task_TypeInfo_Internal = {
+// Fallback TypeInfo used when generated TypeInfo hasn't been registered yet.
+static TypeInfo Task_TypeInfo_Fallback = {
     .name = "Task",
     .namespace_name = "System.Threading.Tasks",
     .full_name = "System.Threading.Tasks.Task",
@@ -60,6 +61,17 @@ static TypeInfo Task_TypeInfo_Internal = {
     .interface_vtable_count = 0,
 };
 
+// Points to the generated TypeInfo once registered, falls back to internal.
+static TypeInfo* s_task_typeinfo = &Task_TypeInfo_Fallback;
+
+void task_set_typeinfo(TypeInfo* ti) {
+    if (ti) {
+        // Preserve our finalizer on the generated TypeInfo
+        if (!ti->finalizer) ti->finalizer = task_finalizer;
+        s_task_typeinfo = ti;
+    }
+}
+
 static std::once_flag s_completed_task_once;
 static Task* s_completed_task = nullptr;
 
@@ -75,7 +87,7 @@ static inline void task_store_status(Task* t, Int32 status) {
 // Note: Task doesn't inherit from Object (to avoid MSVC tail-padding mismatch),
 // so we use reinterpret_cast instead of static_cast.
 static Task* task_alloc() {
-    auto* t = reinterpret_cast<Task*>(gc::alloc(sizeof(Task), &Task_TypeInfo_Internal));
+    auto* t = reinterpret_cast<Task*>(gc::alloc(sizeof(Task), s_task_typeinfo));
     t->f_status = 0;
     t->f_exception = nullptr;
     t->f_continuations = nullptr;
