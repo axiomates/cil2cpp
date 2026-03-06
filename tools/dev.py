@@ -600,6 +600,54 @@ def cmd_integration(args):
         header("Results (quick mode — Phase 0+1 only)")
         return runner.summary()
 
+    # ===== Phase 1.5: ArrayTest =====
+    header("Phase 1.5: ArrayTest (array operations)")
+
+    at_sample = TESTPROJECTS_DIR / "ArrayTest" / "ArrayTest.csproj"
+    at_output = temp_dir / "arraytest_output"
+    at_build = temp_dir / "arraytest_build"
+
+    def at_codegen():
+        run(["dotnet", "run", "--project", str(CLI_PROJECT), "--",
+             "codegen", "-i", str(at_sample), "-o", str(at_output)],
+            capture=True)
+
+    def at_files_exist():
+        for f in ["ArrayTest.h", "ArrayTest_data.cpp", "ArrayTest_stubs.cpp",
+                   "main.cpp", "CMakeLists.txt"]:
+            if not (at_output / f).exists():
+                raise RuntimeError(f"Missing: {f}")
+        if not list(at_output.glob("ArrayTest_methods_*.cpp")):
+            raise RuntimeError("No ArrayTest_methods_*.cpp files found")
+
+    def at_cmake_configure():
+        run(["cmake", "-B", str(at_build), "-S", str(at_output),
+             "-G", generator, *cmake_arch,
+             f"-DCMAKE_PREFIX_PATH={runtime_prefix}"],
+            capture=True)
+
+    def at_cmake_build():
+        run(["cmake", "--build", str(at_build), "--config", config],
+            capture=True)
+
+    def at_run_verify():
+        exe = _exe_path(at_build, config, "ArrayTest")
+        if not exe.exists():
+            raise RuntimeError(f"Executable not found: {exe}")
+        r = subprocess.run([str(exe)], capture_output=True, text=True, check=False)
+        if r.returncode != 0:
+            raise RuntimeError(f"ArrayTest exited with code {r.returncode}")
+        got = r.stdout.strip()
+        expected = "10\n30\n50\n5\n99\n0\n100\n200"
+        if got != expected:
+            raise RuntimeError(f"Output mismatch.\nExpected:\n{expected}\nGot:\n{got}")
+
+    runner.step("Codegen ArrayTest", at_codegen)
+    runner.step("Generated files exist (*.h, *.cpp, main.cpp, CMakeLists.txt)", at_files_exist)
+    runner.step("CMake configure", at_cmake_configure)
+    runner.step(f"CMake build ({config})", at_cmake_build)
+    runner.step("Run ArrayTest and verify output", at_run_verify)
+
     # ===== Phase 2: Library project =====
     header("Phase 2: Library project (no entry point)")
 

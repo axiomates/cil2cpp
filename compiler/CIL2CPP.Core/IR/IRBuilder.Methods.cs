@@ -1688,7 +1688,7 @@ public partial class IRBuilder
                     ResultVar = tmp,
                     ResultTypeCpp = cppType,
                 });
-                stack.Push(tmp);
+                stack.Push(new StackEntry(tmp, cppType));
                 break;
             }
 
@@ -2315,6 +2315,7 @@ public partial class IRBuilder
                 var obj = stack.PopExprOr("nullptr");
                 var tmp = $"__t{tempCounter++}";
 
+                string? unboxResultType = null;
                 if (IsNullableType(typeRef))
                 {
                     // ECMA-335 III.4.33: unbox.any Nullable<T>:
@@ -2334,6 +2335,7 @@ public partial class IRBuilder
                         ResultVar = tmp,
                         ResultTypeCpp = nullableCpp,
                     });
+                    unboxResultType = nullableCpp;
                 }
                 else if (CppNameMapper.IsValueType(resolvedName))
                 {
@@ -2349,6 +2351,7 @@ public partial class IRBuilder
                         ResultVar = tmp,
                         IsUnboxAny = true
                     });
+                    unboxResultType = typeCpp;
                 }
                 else
                 {
@@ -2364,8 +2367,9 @@ public partial class IRBuilder
                         IsSafe = false,
                         TypeInfoCppName = unboxIsArray ? "System_Array" : null
                     });
+                    unboxResultType = unboxCastTarget + "*";
                 }
-                stack.Push(tmp);
+                stack.Push(new StackEntry(tmp, unboxResultType));
                 break;
             }
 

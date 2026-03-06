@@ -194,6 +194,16 @@ public partial class IRBuilder
             right = $"(void*){right}";
         }
 
+        // Cast bool operands in comparisons to int32_t to prevent MSVC C4805.
+        // Example: Boolean::Equals compares uint8_t (ldind.u1) with bool (unbox<bool>).
+        if (op is "==" or "!=" or "<" or ">" or "<=" or ">=")
+        {
+            if (leftEntry.CppType == "bool" && rightEntry.CppType != "bool")
+                left = $"(int32_t){left}";
+            if (rightEntry.CppType == "bool" && leftEntry.CppType != "bool")
+                right = $"(int32_t){right}";
+        }
+
         // Arithmetic ops (*, /, %) on pointer operands: C++ doesn't allow arithmetic
         // on pointer types (MSVC C2296). IL treats native int and pointers interchangeably
         // (e.g., charEnd_ptr / 2 to get element count). Cast to intptr_t.
@@ -223,6 +233,13 @@ public partial class IRBuilder
                 left = $"(uintptr_t){left}";
             if (rightIsPtr)
                 right = $"(uintptr_t){right}";
+            // Cast bool operands to int32_t to prevent MSVC C4805.
+            // IL and/or/xor treat all operands as integers (ECMA-335 III.3.1);
+            // C++ bool in bitwise ops with int triggers the warning.
+            if (!leftIsPtr && leftEntry.CppType == "bool")
+                left = $"(int32_t){left}";
+            if (!rightIsPtr && rightEntry.CppType == "bool")
+                right = $"(int32_t){right}";
         }
 
         // Float/double remainder: C++ % operator is invalid for floating-point (MSVC C2296/C2297).

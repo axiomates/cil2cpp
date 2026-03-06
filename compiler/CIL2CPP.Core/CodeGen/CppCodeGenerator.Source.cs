@@ -1234,8 +1234,10 @@ public partial class CppCodeGenerator
                 // IRBinaryOp: comparisons produce bool, arithmetic produces intptr_t
                 case IRBinaryOp binOp when binOp.ResultVar.StartsWith("__t"):
                 {
+                    // ECMA-335: comparisons produce int32 (0/1), not bool.
+                    // ToCpp() casts comparison results to (int32_t) to match.
                     var resultType = binOp.Op is "==" or "!=" or "<" or ">" or "<=" or ">="
-                        ? "bool" : "intptr_t";
+                        ? "int32_t" : "intptr_t";
                     types.TryAdd(binOp.ResultVar, resultType);
                     break;
                 }

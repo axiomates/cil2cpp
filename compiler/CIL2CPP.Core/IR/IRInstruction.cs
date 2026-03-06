@@ -168,28 +168,35 @@ public class IRBinaryOp : IRInstruction
         {
             // ECMA-335 III.1.5: unsigned comparisons on floats use unordered (NaN → true).
             // Use unsigned_gt/lt/ge/le which handle both integer (as-unsigned) and float (NaN-aware).
+            // Cast to int32_t: ECMA-335 comparisons produce int32 (0/1), not C++ bool.
+            // Without the cast, C++ auto infers bool, causing MSVC C4805 when the result
+            // is used in bitwise ops (&, |, ^) with integer operands.
             if (Op == ">")
-                return $"{ResultVar} = cil2cpp::unsigned_gt({Left}, {Right});";
+                return $"{ResultVar} = (int32_t)cil2cpp::unsigned_gt({Left}, {Right});";
             if (Op == "<")
-                return $"{ResultVar} = cil2cpp::unsigned_lt({Left}, {Right});";
+                return $"{ResultVar} = (int32_t)cil2cpp::unsigned_lt({Left}, {Right});";
             if (Op == ">=")
-                return $"{ResultVar} = cil2cpp::unsigned_ge({Left}, {Right});";
+                return $"{ResultVar} = (int32_t)cil2cpp::unsigned_ge({Left}, {Right});";
             if (Op == "<=")
-                return $"{ResultVar} = cil2cpp::unsigned_le({Left}, {Right});";
+                return $"{ResultVar} = (int32_t)cil2cpp::unsigned_le({Left}, {Right});";
             return $"{ResultVar} = cil2cpp::to_unsigned({Left}) {Op} cil2cpp::to_unsigned({Right});";
         }
         // ECMA-335 III.4.1: signed comparisons (clt/cgt).
         // CLI evaluation stack doesn't distinguish signed/unsigned — signedness comes from the
         // instruction. Use signed_lt/gt/ge/le to ensure signed semantics even when C++ operand
         // types are unsigned (e.g., uint64_t from ulong fields in Int128).
+        // Cast to int32_t: same reason as above (MSVC C4805 prevention).
         if (Op == ">")
-            return $"{ResultVar} = cil2cpp::signed_gt({Left}, {Right});";
+            return $"{ResultVar} = (int32_t)cil2cpp::signed_gt({Left}, {Right});";
         if (Op == "<")
-            return $"{ResultVar} = cil2cpp::signed_lt({Left}, {Right});";
+            return $"{ResultVar} = (int32_t)cil2cpp::signed_lt({Left}, {Right});";
         if (Op == ">=")
-            return $"{ResultVar} = cil2cpp::signed_ge({Left}, {Right});";
+            return $"{ResultVar} = (int32_t)cil2cpp::signed_ge({Left}, {Right});";
         if (Op == "<=")
-            return $"{ResultVar} = cil2cpp::signed_le({Left}, {Right});";
+            return $"{ResultVar} = (int32_t)cil2cpp::signed_le({Left}, {Right});";
+        // == and != also produce bool in C++ — cast to int32_t for ECMA-335 compliance.
+        if (Op is "==" or "!=")
+            return $"{ResultVar} = (int32_t)({Left} {Op} {Right});";
         return $"{ResultVar} = {Left} {Op} {Right};";
     }
 }
