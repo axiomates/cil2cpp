@@ -903,17 +903,17 @@ public partial class IRBuilder
             var tmp = $"__t{tempCounter++}";
             block.Instructions.Add(new IRRawCpp
             {
-                Code = $"int32_t {startTmp} = {range}.f__start.f__value < 0 " +
-                       $"? {range}.f__start.f__value + cil2cpp::array_length({arr}) + 1 " +
-                       $": {range}.f__start.f__value;",
+                Code = $"int32_t {startTmp} = {range}.f__Start_k__BackingField.f_value < 0 " +
+                       $"? {range}.f__Start_k__BackingField.f_value + cil2cpp::array_length({arr}) + 1 " +
+                       $": {range}.f__Start_k__BackingField.f_value;",
                 ResultVar = startTmp,
                 ResultTypeCpp = "int32_t",
             });
             block.Instructions.Add(new IRRawCpp
             {
-                Code = $"int32_t {endTmp} = {range}.f__end.f__value < 0 " +
-                       $"? {range}.f__end.f__value + cil2cpp::array_length({arr}) + 1 " +
-                       $": {range}.f__end.f__value;",
+                Code = $"int32_t {endTmp} = {range}.f__End_k__BackingField.f_value < 0 " +
+                       $"? {range}.f__End_k__BackingField.f_value + cil2cpp::array_length({arr}) + 1 " +
+                       $": {range}.f__End_k__BackingField.f_value;",
                 ResultVar = endTmp,
                 ResultTypeCpp = "int32_t",
             });
@@ -1266,12 +1266,20 @@ public partial class IRBuilder
         {
             // Generic method instantiation — use the monomorphized name
             var elemMethod = gim.ElementMethod;
-            var declType = elemMethod.DeclaringType.FullName;
+            // Resolve declaring type through active type param map — without this,
+            // calls from within generic method bodies use unresolved type params (e.g., TResult)
+            // in the declaring type, causing name mismatches with the actual function definitions
+            // that use resolved types (e.g., System.Int32).
+            var declType = ResolveTypeRefOperand(elemMethod.DeclaringType);
             // Resolve type arguments through active type param map (method-level generics)
             // Must handle complex types containing generic params (ArrayType, GenericInstanceType, etc.)
             var typeArgs = gim.GenericArguments.Select(a => ResolveTypeRefOperand(a)).ToList();
             // Include parameter types in key (matches CollectGenericMethod)
-            var paramSig = string.Join(",", elemMethod.Parameters.Select(p => p.ParameterType.FullName));
+            // Resolve param types too — raw Cecil paramSig may contain unresolved generic params
+            var paramSig = string.Join(",", elemMethod.Parameters.Select(p =>
+                _activeTypeParamMap != null
+                    ? ResolveGenericTypeName(p.ParameterType, _activeTypeParamMap)
+                    : p.ParameterType.FullName));
             var key = MakeGenericMethodKey(declType, elemMethod.Name, typeArgs, paramSig);
 
             if (_genericMethodInstantiations.TryGetValue(key, out var gmInfo))
@@ -1296,6 +1304,10 @@ public partial class IRBuilder
                         var disambigMap = new Dictionary<string, string>();
                         for (int gi = 0; gi < cecilMethod.GenericParameters.Count && gi < typeArgs.Count; gi++)
                             disambigMap[cecilMethod.GenericParameters[gi].Name] = typeArgs[gi];
+                        // Also include type-level params for full resolution of param types like Task<TResult>
+                        if (_activeTypeParamMap != null)
+                            foreach (var (k, v) in _activeTypeParamMap)
+                                disambigMap.TryAdd(k, v);
                         var disambigSuffix = string.Join("_", cecilMethod.Parameters
                             .Select(p => CppNameMapper.MangleTypeName(
                                 ResolveGenericTypeName(p.ParameterType, disambigMap))));

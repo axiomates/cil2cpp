@@ -21,18 +21,26 @@ namespace cil2cpp {
 extern thread_local Task* g_async_iter_current_task;
 
 // ── Non-generic ValueTask (for DisposeAsync) ──
+// Field names match BCL IL: System.Threading.Tasks.ValueTask._obj, _token, _continueOnCapturedContext
 struct ValueTaskVoid {
-    Task* f_task;   // null = default/completed
+    Object* f_obj;                     // IValueTaskSource or Task (null = completed)
+    int16_t f_token;
+    bool f_continueOnCapturedContext;
 };
 
 // ── Non-generic ValueTaskAwaiter ──
+// Field name matches BCL IL: System.Runtime.CompilerServices.ValueTaskAwaiter._value
 struct ValueTaskAwaiterVoid {
-    Task* f_task;   // null = already completed
+    ValueTaskVoid f_value;
 };
 
 // ── AsyncIteratorMethodBuilder ──
+// Field name matches BCL IL: System.Runtime.CompilerServices.AsyncIteratorMethodBuilder._task
+// BCL IL field type is Task<VoidTaskResult>, but generated code uses the concrete generic struct
+// (System_Threading_Tasks_Task_1_VoidTaskResult) which is unrelated to cil2cpp::Task in C++.
+// Use void* to accept any task pointer type without cast errors.
 struct AsyncIteratorMethodBuilder {
-    Int32 f_dummy;  // placeholder (builder is stateless in our impl)
+    void* f_m_task;  // BCL IL: Task<VoidTaskResult> _task → mangled as f_m_task
 };
 
 } // namespace cil2cpp

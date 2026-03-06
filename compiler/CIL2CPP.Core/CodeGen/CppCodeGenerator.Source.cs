@@ -416,9 +416,12 @@ public partial class CppCodeGenerator
         var sb = new StringBuilder();
         EmitSourceFileHeader(sb, "Stubs: unreachable method placeholders (tree-shaking gaps)");
 
-        // Partition: CoreRuntimeTypes methods → discarded (runtime provides them),
-        // everything else → stubs in this file.
-        var (_, stubs) = PartitionMissingMethods(_emittedMethodSignatures);
+        // Partition: CoreRuntimeTypes methods vs everything else.
+        // Both partitions get stub bodies — CoreRuntimeTypes methods can't compile from IL
+        // (struct layout mismatch) but callers in other BCL code still reference them.
+        var (glue, stubs) = PartitionMissingMethods(_emittedMethodSignatures);
+        if (glue.Count > 0)
+            GenerateMissingMethodImpls(sb, glue, "Runtime Type Method Stubs (CoreRuntimeTypes — struct layout prevents IL compilation)");
         if (stubs.Count > 0)
             GenerateMissingMethodImpls(sb, stubs, "Unreachable Method Stubs (tree-shaking gaps — should be eliminated)");
 

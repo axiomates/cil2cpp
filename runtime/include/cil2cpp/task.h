@@ -60,16 +60,18 @@ struct TaskContinuation {
 
 /**
  * TaskAwaiter (value type, stack-allocated).
+ * Field name matches BCL IL: System.Runtime.CompilerServices.TaskAwaiter.m_task
  */
 struct TaskAwaiter {
-    Task* f_task;
+    Task* f_m_task;
 };
 
 /**
  * AsyncTaskMethodBuilder (value type, stack-allocated).
+ * Field name matches BCL IL: System.Runtime.CompilerServices.AsyncTaskMethodBuilder.m_task
  */
 struct AsyncTaskMethodBuilder {
-    Task* f_task;
+    Task* f_m_task;
 };
 
 /** Create a new completed Task (non-generic only). */
