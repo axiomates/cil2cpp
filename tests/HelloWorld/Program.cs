@@ -32,5 +32,7 @@ public class Program
 
         calc.SetResult(42);
         Console.WriteLine(calc.GetResult());
+
+        Console.WriteLine(-10);
     }
 }

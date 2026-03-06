@@ -201,13 +201,18 @@ public static class CppNameMapper
         var backtickIdx = ilTypeName.IndexOf('`');
         if (backtickIdx > 0 && ilTypeName.Contains('<'))
         {
-            var angleBracket = ilTypeName.IndexOf('<');
-            var openTypeName = ilTypeName[..angleBracket];
-            var argsStr = ilTypeName[(angleBracket + 1)..^1];
-            // Use ParseGenericArgs for correct handling of nested generics
-            // (Split(',') breaks on commas inside nested angle brackets)
-            var args = ParseGenericArgs(argsStr);
-            return MangleGenericInstanceTypeName(openTypeName, args);
+            // Find the generic '<' after the backtick, not an earlier '<' from
+            // compiler-generated names like "<InvokeAsync>d__7`1<...>"
+            var angleBracket = ilTypeName.IndexOf('<', backtickIdx);
+            if (angleBracket > 0)
+            {
+                var openTypeName = ilTypeName[..angleBracket];
+                var argsStr = ilTypeName[(angleBracket + 1)..^1];
+                // Use ParseGenericArgs for correct handling of nested generics
+                // (Split(',') breaks on commas inside nested angle brackets)
+                var args = ParseGenericArgs(argsStr);
+                return MangleGenericInstanceTypeName(openTypeName, args);
+            }
         }
 
         return MangleTypeName(ilTypeName);
@@ -310,7 +315,15 @@ public static class CppNameMapper
         var backtickIdx = ilFullName.IndexOf('`');
         if (backtickIdx > 0 && ilFullName.Contains('<') && ilFullName.EndsWith(">"))
         {
-            var angleBracket = ilFullName.IndexOf('<');
+            // Find the generic '<' that comes AFTER the backtick, not an earlier '<' from
+            // compiler-generated names like "<InvokeAsync>d__7`1<...>".
+            // The generic '<' immediately follows the arity suffix (e.g., `1<, `2<).
+            var angleBracket = ilFullName.IndexOf('<', backtickIdx);
+            if (angleBracket < 0)
+            {
+                // No '<' after backtick — not actually a generic instance
+                return MangleTypeName(ilFullName);
+            }
             var openTypeName = ilFullName[..angleBracket];
             var argsStr = ilFullName[(angleBracket + 1)..^1];
             var args = ParseGenericArgs(argsStr);

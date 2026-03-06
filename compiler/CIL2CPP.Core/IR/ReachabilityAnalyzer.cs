@@ -377,7 +377,11 @@ public class ReachabilityAnalyzer
         RegisterInSubtypeIndex(type);
 
         // RTA: virtual dispatch only for CONSTRUCTED types (not merely reachable).
-        // MarkDispatchedOverrides is called from MarkTypeConstructed, not here.
+        // Exception: value types are never "constructed" (stack-allocated, no newobj),
+        // but their interface method overrides ARE statically resolved via constrained. callvirt.
+        // So we must check dispatched overrides when a value type becomes reachable.
+        if (type.IsValueType)
+            MarkDispatchedOverrides(type);
     }
 
     /// <summary>
@@ -543,20 +547,24 @@ public class ReachabilityAnalyzer
 
         _dispatchedVirtualSlots.Add((method.Name, method.Parameters.Count, paramSig, method.DeclaringType));
 
-        // RTA: only check CONSTRUCTED subtypes for virtual dispatch
+        // RTA: check CONSTRUCTED subtypes for virtual dispatch.
+        // Also check REACHABLE value types — value types are never "constructed" (stack-allocated),
+        // but their interface method overrides are statically resolved via constrained. callvirt.
         if (_subtypeIndex.TryGetValue(method.DeclaringType.FullName, out var subtypes))
         {
             foreach (var type in subtypes.ToArray())
             {
-                if (_result.ConstructedTypes.Contains(type))
+                if (_result.ConstructedTypes.Contains(type)
+                    || (type.IsValueType && _result.ReachableTypes.Contains(type)))
                     MarkOverrideIfExists(type, method.Name, method.Parameters.Count, paramSig);
             }
         }
     }
 
     /// <summary>
-    /// When a type becomes CONSTRUCTED, check if it overrides any dispatched virtual slot.
-    /// Called from MarkTypeConstructed — NOT from MarkTypeReachable (key RTA distinction).
+    /// When a type becomes CONSTRUCTED (or REACHABLE for value types), check if it overrides
+    /// any dispatched virtual slot. Called from MarkTypeConstructed and MarkTypeReachable (value types only).
+    /// Value types are never "constructed" but their interface overrides are resolved via constrained. callvirt.
     /// </summary>
     private void MarkDispatchedOverrides(TypeDefinition type)
     {
@@ -669,7 +677,17 @@ public class ReachabilityAnalyzer
     {
         if (method.Parameters.Count == 0)
             return "";
-        return string.Join(",", method.Parameters.Select(p => p.ParameterType.FullName));
+        return string.Join(",", method.Parameters.Select(p =>
+        {
+            // Normalize GenericParameter names (T, TKey, TValue, etc.) to !N format
+            // so ParamSignaturesMatch's generic fallback ("contains '!'") triggers correctly.
+            // Without this, IEqualityComparer<T>.GetHashCode(T) has sig="T" which doesn't match
+            // OrdinalComparer.GetHashCode(String) sig="System.String", and the "!" fallback
+            // doesn't trigger because "T" doesn't contain '!'.
+            if (p.ParameterType is GenericParameter gp)
+                return gp.Type == GenericParameterType.Type ? $"!{gp.Position}" : $"!!{gp.Position}";
+            return p.ParameterType.FullName;
+        }));
     }
 
     private bool IsUserAssembly(TypeDefinition type)

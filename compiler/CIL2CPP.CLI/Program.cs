@@ -110,7 +110,7 @@ class Program
     /// <summary>
     /// Build a .csproj and return the path to the output DLL.
     /// </summary>
-    static FileInfo BuildAndResolve(FileInfo input)
+    static FileInfo BuildAndResolve(FileInfo input, string config = "Release")
     {
         if (!input.Exists)
         {
@@ -124,11 +124,11 @@ class Program
                 $"Expected .csproj file, got '{ext}'. CIL2CPP accepts C# project files as input.");
         }
 
-        Console.WriteLine($"Building {input.Name}...");
+        Console.WriteLine($"Building {input.Name} ({config})...");
 
         var process = new Process();
         process.StartInfo.FileName = "dotnet";
-        process.StartInfo.Arguments = $"build \"{input.FullName}\" --nologo -v q";
+        process.StartInfo.Arguments = $"build \"{input.FullName}\" -c {config} --nologo -v q";
         process.StartInfo.RedirectStandardOutput = true;
         process.StartInfo.RedirectStandardError = true;
         process.StartInfo.UseShellExecute = false;
@@ -146,13 +146,14 @@ class Program
 
         Console.WriteLine("Build succeeded.");
 
-        // Find the output DLL by scanning bin/{Debug,Release}/net*/
+        // Find the output DLL — check the requested config first
         var projectDir = input.DirectoryName!;
         var assemblyName = Path.GetFileNameWithoutExtension(input.Name);
+        var configs = config == "Release" ? new[] { "Release", "Debug" } : new[] { "Debug", "Release" };
 
-        foreach (var config in new[] { "Debug", "Release" })
+        foreach (var cfg in configs)
         {
-            var binDir = Path.Combine(projectDir, "bin", config);
+            var binDir = Path.Combine(projectDir, "bin", cfg);
             if (!Directory.Exists(binDir)) continue;
 
             foreach (var tfmDir in Directory.GetDirectories(binDir))
@@ -180,7 +181,7 @@ class Program
         FileInfo assemblyFile;
         try
         {
-            assemblyFile = BuildAndResolve(input);
+            assemblyFile = BuildAndResolve(input, configName);
         }
         catch (Exception ex)
         {

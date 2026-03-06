@@ -520,7 +520,6 @@ public partial class IRBuilder
 
         // Pass 1.5: Create specialized types for each generic instantiation
         CreateGenericSpecializations();
-        Console.Error.WriteLine($"[tree-shaking] Specialized method keys tracked: {_calledSpecializedMethods.Count}");
 
         // Pass 2: Fill in fields, base types, interfaces
         foreach (var typeDef in _allTypes)
@@ -665,20 +664,7 @@ public partial class IRBuilder
         // Pass 3.4: Convert deferred generic specialization bodies.
         // Must happen AFTER disambiguation (Pass 3.3) so that call sites in generic method
         // bodies resolve to the correct disambiguated function names.
-        var pass34sw = System.Diagnostics.Stopwatch.StartNew();
         ConvertDeferredGenericBodies();
-        pass34sw.Stop();
-
-        // Log generic method compilation stats
-        {
-            var genericMethods = _module.Types.Where(t => t.IsGenericInstance)
-                .SelectMany(t => t.Methods).ToList();
-            var compiled = genericMethods.Count(m => m.BasicBlocks.Count > 0);
-            var total = genericMethods.Count;
-            Console.Error.WriteLine($"[tree-shaking] Generic methods: {compiled} compiled, {total - compiled} skipped (of {total} total)");
-            Console.Error.WriteLine($"[perf] Pass 3.4 ConvertDeferredGenericBodies: {pass34sw.ElapsedMilliseconds}ms, " +
-                $"specMethodKeys={_calledSpecializedMethods.Count}");
-        }
 
         // Post-3.4: Re-evaluate HasCctor for GENERIC types whose cctor body was never compiled.
         // CreateGenericSpecializations sets HasCctor=true when the cctor is in _deferredGenericBodies,
@@ -697,10 +683,21 @@ public partial class IRBuilder
         // Pass 3.5: Create specialized methods for each generic method instantiation
         CreateGenericMethodSpecializations();
 
+        // Pass 3.5b: Drain deferred generic bodies discovered during Pass 3.5.
+        // CreateGenericMethodSpecializations calls EnsureBodyReferencedTypesExist which may
+        // discover new generic types (e.g., AsyncStateMachineBox<TResult,TStateMachine>)
+        // and add their methods to _deferredGenericBodies. These weren't in the queue during
+        // Pass 3.4 because they're only referenced from generic method bodies compiled in Pass 3.5.
+        if (_deferredGenericBodies.Count > 0)
+        {
+            foreach (var irType in _module.Types)
+                BuildVTableRecursive(irType, _vtableBuilt);
+            DisambiguateOverloadedMethods();
+            ConvertDeferredGenericBodies();
+        }
+
         // Pass 3.6: Post-specialization cleanup (demand-driven replaced bulk scanning).
-        // ConvertDeferredGenericBodies (Pass 3.4) already handles demand-driven discovery
-        // via EnsureBodyReferencedTypesExist draining-queue fixpoint.
-        // Just ensure disambiguation is up to date for types created during 3.4/3.5.
+        // Ensure disambiguation is up to date for types created during 3.4/3.5/3.5b.
         DisambiguateOverloadedMethods();
 
         // Pass 3.7: Fix up undisambiguated call sites in already-compiled method bodies.
@@ -784,6 +781,15 @@ public partial class IRBuilder
         // E.g., DateTimeFormatInfo.GetAbbreviatedDayName calls ThrowHelper.ThrowArgumentOutOfRange_Range<DayOfWeek>
         // which is only discovered when the non-generic method body is compiled in Pass 6.
         CreateGenericMethodSpecializations();
+
+        // Pass 6.1b: Drain deferred generic bodies discovered during Pass 6.1.
+        if (_deferredGenericBodies.Count > 0)
+        {
+            foreach (var irType in _module.Types)
+                BuildVTableRecursive(irType, _vtableBuilt);
+            DisambiguateOverloadedMethods();
+            ConvertDeferredGenericBodies();
+        }
 
         // Pass 6.5: Discover types referenced by compiled method bodies but not yet in the module
         // This can happen when BCL methods reference types only as parameters/locals/fields

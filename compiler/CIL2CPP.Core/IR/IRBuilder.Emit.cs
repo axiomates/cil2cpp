@@ -204,6 +204,29 @@ public partial class IRBuilder
                 right = $"(int32_t){right}";
         }
 
+        // Pointer arithmetic (+, -): C++ doesn't allow arithmetic on void* (unknown size).
+        // IL treats native int and pointers interchangeably; add/sub on native int is byte-level.
+        // Cast void* operands to uint8_t* so pointer arithmetic works at byte granularity.
+        if (op is "+" or "-")
+        {
+            bool leftIsPtr = leftEntry.IsPointer
+                || (method != null && IsPointerTypedOperand(left, method));
+            bool rightIsPtr = rightEntry.IsPointer
+                || (method != null && IsPointerTypedOperand(right, method));
+            // Cast pointer operands to uint8_t* for byte-level arithmetic.
+            // Only cast when the other operand is not also a pointer (ptr + int, not ptr + ptr).
+            if (leftIsPtr && !rightIsPtr)
+                left = $"(uint8_t*){left}";
+            else if (rightIsPtr && !leftIsPtr)
+                right = $"(uint8_t*){right}";
+            else if (leftIsPtr && rightIsPtr && op == "-")
+            {
+                // ptr - ptr: result is ptrdiff_t, cast both to uint8_t* for byte difference
+                left = $"(uint8_t*){left}";
+                right = $"(uint8_t*){right}";
+            }
+        }
+
         // Arithmetic ops (*, /, %) on pointer operands: C++ doesn't allow arithmetic
         // on pointer types (MSVC C2296). IL treats native int and pointers interchangeably
         // (e.g., charEnd_ptr / 2 to get element count). Cast to intptr_t.
@@ -494,10 +517,12 @@ public partial class IRBuilder
             var ptrEntry = stack.PopEntry();
             var ptr = ptrEntry.Expr.Length > 0 ? ptrEntry.Expr : "nullptr";
             var tmp = $"__t{tempCounter++}";
-            // HACK: pointer type unknown at this point — decltype preserves it
+            // void* arithmetic is invalid in C++ — cast through uint8_t* for byte-level offset
+            var ptrExpr = (ptrEntry.CppType == "void*") ? $"(uint8_t*){ptr}" : ptr;
+            var resultCast = (ptrEntry.CppType == "void*") ? $"(void*)" : "";
             block.Instructions.Add(new IRRawCpp
             {
-                Code = $"auto {tmp} = {ptr} + {offset};",
+                Code = $"auto {tmp} = {resultCast}({ptrExpr} + {offset});",
                 ResultVar = tmp,
                 ResultTypeCpp = ptrEntry.CppType,
             });
@@ -2459,6 +2484,7 @@ public partial class IRBuilder
         }
 
         // Override or add virtual methods
+        bool isCoreRuntime = CoreRuntimeTypes.Contains(irType.ILFullName);
         foreach (var method in irType.Methods.Where(m => m.IsVirtual))
         {
             // newslot methods always create a new vtable slot (C# 'new virtual')
@@ -2480,11 +2506,22 @@ public partial class IRBuilder
                 existing = irType.VTable.LastOrDefault(e => e.MethodName == method.Name && e.Method == null);
             }
 
+            // For CoreRuntimeTypes, don't replace existing vtable entries with bodyless overrides.
+            // The runtime provides implementations via extern "C" named after the ORIGINAL
+            // declaring type (e.g., System_Reflection_MemberInfo_get_Name), not the overriding
+            // type (System_RuntimeType_get_Name). Keeping the original method reference in the
+            // vtable preserves the correct CppName for codegen to find the extern "C" function.
+            bool skipOverride = isCoreRuntime && !method.IsAbstract && method.BasicBlocks.Count == 0
+                && !method.IsConstructor && !method.IsStaticConstructor && existing != null;
+
             if (existing != null)
             {
-                // Override
-                existing.Method = method;
-                existing.DeclaringType = irType;
+                if (!skipOverride)
+                {
+                    // Override
+                    existing.Method = method;
+                    existing.DeclaringType = irType;
+                }
                 method.VTableSlot = existing.Slot;
             }
             else

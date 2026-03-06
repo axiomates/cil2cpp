@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <cil2cpp/object.h>
 #include <cil2cpp/string.h>
+#include <cil2cpp/exception.h>
 
 // Value types used by CoreRuntimeTypes method signatures.
 // These must be ABI-compatible with the generated struct definitions.
@@ -43,6 +44,8 @@ typedef int32_t Interop_BOOL;
 struct System_RuntimeTypeHandle { void* f_m_type; };
 struct System_RuntimeMethodHandleInternal { void* f_value; };
 struct System_RuntimeMethodHandle { void* f_m_value; };
+struct System_RuntimeFieldHandleInternal { void* f_value; };
+struct System_RuntimeFieldHandle { System_RuntimeFieldHandleInternal f_m_fieldHandle; };
 struct System_Reflection_MetadataToken { int32_t f_Value; };
 struct System_Reflection_MetadataImport { intptr_t f_m_metadataImport2; };
 struct System_Threading_ThreadHandle { void* f_m_ptr; };
@@ -104,6 +107,7 @@ extern "C" void* System_DefaultBinder_SelectProperty(void* /*__this*/, System_Re
 
 // ===== System.Delegate =====
 extern "C" void* System_Delegate_FindMethodHandle(void* /*__this*/) { return nullptr; }
+extern "C" void* System_Delegate_get_Target(void* /*__this*/) { return nullptr; }
 extern "C" bool System_Delegate_InternalEqualMethodHandles(void* /*left*/, void* /*right*/) { return false; }
 
 // ===== System.Enum =====
@@ -121,6 +125,11 @@ extern "C" bool System_Exception_IsImmutableAgileException(void* /*e*/) { return
 extern "C" void System_Exception_PrepareForForeignExceptionRaise() { }
 extern "C" void System_Exception_RestoreDispatchState(void* /*__this*/, void* /*dispatchState*/) { }
 extern "C" void System_Exception_SaveStackTracesFromDeepCopy(void* /*exception*/, void* /*currentStackTrace*/, void* /*dynamicMethodArray*/) { }
+extern "C" void System_Exception_SetCurrentStackTrace(void* /*__this*/) { }
+extern "C" void* System_Exception_SetRemoteStackTrace(void* __this, void* stackTrace) {
+    if (__this) static_cast<cil2cpp::Exception*>(__this)->f_remoteStackTraceString = static_cast<cil2cpp::String*>(stackTrace);
+    return __this;
+}
 extern "C" void* System_Exception_ToString(void* /*__this*/) { return nullptr; }
 
 // ===== System.Object =====
@@ -146,6 +155,8 @@ extern "C" void* System_Reflection_FieldInfo_get_FieldType(void* /*__this*/) { r
 extern "C" void* System_Reflection_FieldInfo_GetRawConstantValue(void* /*__this*/) { return nullptr; }
 extern "C" void* System_Reflection_FieldInfo_GetValue(void* /*__this*/, void* /*obj*/) { return nullptr; }
 extern "C" void System_Reflection_FieldInfo_SetValue__System_Object_System_Object_System_Reflection_BindingFlags_System_Reflection_Binder_System_Globalization_CultureInfo(void* /*__this*/, void* /*obj*/, void* /*value*/, System_Reflection_BindingFlags invokeAttr, void* /*binder*/, void* /*culture*/) { }
+extern "C" System_RuntimeFieldHandle System_Reflection_FieldInfo_get_FieldHandle(void* /*__this*/) { return {}; }
+extern "C" bool System_Reflection_FieldInfo_get_IsStatic(void* /*__this*/) { return false; }
 
 // ===== System.Reflection.MemberInfo =====
 extern "C" void System_Reflection_MemberInfo__ctor(void* /*__this*/) { }
@@ -198,6 +209,8 @@ extern "C" int32_t System_Reflection_MethodInfo_get_GenericParameterCount(void* 
 extern "C" void* System_Reflection_MethodInfo_get_ReturnType(void* /*__this*/) { return nullptr; }
 extern "C" void* System_Reflection_MethodInfo_GetGenericMethodDefinition(void* /*__this*/) { return nullptr; }
 extern "C" void* System_Reflection_MethodInfo_MakeGenericMethod(void* /*__this*/, void* /*typeArguments*/) { return nullptr; }
+extern "C" void* System_Reflection_MethodInfo_get_ReturnTypeCustomAttributes(void* /*__this*/) { return nullptr; }
+extern "C" void* System_Reflection_MethodInfo_GetBaseDefinition(void* /*__this*/) { return nullptr; }
 
 // ===== System.Reflection.ParameterInfo =====
 extern "C" void System_Reflection_ParameterInfo__ctor(void* /*__this*/) { }
@@ -499,10 +512,16 @@ extern "C" intptr_t System_Runtime_InteropServices_Marshalling_SafeHandleMarshal
 extern "C" void System_Runtime_InteropServices_Marshalling_SafeHandleMarshaller_1_ManagedToUnmanagedIn_Microsoft_Win32_SafeHandles_SafeTokenHandle_Free(void* /*__this*/) { }
 
 // ===== System.Threading.CancellationTokenSource =====
+extern "C" void System_Threading_CancellationTokenSource__ctor(void* /*__this*/) { }
 extern "C" bool System_Threading_CancellationTokenSource_get_IsCancellationCompleted(void* /*__this*/) { return false; }
 extern "C" bool System_Threading_CancellationTokenSource_get_IsCancellationRequested(void* /*__this*/) { return false; }
+extern "C" void System_Threading_CancellationTokenSource_NotifyCancellation(void* /*__this*/, bool /*throwOnFirstException*/) { }
+struct System_Threading_CancellationTokenRegistration { int64_t f_id; void* f_node; };
+extern "C" System_Threading_CancellationTokenRegistration System_Threading_CancellationTokenSource_Register(void* /*__this*/, void* /*callback*/, void* /*stateForCallback*/, void* /*syncContext*/, void* /*executionContext*/) { return {}; }
 
 // ===== System.Threading.Thread =====
+extern "C" void System_Threading_Thread__ctor__System_Threading_ParameterizedThreadStart(void* /*__this*/, void* /*start*/) { }
+extern "C" void System_Threading_Thread__ctor__System_Threading_ThreadStart(void* /*__this*/, void* /*start*/) { }
 extern "C" void System_Threading_Thread__InformThreadNameChange_g____PInvoke_26_0(System_Threading_ThreadHandle __t_native, void* /*__name_native*/, int32_t __len_native) { }
 extern "C" bool System_Threading_Thread_get_IsBackground(void* /*__this*/) { return false; }
 extern "C" bool System_Threading_Thread_get_IsThreadPoolThread(void* /*__this*/) { return false; }
@@ -512,6 +531,7 @@ extern "C" System_Threading_ThreadHandle System_Threading_Thread_GetNativeHandle
 extern "C" void System_Threading_Thread_ResetThreadPoolThread(void* /*__this*/) { }
 extern "C" void System_Threading_Thread_ResetThreadPoolThreadSlow(void* /*__this*/) { }
 extern "C" void System_Threading_Thread_set_IsBackground(void* /*__this*/, bool value) { }
+extern "C" void System_Threading_Thread_set_Name(void* /*__this*/, void* /*value*/) { }
 extern "C" void System_Threading_Thread_set_IsThreadPoolThread(void* /*__this*/, bool value) { }
 extern "C" void System_Threading_Thread_set_Priority(void* /*__this*/, System_Threading_ThreadPriority value) { }
 extern "C" void System_Threading_Thread_SetThreadPoolWorkerThreadName(void* /*__this*/) { }
@@ -519,6 +539,8 @@ extern "C" void System_Threading_Thread_Start__System_Boolean_System_Boolean(voi
 extern "C" void System_Threading_Thread_StartCore(void* /*__this*/) { }
 extern "C" void System_Threading_Thread_StartInternal(System_Threading_ThreadHandle t, int32_t stackSize, int32_t priority, void* /*pThreadName*/) { }
 extern "C" void System_Threading_Thread_ThreadNameChanged(void* /*__this*/, void* /*value*/) { }
+extern "C" void System_Threading_Thread_UnsafeStart(void* /*__this*/) { }
+extern "C" void System_Threading_Thread_UnsafeStart__System_Object(void* /*__this*/, void* /*parameter*/) { }
 extern "C" Interop_BOOL System_Threading_Thread_YieldInternal() { return {}; }
 
 // ===== System.Type =====
@@ -537,6 +559,7 @@ extern "C" void* System_Type_get_GenericTypeArguments(void* /*__this*/) { return
 extern "C" System_Guid System_Type_get_GUID(void* /*__this*/) { return {}; }
 extern "C" bool System_Type_get_HasElementType(void* /*__this*/) { return false; }
 extern "C" bool System_Type_get_IsArray(void* /*__this*/) { return false; }
+extern "C" bool System_Type_IsArrayImpl(void* /*__this*/) { return false; }
 extern "C" bool System_Type_get_IsByRef(void* /*__this*/) { return false; }
 extern "C" bool System_Type_get_IsByRefLike(void* /*__this*/) { return false; }
 extern "C" bool System_Type_get_IsClass(void* /*__this*/) { return false; }
@@ -580,6 +603,7 @@ extern "C" void* System_Type_GetEvents(void* /*__this*/) { return nullptr; }
 extern "C" void* System_Type_GetEvents__System_Reflection_BindingFlags(void* /*__this*/, System_Reflection_BindingFlags bindingAttr) { return nullptr; }
 extern "C" void* System_Type_GetField__System_String(void* /*__this*/, void* /*name*/) { return nullptr; }
 extern "C" void* System_Type_GetField__System_String_System_Reflection_BindingFlags(void* /*__this*/, void* /*name*/, System_Reflection_BindingFlags bindingAttr) { return nullptr; }
+extern "C" void* System_Type_GetFields(void* /*__this*/) { return nullptr; }
 extern "C" void* System_Type_GetFields__System_Reflection_BindingFlags(void* /*__this*/, System_Reflection_BindingFlags bindingAttr) { return nullptr; }
 extern "C" void* System_Type_GetFunctionPointerCallingConventions(void* /*__this*/) { return nullptr; }
 extern "C" void* System_Type_GetFunctionPointerParameterTypes(void* /*__this*/) { return nullptr; }
@@ -606,6 +630,7 @@ extern "C" void* System_Type_GetMethod__System_String_System_Type__(void* /*__th
 extern "C" void* System_Type_GetMethod__System_String_System_Type___System_Reflection_ParameterModifier__(void* /*__this*/, void* /*name*/, void* /*types*/, void* /*modifiers*/) { return nullptr; }
 extern "C" void* System_Type_GetMethodImpl__System_String_System_Int32_System_Reflection_BindingFlags_System_Reflection_Binder_System_Reflection_CallingConventions_System_Type___System_Reflection_ParameterModifier__(void* /*__this*/, void* /*name*/, int32_t genericParameterCount, System_Reflection_BindingFlags bindingAttr, void* /*binder*/, System_Reflection_CallingConventions callConvention, void* /*types*/, void* /*modifiers*/) { return nullptr; }
 extern "C" void* System_Type_GetMethodImpl__System_String_System_Reflection_BindingFlags_System_Reflection_Binder_System_Reflection_CallingConventions_System_Type___System_Reflection_ParameterModifier__(void* /*__this*/, void* /*name*/, System_Reflection_BindingFlags bindingAttr, void* /*binder*/, System_Reflection_CallingConventions callConvention, void* /*types*/, void* /*modifiers*/) { return nullptr; }
+extern "C" void* System_Type_GetMethods(void* /*__this*/) { return nullptr; }
 extern "C" void* System_Type_GetMethods__System_Reflection_BindingFlags(void* /*__this*/, System_Reflection_BindingFlags bindingAttr) { return nullptr; }
 extern "C" void* System_Type_GetNestedType__System_String_System_Reflection_BindingFlags(void* /*__this*/, void* /*name*/, System_Reflection_BindingFlags bindingAttr) { return nullptr; }
 extern "C" void* System_Type_GetNestedTypes__System_Reflection_BindingFlags(void* /*__this*/, System_Reflection_BindingFlags bindingAttr) { return nullptr; }

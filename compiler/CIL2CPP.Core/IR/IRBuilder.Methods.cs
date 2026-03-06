@@ -1172,9 +1172,13 @@ public partial class IRBuilder
                     break;
                 // Save stack top as merge variable for branch target (dup+brtrue pattern)
                 // Only save if the stack top is a valid C++ lvalue (variable name, not a literal)
-                if (stack.Count > 0 && !branchMergeVars.ContainsKey(target.Offset)
-                    && IsValidMergeVariable(stack.Peek().Expr))
-                    branchMergeVars[target.Offset] = stack.Peek().Expr;
+                if (stack.Count > 0 && IsValidMergeVariable(stack.Peek().Expr))
+                {
+                    if (!branchMergeVars.ContainsKey(target.Offset))
+                        branchMergeVars[target.Offset] = stack.Peek().Expr;
+                    else if (branchMergeVars[target.Offset] != stack.Peek().Expr)
+                        block.Instructions.Add(new IRAssign { Target = branchMergeVars[target.Offset], Value = stack.Peek().Expr });
+                }
                 // Save full stack snapshot for branch target (ternary pattern support).
                 // After popping the condition, the remaining stack is what the target sees.
                 if (stack.Count > 0 && !branchTargetStacks.ContainsKey(target.Offset))
@@ -1198,9 +1202,13 @@ public partial class IRBuilder
                     break;
                 // Save stack top as merge variable for branch target (dup+brfalse pattern)
                 // Only save if the stack top is a valid C++ lvalue (variable name, not a literal)
-                if (stack.Count > 0 && !branchMergeVars.ContainsKey(target.Offset)
-                    && IsValidMergeVariable(stack.Peek().Expr))
-                    branchMergeVars[target.Offset] = stack.Peek().Expr;
+                if (stack.Count > 0 && IsValidMergeVariable(stack.Peek().Expr))
+                {
+                    if (!branchMergeVars.ContainsKey(target.Offset))
+                        branchMergeVars[target.Offset] = stack.Peek().Expr;
+                    else if (branchMergeVars[target.Offset] != stack.Peek().Expr)
+                        block.Instructions.Add(new IRAssign { Target = branchMergeVars[target.Offset], Value = stack.Peek().Expr });
+                }
                 // Save full stack snapshot for branch target (ternary pattern support)
                 if (stack.Count > 0 && !branchTargetStacks.ContainsKey(target.Offset))
                     branchTargetStacks[target.Offset] = stack.Reverse().ToArray();

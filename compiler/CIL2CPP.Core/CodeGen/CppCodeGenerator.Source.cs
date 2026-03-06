@@ -201,7 +201,14 @@ public partial class CppCodeGenerator
             if (!emittedTypeInfo.Add(type.CppName)) continue;
             if (type.IsRuntimeProvided && IRBuilder.CoreRuntimeTypes.Contains(type.ILFullName))
             {
-                // Emit minimal TypeInfo stub for core runtime types (Object, String, etc.)
+                // Core runtime types with vtable entries (constructed, used for virtual dispatch)
+                // need full TypeInfo so runtime-created instances can dispatch correctly.
+                if (type.VTable.Count > 0)
+                {
+                    GenerateTypeInfo(sb, type);
+                    continue;
+                }
+                // Emit minimal TypeInfo stub for core runtime types without vtables
                 // (other types may reference these as base_type)
                 var baseName = type.BaseType != null && emittedTypeInfo.Contains(type.BaseType.CppName)
                     ? $"&{type.BaseType.CppName}_TypeInfo" : "&System_Object_TypeInfo";
@@ -391,8 +398,7 @@ public partial class CppCodeGenerator
         {
             if (method.IsInternalCall || method.IsPInvoke) continue;
             if (IRBuilder.SkipAllMethodsTypes.Contains(type.ILFullName)) continue;
-            if (!method.IsStatic
-                && IRBuilder.CoreRuntimeTypes.Contains(type.ILFullName)) continue;
+            if (!method.IsStatic && IRBuilder.CoreRuntimeTypes.Contains(type.ILFullName)) continue;
             if (method.IsAbstract) continue;
             if (method.BasicBlocks.Count == 0) continue;
             if (method.HasICallMapping) continue;
@@ -400,7 +406,6 @@ public partial class CppCodeGenerator
             if (HasGenericBodyTypeConflict(type, method)) continue;
             if (CallsUndeclaredFunction(method)) continue;
             if (!_emittedMethodSignatures.Add(method.GetCppSignature())) continue;
-
             // Direct render — compile from IL
             GenerateMethodImpl(sb, method);
         }
@@ -580,8 +585,17 @@ public partial class CppCodeGenerator
 
                 // Classify: runtime-provided types → glue; everything else → stub
                 var typeName = irMethod.DeclaringType?.ILFullName ?? "";
-                if (IRBuilder.CoreRuntimeTypes.Contains(typeName)
-                    || IRBuilder.SkipAllMethodsTypes.Contains(typeName)
+                if (IRBuilder.CoreRuntimeTypes.Contains(typeName))
+                {
+                    // CoreRuntimeType methods are declared as extern "C" in the header
+                    // (by GenerateMissingMethodStubs). Generating stub bodies would conflict
+                    // with the extern "C" definitions in core_methods.cpp (LNK2005).
+                    // Skip ALL CoreRuntimeType stubs — missing impls surface as linker errors
+                    // and should be added to core_methods.cpp.
+                    _emittedMethodSignatures.Add(sig);
+                    continue;
+                }
+                else if (IRBuilder.SkipAllMethodsTypes.Contains(typeName)
                     || IRBuilder.ClrInternalTypeNames.Contains(typeName))
                 {
                     glue.Add(irMethod);
@@ -831,7 +845,9 @@ public partial class CppCodeGenerator
         }
         if (!type.IsInterface)
             sb.AppendLine($"    .instance_size = {instanceSize},");
-        // .element_size always 0 for non-array types — omit
+        // Value types need element_size for array element access (array_get_element_ptr)
+        if (type.IsValueType && !type.IsInterface)
+            sb.AppendLine($"    .element_size = {instanceSize},");
         sb.AppendLine($"    .flags = {flagsStr},");
         if (vtableExpr != "nullptr")
             sb.AppendLine($"    .vtable = {vtableExpr},");
@@ -901,11 +917,11 @@ public partial class CppCodeGenerator
         // (variables declared inside one { } label scope can't be used in another)
         // Also track cross-scope pointer vars for explicit cast wrapping below.
         Dictionary<string, string>? crossScopePtrVars = null;
+        // Determine temp var types for cross-scope declarations and void* arithmetic fix
+        var tempVarTypes = DetermineTempVarTypes(allInstructions, method);
         if (hasLabels)
         {
             var crossScopeVars = FindCrossScopeVariables(allInstructions);
-            // Determine actual types from IRCall.ResultTypeCpp for each temp var
-            var tempVarTypes = DetermineTempVarTypes(allInstructions, method);
             crossScopePtrVars = new Dictionary<string, string>();
             foreach (var varName in crossScopeVars)
             {
@@ -993,6 +1009,21 @@ public partial class CppCodeGenerator
                 }
 
                 var code = instr.ToCpp();
+
+                // Fix void* pointer arithmetic: C++ doesn't allow arithmetic on void*.
+                // IL treats native int and void* interchangeably for add/sub (byte-level).
+                // Cast void* operands to uint8_t* so the arithmetic compiles.
+                if (instr is IRBinaryOp binOp2 && binOp2.Op is "+" or "-")
+                {
+                    var leftType = tempVarTypes.GetValueOrDefault(binOp2.Left);
+                    var rightType = tempVarTypes.GetValueOrDefault(binOp2.Right);
+                    if (leftType == "void*" || rightType == "void*")
+                    {
+                        var fixedLeft = leftType == "void*" ? $"(uint8_t*){binOp2.Left}" : binOp2.Left;
+                        var fixedRight = rightType == "void*" ? $"(uint8_t*){binOp2.Right}" : binOp2.Right;
+                        code = $"{binOp2.ResultVar} = {fixedLeft} {binOp2.Op} {fixedRight};";
+                    }
+                }
 
                 // Replace calls to undeclared SIMD functions with default values.
                 // These calls are always in feature-switch-guarded dead branches
@@ -1471,6 +1502,17 @@ public partial class CppCodeGenerator
         if (method.IsAbstract || method.BasicBlocks.Count == 0)
             return "nullptr";
 
+        return BuildMethodPointerCast(method);
+    }
+
+    /// <summary>
+    /// Build a typed function pointer cast expression for a method.
+    /// Unlike GetTypedMethodPointerCast, this does NOT check IsAbstract/BasicBlocks.
+    /// Used for CoreRuntimeType vtable entries where the extern "C" function exists
+    /// in the runtime but the IR method has no compiled body.
+    /// </summary>
+    private string BuildMethodPointerCast(IRMethod method)
+    {
         // Use actual declared parameter types for the cast so it matches the function
         // declaration — needed for overload resolution with MSVC.
         // Only sanitize IL function pointer types (contain parentheses) to void*.
@@ -1545,12 +1587,66 @@ public partial class CppCodeGenerator
         }
 
         var constructedTypes = _module.ConstructedTypes;
+
+        // Pre-pass: collect extern "C" forward declarations needed for CoreRuntimeType vtable entries.
+        // CoreRuntimeType methods (e.g., System_Reflection_MemberInfo_get_Name) are defined in
+        // core_methods.cpp but not declared in the generated header. We need forward declarations
+        // for them so they can be referenced in vtable arrays.
+        var coreRuntimeExternDecls = new HashSet<string>();
+
         bool any = false;
         foreach (var type in userTypes)
         {
-            // Skip core runtime types (Object, String) but generate vtables for non-core (Task, Thread)
-            var isCoreRuntime = type.IsRuntimeProvided && IRBuilder.CoreRuntimeTypes.Contains(type.ILFullName);
-            if (type.IsInterface || type.IsDelegate || isCoreRuntime || type.VTable.Count == 0) continue;
+            if (type.IsInterface || type.IsDelegate || type.VTable.Count == 0) continue;
+            // Skip VTable for non-constructed types (no instances → no virtual dispatch)
+            if (constructedTypes.Count > 0 && !constructedTypes.Contains(type.ILFullName)
+                && !_referencedTypeInfoNames.Contains(type.CppName)) continue;
+
+            // Scan vtable entries for CoreRuntimeType methods that need extern "C" decls.
+            // This covers both abstract methods (base declarations) and non-abstract bodyless
+            // methods (newslot declarations on CoreRuntimeTypes like Type.get_IsClass).
+            foreach (var e in type.VTable)
+            {
+                if (e.Method == null) continue;
+                var declType = e.Method.DeclaringType;
+                if (declType == null || !IRBuilder.CoreRuntimeTypes.Contains(declType.ILFullName)) continue;
+                // Only need extern "C" for methods that aren't already declared
+                if (_declaredFunctionNames.Contains(e.Method.CppName)) continue;
+                // Only for methods without compiled bodies (runtime-provided implementations)
+                if (!e.Method.IsAbstract && e.Method.BasicBlocks.Count > 0) continue;
+                // Build extern "C" declaration matching core_methods.cpp signature (void* params)
+                var retCpp = e.Method.ReturnTypeCpp ?? "void";
+                // Simplify: use void* for all pointer/object params, keep value types
+                var paramList = new List<string>();
+                if (!e.Method.IsStatic) paramList.Add("void*"); // this
+                foreach (var p in e.Method.Parameters)
+                {
+                    // core_methods.cpp uses void* for all reference types
+                    var ptype = p.CppTypeName;
+                    if (ptype.EndsWith("*") || ptype == "cil2cpp::Object*" || ptype == "cil2cpp::String*")
+                        paramList.Add("void*");
+                    else
+                        paramList.Add(ptype);
+                }
+                var retType = retCpp.EndsWith("*") ? "void*" : retCpp;
+                var decl = $"extern \"C\" {retType} {e.Method.CppName}({string.Join(", ", paramList)});";
+                coreRuntimeExternDecls.Add(decl);
+                _declaredFunctionNames.Add(e.Method.CppName);
+            }
+        }
+
+        // Emit extern "C" forward declarations for CoreRuntimeType methods
+        if (coreRuntimeExternDecls.Count > 0)
+        {
+            sb.AppendLine("// Forward declarations for CoreRuntimeType extern \"C\" methods (defined in core_methods.cpp)");
+            foreach (var decl in coreRuntimeExternDecls.OrderBy(d => d))
+                sb.AppendLine(decl);
+            sb.AppendLine();
+        }
+
+        foreach (var type in userTypes)
+        {
+            if (type.IsInterface || type.IsDelegate || type.VTable.Count == 0) continue;
             // Skip VTable for non-constructed types (no instances → no virtual dispatch)
             if (constructedTypes.Count > 0 && !constructedTypes.Contains(type.ILFullName)
                 && !_referencedTypeInfoNames.Contains(type.CppName)) continue;
@@ -1587,12 +1683,18 @@ public partial class CppCodeGenerator
                 if (e.Method != null && !e.Method.IsAbstract)
                 {
                     // If the method's declaring type is a core runtime type or not in generated types,
-                    // the C++ function won't exist — use fallback
+                    // check if the function is declared (extern "C" from runtime), otherwise use fallback
                     var declType = e.Method.DeclaringType;
                     var isDeclCoreRuntime = declType != null && declType.IsRuntimeProvided
                         && IRBuilder.CoreRuntimeTypes.Contains(declType.ILFullName);
                     if (declType != null && (isDeclCoreRuntime || !generatedMethodTypes.Contains(declType.CppName)))
+                    {
+                        if (_declaredFunctionNames.Contains(e.Method.CppName))
+                            return GetTypedMethodPointerCast(e.Method);
+                        if (parentVTableEntries.TryGetValue(idx, out var parentFallback))
+                            return parentFallback;
                         return ObjectMethodFallbacks.GetValueOrDefault(e.MethodName, "nullptr");
+                    }
                     // Check if the function was actually declared in the header
                     if (!_declaredFunctionNames.Contains(e.Method.CppName))
                     {
@@ -1603,6 +1705,18 @@ public partial class CppCodeGenerator
                     }
                     return GetTypedMethodPointerCast(e.Method);
                 }
+
+                // Abstract or bodyless method on CoreRuntimeType — use the extern "C" function
+                if (e.Method != null)
+                {
+                    var declType = e.Method.DeclaringType;
+                    if (declType != null && IRBuilder.CoreRuntimeTypes.Contains(declType.ILFullName)
+                        && _declaredFunctionNames.Contains(e.Method.CppName))
+                    {
+                        return BuildMethodPointerCast(e.Method);
+                    }
+                }
+
                 // Method not assigned — try parent fallback
                 if (parentVTableEntries.TryGetValue(idx, out var inherited))
                     return inherited;
@@ -1629,7 +1743,9 @@ public partial class CppCodeGenerator
         foreach (var type in userTypes)
         {
             var isCoreRuntime = type.IsRuntimeProvided && IRBuilder.CoreRuntimeTypes.Contains(type.ILFullName);
-            if (type.IsInterface || isCoreRuntime || type.Interfaces.Count == 0) continue;
+            // Skip CoreRuntimeTypes that don't have vtables (minimal stubs), but allow those
+            // with vtables (constructed types that need interface dispatch)
+            if (type.IsInterface || (isCoreRuntime && type.VTable.Count == 0) || type.Interfaces.Count == 0) continue;
             if (!any)
             {
                 sb.AppendLine("// ===== Interface Data =====");
@@ -1657,7 +1773,7 @@ public partial class CppCodeGenerator
         foreach (var type in userTypes)
         {
             var isCoreRt2 = type.IsRuntimeProvided && IRBuilder.CoreRuntimeTypes.Contains(type.ILFullName);
-            if (type.IsInterface || isCoreRt2 || type.InterfaceImpls.Count == 0) continue;
+            if (type.IsInterface || (isCoreRt2 && type.VTable.Count == 0) || type.InterfaceImpls.Count == 0) continue;
             foreach (var impl in type.InterfaceImpls)
             {
                 for (int mi = 0; mi < impl.MethodImpls.Count; mi++)
@@ -1723,7 +1839,7 @@ public partial class CppCodeGenerator
         foreach (var type in userTypes)
         {
             var isCoreRt = type.IsRuntimeProvided && IRBuilder.CoreRuntimeTypes.Contains(type.ILFullName);
-            if (type.IsInterface || isCoreRt || type.InterfaceImpls.Count == 0) continue;
+            if (type.IsInterface || (isCoreRt && type.VTable.Count == 0) || type.InterfaceImpls.Count == 0) continue;
             // NOTE: Previously skipped non-constructed types ("no instances → no interface dispatch").
             // WRONG: derived instances use base type interface vtables via type_get_interface_vtable's
             // base_type chain walk. Must emit for ALL types with InterfaceImpls.

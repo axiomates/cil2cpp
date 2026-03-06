@@ -23,6 +23,14 @@ public partial class IRBuilder
     private readonly HashSet<string> _calledSpecializedMethods = new();
 
     /// <summary>
+    /// Methods that were skipped during CreateGenericSpecializations because their specKey
+    /// wasn't in _calledSpecializedMethods at that time. If body compilation later adds
+    /// the key, these methods can be recovered and compiled.
+    /// </summary>
+    private readonly List<(string SpecKey, MethodDefinition CecilMethod, IRMethod IrMethod,
+        Dictionary<string, string> TypeParamMap)> _skippedSpecializedMethods = new();
+
+    /// <summary>
     /// Check if any constructed type inherits from or implements the given generic type.
     /// If so, virtual methods on this type may be needed for vtable dispatch.
     /// Uses the IL full name of the specialization (e.g., "System.Collections.Generic.IList`1&lt;System.String&gt;").
@@ -94,6 +102,29 @@ public partial class IRBuilder
     }
 
     /// <summary>
+    /// Build a specialized method key from an open generic type method call.
+    /// Used when scanning open generic bodies where the declaring type has unresolved
+    /// generic parameters (e.g., Dictionary`2 calling FindValue on itself).
+    /// </summary>
+    private string? TryBuildSpecKeyFromOpenType(
+        MethodReference methodRef, TypeReference declType, Dictionary<string, string> typeParamMap)
+    {
+        if (!declType.HasGenericParameters) return null;
+
+        var openName = declType.FullName;
+        var resolvedArgs = new List<string>();
+        foreach (var gp in declType.GenericParameters)
+        {
+            if (typeParamMap.TryGetValue(gp.Name, out var resolved))
+                resolvedArgs.Add(resolved);
+            else
+                return null; // can't fully resolve
+        }
+        var args = string.Join(",", resolvedArgs);
+        return $"{openName}<{args}>::{methodRef.Name}/{methodRef.Parameters.Count}";
+    }
+
+    /// <summary>
     /// Construct a unique key for a generic method instantiation.
     /// Includes parameter types to distinguish overloads (e.g. GetReference(Span) vs GetReference(ReadOnlySpan)).
     /// Shared between scanning (CollectGenericMethod) and call emission (EmitMethodCall).
@@ -109,7 +140,9 @@ public partial class IRBuilder
     private static string MangleGenericMethodName(string declaringType, string methodName, List<string> typeArgs)
     {
         var typeCppName = CppNameMapper.MangleTypeName(declaringType);
-        var argParts = string.Join("_", typeArgs.Select(CppNameMapper.MangleTypeName));
+        // Use MangleTypeNameClean for type args to handle nested generics correctly
+        // (MangleTypeName converts '>' to '_', producing double underscores at arg boundaries)
+        var argParts = string.Join("_", typeArgs.Select(CppNameMapper.MangleTypeNameClean));
         return $"{typeCppName}_{CppNameMapper.MangleTypeName(methodName)}_{argParts}";
     }
 
@@ -627,6 +660,32 @@ public partial class IRBuilder
                         if (resolvedKey != null)
                             _calledSpecializedMethods.Add(resolvedKey);
                     }
+                    else if (typeParamMap.Count > 0)
+                    {
+                        // Open generic body calling another method on the same open type.
+                        var declType = methodRef.DeclaringType;
+                        TypeReference? resolvedDecl = null;
+                        if (declType.HasGenericParameters)
+                        {
+                            resolvedDecl = declType;
+                        }
+                        else
+                        {
+                            try
+                            {
+                                var resolved = declType.Resolve();
+                                if (resolved?.HasGenericParameters == true)
+                                    resolvedDecl = resolved;
+                            }
+                            catch { /* ignore resolve failures */ }
+                        }
+                        if (resolvedDecl != null)
+                        {
+                            var openKey = TryBuildSpecKeyFromOpenType(methodRef, resolvedDecl, typeParamMap);
+                            if (openKey != null)
+                                _calledSpecializedMethods.Add(openKey);
+                        }
+                    }
                     TryCollectResolvedGenericType(methodRef.ReturnType, typeParamMap);
                     foreach (var p in methodRef.Parameters)
                         TryCollectResolvedGenericType(p.ParameterType, typeParamMap);
@@ -935,6 +994,17 @@ public partial class IRBuilder
                                 _deferredGenericBodies.Add((methodDef, irMethod,
                                     new Dictionary<string, string>(typeParamMap)));
                             }
+                        }
+                        else if (_reachability.IsReachable(methodDef)
+                                 && !methodDef.IsConstructor && !methodDef.IsAbstract
+                                 && !HasClrInternalDependencies(methodDef))
+                        {
+                            // Store skipped methods so they can be recovered if body compilation
+                            // later adds their key to _calledSpecializedMethods.
+                            var skipKey = GetSpecializedMethodKey(
+                                info.OpenTypeName, info.TypeArguments, methodDef);
+                            _skippedSpecializedMethods.Add((skipKey, methodDef, irMethod,
+                                new Dictionary<string, string>(typeParamMap)));
                         }
                     }
                 }
@@ -1380,7 +1450,11 @@ public partial class IRBuilder
         if (!resolvedTypeName.Contains('<')) return;
 
         // Parse: "Outer/Inner`1<Arg1,Arg2>" → openTypeName="Outer/Inner`1", args=["Arg1","Arg2"]
-        var ltIdx = resolvedTypeName.IndexOf('<');
+        // Find the generic '<' after the backtick to skip '<' in compiler-generated names
+        var backtickIdx = resolvedTypeName.IndexOf('`');
+        var ltIdx = backtickIdx > 0
+            ? resolvedTypeName.IndexOf('<', backtickIdx)
+            : resolvedTypeName.IndexOf('<');
         if (ltIdx < 0) return;
         var openTypeName = resolvedTypeName[..ltIdx];
         var argsStr = resolvedTypeName[(ltIdx + 1)..^1]; // strip < and >
@@ -1791,6 +1865,20 @@ public partial class IRBuilder
 
                 var methodInfo = new IL.MethodInfo(cecilMethod);
                 ConvertMethodBodyWithGenerics(methodInfo, irMethod, typeParamMap);
+            }
+
+            // Recover skipped methods whose keys are now in _calledSpecializedMethods.
+            for (int i = _skippedSpecializedMethods.Count - 1; i >= 0; i--)
+            {
+                var (specKey, cecilMethod, irMethod, typeParamMap) = _skippedSpecializedMethods[i];
+                if (_calledSpecializedMethods.Contains(specKey) && irMethod.BasicBlocks.Count == 0)
+                {
+                    _skippedSpecializedMethods.RemoveAt(i);
+                    if (HasClrInternalDependencies(cecilMethod))
+                        GenerateStubBody(irMethod);
+                    else
+                        _deferredGenericBodies.Add((cecilMethod, irMethod, typeParamMap));
+                }
             }
 
             // If new types were discovered during body compilation, build VTables
@@ -2249,11 +2337,16 @@ public partial class IRBuilder
         var backtickIdx = key.IndexOf('`');
         if (backtickIdx > 0 && key.Contains('<'))
         {
-            var angleBracket = key.IndexOf('<');
-            var openTypeName = key[..angleBracket];
-            var argsStr = key[(angleBracket + 1)..^1];
-            var args = argsStr.Split(',').Select(a => a.Trim()).ToList();
-            return CppNameMapper.MangleGenericInstanceTypeName(openTypeName, args);
+            // Find the generic '<' after the backtick, not an earlier '<' from
+            // compiler-generated names like "<InvokeAsync>d__7`1<...>"
+            var angleBracket = key.IndexOf('<', backtickIdx);
+            if (angleBracket > 0)
+            {
+                var openTypeName = key[..angleBracket];
+                var argsStr = key[(angleBracket + 1)..^1];
+                var args = CppNameMapper.ParseGenericArgs(argsStr);
+                return CppNameMapper.MangleGenericInstanceTypeName(openTypeName, args);
+            }
         }
         return CppNameMapper.MangleTypeName(key);
     }
@@ -2316,7 +2409,10 @@ public partial class IRBuilder
         var backtickIdx = ilTypeName.IndexOf('`');
         if (backtickIdx > 0 && ilTypeName.Contains('<'))
         {
-            var angleBracket = ilTypeName.IndexOf('<');
+            // Find the generic '<' after the backtick, not an earlier '<' from
+            // compiler-generated names like "<InvokeAsync>d__7`1<...>"
+            var angleBracket = ilTypeName.IndexOf('<', backtickIdx);
+            if (angleBracket < 0) goto fallback;
             var openTypeName = ilTypeName[..angleBracket];
             var argsStr = ilTypeName[(angleBracket + 1)..^1];
             // Use bracket-aware parser to correctly handle nested generics
@@ -2345,6 +2441,7 @@ public partial class IRBuilder
                 return cppGenName;
         }
 
+        fallback:
         return CppNameMapper.GetCppTypeForDecl(ilTypeName);
     }
 

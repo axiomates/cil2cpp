@@ -690,7 +690,9 @@ public partial class CppCodeGenerator
                 if (instr is IR.IRCall call && !string.IsNullOrEmpty(call.FunctionName)
                     && _undeclaredFunctionNames.Contains(call.FunctionName)
                     && !IsSimdIntrinsicFunction(call.FunctionName))
+                {
                     return true;
+                }
                 // Note: SIMD intrinsic calls (X86/Arm/Wasm) are NOT flagged here because
                 // they're always in feature-switch-guarded dead branches. They're replaced
                 // with default values at render time in GenerateMethodImpl.
