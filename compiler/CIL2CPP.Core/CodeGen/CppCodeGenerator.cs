@@ -68,12 +68,16 @@ public partial class CppCodeGenerator
         if (typeName.Length < 2) return false;
         if (typeName[0] != 'T' || !char.IsUpper(typeName[1])) return false;
         if (typeName.Contains('_')) return false;
-        // All chars must be letters or digits
+        // All chars must be letters or digits, and must contain at least one lowercase letter.
+        // Real generic params are PascalCase (TResult, TKey, TValue) — all-caps words like
+        // TIME, ZONE, INFORMATION (from Interop struct names) are not generic params.
+        bool hasLower = false;
         for (int i = 2; i < typeName.Length; i++)
         {
             if (!char.IsLetterOrDigit(typeName[i])) return false;
+            if (char.IsLower(typeName[i])) hasLower = true;
         }
-        return true;
+        return hasLower;
     }
 
     /// <summary>
@@ -573,6 +577,7 @@ public partial class CppCodeGenerator
         return false;
     }
 
+
     /// <summary>
     /// Detect methods on generic type specializations where the method body uses
     /// a different specialization's functions/types than what the parent type's
@@ -689,8 +694,9 @@ public partial class CppCodeGenerator
                 // Note: SIMD intrinsic calls (X86/Arm/Wasm) are NOT flagged here because
                 // they're always in feature-switch-guarded dead branches. They're replaced
                 // with default values at render time in GenerateMethodImpl.
-                // SIMD container method calls (Vector128<T>.*, etc.) ARE flagged — methods
-                // that genuinely use SIMD in live code paths should be blocked.
+                // SIMD container method calls (Vector128<T>.*, Vector128.Create, etc.) ARE
+                // flagged — methods that genuinely use SIMD in live code paths must be blocked
+                // since opaque SIMD structs don't have real fields.
                 if (instr is IR.IRNewObj newObj && !string.IsNullOrEmpty(newObj.CtorName)
                     && _undeclaredFunctionNames.Contains(newObj.CtorName))
                     return true;
@@ -731,7 +737,8 @@ public partial class CppCodeGenerator
             || functionName.StartsWith("System_Runtime_Intrinsics_Vector64_")
             || functionName.StartsWith("System_Runtime_Intrinsics_Vector128_")
             || functionName.StartsWith("System_Runtime_Intrinsics_Vector256_")
-            || functionName.StartsWith("System_Runtime_Intrinsics_Vector512_");
+            || functionName.StartsWith("System_Runtime_Intrinsics_Vector512_")
+            || functionName.StartsWith("System_Runtime_Intrinsics_Scalar_1_");
     }
 
     /// <summary>

@@ -780,6 +780,11 @@ public partial class IRBuilder
             ConvertMethodBody(methodDef, irMethod);
         }
 
+        // Pass 6.1: Compile generic method specializations discovered during Pass 6.
+        // E.g., DateTimeFormatInfo.GetAbbreviatedDayName calls ThrowHelper.ThrowArgumentOutOfRange_Range<DayOfWeek>
+        // which is only discovered when the non-generic method body is compiled in Pass 6.
+        CreateGenericMethodSpecializations();
+
         // Pass 6.5: Discover types referenced by compiled method bodies but not yet in the module
         // This can happen when BCL methods reference types only as parameters/locals/fields
         DiscoverMissingReferencedTypes();

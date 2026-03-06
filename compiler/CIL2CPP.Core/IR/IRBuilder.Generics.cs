@@ -463,8 +463,14 @@ public partial class IRBuilder
 
         // Skip all SIMD method specializations — all SIMD code is dead (IsHardwareAccelerated=false)
         if (IsSimdContainerType(info.DeclaringTypeName) ||
-            info.DeclaringTypeName.StartsWith("System.Runtime.Intrinsics.") ||
-            info.DeclaringTypeName == "System.ThrowHelper")
+            info.DeclaringTypeName.StartsWith("System.Runtime.Intrinsics."))
+            return;
+
+        // Skip SIMD-specific ThrowHelper methods (only called from dead SIMD branches).
+        // Other ThrowHelper methods (ThrowKeyNotFoundException, ThrowArgumentOutOfRange_Range)
+        // are genuinely needed by Dictionary, DateTimeFormatInfo, etc.
+        if (info.DeclaringTypeName == "System.ThrowHelper"
+            && (info.MethodName.Contains("Intrinsics") || info.MethodName.Contains("Numerics")))
             return;
 
         // Find the declaring IRType
@@ -539,15 +545,15 @@ public partial class IRBuilder
             // Local variables
             if (cecilMethod.HasBody)
             {
+                var localParamMap = BuildMethodLevelGenericParamMap(cecilMethod, typeParamMap);
                 foreach (var localDef in cecilMethod.Body.Variables)
                 {
-                    var localTypeName = ResolveGenericTypeName(localDef.VariableType, typeParamMap);
-                    var resolvedCpp = ResolveTypeForDecl(localTypeName);
+                    var localTypeName = ResolveGenericTypeName(localDef.VariableType, localParamMap);
                     irMethod.Locals.Add(new IRLocal
                     {
                         Index = localDef.Index,
                         CppName = $"loc_{localDef.Index}",
-                        CppTypeName = resolvedCpp,
+                        CppTypeName = ResolveTypeForDecl(localTypeName),
                     });
                 }
             }
@@ -804,6 +810,13 @@ public partial class IRBuilder
                     if (!methodDef.IsVirtual && !methodDef.IsConstructor
                         && !_reachability.IsReachable(methodDef))
                         continue;
+                    // Skip methods with their own generic parameters (method-level generics).
+                    // These can't be compiled in the type specialization because the method-level
+                    // params (TResult, TKey, etc.) are unresolved. They'll be compiled via
+                    // _genericMethodInstantiations with concrete type args at each call site.
+                    // CLR guarantees: generic methods cannot be virtual, so no vtable impact.
+                    if (methodDef.HasGenericParameters)
+                        continue;
                     var returnTypeName = ResolveGenericTypeName(methodDef.ReturnType, typeParamMap);
                     var cppName = CppNameMapper.MangleMethodName(info.MangledName, methodDef.Name);
                     // op_Explicit/op_Implicit: disambiguate by return type (C++ can't overload by return type)
@@ -845,9 +858,13 @@ public partial class IRBuilder
                     // Local variables
                     if (methodDef.HasBody)
                     {
+                        // Build supplementary map for method-level generic params that leak into
+                        // local types via Cecil. E.g., MemoryMarshal.Cast<TFrom, TResult> — the
+                        // return type uses TResult, which appears in locals of calling methods.
+                        var localParamMap = BuildMethodLevelGenericParamMap(methodDef, typeParamMap);
                         foreach (var localDef in methodDef.Body.Variables)
                         {
-                            var localTypeName = ResolveGenericTypeName(localDef.VariableType, typeParamMap);
+                            var localTypeName = ResolveGenericTypeName(localDef.VariableType, localParamMap);
                             irMethod.Locals.Add(new IRLocal
                             {
                                 Index = localDef.Index,
@@ -1198,9 +1215,10 @@ public partial class IRBuilder
                 // Local variables (needed for body conversion)
                 if (methodDef.HasBody)
                 {
+                    var localParamMap = BuildMethodLevelGenericParamMap(methodDef, typeParamMap);
                     foreach (var localDef in methodDef.Body.Variables)
                     {
-                        var localTypeName = ResolveGenericTypeName(localDef.VariableType, typeParamMap);
+                        var localTypeName = ResolveGenericTypeName(localDef.VariableType, localParamMap);
                         irMethod.Locals.Add(new IRLocal
                         {
                             Index = localDef.Index,
@@ -1552,6 +1570,41 @@ public partial class IRBuilder
         if (typeRef is GenericInstanceType git)
             return git.GenericArguments.Any(ContainsGenericParameter);
         return false;
+    }
+
+    /// <summary>
+    /// Build an augmented type param map that includes method-level generic params
+    /// from GenericInstanceMethod calls in the body. Cecil sometimes stores local variable types
+    /// using the callee method's formal generic param names (e.g., local type Span&lt;TResult&gt;
+    /// from MemoryMarshal.Cast&lt;TFrom, TResult&gt;). These need to be resolved to the actual
+    /// type arguments at the call site.
+    /// </summary>
+    private Dictionary<string, string> BuildMethodLevelGenericParamMap(
+        Mono.Cecil.MethodDefinition methodDef, Dictionary<string, string> typeParamMap)
+    {
+        if (!methodDef.HasBody)
+            return typeParamMap;
+
+        // Scan the body for GenericInstanceMethod calls and build supplementary mappings
+        var augmented = new Dictionary<string, string>(typeParamMap);
+        foreach (var instr in methodDef.Body.Instructions)
+        {
+            var operand = instr.Operand;
+            if (operand is Mono.Cecil.GenericInstanceMethod gim)
+            {
+                var elemMethod = gim.ElementMethod.Resolve();
+                if (elemMethod == null || !elemMethod.HasGenericParameters) continue;
+                for (int i = 0; i < elemMethod.GenericParameters.Count && i < gim.GenericArguments.Count; i++)
+                {
+                    var formalName = elemMethod.GenericParameters[i].Name;
+                    if (augmented.ContainsKey(formalName)) continue;
+                    // Resolve the actual type argument through the current type param map
+                    var argResolved = ResolveGenericTypeName(gim.GenericArguments[i], typeParamMap);
+                    augmented[formalName] = argResolved;
+                }
+            }
+        }
+        return augmented;
     }
 
     /// <summary>

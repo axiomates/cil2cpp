@@ -2693,9 +2693,13 @@ public partial class IRBuilder
     /// </summary>
     private static bool ContainsUnresolvedGenericParam(string typeName)
     {
-        // Check for common patterns: single-char params (T, K, V), multi-char (TKey, TValue, TStorage)
-        // Only flag if the name looks like an IL type name (no namespace dots) that would be a GP name
+        // Check for IL generic param notation: !0, !1, !!0, etc.
         if (System.Text.RegularExpressions.Regex.IsMatch(typeName, @"(^|[\[<,])![\d]"))
+            return true;
+        // Check for named generic params (TResult, TKey, TValue, TStorage, etc.)
+        // These are single-word PascalCase identifiers without dots/namespace — no concrete type
+        // in .NET BCL looks like this (all concrete types have namespaces like System.Byte).
+        if (IsUnresolvedElementType(typeName))
             return true;
         return false;
     }

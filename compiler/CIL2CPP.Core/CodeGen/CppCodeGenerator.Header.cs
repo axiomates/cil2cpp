@@ -1132,15 +1132,23 @@ public partial class CppCodeGenerator
         // Collect all called function names from method bodies that WILL be compiled.
         // Scan userTypes (excludes unresolved generic params) but include RuntimeProvided
         // — their method bodies may call ctors on other CoreRuntimeTypes that need declarations.
+        // Apply the same filters as EmitMethodsForType in Source.cs to exclude methods that
+        // won't actually be emitted (invalid signatures, generic conflicts, etc.).
         var calledFunctions = new HashSet<string>();
         foreach (var type in userTypes)
         {
             if (type.IsDelegate) continue;
+            bool isSkippedType0 = IRBuilder.SkipAllMethodsTypes.Contains(type.ILFullName);
             foreach (var method in type.Methods)
             {
                 if (method.IsAbstract || method.IsInternalCall) continue;
                 if (method.BasicBlocks.Count == 0 && !method.IsPInvoke) continue;
                 if (method.IrStubReason != null) continue;
+                if (method.HasICallMapping) continue;
+                if (isSkippedType0) continue;
+                if (!method.IsStatic && IRBuilder.CoreRuntimeTypes.Contains(type.ILFullName)) continue;
+                if (HasInvalidCppSignature(method)) continue;
+                if (HasGenericBodyTypeConflict(type, method)) continue;
 
                 foreach (var block in method.BasicBlocks)
                 {
@@ -1166,7 +1174,23 @@ public partial class CppCodeGenerator
             }
         }
 
-        // Find called functions that have no declaration
+        // Build the undeclared function set from the initial scan.
+        {
+            var initialMissing = new List<(string name, IR.IRMethod? method)>();
+            foreach (var funcName in calledFunctions)
+            {
+                if (declaredNames.Contains(funcName)) continue;
+                methodLookup.TryGetValue(funcName, out var irMethod);
+                initialMissing.Add((funcName, irMethod));
+            }
+            foreach (var (funcName, irMethod) in initialMissing)
+            {
+                if (irMethod == null || HasInvalidCppSignature(irMethod))
+                    _undeclaredFunctionNames.Add(funcName);
+            }
+        }
+
+        // Final: build missing functions list from remaining calledFunctions
         var missingFunctions = new List<(string name, IR.IRMethod? method)>();
         foreach (var funcName in calledFunctions)
         {
