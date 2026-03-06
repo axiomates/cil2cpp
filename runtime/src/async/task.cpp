@@ -16,7 +16,17 @@
 #include <chrono>
 #include <new>
 
+// BCL-compiled methods for Task state management.
+// These are generated from BCL IL and linked from the compiled output.
+// Uses C++ linkage to match the generated code's name mangling.
+void System_Threading_Tasks_Task_FinishContinuations(cil2cpp::Task* task);
+
 namespace cil2cpp {
+
+// BCL stateFlags constants
+static constexpr Int32 TASK_STATE_RAN_TO_COMPLETION = 0x01000000;
+static constexpr Int32 TASK_STATE_FAULTED = 0x00200000;
+static constexpr Int32 TASK_STATE_COMPLETION_RESERVED = 0x04000000;
 
 // Releases the CRT-heap mutex when Task is GC-collected.
 static void task_finalizer(Object* raw) {
@@ -84,6 +94,7 @@ static void run_continuations(TaskContinuation* head) {
 Task* task_create_completed() {
     auto* t = task_alloc();
     t->f_status = 1;
+    t->f_m_stateFlags = TASK_STATE_COMPLETION_RESERVED | TASK_STATE_RAN_TO_COMPLETION;
     return t;
 }
 
@@ -109,6 +120,7 @@ void task_init_pending(Task* t) {
 void task_init_completed(Task* t) {
     if (!t) return;
     t->f_status = 1;
+    t->f_m_stateFlags = TASK_STATE_COMPLETION_RESERVED | TASK_STATE_RAN_TO_COMPLETION;
     t->f_exception = nullptr;
     t->f_continuations = nullptr;
     t->f_lock = nullptr;
@@ -125,7 +137,16 @@ void task_complete(Task* t) {
         conts = t->f_continuations;
         t->f_continuations = nullptr;
     }
+    // Update BCL stateFlags so BCL-compiled code sees completion.
+    // volatile → cast away for atomic_ref (we control all access)
+    auto& flags = const_cast<Int32&>(t->f_m_stateFlags);
+    std::atomic_ref<Int32>(flags).fetch_or(
+        TASK_STATE_COMPLETION_RESERVED | TASK_STATE_RAN_TO_COMPLETION,
+        std::memory_order_release);
+    // Run runtime continuations (function pointer + state pairs)
     run_continuations(conts);
+    // Run BCL continuations (IAsyncStateMachineBox objects in m_continuationObject)
+    System_Threading_Tasks_Task_FinishContinuations(t);
 }
 
 void task_fault(Task* t, Exception* ex) {
@@ -140,7 +161,13 @@ void task_fault(Task* t, Exception* ex) {
         conts = t->f_continuations;
         t->f_continuations = nullptr;
     }
+    // Update BCL stateFlags for faulted state
+    auto& faultFlags = const_cast<Int32&>(t->f_m_stateFlags);
+    std::atomic_ref<Int32>(faultFlags).fetch_or(
+        TASK_STATE_COMPLETION_RESERVED | TASK_STATE_FAULTED,
+        std::memory_order_release);
     run_continuations(conts);
+    System_Threading_Tasks_Task_FinishContinuations(t);
 }
 
 void task_add_continuation(Task* t, void (*callback)(void*), void* state) {

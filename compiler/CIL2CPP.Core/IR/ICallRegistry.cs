@@ -799,6 +799,13 @@ public static class ICallRegistry
         RegisterICallWildcard("System.Diagnostics.Tracing.EventSource", "SetCurrentThreadActivityId",
             "cil2cpp::interop_globalization_return_zero");
 
+        // ===== System.Threading.Tasks — runtime async implementations =====
+        // Task.Delay(int) uses the runtime's task_delay instead of the BCL's timer infrastructure.
+        // The BCL path (TimerQueue, TimerQueueTimer, AutoResetEvent) requires a dedicated timer thread
+        // that our runtime does not provide.
+        RegisterICallTyped("System.Threading.Tasks.Task", "Delay", 1, "System.Int32",
+            "cil2cpp::task_delay");
+
         // ===== System.Threading.Tasks interface stubs =====
         RegisterICallWildcard("System.Threading.Tasks.TaskContinuation", "Run",
             "cil2cpp::interop_globalization_return_zero");

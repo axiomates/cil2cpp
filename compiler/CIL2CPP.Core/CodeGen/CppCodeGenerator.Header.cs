@@ -558,8 +558,23 @@ public partial class CppCodeGenerator
                 // Detect C# field hiding (derived class `new` field shadows base field)
                 // In .NET layout both fields coexist — disambiguate with ancestor suffix
                 var emittedFieldNames = new HashSet<string>();
+                // Track which ancestors we've already injected runtime-only fields for
+                var injectedAncestors = new HashSet<string>();
                 foreach (var (field, fromType) in inheritedFields)
                 {
+                    // Inject runtime-only C++ fields before the first BCL field of each
+                    // RuntimeProvidedType ancestor (these fields exist in the runtime struct
+                    // but not in IL metadata, and subtypes must include them for layout match)
+                    if (injectedAncestors.Add(fromType.ILFullName) &&
+                        RuntimeOnlyFields.TryGetValue(fromType.ILFullName, out var extraFields))
+                    {
+                        foreach (var (extraType, extraName) in extraFields)
+                        {
+                            sb.AppendLine($"    {extraType} {extraName}; // runtime-only from {fromType.ILFullName}");
+                            inheritedFieldNames.Add(extraName);
+                            emittedFieldNames.Add(extraName);
+                        }
+                    }
                     var cppType = SanitizeFieldType(field.FieldTypeName, definedTypes);
                     var fieldName = field.CppName;
                     if (!emittedFieldNames.Add(fieldName))
@@ -883,6 +898,25 @@ public partial class CppCodeGenerator
         }
         return result;
     }
+
+    /// <summary>
+    /// Runtime-only C++ fields for RuntimeProvidedTypes whose runtime struct
+    /// has additional fields not present in the IL metadata.
+    /// These must be injected into subtypes so their memory layout matches
+    /// the runtime struct (e.g. cil2cpp::Task has 4 extra fields before BCL fields).
+    /// Key: IL full name of the RuntimeProvidedType ancestor.
+    /// Value: ordered list of (C++ type, field name) pairs.
+    /// </summary>
+    private static readonly Dictionary<string, (string CppType, string CppName)[]> RuntimeOnlyFields = new()
+    {
+        ["System.Threading.Tasks.Task"] = new[]
+        {
+            ("int32_t", "f_status"),
+            ("cil2cpp::Exception*", "f_exception"),
+            ("void*", "f_continuations"),
+            ("void*", "f_lock"),
+        },
+    };
 
     /// <summary>
 
