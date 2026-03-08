@@ -710,9 +710,121 @@ def cmd_integration(args):
     runner.step("Generated files exist", ft_files_exist)
     runner.step("FeatureTest source files have entry point and are substantial", ft_cpp_not_empty)
 
-    # NOTE: Other test projects (Library, Debug, StringLiterals, MultiAssembly, ArglistTest,
-    # SystemIOTest, FileStreamTest, SocketTest, HttpTest, NuGetSimpleTest, JsonSGTest, HttpGetTest)
-    # are disabled. Enable them phase-by-phase as issues are fixed.
+    # ===== Phase 4: ArglistTest (varargs + TypedReference) =====
+    header("Phase 4: ArglistTest (varargs, mkrefany, refanyval)")
+
+    arg_sample = TESTPROJECTS_DIR / "ArglistTest" / "ArglistTest.csproj"
+    arg_output = temp_dir / "arglist_output"
+    arg_build = temp_dir / "arglist_build"
+
+    dotnet_arg_output = None
+
+    def arg_dotnet_run():
+        nonlocal dotnet_arg_output
+        dotnet_arg_output = _get_dotnet_output(arg_sample)
+        print(f"    .NET output: {repr(dotnet_arg_output[:200])}")
+
+    def arg_codegen():
+        run(["dotnet", "run", "--project", str(CLI_PROJECT), "--",
+             "codegen", "-i", str(arg_sample), "-o", str(arg_output)],
+            capture=True)
+
+    def arg_files_exist():
+        for f in ["ArglistTest.h", "ArglistTest_data.cpp", "ArglistTest_stubs.cpp",
+                   "main.cpp", "CMakeLists.txt"]:
+            if not (arg_output / f).exists():
+                raise RuntimeError(f"Missing: {f}")
+
+    def arg_cmake_configure():
+        run(["cmake", "-B", str(arg_build), "-S", str(arg_output),
+             "-G", generator, *cmake_arch,
+             f"-DCMAKE_PREFIX_PATH={runtime_prefix}"],
+            capture=True)
+
+    def arg_cmake_build():
+        run(["cmake", "--build", str(arg_build), "--config", config],
+            capture=True)
+
+    def arg_run_verify():
+        exe = _exe_path(arg_build, config, "ArglistTest")
+        if not exe.exists():
+            raise RuntimeError(f"Executable not found: {exe}")
+        r = subprocess.run([str(exe)], capture_output=True, text=True, check=False)
+        if r.returncode != 0:
+            raise RuntimeError(f"ArglistTest exited with code {r.returncode}\nstderr: {r.stderr}")
+        got = r.stdout.strip()
+        if got != dotnet_arg_output:
+            raise RuntimeError(
+                f"Output mismatch vs .NET:\n"
+                f"  .NET output:\n{dotnet_arg_output}\n"
+                f"  C++ output:\n{got}")
+
+    runner.step("Get .NET reference output", arg_dotnet_run)
+    runner.step("Codegen ArglistTest", arg_codegen)
+    runner.step("Generated files exist", arg_files_exist)
+    runner.step("CMake configure", arg_cmake_configure)
+    runner.step(f"CMake build ({config})", arg_cmake_build)
+    runner.step("Run and compare C++ vs .NET output", arg_run_verify)
+
+    # ===== Phase 5: MultiAssemblyTest (cross-project, references MathLib) =====
+    header("Phase 5: MultiAssemblyTest (cross-assembly references)")
+
+    multi_sample = TESTPROJECTS_DIR / "MultiAssemblyTest" / "MultiAssemblyTest.csproj"
+    multi_output = temp_dir / "multi_output"
+    multi_build = temp_dir / "multi_build"
+
+    dotnet_multi_output = None
+
+    def multi_dotnet_run():
+        nonlocal dotnet_multi_output
+        dotnet_multi_output = _get_dotnet_output(multi_sample)
+        print(f"    .NET output: {repr(dotnet_multi_output[:200])}")
+
+    def multi_codegen():
+        run(["dotnet", "run", "--project", str(CLI_PROJECT), "--",
+             "codegen", "-i", str(multi_sample), "-o", str(multi_output)],
+            capture=True)
+
+    def multi_files_exist():
+        for f in ["MultiAssemblyTest.h", "MultiAssemblyTest_data.cpp",
+                   "MultiAssemblyTest_stubs.cpp", "main.cpp", "CMakeLists.txt"]:
+            if not (multi_output / f).exists():
+                raise RuntimeError(f"Missing: {f}")
+
+    def multi_cmake_configure():
+        run(["cmake", "-B", str(multi_build), "-S", str(multi_output),
+             "-G", generator, *cmake_arch,
+             f"-DCMAKE_PREFIX_PATH={runtime_prefix}"],
+            capture=True)
+
+    def multi_cmake_build():
+        run(["cmake", "--build", str(multi_build), "--config", config],
+            capture=True)
+
+    def multi_run_verify():
+        exe = _exe_path(multi_build, config, "MultiAssemblyTest")
+        if not exe.exists():
+            raise RuntimeError(f"Executable not found: {exe}")
+        r = subprocess.run([str(exe)], capture_output=True, text=True, check=False)
+        if r.returncode != 0:
+            raise RuntimeError(f"MultiAssemblyTest exited with code {r.returncode}\nstderr: {r.stderr}")
+        got = r.stdout.strip()
+        if got != dotnet_multi_output:
+            raise RuntimeError(
+                f"Output mismatch vs .NET:\n"
+                f"  .NET output:\n{dotnet_multi_output}\n"
+                f"  C++ output:\n{got}")
+
+    runner.step("Get .NET reference output", multi_dotnet_run)
+    runner.step("Codegen MultiAssemblyTest", multi_codegen)
+    runner.step("Generated files exist", multi_files_exist)
+    runner.step("CMake configure", multi_cmake_configure)
+    runner.step(f"CMake build ({config})", multi_cmake_build)
+    runner.step("Run and compare C++ vs .NET output", multi_run_verify)
+
+    # NOTE: Other test projects (Library, Debug, StringLiterals, SystemIOTest, FileStreamTest,
+    # SocketTest, HttpTest, NuGetSimpleTest, JsonSGTest, HttpGetTest) are disabled.
+    # Enable them phase-by-phase as issues are fixed.
 
     # ===== Cleanup =====
     header("Cleanup")
