@@ -26,7 +26,7 @@ void File_WriteAllBytes(String* path, Object* bytes);
 void File_Delete(String* path);
 void File_Copy(String* srcPath, String* destPath, bool overwrite);
 void File_Move(String* srcPath, String* destPath, bool overwrite);
-Object* File_ReadAllLines(String* path);  // returns string[]
+Array* File_ReadAllLines(String* path);  // returns string[]
 void File_AppendAllText(String* path, String* contents);
 
 // ===== System.IO.Directory =====

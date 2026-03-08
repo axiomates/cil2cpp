@@ -1932,13 +1932,17 @@ public partial class IRBuilder
 
             case Code.Ldlen:
             {
-                // TODO: ECMA-335 III.4.18 specifies ldlen pushes native unsigned int (uintptr_t),
-                // but .NET arrays are limited to Int32.MaxValue elements. Using int32_t for compatibility.
-                var arr = stack.PopExprOr("nullptr");
+                // ECMA-335 III.4.18: ldlen pops an array ref, pushes native unsigned int.
+                // .NET arrays are limited to Int32.MaxValue elements; using int32_t for compatibility.
+                var arrEntry = stack.PopEntry();
+                var arrExpr = arrEntry.Expr;
+                // If the expression is not already an Array*, cast it
+                if (arrEntry.CppType != null && !arrEntry.CppType.Contains("Array"))
+                    arrExpr = $"(cil2cpp::Array*){arrExpr}";
                 var tmp = $"__t{tempCounter++}";
                 block.Instructions.Add(new IRRawCpp
                 {
-                    Code = $"auto {tmp} = cil2cpp::array_length({arr});",
+                    Code = $"auto {tmp} = cil2cpp::array_length({arrExpr});",
                     ResultVar = tmp,
                     ResultTypeCpp = "int32_t",
                 });

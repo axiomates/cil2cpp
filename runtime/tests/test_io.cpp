@@ -117,9 +117,8 @@ TEST_F(IOTest, ReadAllLines_Simple) {
     auto path = test_dir_ / "lines.txt";
     write_raw(path, "line1\nline2\nline3", 17);
 
-    auto* result = cil2cpp::icall::File_ReadAllLines(path_str(path));
-    ASSERT_NE(result, nullptr);
-    auto* arr = reinterpret_cast<cil2cpp::Array*>(result);
+    auto* arr = cil2cpp::icall::File_ReadAllLines(path_str(path));
+    ASSERT_NE(arr, nullptr);
     ASSERT_EQ(cil2cpp::array_length(arr), 3);
 
     auto** elems = reinterpret_cast<cil2cpp::String**>(cil2cpp::array_data(arr));
@@ -134,9 +133,8 @@ TEST_F(IOTest, ReadAllLines_Utf8BomStripped) {
     const uint8_t data[] = { 0xEF, 0xBB, 0xBF, 'f', 'i', 'r', 's', 't', '\n', 's', 'e', 'c', 'o', 'n', 'd' };
     write_raw(path, data, sizeof(data));
 
-    auto* result = cil2cpp::icall::File_ReadAllLines(path_str(path));
-    ASSERT_NE(result, nullptr);
-    auto* arr = reinterpret_cast<cil2cpp::Array*>(result);
+    auto* arr = cil2cpp::icall::File_ReadAllLines(path_str(path));
+    ASSERT_NE(arr, nullptr);
     ASSERT_EQ(cil2cpp::array_length(arr), 2);
 
     auto** elems = reinterpret_cast<cil2cpp::String**>(cil2cpp::array_data(arr));
@@ -149,8 +147,7 @@ TEST_F(IOTest, ReadAllLines_CrLf) {
     auto path = test_dir_ / "crlf.txt";
     write_raw(path, "a\r\nb\r\nc", 7);
 
-    auto* result = cil2cpp::icall::File_ReadAllLines(path_str(path));
-    auto* arr = reinterpret_cast<cil2cpp::Array*>(result);
+    auto* arr = cil2cpp::icall::File_ReadAllLines(path_str(path));
     ASSERT_EQ(cil2cpp::array_length(arr), 3);
 
     auto** elems = reinterpret_cast<cil2cpp::String**>(cil2cpp::array_data(arr));

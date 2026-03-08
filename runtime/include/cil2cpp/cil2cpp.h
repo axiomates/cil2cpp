@@ -197,6 +197,43 @@ inline int32_t span_index_of_any_except(const T* searchSpace, T value, int32_t l
     return -1;
 }
 
+// SequenceCompareTo: lexicographic comparison of two spans
+// elemSize is the byte size of each element (1 for byte, 2 for char16_t)
+inline int32_t span_sequence_compare_to(const void* first, int32_t firstLength,
+                                         const void* second, int32_t secondLength,
+                                         size_t elemSize) {
+    int32_t minLen = firstLength < secondLength ? firstLength : secondLength;
+    int cmp = std::memcmp(first, second, (size_t)minLen * elemSize);
+    if (cmp != 0) return cmp < 0 ? -1 : 1;
+    if (firstLength < secondLength) return -1;
+    if (firstLength > secondLength) return 1;
+    return 0;
+}
+
+// IndexOf for subsequence: find first occurrence of value[0..valueLen] in searchSpace[0..searchLen]
+inline int32_t span_index_of_seq(const void* searchSpace, int32_t searchLen,
+                                  const void* value, int32_t valueLen,
+                                  size_t elemSize) {
+    if (valueLen == 0) return 0;
+    if (valueLen > searchLen) return -1;
+    auto sp = static_cast<const uint8_t*>(searchSpace);
+    auto val = static_cast<const uint8_t*>(value);
+    size_t valBytes = (size_t)valueLen * elemSize;
+    int32_t limit = searchLen - valueLen;
+    for (int32_t i = 0; i <= limit; i++) {
+        if (std::memcmp(sp + (size_t)i * elemSize, val, valBytes) == 0)
+            return i;
+    }
+    return -1;
+}
+
+// Fill: set all elements to the given value
+template<typename T>
+inline void span_fill(T* dest, size_t numElements, T value) {
+    for (size_t i = 0; i < numElements; i++)
+        dest[i] = value;
+}
+
 /**
  * Initialize the CIL2CPP runtime.
  * Must be called before any other runtime functions.

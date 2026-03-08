@@ -3528,6 +3528,81 @@ public partial class IRBuilder
             return true;
         }
 
+        // SequenceEqual(ref byte, ref byte, nuint) → memcmp
+        // The BCL implementation uses SIMD intrinsics (Vector128/256/512) that are stubbed in AOT.
+        if (name == "SequenceEqual" && paramCount == 3 && methodRef is not GenericInstanceMethod)
+        {
+            var length = stack.PopExpr();
+            var second = stack.PopExpr();
+            var first = stack.PopExpr();
+            var tmp = $"__t{tempCounter++}";
+            block.Instructions.Add(new IRRawCpp
+            {
+                Code = $"auto {tmp} = (std::memcmp({first}, {second}, (size_t){length}) == 0);",
+                ResultVar = tmp,
+                ResultTypeCpp = "bool",
+            });
+            stack.Push(new StackEntry(tmp, "bool"));
+            return true;
+        }
+
+        // SequenceCompareTo(ref byte, int, ref byte, int) → memcmp with length handling
+        // SequenceCompareTo(ref char, int, ref char, int) → same pattern
+        if (name == "SequenceCompareTo" && paramCount == 4 && methodRef is not GenericInstanceMethod)
+        {
+            var secondLength = stack.PopExpr();
+            var second = stack.PopExpr();
+            var firstLength = stack.PopExpr();
+            var first = stack.PopExpr();
+            var tmp = $"__t{tempCounter++}";
+            // Determine element size from parameter type
+            var firstParam = methodRef.Parameters[0].ParameterType;
+            var elemSize = firstParam.FullName.Contains("Char") ? "sizeof(char16_t)" : "1";
+            block.Instructions.Add(new IRRawCpp
+            {
+                Code = $"auto {tmp} = cil2cpp::span_sequence_compare_to({first}, {firstLength}, {second}, {secondLength}, {elemSize});",
+                ResultVar = tmp,
+                ResultTypeCpp = "int32_t",
+            });
+            stack.Push(new StackEntry(tmp, "int32_t"));
+            return true;
+        }
+
+        // IndexOf(ref byte, int, ref byte, int) → memmem-style substring search
+        // IndexOf(ref char, int, ref char, int) → same for char16_t
+        if (name == "IndexOf" && paramCount == 4 && methodRef is not GenericInstanceMethod)
+        {
+            var valueLength = stack.PopExpr();
+            var value = stack.PopExpr();
+            var searchSpaceLength = stack.PopExpr();
+            var searchSpace = stack.PopExpr();
+            var tmp = $"__t{tempCounter++}";
+            var firstParam = methodRef.Parameters[0].ParameterType;
+            var elemSize = firstParam.FullName.Contains("Char") ? "sizeof(char16_t)" : "1";
+            block.Instructions.Add(new IRRawCpp
+            {
+                Code = $"auto {tmp} = cil2cpp::span_index_of_seq({searchSpace}, {searchSpaceLength}, {value}, {valueLength}, {elemSize});",
+                ResultVar = tmp,
+                ResultTypeCpp = "int32_t",
+            });
+            stack.Push(new StackEntry(tmp, "int32_t"));
+            return true;
+        }
+
+        // Fill<char>(ref char, nuint, char) → memset-style fill
+        if (name == "Fill" && paramCount == 3 && methodRef is GenericInstanceMethod)
+        {
+            var value = stack.PopExpr();
+            var numElements = stack.PopExpr();
+            var refData = stack.PopExpr();
+            var tmp = $"__t{tempCounter++}";
+            block.Instructions.Add(new IRRawCpp
+            {
+                Code = $"cil2cpp::span_fill({refData}, {numElements}, {value});",
+            });
+            return true;
+        }
+
         return false;
     }
 

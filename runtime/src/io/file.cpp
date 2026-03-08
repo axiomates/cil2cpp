@@ -343,7 +343,7 @@ void File_Move(String* srcPath, String* destPath, bool overwrite) {
     }
 }
 
-Object* File_ReadAllLines(String* path) {
+Array* File_ReadAllLines(String* path) {
     auto bytes = read_file_bytes(io::managed_string_to_path(path));
 
     // Detect and skip UTF-8 BOM
@@ -378,7 +378,7 @@ Object* File_ReadAllLines(String* path) {
         for (int32_t i = 0; i < count; ++i) {
             elements[i] = string_create_utf8(lines[static_cast<size_t>(i)].c_str());
         }
-        return reinterpret_cast<Object*>(arr);
+        return arr;
     }
 
     std::string content(bytes.begin() + static_cast<ptrdiff_t>(offset), bytes.end());
@@ -400,7 +400,7 @@ Object* File_ReadAllLines(String* path) {
     for (int32_t i = 0; i < count; ++i) {
         elements[i] = string_create_utf8(lines[static_cast<size_t>(i)].c_str());
     }
-    return reinterpret_cast<Object*>(arr);
+    return arr;
 }
 
 void File_AppendAllText(String* path, String* contents) {
