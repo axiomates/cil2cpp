@@ -76,6 +76,7 @@ enum class TypeFlags : UInt32 {
     Generic = 1 << 7,
     Public = 1 << 8,
     NestedPublic = 1 << 9,
+    IsByRefLike = 1 << 10,
 };
 
 inline TypeFlags operator|(TypeFlags a, TypeFlags b) {
@@ -280,6 +281,12 @@ struct TypeInfo {
     uint8_t* generic_variances;           // 0=invariant, 1=covariant, 2=contravariant
     UInt32 generic_argument_count;
     const char* generic_definition_name; // Open type's full_name, or nullptr
+
+    // Element type info (for arrays: element TypeInfo, for pointers: pointed-to TypeInfo)
+    TypeInfo* element_type_info;         // nullptr for non-array/non-pointer types
+
+    // ECMA-335 metadata token
+    UInt32 metadata_token;              // 0 if not available
 };
 
 /**

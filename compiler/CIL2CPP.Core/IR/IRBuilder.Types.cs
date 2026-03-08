@@ -23,7 +23,13 @@ public partial class IRBuilder
             IsEnum = typeDef.IsEnum,
             IsPublic = typeDef.GetCecilType().IsPublic,
             IsNestedPublic = typeDef.GetCecilType().IsNestedPublic,
+            MetadataToken = typeDef.GetCecilType().MetadataToken.ToUInt32(),
         };
+
+        // Detect IsByRefLike via IsByRefLikeAttribute
+        if (typeDef.GetCecilType().CustomAttributes.Any(
+            a => a.AttributeType.FullName == "System.Runtime.CompilerServices.IsByRefLikeAttribute"))
+            irType.IsByRefLike = true;
 
         if (typeDef.IsEnum)
             irType.EnumUnderlyingType = typeDef.EnumUnderlyingType ?? "System.Int32";

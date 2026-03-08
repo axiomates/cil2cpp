@@ -18,16 +18,18 @@
 
 #include <cstring>
 #include <mutex>
+#include <string>
+#include <unordered_map>
 
 namespace cil2cpp {
 namespace globalization {
 
 // ===== Collator Cache =====
-// Cache a collator per sort handle to avoid repeated ucol_open() calls.
-// For simplicity, we cache the invariant (root) collator only.
+// Per-locale collator cache. Each culture sort name maps to a cached UCollator*.
 // Thread-safe via mutex.
 
 static UCollator* g_invariant_collator = nullptr;
+static std::unordered_map<std::string, UCollator*> g_collator_cache;
 static std::mutex g_collator_mutex;
 
 void init() {
@@ -39,6 +41,13 @@ void init() {
 }
 
 void shutdown() {
+    std::lock_guard<std::mutex> lock(g_collator_mutex);
+    for (auto& [locale, collator] : g_collator_cache) {
+        if (collator && collator != g_invariant_collator) {
+            ucol_close(collator);
+        }
+    }
+    g_collator_cache.clear();
     if (g_invariant_collator) {
         ucol_close(g_invariant_collator);
         g_invariant_collator = nullptr;
@@ -298,10 +307,41 @@ void compareinfo_throw_options_failed(Int32 /*options*/) {
     throw_argument();
 }
 
-intptr_t compareinfo_get_sort_handle(String* /*sortName*/) {
-    // Return a non-null sentinel — we use the global collator, not per-handle collators
-    // TODO: proper per-locale collator cache
-    return reinterpret_cast<intptr_t>(g_invariant_collator);
+intptr_t compareinfo_get_sort_handle(String* sortName) {
+    // Empty or null sort name → invariant culture
+    if (!sortName || string_length(sortName) == 0) {
+        return reinterpret_cast<intptr_t>(g_invariant_collator);
+    }
+
+    // Convert sort name to UTF-8 locale string
+    auto* chars = string_get_raw_data(sortName);
+    int32_t len = string_length(sortName);
+    // Simple ASCII conversion for locale names (BCP 47 tags are ASCII)
+    std::string locale(static_cast<size_t>(len), '\0');
+    for (int32_t i = 0; i < len; i++) {
+        locale[static_cast<size_t>(i)] = static_cast<char>(chars[i]);
+        // ICU uses '_' as separator, .NET uses '-'
+        if (locale[static_cast<size_t>(i)] == '-')
+            locale[static_cast<size_t>(i)] = '_';
+    }
+
+    std::lock_guard<std::mutex> lock(g_collator_mutex);
+    auto it = g_collator_cache.find(locale);
+    if (it != g_collator_cache.end()) {
+        return reinterpret_cast<intptr_t>(it->second);
+    }
+
+    // Create new collator for this locale
+    UErrorCode err = U_ZERO_ERROR;
+    UCollator* collator = ucol_open(locale.c_str(), &err);
+    if (U_FAILURE(err) || !collator) {
+        // Fallback to invariant on failure
+        g_collator_cache[locale] = g_invariant_collator;
+        return reinterpret_cast<intptr_t>(g_invariant_collator);
+    }
+
+    g_collator_cache[locale] = collator;
+    return reinterpret_cast<intptr_t>(collator);
 }
 
 // ===== String ICalls =====

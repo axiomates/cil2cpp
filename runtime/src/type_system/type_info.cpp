@@ -227,9 +227,27 @@ Boolean object_is_instance_of(Object* obj, TypeInfo* type) {
             }
             // Generic interfaces: T[] implements IList<T>, ICollection<T>, IEnumerable<T>,
             // IReadOnlyList<T>, IReadOnlyCollection<T>
-            // TODO: enable this once array interface vtable dispatch is implemented
-            // Currently disabled because object_is_instance_of returning true leads to
-            // type_get_interface_vtable_checked calls that fail (arrays don't have interface vtables)
+            if (type->generic_definition_name && type->generic_argument_count == 1
+                && type->generic_arguments && type->generic_arguments[0]) {
+                const char* genDef = type->generic_definition_name;
+                // Check if this is one of the array-compatible generic interfaces
+                bool isArrayInterface =
+                    std::strcmp(genDef, "System_Collections_Generic_IList_1") == 0 ||
+                    std::strcmp(genDef, "System_Collections_Generic_ICollection_1") == 0 ||
+                    std::strcmp(genDef, "System_Collections_Generic_IEnumerable_1") == 0 ||
+                    std::strcmp(genDef, "System_Collections_Generic_IReadOnlyList_1") == 0 ||
+                    std::strcmp(genDef, "System_Collections_Generic_IReadOnlyCollection_1") == 0;
+                if (isArrayInterface) {
+                    // Array element type: the array's __type_info IS the element TypeInfo
+                    auto* elemType = obj->__type_info;
+                    auto* interfaceArgType = type->generic_arguments[0];
+                    // Exact match or assignability (for reference type covariance)
+                    if (elemType == interfaceArgType ||
+                        type_is_assignable_from(interfaceArgType, elemType)) {
+                        return true;
+                    }
+                }
+            }
         }
     }
 

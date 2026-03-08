@@ -51,11 +51,9 @@ public partial class IRBuilder
         var right = items[0].Expr;
         var left = items.Length > 1 ? items[1].Expr : "0";
 
-        // Prefer StackEntry type info, fall back to string heuristic
-        var leftPtrType = ClassifyPointerType(items.Length > 1 ? items[1].CppType ?? "" : "")
-                          ?? GetTypedPointerType(left, irMethod);
-        var rightPtrType = ClassifyPointerType(items[0].CppType ?? "")
-                           ?? GetTypedPointerType(right, irMethod);
+        // Use StackEntry.CppType for pointer type detection
+        var leftPtrType = ClassifyPointerType(items.Length > 1 ? items[1].CppType ?? "" : "");
+        var rightPtrType = ClassifyPointerType(items[0].CppType ?? "");
 
         // Neither is a typed pointer → not pointer arithmetic
         if (leftPtrType == null && rightPtrType == null) return false;
@@ -87,7 +85,6 @@ public partial class IRBuilder
                 ResultVar = tmp,
                 ResultTypeCpp = leftPtrType,
             });
-            _tempPtrTypes[tmp] = leftPtrType;
         }
         else // rightPtrType != null && op == "+"
         {
@@ -98,52 +95,12 @@ public partial class IRBuilder
                 ResultVar = tmp,
                 ResultTypeCpp = rightPtrType,
             });
-            _tempPtrTypes[tmp] = rightPtrType;
         }
 
         // Push with pointer type so downstream consumers (comparisons, further arithmetic) know it's a pointer
         var resultType = leftPtrType ?? rightPtrType;
         stack.Push(resultType != null ? new StackEntry(tmp, resultType) : new StackEntry(tmp));
         return true;
-    }
-
-    /// <summary>
-    /// Check if an expression is a typed pointer with element size > 1 byte.
-    /// Returns the pointer C++ type (e.g. "char16_t*") or null.
-    /// </summary>
-    private string? GetTypedPointerType(string expr, IRMethod irMethod)
-    {
-        // Check local variables: loc_N
-        if (expr.StartsWith("loc_") && int.TryParse(expr["loc_".Length..], out var locIdx))
-        {
-            var local = irMethod.Locals.FirstOrDefault(l => l.Index == locIdx);
-            if (local != null)
-                return ClassifyPointerType(local.CppTypeName);
-        }
-
-        // Check parameters by name (e.g., "pChars", "ptr", etc.)
-        var param = irMethod.Parameters.FirstOrDefault(p => p.CppName == expr);
-        if (param != null)
-            return ClassifyPointerType(param.CppTypeName);
-
-        // Check previously computed temp pointer types
-        if (_tempPtrTypes.TryGetValue(expr, out var tempType))
-            return tempType;
-
-        // HACK: Recovers pointer type from rendered C++ cast expression when CppType is not tracked.
-        // This is a fallback for code paths that still use PopExpr() instead of PopEntry().
-        // TODO: Phase 2 (StackEntry.CppType propagation) will eliminate the need for this.
-        if (expr.StartsWith("(") && expr.Contains("*)"))
-        {
-            var closeIdx = expr.IndexOf("*)");
-            if (closeIdx > 1)
-            {
-                var castType = expr[1..closeIdx] + "*";
-                return ClassifyPointerType(castType);
-            }
-        }
-
-        return null;
     }
 
     /// <summary>
@@ -428,7 +385,7 @@ public partial class IRBuilder
                 ResultVar = tmp,
                 ResultTypeCpp = retType,
             });
-            stack.Push(tmp);
+            stack.Push(new StackEntry(tmp, retType));
             return;
         }
 
@@ -457,7 +414,7 @@ public partial class IRBuilder
                 ResultVar = tmp,
                 ResultTypeCpp = targetType,
             });
-            stack.Push(tmp);
+            stack.Push(new StackEntry(tmp, targetType));
             return;
         }
 
@@ -479,7 +436,7 @@ public partial class IRBuilder
                 ResultVar = tmp,
                 ResultTypeCpp = "int32_t",
             });
-            stack.Push(tmp);
+            stack.Push(new StackEntry(tmp, "int32_t"));
             return;
         }
 
@@ -588,7 +545,7 @@ public partial class IRBuilder
                 ResultVar = tmp,
                 ResultTypeCpp = cppType,
             });
-            stack.Push(tmp);
+            stack.Push(new StackEntry(tmp, cppType));
             return;
         }
 
@@ -628,14 +585,16 @@ public partial class IRBuilder
             && methodRef.Name == "Subtract" && methodRef.Parameters.Count == 2)
         {
             var offset = stack.PopExpr();
-            var ptr = stack.PopExprOr("nullptr");
+            var ptrEntry = stack.PopEntry();
+            var ptr = ptrEntry.Expr.Length > 0 ? ptrEntry.Expr : "nullptr";
             var tmp = $"__t{tempCounter++}";
             block.Instructions.Add(new IRRawCpp
             {
                 Code = $"auto {tmp} = {ptr} - {offset};",
                 ResultVar = tmp,
+                ResultTypeCpp = ptrEntry.CppType,
             });
-            stack.Push(tmp);
+            stack.Push(new StackEntry(tmp, ptrEntry.CppType));
             return;
         }
 
@@ -652,7 +611,7 @@ public partial class IRBuilder
                 ResultVar = tmp,
                 ResultTypeCpp = "bool",
             });
-            stack.Push(tmp);
+            stack.Push(new StackEntry(tmp, "bool"));
             return;
         }
 
@@ -669,7 +628,7 @@ public partial class IRBuilder
                 ResultVar = tmp,
                 ResultTypeCpp = "intptr_t",
             });
-            stack.Push(tmp);
+            stack.Push(new StackEntry(tmp, "intptr_t"));
             return;
         }
 
@@ -685,7 +644,7 @@ public partial class IRBuilder
                 ResultVar = tmp,
                 ResultTypeCpp = "bool",
             });
-            stack.Push(tmp);
+            stack.Push(new StackEntry(tmp, "bool"));
             return;
         }
 
@@ -693,7 +652,7 @@ public partial class IRBuilder
         if (methodRef.DeclaringType.FullName == "System.Runtime.CompilerServices.Unsafe"
             && methodRef.Name == "NullRef" && methodRef.Parameters.Count == 0)
         {
-            stack.Push("nullptr");
+            stack.Push(new StackEntry("nullptr", "void*"));
             return;
         }
 
@@ -702,15 +661,18 @@ public partial class IRBuilder
             && methodRef.Name == "AddByteOffset" && methodRef.Parameters.Count == 2)
         {
             var offset = stack.PopExpr();
-            var ptr = stack.PopExprOr("nullptr");
+            var ptrEntry = stack.PopEntry();
+            var ptr = ptrEntry.Expr.Length > 0 ? ptrEntry.Expr : "nullptr";
             var tmp = $"__t{tempCounter++}";
+            // Use tracked CppType for result cast; fall back to decltype if not available
+            var castExpr = ptrEntry.CppType != null ? $"({ptrEntry.CppType})" : $"(decltype({ptr}))";
             block.Instructions.Add(new IRRawCpp
             {
-                Code = $"auto {tmp} = (decltype({ptr}))((uint8_t*){ptr} + (intptr_t){offset});",
+                Code = $"auto {tmp} = {castExpr}((uint8_t*){ptr} + (intptr_t){offset});",
                 ResultVar = tmp,
-                // ResultTypeCpp left null — decltype preserves source pointer type
+                ResultTypeCpp = ptrEntry.CppType,
             });
-            stack.Push(tmp);
+            stack.Push(new StackEntry(tmp, ptrEntry.CppType));
             return;
         }
 
@@ -719,14 +681,17 @@ public partial class IRBuilder
             && methodRef.Name == "SubtractByteOffset" && methodRef.Parameters.Count == 2)
         {
             var offset = stack.PopExpr();
-            var ptr = stack.PopExprOr("nullptr");
+            var ptrEntry = stack.PopEntry();
+            var ptr = ptrEntry.Expr.Length > 0 ? ptrEntry.Expr : "nullptr";
             var tmp = $"__t{tempCounter++}";
+            var castExpr = ptrEntry.CppType != null ? $"({ptrEntry.CppType})" : $"(decltype({ptr}))";
             block.Instructions.Add(new IRRawCpp
             {
-                Code = $"auto {tmp} = (decltype({ptr}))((uint8_t*){ptr} - (intptr_t){offset});",
+                Code = $"auto {tmp} = {castExpr}((uint8_t*){ptr} - (intptr_t){offset});",
                 ResultVar = tmp,
+                ResultTypeCpp = ptrEntry.CppType,
             });
-            stack.Push(tmp);
+            stack.Push(new StackEntry(tmp, ptrEntry.CppType));
             return;
         }
 
@@ -748,7 +713,7 @@ public partial class IRBuilder
                 ResultVar = tmp,
                 ResultTypeCpp = cppTo,
             });
-            stack.Push(tmp);
+            stack.Push(new StackEntry(tmp, cppTo));
             return;
         }
 
@@ -785,7 +750,7 @@ public partial class IRBuilder
                 ResultVar = tmp,
                 ResultTypeCpp = cppType,
             });
-            stack.Push(tmp);
+            stack.Push(new StackEntry(tmp, cppType));
             return;
         }
 
@@ -809,7 +774,7 @@ public partial class IRBuilder
                 if (methodRef.HasThis && stack.Count > 0) stack.Pop();
                 var tmp = $"__t{tempCounter++}";
                 block.Instructions.Add(new IRRawCpp { Code = $"int32_t {tmp} = 0;", ResultVar = tmp, ResultTypeCpp = "int32_t" });
-                stack.Push(tmp);
+                stack.Push(new StackEntry(tmp, "int32_t"));
                 return;
             }
         }
@@ -834,7 +799,7 @@ public partial class IRBuilder
                 ResultVar = tmp,
                 ResultTypeCpp = "cil2cpp::Array*",
             });
-            stack.Push(tmp);
+            stack.Push(new StackEntry(tmp, "cil2cpp::Array*"));
             return;
         }
 
@@ -954,7 +919,7 @@ public partial class IRBuilder
                 ResultVar = tmp,
                 ResultTypeCpp = "cil2cpp::Array*",
             });
-            stack.Push(tmp);
+            stack.Push(new StackEntry(tmp, "cil2cpp::Array*"));
             return;
         }
 
@@ -1008,7 +973,7 @@ public partial class IRBuilder
                     ResultTypeCpp = retCpp,
                 });
             }
-            stack.Push(tmp);
+            stack.Push(new StackEntry(tmp, retCpp));
             return;
         }
 
@@ -1130,7 +1095,7 @@ public partial class IRBuilder
             {
                 var tmp = $"__t{tempCounter++}";
                 invoke.ResultVar = tmp;
-                stack.Push(tmp);
+                stack.Push(new StackEntry(tmp, invoke.ReturnTypeCpp));
             }
             block.Instructions.Add(invoke);
             return;
@@ -1196,7 +1161,7 @@ public partial class IRBuilder
                 ResultVar = tmp,
                 ResultTypeCpp = spanCpp,
             });
-            stack.Push(tmp);
+            stack.Push(new StackEntry(tmp, spanCpp));
             return;
         }
 
@@ -1210,7 +1175,7 @@ public partial class IRBuilder
             bool isRef = IsReferenceOrContainsReferences(typeArg);
             var tmp = $"__t{tempCounter++}";
             block.Instructions.Add(new IRRawCpp { Code = $"{tmp} = {(isRef ? "true" : "false")};", ResultVar = tmp, ResultTypeCpp = "bool" });
-            stack.Push(tmp);
+            stack.Push(new StackEntry(tmp, "bool"));
             return;
         }
 
@@ -1225,7 +1190,7 @@ public partial class IRBuilder
             bool isBitwiseEq = IsBitwiseEquatable(typeArg);
             var tmp = $"__t{tempCounter++}";
             block.Instructions.Add(new IRRawCpp { Code = $"{tmp} = {(isBitwiseEq ? "true" : "false")};", ResultVar = tmp, ResultTypeCpp = "bool" });
-            stack.Push(tmp);
+            stack.Push(new StackEntry(tmp, "bool"));
             return;
         }
 
@@ -1476,9 +1441,11 @@ public partial class IRBuilder
         }
 
         // 'this' for instance methods
+        string? rawThisArg = null; // Pre-cast this pointer for constrained call fixup
         if (methodRef.HasThis)
         {
             var thisArg = stack.PopExprOr("__this");
+            rawThisArg = thisArg; // Save before any cast
             if (mappedName != null && methodRef.DeclaringType.FullName == "System.Object")
             {
                 // BCL mapped Object methods expect cil2cpp::Object*
@@ -1624,15 +1591,10 @@ public partial class IRBuilder
                     // The `this` arg is currently a pointer to the value type; box it
                     if (irCall.Arguments.Count > 0)
                     {
-                        var thisPtr = irCall.Arguments[0]; // e.g., "(cil2cpp::Object*)&loc_0"
                         var cppTypeName = GetMangledTypeNameForRef(constrainedType);
                         var typeInfoName = $"{cppTypeName}_TypeInfo";
-                        // HACK: Strip (cil2cpp::Object*) cast prefix from rendered string.
-                        // Safe because thisPtr was constructed by our own codegen with consistent formatting.
-                        // TODO: Phase 2 — use StackEntry.CppType to avoid string manipulation.
-                        var rawPtr = thisPtr;
-                        if (rawPtr.StartsWith("(cil2cpp::Object*)"))
-                            rawPtr = rawPtr["(cil2cpp::Object*)".Length..];
+                        // Use the pre-cast raw this pointer (saved before Object* cast was applied)
+                        var rawPtr = rawThisArg ?? irCall.Arguments[0];
                         irCall.Arguments[0] = $"(cil2cpp::Object*)cil2cpp::box_raw({rawPtr}, sizeof({cppTypeName}), &{typeInfoName})";
                     }
                 }
@@ -1646,11 +1608,8 @@ public partial class IRBuilder
                 // Cast to Object** and dereference to get Object*.
                 if (irCall.Arguments.Count > 0)
                 {
-                    var thisArg = irCall.Arguments[0];
-                    // Strip (cil2cpp::Object*) cast prefix
-                    var rawPtr = thisArg;
-                    if (rawPtr.StartsWith("(cil2cpp::Object*)"))
-                        rawPtr = rawPtr["(cil2cpp::Object*)".Length..];
+                    // Use the pre-cast raw this pointer (saved before Object* cast was applied)
+                    var rawPtr = rawThisArg ?? irCall.Arguments[0];
                     irCall.Arguments[0] = $"*((cil2cpp::Object**){rawPtr})";
                 }
             }
@@ -1688,7 +1647,7 @@ public partial class IRBuilder
                         ResultVar = tmp,
                         ResultTypeCpp = constrainedCppType,
                     });
-                    stack.Push(tmp);
+                    stack.Push(new StackEntry(tmp, constrainedCppType));
                     irCall.Arguments.Clear();
                     args.Clear();
                     return;
@@ -2042,7 +2001,7 @@ public partial class IRBuilder
                     ResultVar = spanTmp,
                     ResultTypeCpp = spanTypeCpp,
                 });
-                stack.Push(spanTmp);
+                stack.Push(new StackEntry(spanTmp, spanTypeCpp));
                 return;
             }
             else if (ctorRef.Parameters.Count == 1
@@ -2058,7 +2017,7 @@ public partial class IRBuilder
                     ResultVar = spanTmp,
                     ResultTypeCpp = spanTypeCpp,
                 });
-                stack.Push(spanTmp);
+                stack.Push(new StackEntry(spanTmp, spanTypeCpp));
                 return;
             }
             else if (ctorRef.Parameters.Count == 2
@@ -2074,7 +2033,7 @@ public partial class IRBuilder
                     ResultVar = spanTmp,
                     ResultTypeCpp = spanTypeCpp,
                 });
-                stack.Push(spanTmp);
+                stack.Push(new StackEntry(spanTmp, spanTypeCpp));
                 return;
             }
             else if (ctorRef.Parameters.Count == 2
@@ -2091,7 +2050,7 @@ public partial class IRBuilder
                     ResultVar = spanTmp,
                     ResultTypeCpp = spanTypeCpp,
                 });
-                stack.Push(spanTmp);
+                stack.Push(new StackEntry(spanTmp, spanTypeCpp));
                 return;
             }
         }
@@ -2521,7 +2480,7 @@ public partial class IRBuilder
             // are skipped — the field won't be initialized but this avoids type-mismatch errors.
         }
 
-        stack.Push(tmp);
+        stack.Push(new StackEntry(tmp, runtimeCppName + "*"));
         return true;
     }
 
@@ -3387,7 +3346,7 @@ public partial class IRBuilder
                 block.Instructions.Add(new IRRawCpp
                     { Code = $"{tmp} = ({cppType})({args[0]} {cppOp} {args[1]});", ResultVar = tmp, ResultTypeCpp = cppType });
             }
-            stack.Push(tmp);
+            stack.Push(new StackEntry(tmp, cppType));
             irCall.Arguments.Clear();
             args.Clear();
             return true;
@@ -3414,7 +3373,7 @@ public partial class IRBuilder
                 block.Instructions.Add(new IRRawCpp
                     { Code = $"{tmp} = ({cppType})({cppOp}{args[0]});", ResultVar = tmp, ResultTypeCpp = cppType });
             }
-            stack.Push(tmp);
+            stack.Push(new StackEntry(tmp, cppType));
             irCall.Arguments.Clear();
             args.Clear();
             return true;
@@ -3626,7 +3585,7 @@ public partial class IRBuilder
                     ResultVar = tmp,
                     ResultTypeCpp = elemPtrCpp,
                 });
-                stack.Push(tmp);
+                stack.Push(new StackEntry(tmp, elemPtrCpp));
                 return true;
             }
 
@@ -3643,7 +3602,7 @@ public partial class IRBuilder
                     ResultVar = tmp,
                     ResultTypeCpp = elemPtrCpp,
                 });
-                stack.Push(tmp);
+                stack.Push(new StackEntry(tmp, elemPtrCpp));
                 return true;
             }
 
@@ -3659,7 +3618,7 @@ public partial class IRBuilder
                     ResultVar = tmp,
                     ResultTypeCpp = elemPtrCpp,
                 });
-                stack.Push(tmp);
+                stack.Push(new StackEntry(tmp, elemPtrCpp));
                 return true;
             }
 
@@ -3675,7 +3634,7 @@ public partial class IRBuilder
                     ResultVar = tmp,
                     ResultTypeCpp = elemCpp,
                 });
-                stack.Push(tmp);
+                stack.Push(new StackEntry(tmp, elemCpp));
                 return true;
             }
 
@@ -3698,7 +3657,7 @@ public partial class IRBuilder
                     ResultVar = tmp,
                     ResultTypeCpp = retCpp,
                 });
-                stack.Push(tmp);
+                stack.Push(new StackEntry(tmp, retCpp));
                 return true;
             }
 
@@ -3721,7 +3680,7 @@ public partial class IRBuilder
                     ResultVar = tmp,
                     ResultTypeCpp = retCpp,
                 });
-                stack.Push(tmp);
+                stack.Push(new StackEntry(tmp, retCpp));
                 return true;
             }
 

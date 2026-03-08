@@ -10,6 +10,7 @@
 #include "types.h"
 #include "object.h"
 #include "type_info.h"
+#include <atomic>
 #include <cstring>
 
 namespace cil2cpp {
@@ -55,16 +56,74 @@ inline void SafeHandle_SetHandle(void* self, intptr_t handle) {
 }
 
 /// SafeHandle.DangerousAddRef(ref bool success)
-/// Simplified: just set success = true (no ref counting in AOT)
+/// Atomically increments the reference count. Sets success=false if handle is already closed.
 inline void SafeHandle_DangerousAddRef(void* self, bool* success) {
-    // TODO: Implement proper reference counting when needed
-    if (success) *success = true;
+    auto* sh = static_cast<SafeHandleLayout*>(self);
+    constexpr int32_t refCountOne = static_cast<int32_t>(SafeHandleState::RefCountOne);
+    constexpr int32_t closedBit = static_cast<int32_t>(SafeHandleState::Closed);
+
+    auto* atomic_state = reinterpret_cast<std::atomic<int32_t>*>(&sh->f_state);
+    int32_t old_state = atomic_state->load(std::memory_order_relaxed);
+    for (;;) {
+        if (old_state & closedBit) {
+            // Handle already closed — cannot add ref
+            if (success) *success = false;
+            return;
+        }
+        int32_t new_state = old_state + refCountOne;
+        if (atomic_state->compare_exchange_weak(old_state, new_state,
+                std::memory_order_acq_rel, std::memory_order_relaxed)) {
+            if (success) *success = true;
+            return;
+        }
+        // old_state updated by CAS failure — retry
+    }
 }
 
 /// SafeHandle.DangerousRelease()
-/// Simplified: no-op (no ref counting in AOT)
-inline void SafeHandle_DangerousRelease(void* /*self*/) {
-    // TODO: Implement proper reference counting and ReleaseHandle() callback
+/// Atomically decrements the reference count. Calls ReleaseHandle() when count reaches zero.
+inline void SafeHandle_DangerousRelease(void* self) {
+    auto* sh = static_cast<SafeHandleLayout*>(self);
+    constexpr int32_t refCountOne = static_cast<int32_t>(SafeHandleState::RefCountOne);
+    constexpr int32_t closedBit = static_cast<int32_t>(SafeHandleState::Closed);
+
+    auto* atomic_state = reinterpret_cast<std::atomic<int32_t>*>(&sh->f_state);
+    int32_t old_state = atomic_state->load(std::memory_order_relaxed);
+    for (;;) {
+        int32_t new_state = old_state - refCountOne;
+        // Check if ref count is reaching zero (bits 2+ all zero after decrement)
+        bool releasing = (new_state >> 2) == 0 && !(old_state & closedBit);
+        if (releasing) {
+            new_state |= closedBit;
+        }
+        if (atomic_state->compare_exchange_weak(old_state, new_state,
+                std::memory_order_acq_rel, std::memory_order_relaxed)) {
+            if (releasing) {
+                // Call ReleaseHandle() via vtable
+                auto* ti = sh->__type_info;
+                if (ti && ti->vtable && sh->f_handle != 0 && sh->f_handle != -1) {
+                    int32_t releaseSlot = -1;
+                    for (UInt32 i = 0; i < ti->method_count; i++) {
+                        if (ti->methods[i].name &&
+                            std::strcmp(ti->methods[i].name, "ReleaseHandle") == 0 &&
+                            ti->methods[i].vtable_slot >= 0) {
+                            releaseSlot = ti->methods[i].vtable_slot;
+                            break;
+                        }
+                    }
+                    if (releaseSlot >= 0 &&
+                        static_cast<UInt32>(releaseSlot) < ti->vtable->method_count &&
+                        ti->vtable->methods[releaseSlot] != nullptr) {
+                        auto releaseHandle = reinterpret_cast<bool(*)(void*)>(
+                            ti->vtable->methods[releaseSlot]);
+                        releaseHandle(self);
+                    }
+                }
+            }
+            return;
+        }
+        // old_state updated by CAS failure — retry
+    }
 }
 
 /// SafeHandle.get_IsClosed() → bool

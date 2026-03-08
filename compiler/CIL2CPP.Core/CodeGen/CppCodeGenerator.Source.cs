@@ -822,7 +822,17 @@ public partial class CppCodeGenerator
         if (type.IsEnum) flagParts.Add("cil2cpp::TypeFlags::Enum");
         if (type.IsPublic) flagParts.Add("cil2cpp::TypeFlags::Public");
         if (type.IsNestedPublic) flagParts.Add("cil2cpp::TypeFlags::NestedPublic");
+        if (type.IsByRefLike) flagParts.Add("cil2cpp::TypeFlags::IsByRefLike");
         var flagsStr = flagParts.Count > 0 ? string.Join(" | ", flagParts) : "cil2cpp::TypeFlags::None";
+
+        // Array flag: detect array types from ILFullName suffix "[]"
+        if (type.ILFullName.EndsWith("[]"))
+        {
+            flagParts.Add("cil2cpp::TypeFlags::Array");
+            // Derive element type CppName from array type ILFullName
+            var elementIL = type.ILFullName[..^2]; // strip "[]"
+            type.ArrayElementTypeCppName = CppNameMapper.MangleTypeName(elementIL);
+        }
 
         // CorElementType (needed by both full and minimal)
         var corElementType = GetCorElementType(type);
@@ -891,6 +901,12 @@ public partial class CppCodeGenerator
                     ? $"\"{type.GenericDefinitionCppName}\"" : "nullptr";
                 sb.AppendLine($"    .generic_definition_name = {minGenDefName},");
             }
+            // Element type info (for array types)
+            if (type.ArrayElementTypeCppName != null)
+                sb.AppendLine($"    .element_type_info = &{type.ArrayElementTypeCppName}_TypeInfo,");
+            // Metadata token
+            if (type.MetadataToken != 0)
+                sb.AppendLine($"    .metadata_token = 0x{type.MetadataToken:X8},");
             sb.AppendLine("};");
             return;
         }
@@ -1016,6 +1032,12 @@ public partial class CppCodeGenerator
             sb.AppendLine($"    .generic_argument_count = {genCount},");
             sb.AppendLine($"    .generic_definition_name = {genDefName},");
         }
+        // Element type info (for array types: T[] → T's TypeInfo)
+        if (type.ArrayElementTypeCppName != null)
+            sb.AppendLine($"    .element_type_info = &{type.ArrayElementTypeCppName}_TypeInfo,");
+        // Metadata token (ECMA-335)
+        if (type.MetadataToken != 0)
+            sb.AppendLine($"    .metadata_token = 0x{type.MetadataToken:X8},");
         sb.AppendLine("};");
     }
 

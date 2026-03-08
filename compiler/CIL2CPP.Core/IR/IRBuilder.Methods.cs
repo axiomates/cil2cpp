@@ -325,7 +325,6 @@ public partial class IRBuilder
         _pendingVolatile = false; // Reset between methods
         _constrainedType = null;
         _inFilterRegion = false;
-        _tempPtrTypes.Clear();
         _endfilterOffset = -1;
         var block = new IRBasicBlock { Id = 0 };
         irMethod.BasicBlocks.Add(block);
@@ -1812,26 +1811,7 @@ public partial class IRBuilder
                 // Preserving the typed pointer avoids void*→T* assignment mismatches
                 // in cross-scope pre-declared variables (AddAutoDeclarations).
                 if (convIEntry.IsAddressOf || convIEntry.IsPointer) break;
-                // Local variables (loc_N) that are pointer types — conv.i is a no-op.
-                // TODO: Phase 2 — if StackEntry.CppType is populated for all locals, these
-                // StartsWith("loc_")/StartsWith("__t") prefix checks can be replaced by CppType.
-                // Currently, pointer values in expressions that don't start with loc_/__t
-                // (e.g., params, __this, complex expressions) will incorrectly emit intptr_t cast.
-                if (convIEntry.Expr.StartsWith("loc_"))
-                {
-                    if (int.TryParse(convIEntry.Expr.AsSpan(4), out var locIdx)
-                        && locIdx >= 0 && locIdx < method.Locals.Count
-                        && method.Locals[locIdx].CppTypeName.EndsWith("*"))
-                        break;
-                }
-                // Temp variables (__tN) that were result of a pointer-returning operation
-                if (convIEntry.Expr.StartsWith("__t") && convIEntry.CppType == null)
-                {
-                    if (method.TempVarTypes.TryGetValue(convIEntry.Expr, out var tempType)
-                        && tempType.EndsWith("*"))
-                        break;
-                }
-                // CppType already tracked as pointer — conv.i is a no-op
+                // CppType tracked as pointer — conv.i is a no-op
                 if (convIEntry.CppType != null && convIEntry.CppType.EndsWith("*"))
                     break;
                 EmitConversion(block, stack, "intptr_t", ref tempCounter);
@@ -1850,24 +1830,7 @@ public partial class IRBuilder
                 // Preserving the typed pointer avoids void*→T* assignment mismatches
                 // in cross-scope pre-declared variables (AddAutoDeclarations).
                 if (convUEntry.IsAddressOf || convUEntry.IsPointer) break;
-                // Local variables (loc_N) that are pointer types — conv.u is a no-op.
-                // CppType may be null if not tracked, but we can look up from method locals.
-                if (convUEntry.Expr.StartsWith("loc_"))
-                {
-                    if (int.TryParse(convUEntry.Expr.AsSpan(4), out var locIdx)
-                        && locIdx >= 0 && locIdx < method.Locals.Count
-                        && method.Locals[locIdx].CppTypeName.EndsWith("*"))
-                        break;
-                }
-                // Temp variables (__tN) that were result of a pointer-returning operation
-                if (convUEntry.Expr.StartsWith("__t") && convUEntry.CppType == null)
-                {
-                    // Look up type from TempVarTypes if available
-                    if (method.TempVarTypes.TryGetValue(convUEntry.Expr, out var tempType)
-                        && tempType.EndsWith("*"))
-                        break;
-                }
-                // CppType already tracked as pointer — conv.u is a no-op
+                // CppType tracked as pointer — conv.u is a no-op
                 if (convUEntry.CppType != null && convUEntry.CppType.EndsWith("*"))
                     break;
                 EmitConversion(block, stack, "uintptr_t", ref tempCounter);

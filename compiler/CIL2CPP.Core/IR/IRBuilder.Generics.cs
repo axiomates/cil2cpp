@@ -779,6 +779,9 @@ public partial class IRBuilder
                 IsDelegate = isDelegate,
                 IsPublic = openType.IsPublic,
                 IsNestedPublic = openType.IsNestedPublic,
+                IsByRefLike = openType.CustomAttributes.Any(
+                    a => a.AttributeType.FullName == "System.Runtime.CompilerServices.IsByRefLikeAttribute"),
+                MetadataToken = openType.MetadataToken.ToUInt32(),
                 GenericArguments = info.TypeArguments,
                 IsRuntimeProvided = RuntimeProvidedTypes.Contains(info.OpenTypeName),
                 SourceKind = _assemblySet.ClassifyAssembly(openType.Module.Assembly.Name.Name),
@@ -1184,6 +1187,9 @@ public partial class IRBuilder
                 IsDelegate = openType.BaseType?.FullName is "System.MulticastDelegate" or "System.Delegate",
                 IsPublic = openType.IsPublic,
                 IsNestedPublic = openType.IsNestedPublic,
+                IsByRefLike = openType.CustomAttributes.Any(
+                    a => a.AttributeType.FullName == "System.Runtime.CompilerServices.IsByRefLikeAttribute"),
+                MetadataToken = openType.MetadataToken.ToUInt32(),
                 GenericArguments = info.TypeArguments,
                 IsRuntimeProvided = false,
                 SourceKind = _assemblySet.ClassifyAssembly(openType.Module.Assembly.Name.Name),

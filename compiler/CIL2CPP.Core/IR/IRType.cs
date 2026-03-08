@@ -74,6 +74,13 @@ public class IRType
     public bool IsPrimitiveType { get; set; }
     public bool IsPublic { get; set; }
     public bool IsNestedPublic { get; set; }
+    public bool IsByRefLike { get; set; }
+
+    /// <summary>For array types: the C++ mangled name of the element type (e.g., "System_Int32")</summary>
+    public string? ArrayElementTypeCppName { get; set; }
+
+    /// <summary>ECMA-335 metadata token (from Cecil MetadataToken.ToUInt32())</summary>
+    public uint MetadataToken { get; set; }
 
     /// <summary>Concrete type argument names for generic instances (e.g., ["System.Int32"])</summary>
     public List<string> GenericArguments { get; set; } = new();

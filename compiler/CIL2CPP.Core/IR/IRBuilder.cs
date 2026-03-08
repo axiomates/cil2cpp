@@ -392,10 +392,6 @@ public partial class IRBuilder
     // volatile. prefix flag — set by Code.Volatile, consumed by next field access
     private bool _pendingVolatile;
 
-    // Track typed pointer types for temp variables (for byte-level pointer arithmetic).
-    // Maps temp var name (e.g. "__t6") to its C++ pointer type (e.g. "char16_t*").
-    private readonly Dictionary<string, string> _tempPtrTypes = new();
-
     // constrained. prefix type — set by Code.Constrained, consumed by next callvirt
     private TypeReference? _constrainedType;
 
