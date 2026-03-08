@@ -390,10 +390,23 @@ public class IRConversion : IRInstruction
             || TargetType.EndsWith("*");
         // Also use C-style cast when source is a pointer type and target is any integer
         // (e.g., conv.u8 on void* → (uint64_t)(ptr) instead of static_cast<uint64_t>(ptr))
-        if (!useCStyleCast && SourceCppType != null && SourceCppType.EndsWith("*"))
+        bool sourceIsPointer = SourceCppType != null && SourceCppType.EndsWith("*");
+        if (!useCStyleCast && sourceIsPointer)
             useCStyleCast = true;
         if (useCStyleCast)
+        {
+            // When casting pointer to a non-pointer-sized integer (e.g. void* → int32_t),
+            // go through uintptr_t first to avoid MSVC C4311 (pointer truncation warning)
+            if (sourceIsPointer && TargetType is not "uintptr_t" and not "intptr_t"
+                && !TargetType.EndsWith("*"))
+                return $"{ResultVar} = ({TargetType})(uintptr_t)({SourceExpr});";
             return $"{ResultVar} = ({TargetType})({SourceExpr});";
+        }
+        // ECMA-335: conv.u8 zero-extends from int32 (not sign-extends).
+        // In C++, static_cast<uint64_t>(int32_t) sign-extends, so we first
+        // convert to unsigned (same width) via to_unsigned(), then widen.
+        if (TargetType == "uint64_t")
+            return $"{ResultVar} = static_cast<uint64_t>(cil2cpp::to_unsigned({SourceExpr}));";
         return $"{ResultVar} = static_cast<{TargetType}>({SourceExpr});";
     }
 }
@@ -560,8 +573,6 @@ public class IRDelegateInvoke : IRInstruction
         {
             if (i < ParamTypes.Count && ParamTypes[i].EndsWith("*") && ParamTypes[i] != "void*")
             {
-                // Cast all pointer arguments through (void*) — flat struct model has no C++ inheritance.
-                // This handles Object* params receiving Socket*/Type*/etc. derived type pointers.
                 castedArgs.Add($"({ParamTypes[i]})(void*){Arguments[i]}");
             }
             else
@@ -570,26 +581,42 @@ public class IRDelegateInvoke : IRInstruction
             }
         }
 
-        // Instance call: target is first arg, then user args
-        var instanceParamTypes = new List<string> { "cil2cpp::Object*" };
-        instanceParamTypes.AddRange(ParamTypes);
-        var instanceFnPtr = $"{ReturnTypeCpp}(*)({string.Join(", ", instanceParamTypes)})";
-        var instanceArgs = new List<string> { $"{del}->target" };
-        instanceArgs.AddRange(castedArgs);
-        var instanceCall = $"(({instanceFnPtr})({del}->method_ptr))({string.Join(", ", instanceArgs)})";
-
-        // Static call: no target arg
-        var staticFnPtr = ParamTypes.Count > 0
-            ? $"{ReturnTypeCpp}(*)({string.Join(", ", ParamTypes)})"
-            : $"{ReturnTypeCpp}(*)()";
-        var staticCall = $"(({staticFnPtr})({del}->method_ptr))({string.Join(", ", castedArgs)})";
-
-        if (ResultVar != null)
+        // Helper: generate single-delegate invoke code
+        string SingleInvoke(string delExpr)
         {
-            // Declare the result variable before the if/else to avoid auto-declaration
-            // inside a compound statement (which AddAutoDeclarations can't handle)
-            return $"{ReturnTypeCpp} {ResultVar};\n    if ({del}->target) {{ {ResultVar} = {instanceCall}; }} else {{ {ResultVar} = {staticCall}; }}";
+            var instanceParamTypes = new List<string> { "cil2cpp::Object*" };
+            instanceParamTypes.AddRange(ParamTypes);
+            var instanceFnPtr = $"{ReturnTypeCpp}(*)({string.Join(", ", instanceParamTypes)})";
+            var instanceArgs = new List<string> { $"{delExpr}->target" };
+            instanceArgs.AddRange(castedArgs);
+            var instanceCall = $"(({instanceFnPtr})({delExpr}->method_ptr))({string.Join(", ", instanceArgs)})";
+
+            var staticFnPtr = ParamTypes.Count > 0
+                ? $"{ReturnTypeCpp}(*)({string.Join(", ", ParamTypes)})"
+                : $"{ReturnTypeCpp}(*)()";
+            var staticCall = $"(({staticFnPtr})({delExpr}->method_ptr))({string.Join(", ", castedArgs)})";
+
+            if (ResultVar != null)
+                return $"{ResultVar} = {delExpr}->target ? {instanceCall} : {staticCall}";
+            return $"if ({delExpr}->target) {{ {instanceCall}; }} else {{ {staticCall}; }}";
         }
-        return $"if ({del}->target) {{ {instanceCall}; }} else {{ {staticCall}; }}";
+
+        // Generate multicast-aware invoke: check invocation_count, loop if multicast
+        var sb = new System.Text.StringBuilder();
+        if (ResultVar != null)
+            sb.AppendLine($"{ReturnTypeCpp} {ResultVar};");
+        else
+            sb.AppendLine();
+
+        sb.Append($"    if ({del}->invocation_count > 0) {{ ");
+        sb.Append($"for (int32_t __di = 0; __di < {del}->invocation_count; __di++) {{ ");
+        sb.Append($"auto* __item = cil2cpp::delegate_get_invocation_item({del}, __di); ");
+        sb.Append($"{SingleInvoke("__item")}; ");
+        sb.Append($"}} ");
+        sb.Append($"}} else {{ ");
+        sb.Append($"{SingleInvoke(del)}; ");
+        sb.Append($"}}");
+
+        return sb.ToString().TrimStart('\n').TrimStart('\r');
     }
 }

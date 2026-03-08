@@ -12,7 +12,9 @@
 #pragma once
 
 #include "types.h"
+#include "string.h"
 #include <cstdlib>
+#include <cstring>
 
 namespace cil2cpp {
 
@@ -23,6 +25,59 @@ namespace cil2cpp {
 // Wildcard stubs: template handles all overloads via variadic params
 template<typename... Args>
 inline int32_t interop_globalization_return_zero(Args...) { return 0; }
+
+// Interop.Globalization.GetLocaleName — copy locale name to output buffer.
+// This enables CultureData initialization for the user's default culture,
+// which is required for correct NumberFormatInfo (infinity/NaN symbols, etc.).
+inline int32_t interop_globalization_get_locale_name(
+    String* localeName, char16_t* buffer, int32_t bufferLength) {
+    if (!localeName || bufferLength <= 0) return 0;
+    auto len = string_length(localeName);
+    if (len <= 0 || len >= bufferLength) return 0;
+    std::memcpy(buffer, &localeName->f_firstChar, len * sizeof(char16_t));
+    buffer[len] = 0;
+    return 1;
+}
+
+// Interop.Globalization.GetLocaleInfoString — provide locale string data.
+// Returns culture-specific values for key locale properties.
+// Uses en-US/invariant defaults for all standard LocaleStringData values.
+inline int32_t interop_globalization_get_locale_info_string(
+    String* /*localeName*/, uint32_t type, char16_t* buffer,
+    int32_t /*bufferLength*/, String* /*uiCultureName*/) {
+    // Helper: write a null-terminated char16_t string from ASCII
+    auto write = [&](const char* s) {
+        int i = 0;
+        while (s[i]) { buffer[i] = static_cast<char16_t>(s[i]); i++; }
+        buffer[i] = 0;
+        return 1;
+    };
+    switch (type) {
+    // Number formatting
+    case 14:  return write(".");   // NumberDecimalSeparator
+    case 15:  return write(",");   // NumberGroupSeparator
+    case 80:  return write("+");   // PositiveSign
+    case 81:  return write("-");   // NegativeSign
+    case 105: return write("NaN"); // NaNSymbol
+    case 106: buffer[0] = 0x221E; buffer[1] = 0; return 1; // PositiveInfinitySymbol ∞
+    case 107: buffer[0] = u'-'; buffer[1] = 0x221E; buffer[2] = 0; return 1; // NegativeInfinitySymbol -∞
+    // Currency
+    case 20:  return write("$");   // CurrencySymbol
+    case 22:  return write(".");   // CurrencyDecimalSeparator
+    case 23:  return write(",");   // CurrencyGroupSeparator
+    // Percent
+    case 19:  return write("%");   // PercentSymbol
+    case 89:  return write("+");   // PercentPositivePattern (string rep)
+    case 90:  return write("-");   // PercentNegativePattern (string rep)
+    case 118: return write("%");   // PerMilleSymbol
+    case 119: return write("+");   // (additional locale data)
+    // List/misc
+    case 40:  return write("AM");  // AMDesignator
+    case 41:  return write("PM");  // PMDesignator
+    default:
+        return 0;
+    }
+}
 
 template<typename... Args>
 inline int32_t interop_globalization_return_one(Args...) { return 1; }

@@ -56,7 +56,8 @@ extern TypeInfo TaskCanceledException_TypeInfo;
 extern TypeInfo KeyNotFoundException_TypeInfo;
 
 [[noreturn]] void throw_exception(Exception* ex) {
-    // DEBUG: trace exception type during FileStream investigation
+#ifndef NDEBUG
+    // Debug-only: trace exception type and stack trace
     if (ex) {
         const char* typeName = "?";
         auto* obj = reinterpret_cast<Object*>(ex);
@@ -69,7 +70,6 @@ extern TypeInfo KeyNotFoundException_TypeInfo;
         }
         fprintf(stderr, "DBG THROW: type=%s msg=%s\n", typeName, msg); fflush(stderr);
         if (msgBuf) free(msgBuf);
-        // Print native stack trace
         auto* trace = capture_stack_trace();
         if (trace) {
             auto* traceStr = string_to_utf8(trace);
@@ -81,6 +81,7 @@ extern TypeInfo KeyNotFoundException_TypeInfo;
     } else {
         fprintf(stderr, "DBG THROW: null exception\n"); fflush(stderr);
     }
+#endif
 
     // Capture stack trace for user-thrown exceptions that don't have one yet.
     // Runtime throw_* functions already set this via create_exception(),
@@ -95,12 +96,16 @@ extern TypeInfo KeyNotFoundException_TypeInfo;
     // from within a catch or finally block — matching .NET semantics where
     // such exceptions propagate to the enclosing try block.
     while (g_exception_context && g_exception_context->state != 0) {
+#ifndef NDEBUG
         fprintf(stderr, "  [throw_exception] skipping context %p (state=%d)\n", (void*)g_exception_context, g_exception_context->state); fflush(stderr);
+#endif
         g_exception_context = g_exception_context->previous;
     }
 
     if (g_exception_context) {
+#ifndef NDEBUG
         fprintf(stderr, "  [throw_exception] longjmp to context %p\n", (void*)g_exception_context); fflush(stderr);
+#endif
         g_exception_context->current_exception = ex;
         longjmp(g_exception_context->jump_buffer, 1);
     }

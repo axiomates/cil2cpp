@@ -145,10 +145,12 @@ InterfaceVTable* type_get_interface_vtable(TypeInfo* type, TypeInfo* interface_t
 InterfaceVTable* type_get_interface_vtable_checked(TypeInfo* type, TypeInfo* interface_type) {
     auto* result = type_get_interface_vtable(type, interface_type);
     if (!result) {
+#ifndef NDEBUG
         fprintf(stderr, "[InvalidCast] type_get_interface_vtable_checked FAILED: type='%s' does not implement interface='%s'\n",
             type ? (type->full_name ? type->full_name : "?") : "null",
             interface_type ? (interface_type->full_name ? interface_type->full_name : "?") : "null");
         fflush(stderr);
+#endif
         throw_invalid_cast();
     }
     return result;
@@ -246,10 +248,12 @@ Object* object_cast(Object* obj, TypeInfo* type) {
     if (object_is_instance_of(obj, type)) {
         return obj;
     }
+#ifndef NDEBUG
     fprintf(stderr, "[InvalidCast] object_cast FAILED: obj type='%s' cannot cast to '%s'\n",
         (obj && obj->__type_info && obj->__type_info->full_name) ? obj->__type_info->full_name : "?",
         (type && type->full_name) ? type->full_name : "?");
     fflush(stderr);
+#endif
     throw_invalid_cast();
 }
 

@@ -2541,25 +2541,71 @@ public partial class IRBuilder
     /// </summary>
     private static bool TypeSatisfiesConstraint(TypeDefinition argType, string constraintTypeName)
     {
-        // Check direct interface implementation
-        if (argType.Interfaces.Any(i => i.InterfaceType.FullName == constraintTypeName))
+        // The type itself satisfies its own constraint (e.g. SafeHandle : SafeHandle)
+        if (ConstraintNameMatches(argType.FullName, constraintTypeName))
+            return true;
+
+        // Check direct interface implementation (exact match or open generic match)
+        if (argType.Interfaces.Any(i => ConstraintNameMatches(i.InterfaceType.FullName, constraintTypeName)))
             return true;
 
         // Walk base type chain
         var baseType = argType.BaseType;
         while (baseType != null)
         {
-            if (baseType.FullName == constraintTypeName) return true;
+            if (ConstraintNameMatches(baseType.FullName, constraintTypeName)) return true;
             // Check interfaces of base type
             try
             {
                 var baseDef = baseType.Resolve();
                 if (baseDef == null) break;
-                if (baseDef.Interfaces.Any(i => i.InterfaceType.FullName == constraintTypeName))
+                if (baseDef.Interfaces.Any(i => ConstraintNameMatches(i.InterfaceType.FullName, constraintTypeName)))
                     return true;
                 baseType = baseDef.BaseType;
             }
             catch { break; }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Match constraint type names, handling generic type name variations.
+    /// For generic constraints like "System.Numerics.INumber`1", also matches
+    /// closed generic forms like "System.Numerics.INumber`1&lt;System.Int32&gt;".
+    /// Also handles modreq/modopt suffixes that Cecil appends to some constraint names.
+    /// </summary>
+    private static bool ConstraintNameMatches(string typeName, string constraintName)
+    {
+        if (typeName == constraintName) return true;
+
+        // Generic open type match: constraint "Ns.IFace`1" matches type "Ns.IFace`1<Arg>"
+        // Extract the open generic prefix (up to and including backtick + arity)
+        int backTick = constraintName.IndexOf('`');
+        if (backTick >= 0)
+        {
+            // Find end of arity digits after backtick
+            int arityEnd = backTick + 1;
+            while (arityEnd < constraintName.Length && char.IsDigit(constraintName[arityEnd]))
+                arityEnd++;
+            var openPrefix = constraintName.Substring(0, arityEnd);
+            // Type matches if it starts with the same open prefix
+            if (typeName.StartsWith(openPrefix, StringComparison.Ordinal))
+                return true;
+        }
+
+        // modreq/modopt suffix: constraint may be "System.ValueType modreq(...)"
+        // Strip modreq/modopt and retry
+        if (constraintName.Contains(" modreq(") || constraintName.Contains(" modopt("))
+        {
+            int modIdx = constraintName.IndexOf(" mod", StringComparison.Ordinal);
+            if (modIdx > 0)
+            {
+                var stripped = constraintName.Substring(0, modIdx);
+                if (typeName == stripped) return true;
+                // Also try open generic match on stripped name
+                if (ConstraintNameMatches(typeName, stripped)) return true;
+            }
         }
 
         return false;

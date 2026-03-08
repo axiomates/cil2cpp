@@ -98,10 +98,25 @@ TypeInfo System_Type_TypeInfo = {
 static std::unordered_map<TypeInfo*, Type*> g_type_cache;
 static std::mutex g_type_cache_mutex;
 
+// Patch RuntimeType's generated vtable so ToString/Equals/GetHashCode
+// operate on the *represented* type, not on the RuntimeType object itself.
+static void patch_runtime_type_vtable() {
+    static bool patched = false;
+    if (patched) return;
+    patched = true;
+    auto* vt = ::System_RuntimeType_TypeInfo.vtable;
+    if (vt && vt->method_count >= 3) {
+        vt->methods[0] = reinterpret_cast<void*>(&Type_ToString_vtable);
+        vt->methods[1] = reinterpret_cast<void*>(&Type_Equals_vtable);
+        vt->methods[2] = reinterpret_cast<void*>(&Type_GetHashCode_vtable);
+    }
+}
+
 Type* type_get_type_object(TypeInfo* info) {
     if (!info) return nullptr;
 
     std::lock_guard<std::mutex> lock(g_type_cache_mutex);
+    patch_runtime_type_vtable();
 
     auto it = g_type_cache.find(info);
     if (it != g_type_cache.end()) {

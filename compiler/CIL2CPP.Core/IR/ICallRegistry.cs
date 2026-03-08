@@ -729,8 +729,8 @@ public static class ICallRegistry
         RegisterICallWildcard("Interop/Globalization", "GetSortHandle", "cil2cpp::interop_globalization_return_zero");
         RegisterICallWildcard("Interop/Globalization", "IanaIdToWindowsId", "cil2cpp::interop_globalization_return_zero");
         RegisterICallWildcard("Interop/Globalization", "CompareString", "cil2cpp::interop_globalization_return_zero");
-        RegisterICallWildcard("Interop/Globalization", "GetLocaleName", "cil2cpp::interop_globalization_return_zero");
-        RegisterICallWildcard("Interop/Globalization", "GetLocaleInfoString", "cil2cpp::interop_globalization_return_zero");
+        RegisterICallWildcard("Interop/Globalization", "GetLocaleName", "cil2cpp::interop_globalization_get_locale_name");
+        RegisterICallWildcard("Interop/Globalization", "GetLocaleInfoString", "cil2cpp::interop_globalization_get_locale_info_string");
         RegisterICallWildcard("Interop/Globalization", "GetLocaleInfoInt", "cil2cpp::interop_globalization_return_zero");
         RegisterICallWildcard("Interop/Globalization", "GetLocaleInfoGroupingSizes", "cil2cpp::interop_globalization_return_zero");
         RegisterICallWildcard("Interop/Globalization", "GetLocaleTimeFormat", "cil2cpp::interop_globalization_return_zero");

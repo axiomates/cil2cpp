@@ -1780,8 +1780,13 @@ public partial class IRBuilder
             else if (resolved != null && !resolved.IsValueType)
             {
                 // Class virtual dispatch — match by name and parameter types
-                var entry = resolved.VTable.FirstOrDefault(e => e.MethodName == methodRef.Name
-                    && (e.Method == null || ParameterTypesMatchRef(e.Method, methodRef)));
+                // When multiple vtable entries match (e.g. inherited + newslot), prefer
+                // the one whose declaring type matches the method reference's declaring type.
+                var candidates = resolved.VTable.Where(e => e.MethodName == methodRef.Name
+                    && (e.Method == null || ParameterTypesMatchRef(e.Method, methodRef))).ToList();
+                var declaringCppName = CppNameMapper.GetCppTypeName(declaringTypeName);
+                var entry = candidates.FirstOrDefault(e => e.DeclaringType?.CppName == declaringCppName)
+                    ?? candidates.FirstOrDefault();
                 if (entry != null)
                 {
                     irCall.IsVirtual = true;
@@ -2108,6 +2113,116 @@ public partial class IRBuilder
                        $": cil2cpp::string_fast_allocate(0); " +
                        $"if ({span}.f_reference && {span}.f_length > 0) " +
                        $"std::memcpy(&{tmp2}->f_firstChar, {span}.f_reference, {span}.f_length * sizeof(char16_t));",
+                ResultVar = tmp2,
+                ResultTypeCpp = "cil2cpp::String*",
+            });
+            stack.Push(new StackEntry(tmp2, "cil2cpp::String*"));
+            return;
+        }
+
+        // String..ctor(char*) — null-terminated UTF-16 string.
+        // Must use string_fast_allocate to get correct size, then memcpy.
+        if (ctorRef.DeclaringType.FullName == "System.String"
+            && ctorRef.Parameters.Count == 1
+            && ctorRef.Parameters[0].ParameterType.IsPointer)
+        {
+            var ptr = stack.PopExpr();
+            var tmp2 = $"__t{tempCounter++}";
+            var lenTmp = $"__t{tempCounter++}";
+            block.Instructions.Add(new IRRawCpp
+            {
+                Code = $"int32_t {lenTmp} = 0; " +
+                       $"if ((char16_t*)(void*){ptr}) {{ while (((char16_t*)(void*){ptr})[{lenTmp}]) {lenTmp}++; }} " +
+                       $"auto {tmp2} = cil2cpp::string_fast_allocate({lenTmp}); " +
+                       $"if ({lenTmp} > 0) std::memcpy(&{tmp2}->f_firstChar, (char16_t*)(void*){ptr}, {lenTmp} * sizeof(char16_t));",
+                ResultVar = tmp2,
+                ResultTypeCpp = "cil2cpp::String*",
+            });
+            stack.Push(new StackEntry(tmp2, "cil2cpp::String*"));
+            return;
+        }
+
+        // String..ctor(char*, int startIndex, int length) — substring from pointer.
+        if (ctorRef.DeclaringType.FullName == "System.String"
+            && ctorRef.Parameters.Count == 3
+            && ctorRef.Parameters[0].ParameterType.IsPointer
+            && ctorRef.Parameters[1].ParameterType.FullName == "System.Int32"
+            && ctorRef.Parameters[2].ParameterType.FullName == "System.Int32")
+        {
+            var length = stack.PopExpr();
+            var startIndex = stack.PopExpr();
+            var ptr = stack.PopExpr();
+            var tmp2 = $"__t{tempCounter++}";
+            block.Instructions.Add(new IRRawCpp
+            {
+                Code = $"auto {tmp2} = cil2cpp::string_fast_allocate({length}); " +
+                       $"if ({length} > 0) std::memcpy(&{tmp2}->f_firstChar, " +
+                       $"((char16_t*)(void*){ptr}) + {startIndex}, {length} * sizeof(char16_t));",
+                ResultVar = tmp2,
+                ResultTypeCpp = "cil2cpp::String*",
+            });
+            stack.Push(new StackEntry(tmp2, "cil2cpp::String*"));
+            return;
+        }
+
+        // String..ctor(char c, int count) — repeat character.
+        if (ctorRef.DeclaringType.FullName == "System.String"
+            && ctorRef.Parameters.Count == 2
+            && ctorRef.Parameters[0].ParameterType.FullName == "System.Char"
+            && ctorRef.Parameters[1].ParameterType.FullName == "System.Int32")
+        {
+            var count = stack.PopExpr();
+            var ch = stack.PopExpr();
+            var tmp2 = $"__t{tempCounter++}";
+            block.Instructions.Add(new IRRawCpp
+            {
+                Code = $"auto {tmp2} = cil2cpp::string_fast_allocate({count}); " +
+                       $"for (int32_t __i = 0; __i < {count}; __i++) {tmp2}->chars[__i] = (char16_t){ch};",
+                ResultVar = tmp2,
+                ResultTypeCpp = "cil2cpp::String*",
+            });
+            stack.Push(new StackEntry(tmp2, "cil2cpp::String*"));
+            return;
+        }
+
+        // String..ctor(char[] value) — from char array.
+        if (ctorRef.DeclaringType.FullName == "System.String"
+            && ctorRef.Parameters.Count == 1
+            && ctorRef.Parameters[0].ParameterType.IsArray)
+        {
+            var arr = stack.PopExpr();
+            var tmp2 = $"__t{tempCounter++}";
+            var lenTmp = $"__t{tempCounter++}";
+            block.Instructions.Add(new IRRawCpp
+            {
+                Code = $"int32_t {lenTmp} = {arr} ? cil2cpp::array_length((cil2cpp::Array*){arr}) : 0; " +
+                       $"auto {tmp2} = cil2cpp::string_fast_allocate({lenTmp}); " +
+                       $"if ({lenTmp} > 0) std::memcpy(&{tmp2}->f_firstChar, " +
+                       $"(char16_t*)cil2cpp::array_data((cil2cpp::Array*){arr}), {lenTmp} * sizeof(char16_t));",
+                ResultVar = tmp2,
+                ResultTypeCpp = "cil2cpp::String*",
+            });
+            stack.Push(new StackEntry(tmp2, "cil2cpp::String*"));
+            return;
+        }
+
+        // String..ctor(char[] value, int startIndex, int length) — substring from array.
+        if (ctorRef.DeclaringType.FullName == "System.String"
+            && ctorRef.Parameters.Count == 3
+            && ctorRef.Parameters[0].ParameterType.IsArray
+            && ctorRef.Parameters[1].ParameterType.FullName == "System.Int32"
+            && ctorRef.Parameters[2].ParameterType.FullName == "System.Int32")
+        {
+            var length = stack.PopExpr();
+            var startIndex = stack.PopExpr();
+            var arr = stack.PopExpr();
+            var tmp2 = $"__t{tempCounter++}";
+            block.Instructions.Add(new IRRawCpp
+            {
+                Code = $"auto {tmp2} = cil2cpp::string_fast_allocate({length}); " +
+                       $"if ({length} > 0) std::memcpy(&{tmp2}->f_firstChar, " +
+                       $"(char16_t*)cil2cpp::array_data((cil2cpp::Array*){arr}) + {startIndex}, " +
+                       $"{length} * sizeof(char16_t));",
                 ResultVar = tmp2,
                 ResultTypeCpp = "cil2cpp::String*",
             });

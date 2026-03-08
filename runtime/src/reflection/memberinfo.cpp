@@ -172,6 +172,9 @@ ManagedMethodInfo* type_get_method(Type* t, String* name) {
 
     for (UInt32 i = 0; i < info->method_count; i++) {
         if (std::strcmp(info->methods[i].name, name_utf8) == 0) {
+            // .NET GetMethod(string) doesn't return constructors
+            if (std::strcmp(name_utf8, ".ctor") == 0 || std::strcmp(name_utf8, ".cctor") == 0)
+                return nullptr;
             return create_managed_method_info(&info->methods[i]);
         }
     }
@@ -188,6 +191,9 @@ ManagedFieldInfo* type_get_field(Type* t, String* name) {
 
     for (UInt32 i = 0; i < info->field_count; i++) {
         if (std::strcmp(info->fields[i].name, name_utf8) == 0) {
+            // .NET GetField(string) without BindingFlags returns public fields only
+            // FieldAttributes.FieldAccessMask = 0x0007, FieldAttributes.Public = 0x0006
+            if ((info->fields[i].flags & 0x0007) != 0x0006) continue;
             return create_managed_field_info(&info->fields[i]);
         }
     }
@@ -608,8 +614,10 @@ String* memberinfo_get_name(Object* obj) {
     if (!obj) throw_null_reference();
     auto* ti = obj->__type_info;
     if (ti == &System_Type_TypeInfo || ti == &::System_RuntimeType_TypeInfo
-        || is_type(ti, "System.RuntimeType") || is_type(ti, "System.Type"))
-        return type_get_name(static_cast<Type*>(obj));
+        || is_type(ti, "System.RuntimeType") || is_type(ti, "System.Type")) {
+        auto* t = static_cast<Type*>(obj);
+        return type_get_name(t);
+    }
     if (is_method_info(ti))
         return methodinfo_get_name(static_cast<ManagedMethodInfo*>(obj));
     if (is_field_info(ti))

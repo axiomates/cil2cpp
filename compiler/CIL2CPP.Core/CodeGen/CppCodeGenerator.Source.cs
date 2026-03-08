@@ -1239,7 +1239,9 @@ public partial class CppCodeGenerator
         // We simply stop emitting #line directives; the compiler continues
         // using the last #line mapping until it encounters a new one.
 
-        // If method doesn't end with return, add one
+        // If method doesn't end with return, add one to satisfy the compiler.
+        // This happens when the last instruction is IRTryEnd (try/finally that
+        // loops via goto) — the path is unreachable but MSVC warns (C4715).
         var lastInstr = method.BasicBlocks
             .SelectMany(b => b.Instructions)
             .LastOrDefault();
@@ -1247,6 +1249,8 @@ public partial class CppCodeGenerator
         {
             if (method.ReturnTypeCpp == "void")
                 sb.AppendLine("    return;");
+            else
+                sb.AppendLine($"    return {{}};");
         }
 
         sb.AppendLine("}");

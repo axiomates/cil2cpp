@@ -75,6 +75,13 @@ static FieldInfo MemberInfoTest_Fields[] = {
         .offset = 0,
         .flags = 0x0011, // Private | Static
     },
+    {
+        .name = "Tag",
+        .declaring_type = nullptr,
+        .field_type = &System_String_TypeInfo,
+        .offset = sizeof(Object) + sizeof(String*),
+        .flags = 0x0006, // Public
+    },
 };
 
 static TypeInfo MemberInfoTest_Animal = {
@@ -82,7 +89,7 @@ static TypeInfo MemberInfoTest_Animal = {
     .base_type = &System_Object_TypeInfo, .interfaces = nullptr, .interface_count = 0,
     .instance_size = sizeof(Object) + sizeof(String*), .element_size = 0,
     .flags = TypeFlags::None, .vtable = nullptr,
-    .fields = MemberInfoTest_Fields, .field_count = 2,
+    .fields = MemberInfoTest_Fields, .field_count = 3,
     .methods = MemberInfoTest_Methods, .method_count = 3,
 .properties = nullptr, .property_count = 0,
 };
@@ -142,15 +149,21 @@ TEST_F(MemberInfoTestFixture, TypeGetFields_ReturnsAllFields) {
     auto* t = type_get_type_object(&MemberInfoTest_Animal);
     auto* arr = type_get_fields(t);
     ASSERT_NE(arr, nullptr);
-    EXPECT_EQ(array_length(arr), 2);
+    EXPECT_EQ(array_length(arr), 3);
 }
 
 TEST_F(MemberInfoTestFixture, TypeGetField_ByName_Found) {
     auto* t = type_get_type_object(&MemberInfoTest_Animal);
-    auto* name = string_literal("_name");
+    auto* name = string_literal("Tag");
     auto* fi = type_get_field(t, name);
     ASSERT_NE(fi, nullptr);
-    EXPECT_STREQ(fi->native_info->name, "_name");
+    EXPECT_STREQ(fi->native_info->name, "Tag");
+}
+
+TEST_F(MemberInfoTestFixture, TypeGetField_ByName_NonPublicReturnsNull) {
+    auto* t = type_get_type_object(&MemberInfoTest_Animal);
+    auto* fi = type_get_field(t, string_literal("_name"));
+    EXPECT_EQ(fi, nullptr);  // .NET GetField(string) returns public only
 }
 
 TEST_F(MemberInfoTestFixture, TypeGetField_ByName_NotFound) {
@@ -212,16 +225,13 @@ TEST_F(MemberInfoTestFixture, MethodInfoIsStatic) {
 }
 
 TEST_F(MemberInfoTestFixture, MethodInfoGetParameters) {
+    // .NET GetMethod(string) doesn't return constructors — use Speak (0 params)
     auto* mi = type_get_method(type_get_type_object(&MemberInfoTest_Animal),
-                               string_literal(".ctor"));
+                               string_literal("Speak"));
     ASSERT_NE(mi, nullptr);
     auto* params = methodinfo_get_parameters(mi);
     ASSERT_NE(params, nullptr);
-    EXPECT_EQ(array_length(params), 1);
-    auto** data = static_cast<ManagedParameterInfo**>(array_data(params));
-    ASSERT_NE(data[0], nullptr);
-    EXPECT_EQ(data[0]->param_type, &System_String_TypeInfo);
-    EXPECT_EQ(data[0]->position, 0);
+    EXPECT_EQ(array_length(params), 0);
 }
 
 TEST_F(MemberInfoTestFixture, MethodInfoToString) {
@@ -238,16 +248,16 @@ TEST_F(MemberInfoTestFixture, MethodInfoToString) {
 
 TEST_F(MemberInfoTestFixture, FieldInfoGetName) {
     auto* fi = type_get_field(type_get_type_object(&MemberInfoTest_Animal),
-                              string_literal("_name"));
+                              string_literal("Tag"));
     ASSERT_NE(fi, nullptr);
     auto* name = fieldinfo_get_name(fi);
     auto* utf8 = string_to_utf8(name);
-    EXPECT_STREQ(utf8, "_name");
+    EXPECT_STREQ(utf8, "Tag");
 }
 
 TEST_F(MemberInfoTestFixture, FieldInfoGetFieldType) {
     auto* fi = type_get_field(type_get_type_object(&MemberInfoTest_Animal),
-                              string_literal("_name"));
+                              string_literal("Tag"));
     ASSERT_NE(fi, nullptr);
     auto* ft = fieldinfo_get_field_type(fi);
     ASSERT_NE(ft, nullptr);
@@ -256,31 +266,26 @@ TEST_F(MemberInfoTestFixture, FieldInfoGetFieldType) {
 
 TEST_F(MemberInfoTestFixture, FieldInfoIsStatic) {
     auto* fiInst = type_get_field(type_get_type_object(&MemberInfoTest_Animal),
-                                  string_literal("_name"));
-    auto* fiStatic = type_get_field(type_get_type_object(&MemberInfoTest_Animal),
-                                    string_literal("_count"));
+                                  string_literal("Tag"));
     ASSERT_NE(fiInst, nullptr);
-    ASSERT_NE(fiStatic, nullptr);
     EXPECT_FALSE(fieldinfo_get_is_static(fiInst));
-    EXPECT_TRUE(fieldinfo_get_is_static(fiStatic));
 }
 
 TEST_F(MemberInfoTestFixture, FieldInfoIsPublic) {
     auto* fi = type_get_field(type_get_type_object(&MemberInfoTest_Animal),
-                              string_literal("_name"));
+                              string_literal("Tag"));
     ASSERT_NE(fi, nullptr);
-    // Family (protected) is not Public
-    EXPECT_FALSE(fieldinfo_get_is_public(fi));
+    EXPECT_TRUE(fieldinfo_get_is_public(fi));
 }
 
 TEST_F(MemberInfoTestFixture, FieldInfoToString) {
     auto* fi = type_get_field(type_get_type_object(&MemberInfoTest_Animal),
-                              string_literal("_name"));
+                              string_literal("Tag"));
     ASSERT_NE(fi, nullptr);
     auto* str = fieldinfo_to_string(fi);
     auto* utf8 = string_to_utf8(str);
-    // Should be "String _name"
-    EXPECT_NE(std::string(utf8).find("_name"), std::string::npos);
+    // Should be "String Tag"
+    EXPECT_NE(std::string(utf8).find("Tag"), std::string::npos);
 }
 
 // ===== MemberInfo TypeInfo tests =====
@@ -304,7 +309,7 @@ TEST_F(MemberInfoTestFixture, ManagedMethodInfoHasCorrectTypeInfo) {
 
 TEST_F(MemberInfoTestFixture, ManagedFieldInfoHasCorrectTypeInfo) {
     auto* fi = type_get_field(type_get_type_object(&MemberInfoTest_Animal),
-                              string_literal("_name"));
+                              string_literal("Tag"));
     ASSERT_NE(fi, nullptr);
     EXPECT_STREQ(fi->__type_info->full_name, "System.Reflection.FieldInfo");
 }
@@ -322,11 +327,11 @@ TEST_F(MemberInfoTestFixture, MemberInfoGetName_OnMethodInfo) {
 
 TEST_F(MemberInfoTestFixture, MemberInfoGetName_OnFieldInfo) {
     auto* fi = type_get_field(type_get_type_object(&MemberInfoTest_Animal),
-                              string_literal("_name"));
+                              string_literal("Tag"));
     ASSERT_NE(fi, nullptr);
     auto* name = memberinfo_get_name(reinterpret_cast<Object*>(fi));
     auto* utf8 = string_to_utf8(name);
-    EXPECT_STREQ(utf8, "_name");
+    EXPECT_STREQ(utf8, "Tag");
 }
 
 TEST_F(MemberInfoTestFixture, MemberInfoGetName_OnType) {

@@ -211,14 +211,25 @@ String* capture_stack_trace();
 /**
  * Null check - throws NullReferenceException if null.
  */
-inline void null_check_impl(void* ptr, const char* file, int line) {
+inline void null_check_impl(void* ptr, [[maybe_unused]] const char* file, [[maybe_unused]] int line) {
     if (ptr == nullptr) {
-        // HACK: temporary diagnostic — print file:line to identify crash location
+#ifndef NDEBUG
         fprintf(stderr, "[NULL_CHECK] failed at %s:%d\n", file, line);
+#endif
         throw_null_reference();
     }
 }
 #define null_check(ptr) null_check_impl(ptr, __FILE__, __LINE__)
+
+/**
+ * Debug-only warning when an unimplemented stub method is called.
+ * In Release builds (NDEBUG defined), this is a no-op.
+ */
+#ifndef NDEBUG
+void stub_called(const char* name);
+#else
+inline void stub_called(const char*) {}
+#endif
 
 // Exception TypeInfo extern declarations (defined in exception.cpp)
 extern TypeInfo Exception_TypeInfo;
@@ -249,15 +260,6 @@ extern TypeInfo IOException_TypeInfo;
 extern TypeInfo FileNotFoundException_TypeInfo;
 extern TypeInfo DirectoryNotFoundException_TypeInfo;
 
-/**
- * Debug diagnostic: log when a stub method is called at runtime.
- * Debug builds print to stderr; Release builds are no-ops.
- */
-#ifdef NDEBUG
-inline void stub_called(const char* /*name*/) {}
-#else
-void stub_called(const char* name);
-#endif
 
 } // namespace cil2cpp
 
