@@ -23,104 +23,106 @@ namespace cil2cpp {
 
 // ===== TypeInfo for managed reflection types =====
 
-// Forward decl for vtable wrappers
-static String* MethodInfo_ToString_vtable(Object* obj);
-static Boolean MethodInfo_Equals_vtable(Object* obj, Object* other);
-static Int32   MethodInfo_GetHashCode_vtable(Object* obj);
+// ===== Fallback TypeInfo for reflection types =====
+// These are used when the runtime creates reflection objects.
+// Generated code defines its own TypeInfo with proper BCL vtables in global namespace.
+// At init time, reflection_set_typeinfos() patches these to use the generated vtables.
 
-static void* System_Reflection_MethodInfo_vtable_methods[] = {
-    reinterpret_cast<void*>(&MethodInfo_ToString_vtable),
-    reinterpret_cast<void*>(&MethodInfo_Equals_vtable),
-    reinterpret_cast<void*>(&MethodInfo_GetHashCode_vtable),
-};
-static VTable System_Reflection_MethodInfo_VTable = {
-    &System_Reflection_MethodInfo_TypeInfo,
-    System_Reflection_MethodInfo_vtable_methods,
-    3,
-};
-
-TypeInfo System_Reflection_MethodInfo_TypeInfo = {
+static TypeInfo MethodInfo_TypeInfo_Fallback = {
     .name = "MethodInfo",
     .namespace_name = "System.Reflection",
     .full_name = "System.Reflection.MethodInfo",
     .base_type = &System_Object_TypeInfo,
     .interfaces = nullptr, .interface_count = 0,
     .instance_size = sizeof(ManagedMethodInfo), .element_size = 0,
-    .flags = TypeFlags::None,
-    .vtable = &System_Reflection_MethodInfo_VTable,
-    .fields = nullptr, .field_count = 0,
-    .methods = nullptr, .method_count = 0,
+    .flags = TypeFlags::None, .vtable = nullptr,
+    .fields = nullptr, .field_count = 0, .methods = nullptr, .method_count = 0,
     .properties = nullptr, .property_count = 0,
     .default_ctor = nullptr, .finalizer = nullptr,
     .interface_vtables = nullptr, .interface_vtable_count = 0,
 };
 
-static String* FieldInfo_ToString_vtable(Object* obj);
-static Boolean FieldInfo_Equals_vtable(Object* obj, Object* other);
-static Int32   FieldInfo_GetHashCode_vtable(Object* obj);
-
-static void* System_Reflection_FieldInfo_vtable_methods[] = {
-    reinterpret_cast<void*>(&FieldInfo_ToString_vtable),
-    reinterpret_cast<void*>(&FieldInfo_Equals_vtable),
-    reinterpret_cast<void*>(&FieldInfo_GetHashCode_vtable),
-};
-static VTable System_Reflection_FieldInfo_VTable = {
-    &System_Reflection_FieldInfo_TypeInfo,
-    System_Reflection_FieldInfo_vtable_methods,
-    3,
-};
-
-TypeInfo System_Reflection_FieldInfo_TypeInfo = {
+static TypeInfo FieldInfo_TypeInfo_Fallback = {
     .name = "FieldInfo",
     .namespace_name = "System.Reflection",
     .full_name = "System.Reflection.FieldInfo",
     .base_type = &System_Object_TypeInfo,
     .interfaces = nullptr, .interface_count = 0,
     .instance_size = sizeof(ManagedFieldInfo), .element_size = 0,
-    .flags = TypeFlags::None,
-    .vtable = &System_Reflection_FieldInfo_VTable,
-    .fields = nullptr, .field_count = 0,
-    .methods = nullptr, .method_count = 0,
+    .flags = TypeFlags::None, .vtable = nullptr,
+    .fields = nullptr, .field_count = 0, .methods = nullptr, .method_count = 0,
     .properties = nullptr, .property_count = 0,
     .default_ctor = nullptr, .finalizer = nullptr,
     .interface_vtables = nullptr, .interface_vtable_count = 0,
 };
 
-TypeInfo System_Reflection_ParameterInfo_TypeInfo = {
+static TypeInfo ParameterInfo_TypeInfo_Fallback = {
     .name = "ParameterInfo",
     .namespace_name = "System.Reflection",
     .full_name = "System.Reflection.ParameterInfo",
     .base_type = &System_Object_TypeInfo,
     .interfaces = nullptr, .interface_count = 0,
     .instance_size = sizeof(ManagedParameterInfo), .element_size = 0,
-    .flags = TypeFlags::None,
-    .vtable = nullptr,
-    .fields = nullptr, .field_count = 0,
-    .methods = nullptr, .method_count = 0,
+    .flags = TypeFlags::None, .vtable = nullptr,
+    .fields = nullptr, .field_count = 0, .methods = nullptr, .method_count = 0,
     .properties = nullptr, .property_count = 0,
     .default_ctor = nullptr, .finalizer = nullptr,
     .interface_vtables = nullptr, .interface_vtable_count = 0,
 };
 
+static TypeInfo PropertyInfo_TypeInfo_Fallback = {
+    .name = "PropertyInfo",
+    .namespace_name = "System.Reflection",
+    .full_name = "System.Reflection.PropertyInfo",
+    .base_type = &System_Object_TypeInfo,
+    .interfaces = nullptr, .interface_count = 0,
+    .instance_size = sizeof(ManagedPropertyInfo), .element_size = 0,
+    .flags = TypeFlags::None, .vtable = nullptr,
+    .fields = nullptr, .field_count = 0, .methods = nullptr, .method_count = 0,
+    .properties = nullptr, .property_count = 0,
+    .default_ctor = nullptr, .finalizer = nullptr,
+    .interface_vtables = nullptr, .interface_vtable_count = 0,
+};
+
+// Pointers start at fallback, patched to generated TypeInfo at init time
+static TypeInfo* s_methodinfo_ti = &MethodInfo_TypeInfo_Fallback;
+static TypeInfo* s_fieldinfo_ti = &FieldInfo_TypeInfo_Fallback;
+static TypeInfo* s_parameterinfo_ti = &ParameterInfo_TypeInfo_Fallback;
+static TypeInfo* s_propertyinfo_ti = &PropertyInfo_TypeInfo_Fallback;
+
+// Public definitions to satisfy extern declarations in headers.
+// NOT used for allocation — s_*_ti pointers are used instead.
+TypeInfo System_Reflection_MethodInfo_TypeInfo = MethodInfo_TypeInfo_Fallback;
+TypeInfo System_Reflection_FieldInfo_TypeInfo = FieldInfo_TypeInfo_Fallback;
+TypeInfo System_Reflection_ParameterInfo_TypeInfo = ParameterInfo_TypeInfo_Fallback;
+TypeInfo System_Reflection_PropertyInfo_TypeInfo = PropertyInfo_TypeInfo_Fallback;
+
+void reflection_set_typeinfos(TypeInfo* method_ti, TypeInfo* field_ti, TypeInfo* param_ti, TypeInfo* prop_ti) {
+    if (method_ti) s_methodinfo_ti = method_ti;
+    if (field_ti)  s_fieldinfo_ti = field_ti;
+    if (param_ti)  s_parameterinfo_ti = param_ti;
+    if (prop_ti)   s_propertyinfo_ti = prop_ti;
+}
+
 // ===== Helper: Create managed wrappers =====
 
 static ManagedMethodInfo* create_managed_method_info(MethodInfo* native) {
     auto* mi = static_cast<ManagedMethodInfo*>(
-        gc::alloc(sizeof(ManagedMethodInfo), &System_Reflection_MethodInfo_TypeInfo));
+        gc::alloc(sizeof(ManagedMethodInfo), s_methodinfo_ti));
     mi->native_info = native;
     return mi;
 }
 
 static ManagedFieldInfo* create_managed_field_info(FieldInfo* native) {
     auto* fi = static_cast<ManagedFieldInfo*>(
-        gc::alloc(sizeof(ManagedFieldInfo), &System_Reflection_FieldInfo_TypeInfo));
+        gc::alloc(sizeof(ManagedFieldInfo), s_fieldinfo_ti));
     fi->native_info = native;
     return fi;
 }
 
 static ManagedPropertyInfo* create_managed_property_info(PropertyInfo* native) {
     auto* pi = static_cast<ManagedPropertyInfo*>(
-        gc::alloc(sizeof(ManagedPropertyInfo), &System_Reflection_PropertyInfo_TypeInfo));
+        gc::alloc(sizeof(ManagedPropertyInfo), s_propertyinfo_ti));
     pi->native_info = native;
     return pi;
 }
@@ -135,7 +137,7 @@ Array* type_get_methods(Type* t) {
     UInt32 count = info->methods ? info->method_count : 0;
 
     // Create an array of ManagedMethodInfo* (pointer-sized elements)
-    auto* arr = array_create(&System_Reflection_MethodInfo_TypeInfo,
+    auto* arr = array_create(s_methodinfo_ti,
                              static_cast<Int32>(count));
     auto** data = static_cast<ManagedMethodInfo**>(array_data(arr));
     for (UInt32 i = 0; i < count; i++) {
@@ -151,7 +153,7 @@ Array* type_get_fields(Type* t) {
     // Reflection metadata may be stripped for types not accessed via reflection
     UInt32 count = info->fields ? info->field_count : 0;
 
-    auto* arr = array_create(&System_Reflection_FieldInfo_TypeInfo,
+    auto* arr = array_create(s_fieldinfo_ti,
                              static_cast<Int32>(count));
     auto** data = static_cast<ManagedFieldInfo**>(array_data(arr));
     for (UInt32 i = 0; i < count; i++) {
@@ -257,7 +259,7 @@ String* methodinfo_to_string(ManagedMethodInfo* mi) {
 Array* methodinfo_get_parameters(ManagedMethodInfo* mi) {
     if (!mi || !mi->native_info) throw_null_reference();
     auto* native = mi->native_info;
-    auto* arr = array_create(&System_Reflection_ParameterInfo_TypeInfo,
+    auto* arr = array_create(s_parameterinfo_ti,
                              static_cast<Int32>(native->parameter_count));
     auto** data = static_cast<ManagedParameterInfo**>(array_data(arr));
     for (UInt32 i = 0; i < native->parameter_count; i++) {
@@ -445,44 +447,6 @@ Int32 parameterinfo_get_position(ManagedParameterInfo* pi) {
     return pi->position;
 }
 
-// ===== VTable implementations =====
-
-static String* MethodInfo_ToString_vtable(Object* obj) {
-    return methodinfo_to_string(static_cast<ManagedMethodInfo*>(obj));
-}
-
-static Boolean MethodInfo_Equals_vtable(Object* obj, Object* other) {
-    if (!other) return false;
-    if (other->__type_info != &System_Reflection_MethodInfo_TypeInfo) return false;
-    auto* a = static_cast<ManagedMethodInfo*>(obj);
-    auto* b = static_cast<ManagedMethodInfo*>(other);
-    return a->native_info == b->native_info;
-}
-
-static Int32 MethodInfo_GetHashCode_vtable(Object* obj) {
-    auto* mi = static_cast<ManagedMethodInfo*>(obj);
-    return mi->native_info
-        ? static_cast<Int32>(reinterpret_cast<uintptr_t>(mi->native_info) >> 3) : 0;
-}
-
-static String* FieldInfo_ToString_vtable(Object* obj) {
-    return fieldinfo_to_string(static_cast<ManagedFieldInfo*>(obj));
-}
-
-static Boolean FieldInfo_Equals_vtable(Object* obj, Object* other) {
-    if (!other) return false;
-    if (other->__type_info != &System_Reflection_FieldInfo_TypeInfo) return false;
-    auto* a = static_cast<ManagedFieldInfo*>(obj);
-    auto* b = static_cast<ManagedFieldInfo*>(other);
-    return a->native_info == b->native_info;
-}
-
-static Int32 FieldInfo_GetHashCode_vtable(Object* obj) {
-    auto* fi = static_cast<ManagedFieldInfo*>(obj);
-    return fi->native_info
-        ? static_cast<Int32>(reinterpret_cast<uintptr_t>(fi->native_info) >> 3) : 0;
-}
-
 // ===== Type → GetProperties =====
 
 Array* type_get_properties(Type* t) {
@@ -491,7 +455,7 @@ Array* type_get_properties(Type* t) {
     auto* info = t->type_info;
     UInt32 count = info->properties ? info->property_count : 0;
 
-    auto* arr = array_create(&System_Reflection_PropertyInfo_TypeInfo,
+    auto* arr = array_create(s_propertyinfo_ti,
                              static_cast<Int32>(count));
     auto** data = static_cast<ManagedPropertyInfo**>(array_data(arr));
     for (UInt32 i = 0; i < count; i++) {
@@ -617,28 +581,53 @@ String* propertyinfo_to_string(ManagedPropertyInfo* pi) {
 
 // ===== Universal MemberInfo dispatchers =====
 
+// Check TypeInfo by full_name to handle linker ODR (both runtime and generated code define TypeInfo symbols)
+static bool is_type(TypeInfo* ti, const char* full_name) {
+    return ti && ti->full_name && std::strcmp(ti->full_name, full_name) == 0;
+}
+
+static bool is_method_info(TypeInfo* ti) {
+    return is_type(ti, "System.Reflection.MethodInfo")
+        || is_type(ti, "System.Reflection.RuntimeMethodInfo")
+        || is_type(ti, "System.Reflection.MethodBase")
+        || is_type(ti, "System.Reflection.ConstructorInfo")
+        || is_type(ti, "System.Reflection.RuntimeConstructorInfo");
+}
+
+static bool is_field_info(TypeInfo* ti) {
+    return is_type(ti, "System.Reflection.FieldInfo")
+        || is_type(ti, "System.Reflection.RuntimeFieldInfo");
+}
+
+static bool is_property_info(TypeInfo* ti) {
+    return is_type(ti, "System.Reflection.PropertyInfo")
+        || is_type(ti, "System.Reflection.RuntimePropertyInfo");
+}
+
 String* memberinfo_get_name(Object* obj) {
     if (!obj) throw_null_reference();
-    if (obj->__type_info == &System_Type_TypeInfo ||
-        obj->__type_info == &::System_RuntimeType_TypeInfo)
+    auto* ti = obj->__type_info;
+    if (ti == &System_Type_TypeInfo || ti == &::System_RuntimeType_TypeInfo
+        || is_type(ti, "System.RuntimeType") || is_type(ti, "System.Type"))
         return type_get_name(static_cast<Type*>(obj));
-    if (obj->__type_info == &System_Reflection_MethodInfo_TypeInfo)
+    if (is_method_info(ti))
         return methodinfo_get_name(static_cast<ManagedMethodInfo*>(obj));
-    if (obj->__type_info == &System_Reflection_FieldInfo_TypeInfo)
+    if (is_field_info(ti))
         return fieldinfo_get_name(static_cast<ManagedFieldInfo*>(obj));
-    if (obj->__type_info == &System_Reflection_PropertyInfo_TypeInfo)
+    if (is_property_info(ti))
         return propertyinfo_get_name(static_cast<ManagedPropertyInfo*>(obj));
     // Fallback: return type name
-    return string_literal(obj->__type_info ? obj->__type_info->name : "?");
+    return string_literal(ti ? ti->name : "?");
 }
 
 Type* memberinfo_get_declaring_type(Object* obj) {
     if (!obj) throw_null_reference();
-    if (obj->__type_info == &System_Reflection_MethodInfo_TypeInfo)
+    auto* ti = obj->__type_info;
+    if (is_method_info(ti))
         return methodinfo_get_declaring_type(static_cast<ManagedMethodInfo*>(obj));
-    if (obj->__type_info == &System_Reflection_FieldInfo_TypeInfo)
+    if (is_field_info(ti))
         return fieldinfo_get_declaring_type(static_cast<ManagedFieldInfo*>(obj));
-    if (obj->__type_info == &System_Reflection_PropertyInfo_TypeInfo)
+    if (is_property_info(ti))
         return propertyinfo_get_declaring_type(static_cast<ManagedPropertyInfo*>(obj));
     // Type doesn't have DeclaringType in our model — return nullptr
     return nullptr;

@@ -712,10 +712,8 @@ public class Program
         TestListString();
         TestDictionaryStringInt();
         TestAsyncConcurrency();
-        // TODO: TestAsyncEnumerable — IAsyncEnumerator.GetAsyncEnumerator returns null
-        // TestAsyncEnumerable();
-        // TODO: TestReflectionAdvanced — needs RuntimeMethodInfo BCL struct compatibility
-        // TestReflectionAdvanced();
+        TestAsyncEnumerable();
+        TestReflectionAdvanced();
         TestNestedExceptionHandling();
     }
 

@@ -641,7 +641,7 @@ public class ReachabilityAnalyzer
         // This avoids seeding unrelated overloads with the same name/count but different param types
         // (e.g. DecoderNLS.GetChars(byte[],int,int,char[],int) vs GetChars(byte*,int,char*,int,bool)).
         foreach (var overrideMethod in type.Methods.Where(m =>
-            m.IsVirtual && m.Name == methodName && m.Parameters.Count == paramCount))
+            m.IsVirtual && MatchesMethodName(m.Name, methodName) && m.Parameters.Count == paramCount))
         {
             var overrideSig = GetParamSignature(overrideMethod);
             if (ParamSignaturesMatch(paramSig, overrideSig))
@@ -649,6 +649,34 @@ public class ReachabilityAnalyzer
                 SeedMethod(overrideMethod);
             }
         }
+    }
+
+    /// <summary>
+    /// Check if a method name matches the target, including explicit interface implementations.
+    /// Explicit interface impls have names like "Namespace.IFace&lt;T&gt;.MethodName" —
+    /// extract the suffix after the last '.' and compare.
+    /// </summary>
+    private static bool MatchesMethodName(string methodName, string targetName)
+    {
+        if (methodName == targetName) return true;
+        // Explicit interface implementation: "Namespace.IFace<T>.MethodName"
+        // Extract suffix after last '.' (but not inside generic args)
+        if (methodName.Contains('.'))
+        {
+            // Strip generic args first: "IFace<T>.Method" → "IFace.Method"
+            var stripped = methodName;
+            int angleBracket = stripped.IndexOf('<');
+            if (angleBracket >= 0)
+            {
+                int close = stripped.LastIndexOf('>');
+                if (close > angleBracket)
+                    stripped = stripped.Substring(0, angleBracket) + stripped.Substring(close + 1);
+            }
+            var lastDot = stripped.LastIndexOf('.');
+            if (lastDot >= 0 && stripped.Substring(lastDot + 1) == targetName)
+                return true;
+        }
+        return false;
     }
 
     /// <summary>

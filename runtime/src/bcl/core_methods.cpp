@@ -14,6 +14,7 @@
 #include <cil2cpp/object.h>
 #include <cil2cpp/string.h>
 #include <cil2cpp/exception.h>
+#include <cil2cpp/memberinfo.h>
 
 // Value types used by CoreRuntimeTypes method signatures.
 // These must be ABI-compatible with the generated struct definitions.
@@ -150,25 +151,44 @@ extern "C" void* System_Reflection_Assembly_GetType__System_String_System_Boolea
 
 // ===== System.Reflection.FieldInfo =====
 extern "C" void System_Reflection_FieldInfo__ctor(void* /*__this*/) { }
-extern "C" System_Reflection_FieldAttributes System_Reflection_FieldInfo_get_Attributes(void* /*__this*/) { return {}; }
-extern "C" void* System_Reflection_FieldInfo_get_FieldType(void* /*__this*/) { return nullptr; }
+extern "C" System_Reflection_FieldAttributes System_Reflection_FieldInfo_get_Attributes(void* __this) {
+    auto* fi = reinterpret_cast<cil2cpp::ManagedFieldInfo*>(__this);
+    if (fi && fi->native_info) return static_cast<System_Reflection_FieldAttributes>(fi->native_info->flags);
+    return {};
+}
+extern "C" void* System_Reflection_FieldInfo_get_FieldType(void* __this) {
+    return cil2cpp::fieldinfo_get_field_type(reinterpret_cast<cil2cpp::ManagedFieldInfo*>(__this));
+}
 extern "C" void* System_Reflection_FieldInfo_GetRawConstantValue(void* /*__this*/) { return nullptr; }
-extern "C" void* System_Reflection_FieldInfo_GetValue(void* /*__this*/, void* /*obj*/) { return nullptr; }
-extern "C" void System_Reflection_FieldInfo_SetValue__System_Object_System_Object_System_Reflection_BindingFlags_System_Reflection_Binder_System_Globalization_CultureInfo(void* /*__this*/, void* /*obj*/, void* /*value*/, System_Reflection_BindingFlags invokeAttr, void* /*binder*/, void* /*culture*/) { }
+extern "C" void* System_Reflection_FieldInfo_GetValue(void* __this, void* obj) {
+    return cil2cpp::fieldinfo_get_value(reinterpret_cast<cil2cpp::ManagedFieldInfo*>(__this), reinterpret_cast<cil2cpp::Object*>(obj));
+}
+extern "C" void System_Reflection_FieldInfo_SetValue__System_Object_System_Object_System_Reflection_BindingFlags_System_Reflection_Binder_System_Globalization_CultureInfo(void* __this, void* obj, void* value, System_Reflection_BindingFlags invokeAttr, void* /*binder*/, void* /*culture*/) {
+    cil2cpp::fieldinfo_set_value(reinterpret_cast<cil2cpp::ManagedFieldInfo*>(__this), reinterpret_cast<cil2cpp::Object*>(obj), reinterpret_cast<cil2cpp::Object*>(value));
+}
 extern "C" System_RuntimeFieldHandle System_Reflection_FieldInfo_get_FieldHandle(void* /*__this*/) { return {}; }
-extern "C" bool System_Reflection_FieldInfo_get_IsStatic(void* /*__this*/) { return false; }
+extern "C" bool System_Reflection_FieldInfo_get_IsStatic(void* __this) {
+    return cil2cpp::fieldinfo_get_is_static(reinterpret_cast<cil2cpp::ManagedFieldInfo*>(__this));
+}
 
 // ===== System.Reflection.MemberInfo =====
 extern "C" void System_Reflection_MemberInfo__ctor(void* /*__this*/) { }
 extern "C" bool System_Reflection_MemberInfo_CacheEquals(void* /*__this*/, void* /*o*/) { return false; }
 extern "C" bool System_Reflection_MemberInfo_Equals(void* /*__this*/, void* /*obj*/) { return false; }
-extern "C" void* System_Reflection_MemberInfo_get_DeclaringType(void* /*__this*/) { return nullptr; }
+extern "C" void* System_Reflection_MemberInfo_get_DeclaringType(void* __this) {
+    return cil2cpp::memberinfo_get_declaring_type(reinterpret_cast<cil2cpp::Object*>(__this));
+}
 extern "C" bool System_Reflection_MemberInfo_get_IsCollectible(void* /*__this*/) { return false; }
 extern "C" System_Reflection_MemberTypes System_Reflection_MemberInfo_get_MemberType(void* /*__this*/) { return {}; }
 extern "C" int32_t System_Reflection_MemberInfo_get_MetadataToken(void* /*__this*/) { return {}; }
 extern "C" void* System_Reflection_MemberInfo_get_Module(void* /*__this*/) { return nullptr; }
-extern "C" void* System_Reflection_MemberInfo_get_Name(void* /*__this*/) { return nullptr; }
-extern "C" void* System_Reflection_MemberInfo_get_ReflectedType(void* /*__this*/) { return nullptr; }
+extern "C" void* System_Reflection_MemberInfo_get_Name(void* __this) {
+    return cil2cpp::memberinfo_get_name(reinterpret_cast<cil2cpp::Object*>(__this));
+}
+extern "C" void* System_Reflection_MemberInfo_get_ReflectedType(void* __this) {
+    // ReflectedType == DeclaringType for our purposes
+    return cil2cpp::memberinfo_get_declaring_type(reinterpret_cast<cil2cpp::Object*>(__this));
+}
 extern "C" void* System_Reflection_MemberInfo_GetCustomAttributes__System_Boolean(void* /*__this*/, bool inherit) { return nullptr; }
 extern "C" void* System_Reflection_MemberInfo_GetCustomAttributes__System_Type_System_Boolean(void* /*__this*/, void* /*attributeType*/, bool inherit) { return nullptr; }
 extern "C" void* System_Reflection_MemberInfo_GetCustomAttributesData(void* /*__this*/) { return nullptr; }
@@ -183,34 +203,60 @@ extern "C" bool System_Reflection_MemberInfo_HasSameMetadataDefinitionAsCore_Sys
 extern "C" bool System_Reflection_MemberInfo_IsDefined(void* /*__this*/, void* /*attributeType*/, bool inherit) { return false; }
 
 // ===== System.Reflection.MethodBase =====
+// Helper to extract native MethodInfo* from a ManagedMethodInfo receiver
+static cil2cpp::MethodInfo* _get_native_mi(void* __this) {
+    if (!__this) return nullptr;
+    return reinterpret_cast<cil2cpp::ManagedMethodInfo*>(__this)->native_info;
+}
 extern "C" void System_Reflection_MethodBase__ctor(void* /*__this*/) { }
 extern "C" bool System_Reflection_MethodBase_Equals(void* /*__this*/, void* /*obj*/) { return false; }
-extern "C" System_Reflection_MethodAttributes System_Reflection_MethodBase_get_Attributes(void* /*__this*/) { return {}; }
+extern "C" System_Reflection_MethodAttributes System_Reflection_MethodBase_get_Attributes(void* __this) {
+    auto* ni = _get_native_mi(__this);
+    return ni ? static_cast<System_Reflection_MethodAttributes>(ni->flags) : System_Reflection_MethodAttributes{};
+}
 extern "C" System_Reflection_CallingConventions System_Reflection_MethodBase_get_CallingConvention(void* /*__this*/) { return {}; }
 extern "C" bool System_Reflection_MethodBase_get_ContainsGenericParameters(void* /*__this*/) { return false; }
 extern "C" bool System_Reflection_MethodBase_get_IsGenericMethod(void* /*__this*/) { return false; }
 extern "C" bool System_Reflection_MethodBase_get_IsGenericMethodDefinition(void* /*__this*/) { return false; }
-extern "C" bool System_Reflection_MethodBase_get_IsPublic(void* /*__this*/) { return false; }
-extern "C" bool System_Reflection_MethodBase_get_IsStatic(void* /*__this*/) { return false; }
+extern "C" bool System_Reflection_MethodBase_get_IsPublic(void* __this) {
+    auto* ni = _get_native_mi(__this);
+    return ni && (ni->flags & 0x0007) == 0x0006;
+}
+extern "C" bool System_Reflection_MethodBase_get_IsStatic(void* __this) {
+    auto* ni = _get_native_mi(__this);
+    return ni && (ni->flags & 0x0010) != 0;
+}
 extern "C" System_RuntimeMethodHandle System_Reflection_MethodBase_get_MethodHandle(void* /*__this*/) { return {}; }
 extern "C" System_Reflection_MethodImplAttributes System_Reflection_MethodBase_get_MethodImplementationFlags(void* /*__this*/) { return {}; }
 extern "C" void* System_Reflection_MethodBase_GetGenericArguments(void* /*__this*/) { return nullptr; }
 extern "C" int32_t System_Reflection_MethodBase_GetHashCode(void* /*__this*/) { return {}; }
 extern "C" System_Reflection_MethodImplAttributes System_Reflection_MethodBase_GetMethodImplementationFlags(void* /*__this*/) { return {}; }
-extern "C" void* System_Reflection_MethodBase_GetParameters(void* /*__this*/) { return nullptr; }
-extern "C" void* System_Reflection_MethodBase_GetParametersNoCopy(void* /*__this*/) { return nullptr; }
+extern "C" void* System_Reflection_MethodBase_GetParameters(void* __this) {
+    return cil2cpp::methodinfo_get_parameters(reinterpret_cast<cil2cpp::ManagedMethodInfo*>(__this));
+}
+extern "C" void* System_Reflection_MethodBase_GetParametersNoCopy(void* __this) {
+    return cil2cpp::methodinfo_get_parameters(reinterpret_cast<cil2cpp::ManagedMethodInfo*>(__this));
+}
 extern "C" void* System_Reflection_MethodBase_GetParameterTypes(void* /*__this*/) { return nullptr; }
-extern "C" void* System_Reflection_MethodBase_Invoke__System_Object_System_Object__(void* /*__this*/, void* /*obj*/, void* /*parameters*/) { return nullptr; }
-extern "C" void* System_Reflection_MethodBase_Invoke__System_Object_System_Reflection_BindingFlags_System_Reflection_Binder_System_Object___System_Globalization_CultureInfo(void* /*__this*/, void* /*obj*/, System_Reflection_BindingFlags invokeAttr, void* /*binder*/, void* /*parameters*/, void* /*culture*/) { return nullptr; }
+extern "C" void* System_Reflection_MethodBase_Invoke__System_Object_System_Object__(void* __this, void* obj, void* parameters) {
+    return cil2cpp::methodinfo_invoke(reinterpret_cast<cil2cpp::ManagedMethodInfo*>(__this),
+        reinterpret_cast<cil2cpp::Object*>(obj), reinterpret_cast<cil2cpp::Array*>(parameters));
+}
+extern "C" void* System_Reflection_MethodBase_Invoke__System_Object_System_Reflection_BindingFlags_System_Reflection_Binder_System_Object___System_Globalization_CultureInfo(void* __this, void* obj, System_Reflection_BindingFlags invokeAttr, void* /*binder*/, void* parameters, void* /*culture*/) {
+    return cil2cpp::methodinfo_invoke(reinterpret_cast<cil2cpp::ManagedMethodInfo*>(__this),
+        reinterpret_cast<cil2cpp::Object*>(obj), reinterpret_cast<cil2cpp::Array*>(parameters));
+}
 
 // ===== System.Reflection.MethodInfo =====
 extern "C" void* System_Reflection_MethodInfo_CreateDelegate__System_Type_System_Object(void* /*__this*/, void* /*delegateType*/, void* /*target*/) { return nullptr; }
 extern "C" int32_t System_Reflection_MethodInfo_get_GenericParameterCount(void* /*__this*/) { return {}; }
-extern "C" void* System_Reflection_MethodInfo_get_ReturnType(void* /*__this*/) { return nullptr; }
+extern "C" void* System_Reflection_MethodInfo_get_ReturnType(void* __this) {
+    return cil2cpp::methodinfo_get_return_type(reinterpret_cast<cil2cpp::ManagedMethodInfo*>(__this));
+}
 extern "C" void* System_Reflection_MethodInfo_GetGenericMethodDefinition(void* /*__this*/) { return nullptr; }
 extern "C" void* System_Reflection_MethodInfo_MakeGenericMethod(void* /*__this*/, void* /*typeArguments*/) { return nullptr; }
 extern "C" void* System_Reflection_MethodInfo_get_ReturnTypeCustomAttributes(void* /*__this*/) { return nullptr; }
-extern "C" void* System_Reflection_MethodInfo_GetBaseDefinition(void* /*__this*/) { return nullptr; }
+extern "C" void* System_Reflection_MethodInfo_GetBaseDefinition(void* __this) { return __this; }
 
 // ===== System.Reflection.ParameterInfo =====
 extern "C" void System_Reflection_ParameterInfo__ctor(void* /*__this*/) { }
@@ -222,9 +268,15 @@ extern "C" bool System_Reflection_ParameterInfo_get_IsOptional(void* /*__this*/)
 extern "C" bool System_Reflection_ParameterInfo_get_IsOut(void* /*__this*/) { return false; }
 extern "C" void* System_Reflection_ParameterInfo_get_Member(void* /*__this*/) { return nullptr; }
 extern "C" int32_t System_Reflection_ParameterInfo_get_MetadataToken(void* /*__this*/) { return {}; }
-extern "C" void* System_Reflection_ParameterInfo_get_Name(void* /*__this*/) { return nullptr; }
-extern "C" void* System_Reflection_ParameterInfo_get_ParameterType(void* /*__this*/) { return nullptr; }
-extern "C" int32_t System_Reflection_ParameterInfo_get_Position(void* /*__this*/) { return {}; }
+extern "C" void* System_Reflection_ParameterInfo_get_Name(void* __this) {
+    return cil2cpp::parameterinfo_get_name(reinterpret_cast<cil2cpp::ManagedParameterInfo*>(__this));
+}
+extern "C" void* System_Reflection_ParameterInfo_get_ParameterType(void* __this) {
+    return cil2cpp::parameterinfo_get_parameter_type(reinterpret_cast<cil2cpp::ManagedParameterInfo*>(__this));
+}
+extern "C" int32_t System_Reflection_ParameterInfo_get_Position(void* __this) {
+    return cil2cpp::parameterinfo_get_position(reinterpret_cast<cil2cpp::ManagedParameterInfo*>(__this));
+}
 extern "C" void* System_Reflection_ParameterInfo_GetCustomAttributes__System_Type_System_Boolean(void* /*__this*/, void* /*attributeType*/, bool inherit) { return nullptr; }
 extern "C" void* System_Reflection_ParameterInfo_GetCustomAttributesData(void* /*__this*/) { return nullptr; }
 extern "C" bool System_Reflection_ParameterInfo_IsDefined(void* /*__this*/, void* /*attributeType*/, bool inherit) { return false; }

@@ -1893,7 +1893,18 @@ public partial class IRBuilder
                     && methodRef.DeclaringType is GenericInstanceType git3
                     && gp3.Position < git3.GenericArguments.Count)
                     elemType = git3.GenericArguments[gp3.Position];
-                var elemResolved = ResolveGenericTypeRef(elemType, methodRef.DeclaringType);
+                // After method-level substitution, if result is a GenericParameter that the
+                // caller's type param map can resolve, use that directly. This avoids wrong
+                // resolution when the callee's declaring type has different generic args.
+                // Example: INumberBase<!!0>::TryConvertToSaturating<!0>(!!0, !0&) where
+                // !0 = caller's TSelf but callee's declaring type resolves it to !!0 = TOther.
+                string elemResolved;
+                if (elemType is GenericParameter gpAfterSubst
+                    && _activeTypeParamMap != null
+                    && _activeTypeParamMap.TryGetValue(gpAfterSubst.Name, out var directMapped))
+                    elemResolved = directMapped;
+                else
+                    elemResolved = ResolveGenericTypeRef(elemType, methodRef.DeclaringType);
                 if (elemResolved.Contains("!!") || System.Text.RegularExpressions.Regex.IsMatch(elemResolved, @"![\d]"))
                     continue;
                 var elemCpp = CppNameMapper.GetCppTypeForDecl(elemResolved);

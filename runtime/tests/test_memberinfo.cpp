@@ -299,14 +299,14 @@ TEST_F(MemberInfoTestFixture, ManagedMethodInfoHasCorrectTypeInfo) {
     auto* mi = type_get_method(type_get_type_object(&MemberInfoTest_Animal),
                                string_literal("Speak"));
     ASSERT_NE(mi, nullptr);
-    EXPECT_EQ(mi->__type_info, &System_Reflection_MethodInfo_TypeInfo);
+    EXPECT_STREQ(mi->__type_info->full_name, "System.Reflection.MethodInfo");
 }
 
 TEST_F(MemberInfoTestFixture, ManagedFieldInfoHasCorrectTypeInfo) {
     auto* fi = type_get_field(type_get_type_object(&MemberInfoTest_Animal),
                               string_literal("_name"));
     ASSERT_NE(fi, nullptr);
-    EXPECT_EQ(fi->__type_info, &System_Reflection_FieldInfo_TypeInfo);
+    EXPECT_STREQ(fi->__type_info->full_name, "System.Reflection.FieldInfo");
 }
 
 // ===== Universal MemberInfo dispatchers =====

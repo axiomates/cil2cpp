@@ -2848,6 +2848,27 @@ public partial class CppCodeGenerator
             sb.AppendLine($"    cil2cpp::task_set_typeinfo(&{taskType.CppName}_TypeInfo);");
         }
 
+        // Register reflection TypeInfos so runtime-created ManagedMethodInfo/FieldInfo objects have proper vtables
+        {
+            var methodInfoType = _userTypes.FirstOrDefault(t => t.ILFullName == "System.Reflection.MethodInfo");
+            var fieldInfoType = _userTypes.FirstOrDefault(t => t.ILFullName == "System.Reflection.FieldInfo");
+            var paramInfoType = _userTypes.FirstOrDefault(t => t.ILFullName == "System.Reflection.ParameterInfo");
+            var propInfoType = _userTypes.FirstOrDefault(t => t.ILFullName == "System.Reflection.PropertyInfo");
+            if (methodInfoType != null || fieldInfoType != null || paramInfoType != null || propInfoType != null)
+            {
+                sb.AppendLine("    // Register reflection TypeInfos for runtime object creation");
+                sb.Append("    cil2cpp::reflection_set_typeinfos(");
+                sb.Append(methodInfoType != null ? $"&{methodInfoType.CppName}_TypeInfo" : "nullptr");
+                sb.Append(", ");
+                sb.Append(fieldInfoType != null ? $"&{fieldInfoType.CppName}_TypeInfo" : "nullptr");
+                sb.Append(", ");
+                sb.Append(paramInfoType != null ? $"&{paramInfoType.CppName}_TypeInfo" : "nullptr");
+                sb.Append(", ");
+                sb.Append(propInfoType != null ? $"&{propInfoType.CppName}_TypeInfo" : "nullptr");
+                sb.AppendLine(");");
+            }
+        }
+
         if (hasStringVTable)
         {
             // Patch BCL TypeInfo (cil2cpp::System::String_TypeInfo) — used by string_literal/string_create_utf8

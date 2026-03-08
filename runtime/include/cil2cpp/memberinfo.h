@@ -47,6 +47,13 @@ struct ManagedParameterInfo : Object {
     Int32 position;         // 0-based position
 };
 
+/**
+ * Register generated TypeInfos for reflection types.
+ * Called from __init_runtime_vtables() in generated code.
+ * This ensures runtime-created reflection objects get the proper BCL vtables.
+ */
+void reflection_set_typeinfos(TypeInfo* method_ti, TypeInfo* field_ti, TypeInfo* param_ti, TypeInfo* prop_ti);
+
 // ===== Type → GetMethods/GetFields API =====
 
 /**

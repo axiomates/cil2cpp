@@ -7,6 +7,7 @@
 
 #include <cil2cpp/cil2cpp.h>
 #include <cil2cpp/task.h>
+#include <cil2cpp/memberinfo.h>
 
 // System_RuntimeType_TypeInfo is defined as extern in type.cpp
 // (normally provided by generated code). Tests need a stub.
