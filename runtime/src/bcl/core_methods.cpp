@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <cil2cpp/object.h>
 #include <cil2cpp/string.h>
+#include <cil2cpp/array.h>
 #include <cil2cpp/exception.h>
 #include <cil2cpp/memberinfo.h>
 #include <cil2cpp/reflection.h>
@@ -54,12 +55,12 @@ struct System_Threading_ThreadHandle { void* f_m_ptr; };
 struct System_Runtime_CompilerServices_TypeHandle { void* f_m_asTAddr; };
 struct System_RuntimeTypeHandle_IntroducedMethodEnumerator { void* f__handle; };
 
-// QCall handle types (CLR-internal, each wraps a pointer)
-struct System_Runtime_CompilerServices_QCallTypeHandle { void* f__ptr; };
-struct System_Runtime_CompilerServices_QCallAssembly { void* f__ptr; };
-struct System_Runtime_CompilerServices_ObjectHandleOnStack { void* f__ptr; };
-struct System_Runtime_CompilerServices_StringHandleOnStack { void* f__ptr; };
-struct System_Runtime_CompilerServices_StackCrawlMarkHandle { void* f__ptr; };
+// QCall handle types — must match generated struct layout
+struct System_Runtime_CompilerServices_QCallTypeHandle { void* f_ptr; intptr_t f_handle; };
+struct System_Runtime_CompilerServices_QCallAssembly { void* f_ptr; };
+struct System_Runtime_CompilerServices_ObjectHandleOnStack { void* f_ptr; };
+struct System_Runtime_CompilerServices_StringHandleOnStack { void* f_ptr; };
+struct System_Runtime_CompilerServices_StackCrawlMarkHandle { void* f_ptr; };
 
 // Span types (pointer + length)
 struct System_ReadOnlySpan_1_System_Int32 { void* f__reference; int32_t f__length; };
@@ -113,9 +114,64 @@ extern "C" void* System_Delegate_get_Target(void* /*__this*/) { cil2cpp::stub_ca
 extern "C" bool System_Delegate_InternalEqualMethodHandles(void* /*left*/, void* /*right*/) { cil2cpp::stub_called(__func__); return false; }
 
 // ===== System.Enum =====
-extern "C" void System_Enum_GetEnumValuesAndNames(System_Runtime_CompilerServices_QCallTypeHandle enumType, System_Runtime_CompilerServices_ObjectHandleOnStack values, System_Runtime_CompilerServices_ObjectHandleOnStack names, Interop_BOOL getNames) { cil2cpp::stub_called(__func__); }
+extern "C" void System_Enum_GetEnumValuesAndNames(
+    System_Runtime_CompilerServices_QCallTypeHandle enumType,
+    System_Runtime_CompilerServices_ObjectHandleOnStack values,
+    System_Runtime_CompilerServices_ObjectHandleOnStack names,
+    Interop_BOOL getNames)
+{
+    // QCallTypeHandle.f_ptr is RuntimeType** — dereference to get Type*
+    auto** rtPtr = reinterpret_cast<cil2cpp::Type**>(enumType.f_ptr);
+    if (!rtPtr || !*rtPtr) return;
+    auto* ti = (*rtPtr)->type_info;
+    if (!ti || !ti->enum_names) return;
+
+    auto count = static_cast<int32_t>(ti->enum_count);
+
+    // Determine underlying type size from cor_element_type
+    int elemSize = 4;  // default Int32
+    uint8_t corType = ti->underlying_type ? ti->underlying_type->cor_element_type : 0x08;
+    switch (corType) {
+        case 0x04: case 0x05: elemSize = 1; break; // I1, U1 (SByte, Byte)
+        case 0x06: case 0x07: elemSize = 2; break; // I2, U2 (Int16, UInt16)
+        case 0x08: case 0x09: elemSize = 4; break; // I4, U4
+        case 0x0A: case 0x0B: elemSize = 8; break; // I8, U8
+    }
+
+    // Create values array — element type is the underlying type
+    auto* underlyingTi = ti->underlying_type ? ti->underlying_type : ti;
+    auto* valArr = cil2cpp::array_create(underlyingTi, count);
+    auto* data = static_cast<uint8_t*>(cil2cpp::array_data(valArr));
+    for (int32_t i = 0; i < count; i++) {
+        int64_t v = ti->enum_values[i];
+        switch (elemSize) {
+            case 1: reinterpret_cast<uint8_t*>(data)[i] = static_cast<uint8_t>(v); break;
+            case 2: reinterpret_cast<uint16_t*>(data)[i] = static_cast<uint16_t>(v); break;
+            case 4: reinterpret_cast<uint32_t*>(data)[i] = static_cast<uint32_t>(v); break;
+            case 8: reinterpret_cast<uint64_t*>(data)[i] = static_cast<uint64_t>(v); break;
+        }
+    }
+    // ObjectHandleOnStack.f_ptr is Object** — write through it
+    *reinterpret_cast<cil2cpp::Object**>(values.f_ptr) = reinterpret_cast<cil2cpp::Object*>(valArr);
+
+    // Create names array if requested
+    if (getNames) {
+        auto* nameArr = cil2cpp::array_create(&cil2cpp::System_String_TypeInfo, count);
+        auto** nameData = static_cast<cil2cpp::String**>(cil2cpp::array_data(nameArr));
+        for (int32_t i = 0; i < count; i++) {
+            nameData[i] = cil2cpp::string_literal(ti->enum_names[i]);
+        }
+        *reinterpret_cast<cil2cpp::Object**>(names.f_ptr) = reinterpret_cast<cil2cpp::Object*>(nameArr);
+    }
+}
 extern "C" void* System_Enum_GetValue(void* /*__this*/) { cil2cpp::stub_called(__func__); return nullptr; }
-extern "C" System_Reflection_CorElementType System_Enum_InternalGetCorElementType(void* /*__this*/) { cil2cpp::stub_called(__func__); return {}; }
+extern "C" System_Reflection_CorElementType System_Enum_InternalGetCorElementType(void* __this) {
+    if (!__this) return {};
+    auto* obj = reinterpret_cast<cil2cpp::Object*>(__this);
+    auto* ti = obj->__type_info;
+    if (ti && ti->underlying_type) return static_cast<System_Reflection_CorElementType>(ti->underlying_type->cor_element_type);
+    return {};
+}
 extern "C" void* System_Enum_ToString__System_String(void* /*__this*/, void* /*format*/) { cil2cpp::stub_called(__func__); return nullptr; }
 
 // ===== System.Exception =====

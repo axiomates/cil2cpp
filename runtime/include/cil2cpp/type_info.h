@@ -269,6 +269,11 @@ struct TypeInfo {
     // Enum underlying type (e.g., Int32 for most enums)
     TypeInfo* underlying_type;           // nullptr for non-enum types
 
+    // Enum name/value metadata (for Enum.ToString)
+    const char** enum_names;             // nullptr for non-enum types
+    Int64* enum_values;                  // enum constant values (widened to Int64)
+    UInt32 enum_count;                   // number of enum constants
+
     // Generic variance data (for variance-aware type assignability)
     // For generic instances: concrete argument TypeInfos + variance flags from open type
     TypeInfo** generic_arguments;        // nullptr for non-generic types

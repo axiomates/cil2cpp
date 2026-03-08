@@ -930,6 +930,27 @@ public partial class CppCodeGenerator
             var underlyingCpp = CppNameMapper.MangleTypeName(type.EnumUnderlyingType);
             underlyingTypeExpr = $"&{underlyingCpp}_TypeInfo";
         }
+        // Enum name/value metadata for Enum.ToString
+        var enumNamesExpr = "nullptr";
+        var enumValuesExpr = "nullptr";
+        var enumCount = 0;
+        if (type.IsEnum)
+        {
+            var enumFields = type.StaticFields
+                .Where(f => f.ConstantValue != null)
+                .OrderBy(f => Convert.ToInt64(f.ConstantValue))
+                .ToList();
+            if (enumFields.Count > 0)
+            {
+                enumCount = enumFields.Count;
+                var namesArr = string.Join(", ", enumFields.Select(f => $"\"{f.Name}\""));
+                var valuesArr = string.Join(", ", enumFields.Select(f => $"{Convert.ToInt64(f.ConstantValue)}LL"));
+                sb.AppendLine($"static const char* {type.CppName}_enum_names[] = {{ {namesArr} }};");
+                sb.AppendLine($"static int64_t {type.CppName}_enum_values[] = {{ {valuesArr} }};");
+                enumNamesExpr = $"{type.CppName}_enum_names";
+                enumValuesExpr = $"{type.CppName}_enum_values";
+            }
+        }
         var genArgsExpr = hasGenericArgs ? $"{type.CppName}_generic_args" : "nullptr";
         var genVarExpr = hasGenericArgs ? $"{type.CppName}_generic_variances" : "nullptr";
         var genCount = hasGenericArgs ? type.GenericArguments.Count : 0;
@@ -982,6 +1003,12 @@ public partial class CppCodeGenerator
         sb.AppendLine($"    .cor_element_type = 0x{corElementType:X2},");
         if (underlyingTypeExpr != "nullptr")
             sb.AppendLine($"    .underlying_type = {underlyingTypeExpr},");
+        if (enumCount > 0)
+        {
+            sb.AppendLine($"    .enum_names = {enumNamesExpr},");
+            sb.AppendLine($"    .enum_values = {enumValuesExpr},");
+            sb.AppendLine($"    .enum_count = {enumCount},");
+        }
         if (hasGenericArgs)
         {
             sb.AppendLine($"    .generic_arguments = {genArgsExpr},");

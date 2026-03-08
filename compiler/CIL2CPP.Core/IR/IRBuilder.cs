@@ -282,6 +282,10 @@ public partial class IRBuilder
     /// </summary>
     private static void GenerateStubBody(IRMethod irMethod)
     {
+        // Special-case: QCall bridge types — generate correct trivial bodies
+        if (TryGenerateQCallHelperBody(irMethod))
+            return;
+
         var block = new IRBasicBlock { Id = 0 };
 
         // Emit stub_called diagnostic (Debug builds print to stderr, Release is no-op)
@@ -295,6 +299,42 @@ public partial class IRBuilder
         }
         block.Instructions.Add(new IRReturn { Value = retVal });
         irMethod.BasicBlocks.Add(block);
+    }
+
+    /// <summary>
+    /// Generate correct bodies for trivial QCall/ObjectHandleOnStack wrapper methods.
+    /// These are 1-line methods that just store or return a pointer.
+    /// </summary>
+    private static bool TryGenerateQCallHelperBody(IRMethod irMethod)
+    {
+        var declType = irMethod.DeclaringType?.ILFullName;
+        var name = irMethod.Name;
+
+        string? code = null;
+
+        // QCallTypeHandle.ctor(RuntimeType** type) — store pointer
+        if (declType == "System.Runtime.CompilerServices.QCallTypeHandle" && name == ".ctor")
+        {
+            // Instance method on value type: 'this' is separate, Parameters[0] is the real param
+            var paramName = irMethod.Parameters.Count >= 1 ? irMethod.Parameters[0].CppName : "type";
+            code = $"__this->f_ptr = (void*){paramName};";
+        }
+        // ObjectHandleOnStack.Create<T>(T** o) — wrap pointer in struct
+        else if (declType == "System.Runtime.CompilerServices.ObjectHandleOnStack" && name == "Create")
+        {
+            var paramName = irMethod.Parameters.Count >= 1 ? irMethod.Parameters[0].CppName : "o";
+            code = $"return {{ (void*){paramName} }};";
+        }
+
+        if (code == null) return false;
+
+        var block = new IRBasicBlock { Id = 0 };
+        block.Instructions.Add(new IRRawCpp { Code = code });
+        if (!code.Contains("return"))
+            block.Instructions.Add(new IRReturn());
+        irMethod.BasicBlocks.Add(block);
+        irMethod.IrStubReason = null; // Clear stub reason — this is a real implementation
+        return true;
     }
 
     /// <summary>
