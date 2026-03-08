@@ -822,7 +822,63 @@ def cmd_integration(args):
     runner.step(f"CMake build ({config})", multi_cmake_build)
     runner.step("Run and compare C++ vs .NET output", multi_run_verify)
 
-    # NOTE: Other test projects (Library, Debug, StringLiterals, SystemIOTest, FileStreamTest,
+    # ===== Phase 6: SystemIOTest (File/Path/Directory I/O) =====
+    header("Phase 6: SystemIOTest (File, Path, Directory I/O)")
+
+    sio_sample = TESTPROJECTS_DIR / "SystemIOTest" / "SystemIOTest.csproj"
+    sio_output = temp_dir / "sio_output"
+    sio_build = temp_dir / "sio_build"
+
+    dotnet_sio_output = None
+
+    def sio_dotnet_run():
+        nonlocal dotnet_sio_output
+        dotnet_sio_output = _get_dotnet_output(sio_sample)
+        print(f"    .NET output: {repr(dotnet_sio_output[:200])}")
+
+    def sio_codegen():
+        run(["dotnet", "run", "--project", str(CLI_PROJECT), "--",
+             "codegen", "-i", str(sio_sample), "-o", str(sio_output)],
+            capture=True)
+
+    def sio_files_exist():
+        for f in ["SystemIOTest.h", "SystemIOTest_data.cpp", "SystemIOTest_stubs.cpp",
+                   "main.cpp", "CMakeLists.txt"]:
+            if not (sio_output / f).exists():
+                raise RuntimeError(f"Missing: {f}")
+
+    def sio_cmake_configure():
+        run(["cmake", "-B", str(sio_build), "-S", str(sio_output),
+             "-G", generator, *cmake_arch,
+             f"-DCMAKE_PREFIX_PATH={runtime_prefix}"],
+            capture=True)
+
+    def sio_cmake_build():
+        run(["cmake", "--build", str(sio_build), "--config", config],
+            capture=True)
+
+    def sio_run_verify():
+        exe = _exe_path(sio_build, config, "SystemIOTest")
+        if not exe.exists():
+            raise RuntimeError(f"Executable not found: {exe}")
+        r = subprocess.run([str(exe)], capture_output=True, text=True, check=False)
+        if r.returncode != 0:
+            raise RuntimeError(f"SystemIOTest exited with code {r.returncode}\nstderr: {r.stderr}")
+        got = r.stdout.strip()
+        if got != dotnet_sio_output:
+            raise RuntimeError(
+                f"Output mismatch vs .NET:\n"
+                f"  .NET output:\n{dotnet_sio_output}\n"
+                f"  C++ output:\n{got}")
+
+    runner.step("Get .NET reference output", sio_dotnet_run)
+    runner.step("Codegen SystemIOTest", sio_codegen)
+    runner.step("Generated files exist", sio_files_exist)
+    runner.step("CMake configure", sio_cmake_configure)
+    runner.step(f"CMake build ({config})", sio_cmake_build)
+    runner.step("Run and compare C++ vs .NET output", sio_run_verify)
+
+    # NOTE: Other test projects (Library, Debug, StringLiterals, FileStreamTest,
     # SocketTest, HttpTest, NuGetSimpleTest, JsonSGTest, HttpGetTest) are disabled.
     # Enable them phase-by-phase as issues are fixed.
 

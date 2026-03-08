@@ -1235,6 +1235,11 @@ public partial class IRBuilder
         if (TryEmitSpanHelpersSearch(block, stack, methodRef, ref tempCounter))
             return;
 
+        // BitOperations intrinsics — PopCount/ResetLowestSetBit use X86.Popcnt hardware
+        // intrinsics that are unavailable in AOT. Replace with portable C++ equivalents.
+        if (TryEmitBitOperationsIntrinsic(block, stack, methodRef, ref tempCounter))
+            return;
+
         // Emit cctor guard for static method calls (ECMA-335 II.10.5.3.1)
         if (!methodRef.HasThis)
         {
@@ -3600,6 +3605,55 @@ public partial class IRBuilder
             {
                 Code = $"cil2cpp::span_fill({refData}, {numElements}, {value});",
             });
+            return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Intercept BitOperations methods that use hardware intrinsics (X86.Popcnt, etc.)
+    /// unavailable in AOT. Replace with portable C++ implementations.
+    /// </summary>
+    private bool TryEmitBitOperationsIntrinsic(IRBasicBlock block, Stack<StackEntry> stack,
+        MethodReference methodRef, ref int tempCounter)
+    {
+        if (methodRef.DeclaringType.FullName != "System.Numerics.BitOperations") return false;
+
+        var name = methodRef.Name;
+        var paramCount = methodRef.Parameters.Count;
+
+        // PopCount(uint32/uint64) → cil2cpp::bit_pop_count / bit_pop_count64
+        if (name == "PopCount" && paramCount == 1)
+        {
+            var value = stack.PopExpr();
+            var tmp = $"__t{tempCounter++}";
+            var is64 = methodRef.Parameters[0].ParameterType.FullName.Contains("64");
+            var func = is64 ? "cil2cpp::bit_pop_count64" : "cil2cpp::bit_pop_count";
+            block.Instructions.Add(new IRRawCpp
+            {
+                Code = $"auto {tmp} = {func}({value});",
+                ResultVar = tmp,
+                ResultTypeCpp = "int32_t",
+            });
+            stack.Push(new StackEntry(tmp, "int32_t"));
+            return true;
+        }
+
+        // ResetLowestSetBit(uint32/uint64) → value & (value - 1)
+        if (name == "ResetLowestSetBit" && paramCount == 1)
+        {
+            var value = stack.PopExpr();
+            var tmp = $"__t{tempCounter++}";
+            var is64 = methodRef.Parameters[0].ParameterType.FullName.Contains("64");
+            var cppType = is64 ? "uint64_t" : "uint32_t";
+            block.Instructions.Add(new IRRawCpp
+            {
+                Code = $"auto {tmp} = ({cppType})({value}) & (({cppType})({value}) - 1);",
+                ResultVar = tmp,
+                ResultTypeCpp = cppType,
+            });
+            stack.Push(new StackEntry(tmp, cppType));
             return true;
         }
 

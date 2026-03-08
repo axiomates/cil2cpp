@@ -234,6 +234,32 @@ inline void span_fill(T* dest, size_t numElements, T value) {
         dest[i] = value;
 }
 
+// ===== BitOperations intrinsics =====
+// BCL BitOperations.PopCount uses X86.Popcnt hardware intrinsic.
+// These provide correct scalar implementations for AOT.
+
+#if defined(_MSC_VER)
+#include <intrin.h>
+#endif
+
+inline int32_t bit_pop_count(uint32_t value) {
+#if defined(_MSC_VER)
+    return (int32_t)__popcnt(value);
+#else
+    return __builtin_popcount(value);
+#endif
+}
+
+inline int32_t bit_pop_count64(uint64_t value) {
+#if defined(_MSC_VER) && defined(_M_X64)
+    return (int32_t)__popcnt64(value);
+#elif defined(_MSC_VER)
+    return (int32_t)(__popcnt((uint32_t)value) + __popcnt((uint32_t)(value >> 32)));
+#else
+    return __builtin_popcountll(value);
+#endif
+}
+
 /**
  * Initialize the CIL2CPP runtime.
  * Must be called before any other runtime functions.
