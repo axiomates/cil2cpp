@@ -1223,43 +1223,53 @@ public partial class IRBuilder
             case Code.Beq:
             case Code.Beq_S:
                 EmitComparisonBranch(block, stack, "==", instr, branchTargetStacks: branchTargetStacks, method: method, deadRanges: featureSwitchDeadRanges);
+                lastCondBranchStackDepth = stack.Count;
                 break;
             case Code.Bne_Un:
             case Code.Bne_Un_S:
                 EmitComparisonBranch(block, stack, "!=", instr, isUnsigned: true, branchTargetStacks: branchTargetStacks, method: method, deadRanges: featureSwitchDeadRanges);
+                lastCondBranchStackDepth = stack.Count;
                 break;
             case Code.Bge:
             case Code.Bge_S:
                 EmitComparisonBranch(block, stack, ">=", instr, branchTargetStacks: branchTargetStacks, deadRanges: featureSwitchDeadRanges);
+                lastCondBranchStackDepth = stack.Count;
                 break;
             case Code.Bgt:
             case Code.Bgt_S:
                 EmitComparisonBranch(block, stack, ">", instr, branchTargetStacks: branchTargetStacks, deadRanges: featureSwitchDeadRanges);
+                lastCondBranchStackDepth = stack.Count;
                 break;
             case Code.Ble:
             case Code.Ble_S:
                 EmitComparisonBranch(block, stack, "<=", instr, branchTargetStacks: branchTargetStacks, deadRanges: featureSwitchDeadRanges);
+                lastCondBranchStackDepth = stack.Count;
                 break;
             case Code.Blt:
             case Code.Blt_S:
                 EmitComparisonBranch(block, stack, "<", instr, branchTargetStacks: branchTargetStacks, deadRanges: featureSwitchDeadRanges);
+                lastCondBranchStackDepth = stack.Count;
                 break;
             // Unsigned branches (ECMA-335 III.3.6-3.12): treat operands as unsigned
             case Code.Bge_Un:
             case Code.Bge_Un_S:
                 EmitComparisonBranch(block, stack, ">=", instr, isUnsigned: true, branchTargetStacks: branchTargetStacks, deadRanges: featureSwitchDeadRanges);
+                lastCondBranchStackDepth = stack.Count;
                 break;
             case Code.Bgt_Un:
             case Code.Bgt_Un_S:
                 EmitComparisonBranch(block, stack, ">", instr, isUnsigned: true, branchTargetStacks: branchTargetStacks, deadRanges: featureSwitchDeadRanges);
+                lastCondBranchStackDepth = stack.Count;
                 break;
             case Code.Ble_Un:
             case Code.Ble_Un_S:
                 EmitComparisonBranch(block, stack, "<=", instr, isUnsigned: true, branchTargetStacks: branchTargetStacks, deadRanges: featureSwitchDeadRanges);
+                lastCondBranchStackDepth = stack.Count;
                 break;
             case Code.Blt_Un:
             case Code.Blt_Un_S:
                 EmitComparisonBranch(block, stack, "<", instr, isUnsigned: true, branchTargetStacks: branchTargetStacks, deadRanges: featureSwitchDeadRanges);
+                lastCondBranchStackDepth = stack.Count;
                 break;
 
             // ===== Switch =====

@@ -154,6 +154,75 @@ public class ReachabilityAnalyzer
         // and mark overrides in all already-reachable types
         if (method.IsVirtual)
             DispatchVirtualSlot(method);
+
+        // ICalls that internally dispatch virtual methods via vtable.
+        // The runtime's SafeHandle_Dispose icall dispatches ReleaseHandle() via vtable scan,
+        // but no IL ever does callvirt SafeHandle.ReleaseHandle — so RTA misses it.
+        SeedICallVirtualDependencies(method);
+    }
+
+    /// <summary>
+    /// Certain [InternalCall] methods dispatch virtual methods from C++ runtime code
+    /// (not via IL callvirt). RTA can't see these indirect dispatches, so we must
+    /// explicitly mark the virtual slots as dispatched when the icall becomes reachable.
+    /// </summary>
+    private void SeedICallVirtualDependencies(MethodDefinition method)
+    {
+        // SafeHandle.Dispose(bool) icall → internally dispatches ReleaseHandle() via vtable.
+        // Normal RTA can't see this because: (1) no IL does callvirt ReleaseHandle,
+        // (2) SafeHandle subtypes are often created via SafeHandleMarshaller's generic
+        // Activator.CreateInstance<T>(), which the analyzer can't resolve (T is unbound).
+        // Fix: when Dispose is reachable, directly seed ReleaseHandle on all reachable subtypes.
+        if (method.DeclaringType.FullName == "System.Runtime.InteropServices.SafeHandle"
+            && method.Name == "Dispose" && method.Parameters.Count == 1)
+        {
+            _safeHandleDisposeReachable = true;
+            SeedSafeHandleReleaseHandleOverrides();
+        }
+    }
+
+    /// <summary>
+    /// When SafeHandle.Dispose(bool) is reachable, seed ReleaseHandle overrides on all
+    /// reachable SafeHandle subtypes. Called both when Dispose is first seeded and when
+    /// new SafeHandle subtypes become reachable (via MarkTypeReachable).
+    /// </summary>
+    private void SeedSafeHandleReleaseHandleOverrides()
+    {
+        if (!_safeHandleDisposeReachable) return;
+        if (!_subtypeIndex.TryGetValue("System.Runtime.InteropServices.SafeHandle", out var subtypes)) return;
+
+        foreach (var type in subtypes.ToArray())
+        {
+            if (!_result.ReachableTypes.Contains(type)) continue;
+            var releaseHandle = type.Methods
+                .FirstOrDefault(m => m.Name == "ReleaseHandle" && m.IsVirtual && m.Parameters.Count == 0);
+            if (releaseHandle != null)
+            {
+                // Mark as constructed so vtable dispatch includes this override
+                MarkTypeConstructed(type);
+                SeedMethod(releaseHandle);
+                // Runtime's SafeHandle_Dispose scans MethodInfo metadata to find
+                // ReleaseHandle's vtable slot — type must be a reflection target
+                _result.ReflectionTargetTypes.Add(type.FullName);
+            }
+        }
+    }
+
+    private bool _safeHandleDisposeReachable;
+
+    /// <summary>
+    /// P/Invoke methods that return class types create instances via the marshaller
+    /// (invisible to IL — no newobj). Mark the return type as constructed so RTA
+    /// dispatches virtual overrides (e.g., SafeFileHandle.ReleaseHandle).
+    /// </summary>
+    private void MarkPInvokeReturnTypeConstructed(MethodDefinition pinvokeMethod)
+    {
+        var returnType = pinvokeMethod.ReturnType;
+        if (returnType == null || returnType.FullName == "System.Void") return;
+
+        var returnTypeDef = TryResolve(returnType);
+        if (returnTypeDef != null && !returnTypeDef.IsValueType && !returnTypeDef.IsInterface)
+            MarkTypeConstructed(returnTypeDef);
     }
 
     private void SeedAllTypes(AssemblyDefinition assembly)
@@ -382,6 +451,9 @@ public class ReachabilityAnalyzer
         // So we must check dispatched overrides when a value type becomes reachable.
         if (type.IsValueType)
             MarkDispatchedOverrides(type);
+
+        // SafeHandle subtypes created by marshallers bypass newobj → need explicit construction
+        SeedSafeHandleReleaseHandleOverrides();
     }
 
     /// <summary>
@@ -923,6 +995,12 @@ public class ReachabilityAnalyzer
 
                         // Detect reflection API calls that require full metadata on target types
                         DetectReflectionApiCall(callRef, instr);
+
+                        // P/Invoke returning SafeHandle-derived types: the marshaller creates
+                        // an instance (via Activator.CreateInstance<T>) that's invisible to IL.
+                        // Mark the return type as constructed so RTA dispatches virtual overrides.
+                        if (callMethodDef != null && callMethodDef.IsPInvokeImpl)
+                            MarkPInvokeReturnTypeConstructed(callMethodDef);
                     }
                     break;
 
