@@ -470,12 +470,15 @@ public partial class IRBuilder
             if (typeDef.HasGenericParameters) continue;
             if (_typeCache.TryGetValue(typeDef.FullName, out var irType2))
             {
-                // Only flag HasCctor if the cctor is actually reachable (will be compiled).
-                // With lazy cctor seeding, types that are reachable but whose cctors
-                // were never triggered (no static field access, no static method call,
-                // no construction) should not emit _ensure_cctor() guards.
-                irType2.HasCctor = typeDef.Methods.Any(m => m.IsConstructor && m.IsStatic
-                    && _reachability.IsReachable(m.GetCecilMethod()));
+                // Flag HasCctor if the type has a .cctor with a body.
+                // Use |= so partial classes spanning assemblies don't overwrite earlier true.
+                // We check HasBody (not reachability) because SeedCctorFor() may not have
+                // been triggered yet for all types, but if the cctor exists and the type is
+                // reachable, the cctor will be compiled and needs ensure_cctor guards.
+                // A missing guard causes silent bugs (static fields read as default zero);
+                // an unnecessary guard is just a cheap bool check — correctness wins.
+                irType2.HasCctor |= typeDef.Methods.Any(m => m.IsConstructor && m.IsStatic
+                    && m.HasBody);
             }
         }
 
