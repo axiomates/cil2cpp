@@ -6,6 +6,7 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
   <ItemGroup>
-    <ProjectReference Include="..\MathLib\MathLib.csproj" />
+    <Compile Remove="MathLib\**" />
+    <ProjectReference Include="MathLib\MathLib.csproj" />
   </ItemGroup>
 </Project>
