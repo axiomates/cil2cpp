@@ -878,7 +878,63 @@ def cmd_integration(args):
     runner.step(f"CMake build ({config})", sio_cmake_build)
     runner.step("Run and compare C++ vs .NET output", sio_run_verify)
 
-    # NOTE: Other test projects (Library, Debug, StringLiterals, FileStreamTest,
+    # ===== Phase 7: FileStreamTest (FileStream, StreamReader/StreamWriter) =====
+    header("Phase 7: FileStreamTest (FileStream, StreamReader, StreamWriter)")
+
+    fst_sample = TESTPROJECTS_DIR / "FileStreamTest" / "FileStreamTest.csproj"
+    fst_output = temp_dir / "fst_output"
+    fst_build = temp_dir / "fst_build"
+
+    dotnet_fst_output = None
+
+    def fst_dotnet_run():
+        nonlocal dotnet_fst_output
+        dotnet_fst_output = _get_dotnet_output(fst_sample)
+        print(f"    .NET output: {repr(dotnet_fst_output[:200])}")
+
+    def fst_codegen():
+        run(["dotnet", "run", "--project", str(CLI_PROJECT), "--",
+             "codegen", "-i", str(fst_sample), "-o", str(fst_output)],
+            capture=True)
+
+    def fst_files_exist():
+        for f in ["FileStreamTest.h", "FileStreamTest_data.cpp", "FileStreamTest_stubs.cpp",
+                   "main.cpp", "CMakeLists.txt"]:
+            if not (fst_output / f).exists():
+                raise RuntimeError(f"Missing: {f}")
+
+    def fst_cmake_configure():
+        run(["cmake", "-B", str(fst_build), "-S", str(fst_output),
+             "-G", generator, *cmake_arch,
+             f"-DCMAKE_PREFIX_PATH={runtime_prefix}"],
+            capture=True)
+
+    def fst_cmake_build():
+        run(["cmake", "--build", str(fst_build), "--config", config],
+            capture=True)
+
+    def fst_run_verify():
+        exe = _exe_path(fst_build, config, "FileStreamTest")
+        if not exe.exists():
+            raise RuntimeError(f"Executable not found: {exe}")
+        r = subprocess.run([str(exe)], capture_output=True, text=True, check=False)
+        if r.returncode != 0:
+            raise RuntimeError(f"FileStreamTest exited with code {r.returncode}\nstderr: {r.stderr}")
+        got = r.stdout.strip()
+        if got != dotnet_fst_output:
+            raise RuntimeError(
+                f"Output mismatch vs .NET:\n"
+                f"  .NET output:\n{dotnet_fst_output}\n"
+                f"  C++ output:\n{got}")
+
+    runner.step("Get .NET reference output", fst_dotnet_run)
+    runner.step("Codegen FileStreamTest", fst_codegen)
+    runner.step("Generated files exist", fst_files_exist)
+    runner.step("CMake configure", fst_cmake_configure)
+    runner.step(f"CMake build ({config})", fst_cmake_build)
+    runner.step("Run and compare C++ vs .NET output", fst_run_verify)
+
+    # NOTE: Other test projects (Library, Debug, StringLiterals,
     # SocketTest, HttpTest, NuGetSimpleTest, JsonSGTest, HttpGetTest) are disabled.
     # Enable them phase-by-phase as issues are fixed.
 
