@@ -250,9 +250,9 @@ public partial class CppCodeGenerator
         _knownTypeNames = new HashSet<string>(_emittedStructDefs);
         foreach (var t in _userTypes)
             _knownTypeNames.Add(t.CppName);
-        foreach (var ilName in IRBuilder.RuntimeProvidedTypes)
+        foreach (var ilName in RuntimeTypeRegistry.GetILNames(RuntimeTypeFlags.RuntimeProvided))
             _knownTypeNames.Add(CppNameMapper.MangleTypeName(ilName));
-        foreach (var (mangled, _) in GetRuntimeProvidedTypeAliases())
+        foreach (var (mangled, _) in RuntimeTypeRegistry.GetTypeAliases())
             _knownTypeNames.Add(mangled);
         // External BCL enum types (emitted as "using X = int32_t" aliases in header)
         foreach (var (mangled, _) in _module.ExternalEnumTypes)

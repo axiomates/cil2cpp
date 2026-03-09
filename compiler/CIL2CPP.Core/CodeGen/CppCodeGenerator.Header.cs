@@ -37,13 +37,13 @@ public partial class CppCodeGenerator
         // Core runtime types that get using aliases (Object, String, Array, etc.)
         foreach (var ilName in IRBuilder.RuntimeProvidedTypes)
             aliasedTypes.Add(CppNameMapper.MangleTypeName(ilName));
-        foreach (var (mangled, _) in GetRuntimeProvidedTypeAliases())
+        foreach (var (mangled, _) in RuntimeTypeRegistry.GetTypeAliases())
             aliasedTypes.Add(mangled);
         // Primitive types that get using aliases (System_Byte = uint8_t, etc.)
         foreach (var (mangled, _) in GetPrimitiveTypeAliases())
             aliasedTypes.Add(mangled);
         // Types already aliased in runtime headers — skip struct definitions
-        foreach (var mangled in RuntimeHeaderAliasedTypes)
+        foreach (var mangled in RuntimeTypeRegistry.GetHeaderAliasedMangledNames())
             aliasedTypes.Add(mangled);
         foreach (var type in userTypes)
         {
@@ -131,7 +131,7 @@ public partial class CppCodeGenerator
         // Using aliases for runtime-provided types (mangled name → cil2cpp:: struct)
         // These types are provided by the runtime but their mangled names may appear
         // as generic type arguments or cast targets in generated code.
-        foreach (var (mangled, cppAlias) in GetRuntimeProvidedTypeAliases())
+        foreach (var (mangled, cppAlias) in RuntimeTypeRegistry.GetTypeAliases())
         {
             if (!forwardDeclared.Contains(mangled))
                 sb.AppendLine($"using {mangled} = {cppAlias};");
@@ -150,12 +150,12 @@ public partial class CppCodeGenerator
         sb.AppendLine("// ===== Type Info Declarations =====");
         // Collect types whose TypeInfo is already declared elsewhere (exception aliases or primitive section)
         var runtimeDeclaredTypeInfos = new HashSet<string>();
-        foreach (var (mangledName, _) in GetExceptionTypeInfoAliases())
+        foreach (var (mangledName, _) in RuntimeTypeRegistry.GetExceptionTypeInfoAliases())
             runtimeDeclaredTypeInfos.Add(mangledName);
         // Skip System.Object/System.String from main loop when declared in primitive type section
         foreach (var entry in _module.PrimitiveTypeInfos.Values)
         {
-            if (GetRuntimeTypeInfoAlias(entry.ILFullName) != null)
+            if (RuntimeTypeRegistry.GetRuntimeTypeInfoName(entry.ILFullName) != null)
                 runtimeDeclaredTypeInfos.Add(entry.CppMangledName);
         }
         foreach (var type in userTypes)
@@ -165,7 +165,7 @@ public partial class CppCodeGenerator
             if (!IsValidCppIdentifier(type.CppName)) continue;
             // Types with a runtime TypeInfo alias (Object, String) are defined as
             // TypeInfo& references in the source — header must match
-            if (GetRuntimeTypeInfoAlias(type.ILFullName) != null)
+            if (RuntimeTypeRegistry.GetRuntimeTypeInfoName(type.ILFullName) != null)
                 sb.AppendLine($"extern cil2cpp::TypeInfo& {type.CppName}_TypeInfo;");
             else
                 sb.AppendLine($"extern cil2cpp::TypeInfo {type.CppName}_TypeInfo;");
@@ -174,7 +174,7 @@ public partial class CppCodeGenerator
         foreach (var entry in _module.PrimitiveTypeInfos.Values)
         {
             // Runtime-provided reference types: declared as TypeInfo& reference to runtime's TypeInfo
-            var runtimeAlias = GetRuntimeTypeInfoAlias(entry.ILFullName);
+            var runtimeAlias = RuntimeTypeRegistry.GetRuntimeTypeInfoName(entry.ILFullName);
             if (runtimeAlias != null)
                 sb.AppendLine($"extern cil2cpp::TypeInfo& {entry.CppMangledName}_TypeInfo;");
             else
@@ -189,7 +189,7 @@ public partial class CppCodeGenerator
         }
         // Exception TypeInfo reference aliases — maps mangled names to runtime-declared TypeInfos
         // (e.g., System_Exception_TypeInfo → cil2cpp::Exception_TypeInfo)
-        foreach (var (mangledName, runtimeTypeInfoName) in GetExceptionTypeInfoAliases())
+        foreach (var (mangledName, runtimeTypeInfoName) in RuntimeTypeRegistry.GetExceptionTypeInfoAliases())
         {
             sb.AppendLine($"extern cil2cpp::TypeInfo& {mangledName}_TypeInfo;");
         }
@@ -199,7 +199,7 @@ public partial class CppCodeGenerator
         foreach (var type in userTypes) declaredTypeInfoNames.Add(type.CppName);
         foreach (var entry in _module.PrimitiveTypeInfos.Values) declaredTypeInfoNames.Add(entry.CppMangledName);
         foreach (var (m, _) in _module.ExternalEnumTypes) declaredTypeInfoNames.Add(m);
-        foreach (var (m, _) in GetExceptionTypeInfoAliases()) declaredTypeInfoNames.Add(m);
+        foreach (var (m, _) in RuntimeTypeRegistry.GetExceptionTypeInfoAliases()) declaredTypeInfoNames.Add(m);
         // Also skip runtime-declared
         foreach (var n in runtimeDeclaredTypeInfos) declaredTypeInfoNames.Add(n);
         // Scan IR method instructions for _TypeInfo references
@@ -949,66 +949,10 @@ public partial class CppCodeGenerator
         };
     }
 
-    /// <summary>
-    /// Get using aliases for runtime-provided types (mangled name → cil2cpp:: struct).
-    /// </summary>
-    private static IEnumerable<(string Mangled, string CppAlias)> GetRuntimeProvidedTypeAliases()
-    {
-        // Core runtime types
-        yield return ("System_Object", "cil2cpp::Object");
-        yield return ("System_String", "cil2cpp::String");
-        yield return ("System_Array", "cil2cpp::Array");
-        yield return ("System_Delegate", "cil2cpp::Delegate");
-        yield return ("System_MulticastDelegate", "cil2cpp::Delegate");
-        yield return ("System_Type", "cil2cpp::Object");  // Type represented as opaque pointer
-        yield return ("System_RuntimeType", "cil2cpp::Type");  // Phase I.2: RuntimeType = Type (Unity IL2CPP pattern)
-        yield return ("System_Attribute", "cil2cpp::Object");  // Base class for all attributes
-        yield return ("System_Enum", "cil2cpp::Object");  // Abstract base for enums — same layout as Object
-        yield return ("System_ValueType", "cil2cpp::Object");  // Abstract base for value types — same layout as Object
-
-        // Exception hierarchy — all map to runtime C++ exception types
-        yield return ("System_Exception", "cil2cpp::Exception");
-        yield return ("System_NullReferenceException", "cil2cpp::NullReferenceException");
-        yield return ("System_IndexOutOfRangeException", "cil2cpp::IndexOutOfRangeException");
-        yield return ("System_InvalidCastException", "cil2cpp::InvalidCastException");
-        yield return ("System_InvalidOperationException", "cil2cpp::InvalidOperationException");
-        yield return ("System_ObjectDisposedException", "cil2cpp::ObjectDisposedException");
-        yield return ("System_NotSupportedException", "cil2cpp::NotSupportedException");
-        yield return ("System_PlatformNotSupportedException", "cil2cpp::PlatformNotSupportedException");
-        yield return ("System_NotImplementedException", "cil2cpp::NotImplementedException");
-        yield return ("System_ArgumentException", "cil2cpp::ArgumentException");
-        yield return ("System_ArgumentNullException", "cil2cpp::ArgumentNullException");
-        yield return ("System_ArgumentOutOfRangeException", "cil2cpp::ArgumentOutOfRangeException");
-        yield return ("System_ArithmeticException", "cil2cpp::ArithmeticException");
-        yield return ("System_OverflowException", "cil2cpp::OverflowException");
-        yield return ("System_DivideByZeroException", "cil2cpp::DivideByZeroException");
-        yield return ("System_FormatException", "cil2cpp::FormatException");
-        yield return ("System_RankException", "cil2cpp::RankException");
-        yield return ("System_ArrayTypeMismatchException", "cil2cpp::ArrayTypeMismatchException");
-        yield return ("System_TypeInitializationException", "cil2cpp::TypeInitializationException");
-        yield return ("System_TimeoutException", "cil2cpp::TimeoutException");
-        yield return ("System_AggregateException", "cil2cpp::AggregateException");
-        yield return ("System_OperationCanceledException", "cil2cpp::OperationCanceledException");
-        yield return ("System_Threading_Tasks_TaskCanceledException", "cil2cpp::TaskCanceledException");
-        yield return ("System_Collections_Generic_KeyNotFoundException", "cil2cpp::KeyNotFoundException");
-
-        // Phase II.3: Runtime reflection subtypes → existing runtime structs
-        yield return ("System_Reflection_RuntimeMethodInfo", "cil2cpp::ManagedMethodInfo");
-        yield return ("System_Reflection_RuntimeFieldInfo", "cil2cpp::ManagedFieldInfo");
-        yield return ("System_Reflection_RuntimeConstructorInfo", "cil2cpp::ManagedMethodInfo");
-        yield return ("System_Reflection_TypeInfo", "cil2cpp::Type");
-        // Phase II.4: New runtime structs for Assembly + PropertyInfo
-        yield return ("System_Reflection_RuntimePropertyInfo", "cil2cpp::ManagedPropertyInfo");
-        yield return ("System_Reflection_Assembly", "cil2cpp::ManagedAssembly");
-        yield return ("System_Reflection_RuntimeAssembly", "cil2cpp::ManagedAssembly");
-        // Phase II.5: WaitHandle hierarchy
-        yield return ("System_Threading_WaitHandle", "cil2cpp::ManagedWaitHandle");
-        yield return ("System_Threading_EventWaitHandle", "cil2cpp::ManagedEventWaitHandle");
-        yield return ("System_Threading_ManualResetEvent", "cil2cpp::ManagedEventWaitHandle");
-        yield return ("System_Threading_AutoResetEvent", "cil2cpp::ManagedEventWaitHandle");
-        yield return ("System_Threading_Mutex", "cil2cpp::ManagedMutex");
-        yield return ("System_Threading_Semaphore", "cil2cpp::ManagedSemaphore");
-    }
+    // GetRuntimeProvidedTypeAliases() → moved to RuntimeTypeRegistry.GetTypeAliases()
+    // RuntimeHeaderAliasedTypes → moved to RuntimeTypeRegistry.IsHeaderAliased() / GetHeaderAliasedMangledNames()
+    // GetExceptionTypeInfoAliases() → moved to RuntimeTypeRegistry.GetExceptionTypeInfoAliases()
+    // GetRuntimeBaseTypeInfoStubs() → moved to RuntimeTypeRegistry.GetBaseTypeStubs()
 
     /// <summary>
     /// Get using aliases for primitive types (mangled name → C++ built-in type).
@@ -1030,101 +974,6 @@ public partial class CppCodeGenerator
         yield return ("System_Char", "char16_t");
         yield return ("System_IntPtr", "intptr_t");
         yield return ("System_UIntPtr", "uintptr_t");
-    }
-
-    /// <summary>
-    /// Types whose "using System_X = cil2cpp::Y;" alias is already defined in runtime headers
-    /// (task.h, memberinfo.h, cancellation.h, async_enumerable.h).
-    /// The codegen must NOT emit struct definitions OR using aliases for these —
-    /// the runtime headers handle both.
-    /// </summary>
-    private static readonly HashSet<string> RuntimeHeaderAliasedTypes = new()
-    {
-        // task.h
-        "System_Threading_Tasks_Task",
-        "System_Runtime_CompilerServices_TaskAwaiter",
-        "System_Runtime_CompilerServices_AsyncTaskMethodBuilder",
-        // IAsyncStateMachine: removed from runtime (Phase IV.1) — now compiled from BCL IL
-        // memberinfo.h
-        "System_Reflection_MemberInfo",
-        "System_Reflection_MethodBase",
-        "System_Reflection_MethodInfo",
-        "System_Reflection_FieldInfo",
-        "System_Reflection_ParameterInfo",
-        // cancellation.h
-        "System_Threading_CancellationTokenSource",
-        "System_Threading_CancellationToken",
-        // async_enumerable.h
-        "System_Threading_Tasks_ValueTask",
-        "System_Runtime_CompilerServices_ValueTaskAwaiter",
-        "System_Runtime_CompilerServices_AsyncIteratorMethodBuilder",
-        // threading.h — ManagedThread is in cil2cpp namespace but no using alias;
-        // still needs to be skipped since runtime defines the struct
-        "System_Threading_Thread",
-        // typed_reference.h
-        "System_TypedReference",
-        "System_ArgIterator",
-        // Phase II.3: Runtime reflection subtypes — aliases in memberinfo.h / reflection.h
-        "System_Reflection_RuntimeMethodInfo",
-        "System_Reflection_RuntimeFieldInfo",
-        "System_Reflection_RuntimeConstructorInfo",
-        "System_Reflection_TypeInfo",
-        // Phase II.4: Assembly + PropertyInfo — aliases in assembly.h
-        "System_Reflection_RuntimePropertyInfo",
-        "System_Reflection_Assembly",
-        "System_Reflection_RuntimeAssembly",
-        // Phase II.5: WaitHandle hierarchy — aliases in waithandle.h
-        "System_Threading_WaitHandle",
-        "System_Threading_EventWaitHandle",
-        "System_Threading_ManualResetEvent",
-        "System_Threading_AutoResetEvent",
-        "System_Threading_Mutex",
-        "System_Threading_Semaphore",
-    };
-
-    /// <summary>
-    /// Get TypeInfo reference aliases for runtime exception types.
-    /// Maps mangled IL names (System_Exception) to runtime-declared TypeInfo names (cil2cpp::Exception_TypeInfo).
-    /// Used by castclass/isinst/catch to reference exception TypeInfos by their mangled names.
-    /// </summary>
-    private static IEnumerable<(string MangledName, string RuntimeTypeInfoName)> GetExceptionTypeInfoAliases()
-    {
-        yield return ("System_Exception", "cil2cpp::Exception_TypeInfo");
-        yield return ("System_NullReferenceException", "cil2cpp::NullReferenceException_TypeInfo");
-        yield return ("System_IndexOutOfRangeException", "cil2cpp::IndexOutOfRangeException_TypeInfo");
-        yield return ("System_InvalidCastException", "cil2cpp::InvalidCastException_TypeInfo");
-        yield return ("System_InvalidOperationException", "cil2cpp::InvalidOperationException_TypeInfo");
-        yield return ("System_ObjectDisposedException", "cil2cpp::ObjectDisposedException_TypeInfo");
-        yield return ("System_NotSupportedException", "cil2cpp::NotSupportedException_TypeInfo");
-        yield return ("System_PlatformNotSupportedException", "cil2cpp::PlatformNotSupportedException_TypeInfo");
-        yield return ("System_NotImplementedException", "cil2cpp::NotImplementedException_TypeInfo");
-        yield return ("System_ArgumentException", "cil2cpp::ArgumentException_TypeInfo");
-        yield return ("System_ArgumentNullException", "cil2cpp::ArgumentNullException_TypeInfo");
-        yield return ("System_ArgumentOutOfRangeException", "cil2cpp::ArgumentOutOfRangeException_TypeInfo");
-        yield return ("System_ArithmeticException", "cil2cpp::ArithmeticException_TypeInfo");
-        yield return ("System_OverflowException", "cil2cpp::OverflowException_TypeInfo");
-        yield return ("System_DivideByZeroException", "cil2cpp::DivideByZeroException_TypeInfo");
-        yield return ("System_FormatException", "cil2cpp::FormatException_TypeInfo");
-        yield return ("System_RankException", "cil2cpp::RankException_TypeInfo");
-        yield return ("System_ArrayTypeMismatchException", "cil2cpp::ArrayTypeMismatchException_TypeInfo");
-        yield return ("System_TypeInitializationException", "cil2cpp::TypeInitializationException_TypeInfo");
-        yield return ("System_TimeoutException", "cil2cpp::TimeoutException_TypeInfo");
-        yield return ("System_AggregateException", "cil2cpp::AggregateException_TypeInfo");
-        yield return ("System_OperationCanceledException", "cil2cpp::OperationCanceledException_TypeInfo");
-        yield return ("System_Threading_Tasks_TaskCanceledException", "cil2cpp::TaskCanceledException_TypeInfo");
-        yield return ("System_Collections_Generic_KeyNotFoundException", "cil2cpp::KeyNotFoundException_TypeInfo");
-    }
-
-    /// <summary>
-    /// Runtime-provided base types that need stub TypeInfo definitions in generated code.
-    /// These are referenced as .base_type for value types, enums, and delegates.
-    /// </summary>
-    private static IEnumerable<(string MangledName, string ILFullName)> GetRuntimeBaseTypeInfoStubs()
-    {
-        yield return ("System_ValueType", "System.ValueType");
-        yield return ("System_Enum", "System.Enum");
-        yield return ("System_MulticastDelegate", "System.MulticastDelegate");
-        yield return ("System_Delegate", "System.Delegate");
     }
 
     /// <summary>
@@ -1183,7 +1032,7 @@ public partial class CppCodeGenerator
                 // (IrStubReason == null) are now emitted from IL — scan their callees.
                 if (!method.IsStatic && IRBuilder.CoreRuntimeTypes.Contains(type.ILFullName))
                 {
-                    if (ShouldKeepCoreRuntimeMethodGate(type, method))
+                    if (RuntimeTypeRegistry.ShouldBlockInstanceMethod(type.ILFullName, method))
                         continue;
                 }
                 else if (method.IrStubReason != null) continue;

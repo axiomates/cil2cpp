@@ -91,7 +91,7 @@ public partial class CppCodeGenerator
             foreach (var entry in _module.PrimitiveTypeInfos.Values)
             {
                 // Runtime-provided reference types: alias to runtime's TypeInfo (e.g., cil2cpp::System::Object_TypeInfo)
-                var runtimeAlias = GetRuntimeTypeInfoAlias(entry.ILFullName);
+                var runtimeAlias = RuntimeTypeRegistry.GetRuntimeTypeInfoName(entry.ILFullName);
                 if (runtimeAlias != null)
                 {
                     sb.AppendLine($"cil2cpp::TypeInfo& {entry.CppMangledName}_TypeInfo = {runtimeAlias};");
@@ -133,7 +133,7 @@ public partial class CppCodeGenerator
         // Exception TypeInfo reference aliases — define references to runtime-declared TypeInfos
         // so that generated catch/cast code can use mangled names (System_Exception_TypeInfo)
         sb.AppendLine("// ===== Exception TypeInfo Aliases =====");
-        foreach (var (mangledName, runtimeTypeInfoName) in GetExceptionTypeInfoAliases())
+        foreach (var (mangledName, runtimeTypeInfoName) in RuntimeTypeRegistry.GetExceptionTypeInfoAliases())
         {
             sb.AppendLine($"cil2cpp::TypeInfo& {mangledName}_TypeInfo = {runtimeTypeInfoName};");
         }
@@ -156,7 +156,7 @@ public partial class CppCodeGenerator
         // Stub TypeInfos for runtime-provided base types not declared in the runtime library
         // These are referenced as .base_type in TypeInfo initialization for value types, enums, delegates
         sb.AppendLine("// ===== Runtime Base Type TypeInfo Stubs =====");
-        foreach (var (mangledName, ilName) in GetRuntimeBaseTypeInfoStubs())
+        foreach (var (mangledName, ilName) in RuntimeTypeRegistry.GetBaseTypeStubs())
         {
             sb.AppendLine($"cil2cpp::TypeInfo {mangledName}_TypeInfo = {{ " +
                 $".name = \"{ilName.Split('.').Last()}\", " +
@@ -187,9 +187,9 @@ public partial class CppCodeGenerator
         // Collect types that already have TypeInfo definitions (primitives, exceptions, base type stubs, aliases)
         foreach (var entry in _module.PrimitiveTypeInfos.Values)
             emittedTypeInfo.Add(entry.CppMangledName);
-        foreach (var (mangledName, _) in GetExceptionTypeInfoAliases())
+        foreach (var (mangledName, _) in RuntimeTypeRegistry.GetExceptionTypeInfoAliases())
             emittedTypeInfo.Add(mangledName);
-        foreach (var (mangledName, _) in GetRuntimeBaseTypeInfoStubs())
+        foreach (var (mangledName, _) in RuntimeTypeRegistry.GetBaseTypeStubs())
             emittedTypeInfo.Add(mangledName);
         // Runtime TypeInfo aliases (Object, String) — already emitted as references above
         if (needsObjectAlias) emittedTypeInfo.Add("System_Object");
@@ -405,7 +405,7 @@ public partial class CppCodeGenerator
             // the C++ runtime struct fields.
             if (!method.IsStatic && IRBuilder.CoreRuntimeTypes.Contains(type.ILFullName))
             {
-                if (ShouldKeepCoreRuntimeMethodGate(type, method))
+                if (RuntimeTypeRegistry.ShouldBlockInstanceMethod(type.ILFullName, method))
                     continue;
             }
             if (method.IsAbstract) continue;
@@ -420,53 +420,7 @@ public partial class CppCodeGenerator
         }
     }
 
-    /// <summary>
-    /// Determine whether a CoreRuntimeType instance method should be blocked from IL emission.
-    /// Types with aliased struct layouts (where C++ runtime fields ≠ IL fields) keep the
-    /// blanket gate. Other CoreRuntimeTypes emit methods with real compiled bodies.
-    /// </summary>
-    private static bool ShouldKeepCoreRuntimeMethodGate(IRType type, IR.IRMethod method)
-    {
-        var ilName = type.ILFullName;
-
-        // Types with aliased struct layouts — IL field accesses don't match C++ runtime structs.
-        // All instance methods must be blocked (provided by core_methods.cpp or runtime).
-        // Also includes reflection types not in ReflectionAliasedTypes but with field mismatches.
-        if (IRBuilder.ReflectionAliasedTypes.Contains(ilName)
-            || ilName is "System.Reflection.RuntimePropertyInfo"
-               or "System.Reflection.Assembly" or "System.Reflection.RuntimeAssembly"
-               or "System.Reflection.TypeInfo")
-            return true;
-
-        // Object/ValueType/Array/Exception/Delegate: fundamental types fully provided by runtime
-        if (ilName is "System.Object" or "System.ValueType" or "System.Array"
-            or "System.Exception" or "System.Delegate" or "System.MulticastDelegate")
-            return true;
-
-        // Thread: instance methods access CLR-internal fields not in ManagedThread
-        if (ilName == "System.Threading.Thread")
-            return true;
-
-        // DefaultBinder: array type mismatches in generic IL patterns
-        if (ilName == "System.DefaultBinder")
-            return true;
-
-        // System.Type virtual methods that throw NotSupportedException("SubclassOverride"):
-        // These are implemented in core_methods.cpp using runtime TypeFlags, bypassing
-        // the need for RuntimeType vtable overrides (which are excluded as CoreRuntimeType).
-        if (ilName == "System.Type" && method.Name is "get_IsByRefLike" or "GetArrayRank"
-            or "GetGenericTypeDefinition" or "GetGenericArguments" or "MakeGenericType")
-            return true;
-
-        // RuntimeType, RuntimeTypeHandle, Enum, Type, TypeInfo, Assembly, RuntimeAssembly,
-        // RuntimePropertyInfo: allow methods with real compiled bodies through.
-        // Methods that couldn't compile (CLR-internal deps) have IrStubReason set.
-        if (method.IrStubReason != null)
-            return true;
-
-        // Method has a real IL-compiled body — emit it
-        return false;
-    }
+    // ShouldKeepCoreRuntimeMethodGate → moved to RuntimeTypeRegistry.ShouldBlockInstanceMethod()
 
     /// <summary>
     /// Generate stub file: fallback implementations for methods that should be eliminated
@@ -1696,17 +1650,7 @@ public partial class CppCodeGenerator
         return $"{varName} = ({preType})(void*){rhs};";
     }
 
-    /// <summary>
-    /// For runtime-provided reference types (System.String, System.Object), return the
-    /// qualified name of the runtime's TypeInfo so we can alias to it instead of emitting a new one.
-    /// Returns null for types that should get their own generated TypeInfo.
-    /// </summary>
-    private static string? GetRuntimeTypeInfoAlias(string ilFullName) => ilFullName switch
-    {
-        "System.String" => "cil2cpp::System::String_TypeInfo",
-        "System.Object" => "cil2cpp::System::Object_TypeInfo",
-        _ => null,
-    };
+    // GetRuntimeTypeInfoAlias → moved to RuntimeTypeRegistry.GetRuntimeTypeInfoName()
 
     /// <summary>
     /// Generate a typed function pointer cast expression for a method, to resolve overload ambiguity.
