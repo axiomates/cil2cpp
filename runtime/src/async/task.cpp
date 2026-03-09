@@ -15,6 +15,7 @@
 #include <atomic>
 #include <chrono>
 #include <new>
+#include <cstdio>
 
 // BCL-compiled methods for Task state management.
 // These are generated from BCL IL and linked from the compiled output.

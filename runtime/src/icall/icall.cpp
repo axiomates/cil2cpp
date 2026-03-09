@@ -386,6 +386,70 @@ void Thread_InternalFinalize(void* __this) {
     // No-op — CIL2CPP doesn't need thread finalization
 }
 
+void Thread_Join(void* __this) {
+    thread::join(reinterpret_cast<ManagedThread*>(__this));
+}
+
+Boolean Thread_Join_Timeout(void* __this, Int32 timeout_ms) {
+    return thread::join_timeout(reinterpret_cast<ManagedThread*>(__this), timeout_ms) ? 1 : 0;
+}
+
+void Thread_Start(void* __this) {
+    thread::start(reinterpret_cast<ManagedThread*>(__this));
+}
+
+void Thread_LongSpinWait(Int32 iterations) {
+    // Long spin: yield between iterations (used by SpinLock/SpinWait)
+    for (Int32 i = 0; i < iterations; ++i) {
+        std::this_thread::yield();
+    }
+}
+
+// ===== System.Type property ICalls =====
+
+Boolean Type_get_IsClass(void* thisPtr) {
+    return type_get_is_class(reinterpret_cast<Type*>(thisPtr));
+}
+
+void* Type_get_BaseType(void* thisPtr) {
+    return reinterpret_cast<void*>(type_get_base_type(reinterpret_cast<Type*>(thisPtr)));
+}
+
+void* Type_get_FullName(void* thisPtr) {
+    return reinterpret_cast<void*>(type_get_full_name(reinterpret_cast<Type*>(thisPtr)));
+}
+
+void* Type_get_Namespace(void* thisPtr) {
+    return reinterpret_cast<void*>(type_get_namespace(reinterpret_cast<Type*>(thisPtr)));
+}
+
+// ===== System.RuntimeType =====
+
+Object* RuntimeType_AllocateValueType(void* thisType, Object* value) {
+    // AllocateValueType: creates a boxed copy of a value type.
+    // If value is non-null, clone it via box-copy. Otherwise allocate empty.
+    auto* typeInfo = reinterpret_cast<Object*>(thisType)->__type_info;
+    auto sz = typeInfo->instance_size;
+    if (value) {
+        // Copy-box: allocate new object with same TypeInfo, copy fields
+        auto* result = reinterpret_cast<Object*>(gc::alloc(sz, typeInfo));
+        std::memcpy(
+            reinterpret_cast<char*>(result) + sizeof(Object),
+            reinterpret_cast<char*>(value) + sizeof(Object),
+            sz - sizeof(Object));
+        return result;
+    }
+    // Allocate zeroed value type box
+    return reinterpret_cast<Object*>(gc::alloc(sz, typeInfo));
+}
+
+// ===== System.Reflection.RuntimeAssembly =====
+
+void* RuntimeAssembly_InternalGetSatelliteAssembly(void* /*thisPtr*/, void* /*culture*/, void* /*version*/, bool /*throwOnFileNotFound*/) {
+    // Satellite assemblies don't exist in AOT — always return nullptr.
+    return nullptr;
+}
+
 // ===== System.Runtime.CompilerServices.RuntimeHelpers =====
 
 Boolean RuntimeHelpers_TryEnsureSufficientExecutionStack() {
@@ -434,8 +498,11 @@ void RuntimeHelpers_InitializeArray(Object* array, void* fieldHandle) {
 
 Object* Enum_InternalBoxEnum(void* enumType, Int64 value) {
     // Box an enum value given its RuntimeType handle and int64 value.
-    // enumType is a RuntimeType* (treated as TypeInfo* for type metadata).
-    auto* typeInfo = reinterpret_cast<TypeInfo*>(enumType);
+    // enumType is a RuntimeType* (cil2cpp::Type* — aliased to System_RuntimeType).
+    // Extract the represented type's TypeInfo from the Type object.
+    auto* typeObj = reinterpret_cast<Type*>(enumType);
+    if (!typeObj) return nullptr;
+    auto* typeInfo = typeObj->type_info;
     if (!typeInfo) return nullptr;
     auto elemSize = typeInfo->element_size > 0 ? typeInfo->element_size : sizeof(Int64);
     auto* obj = reinterpret_cast<Object*>(gc::alloc(
@@ -447,7 +514,10 @@ Object* Enum_InternalBoxEnum(void* enumType, Int64 value) {
 
 Int32 Enum_InternalGetCorElementType(void* enumType) {
     // Returns the CorElementType for the underlying type of an enum.
-    auto* typeInfo = reinterpret_cast<TypeInfo*>(enumType);
+    // enumType is a RuntimeType* (cil2cpp::Type*) — extract the represented TypeInfo.
+    auto* typeObj = reinterpret_cast<Type*>(enumType);
+    if (!typeObj) return 0;
+    auto* typeInfo = typeObj->type_info;
     if (typeInfo && typeInfo->underlying_type && typeInfo->underlying_type->cor_element_type != 0) {
         return static_cast<Int32>(typeInfo->underlying_type->cor_element_type);
     }
@@ -497,10 +567,11 @@ Int64 Interlocked_ExchangeAdd_i64(Int64* location, Int64 value) {
 
 Int32 ThreadPool_GetNextConfigUInt32Value(Int32 /*configVariableIndex*/,
     uint32_t* configValue, bool* isBoolean, char16_t** /*appContextConfigName*/) {
-    // No runtime config variables — return 0 (not found)
+    // No runtime config variables — return negative to signal end of enumeration.
+    // BCL loops until return value < 0; returning 0 would cause an infinite loop.
     if (configValue) *configValue = 0;
     if (isBoolean) *isBoolean = false;
-    return 0; // 0 = not found
+    return -1;
 }
 
 Object* ThreadPool_GetOrCreateThreadLocalCompletionCountObject() {

@@ -398,7 +398,16 @@ public partial class CppCodeGenerator
         {
             if (method.IsInternalCall || method.IsPInvoke) continue;
             if (IRBuilder.SkipAllMethodsTypes.Contains(type.ILFullName)) continue;
-            if (!method.IsStatic && IRBuilder.CoreRuntimeTypes.Contains(type.ILFullName)) continue;
+            // CoreRuntimeTypes: selectively emit methods that have real IL-compiled bodies.
+            // Methods that couldn't compile (CLR-internal deps → IrStubReason set) are
+            // left to core_methods.cpp. Types with aliased struct layouts (reflection types,
+            // Thread, RuntimeType) keep the blanket gate since IL field accesses don't match
+            // the C++ runtime struct fields.
+            if (!method.IsStatic && IRBuilder.CoreRuntimeTypes.Contains(type.ILFullName))
+            {
+                if (ShouldKeepCoreRuntimeMethodGate(type, method))
+                    continue;
+            }
             if (method.IsAbstract) continue;
             if (method.BasicBlocks.Count == 0) continue;
             if (method.HasICallMapping) continue;
@@ -412,9 +421,57 @@ public partial class CppCodeGenerator
     }
 
     /// <summary>
+    /// Determine whether a CoreRuntimeType instance method should be blocked from IL emission.
+    /// Types with aliased struct layouts (where C++ runtime fields ≠ IL fields) keep the
+    /// blanket gate. Other CoreRuntimeTypes emit methods with real compiled bodies.
+    /// </summary>
+    private static bool ShouldKeepCoreRuntimeMethodGate(IRType type, IR.IRMethod method)
+    {
+        var ilName = type.ILFullName;
+
+        // Types with aliased struct layouts — IL field accesses don't match C++ runtime structs.
+        // All instance methods must be blocked (provided by core_methods.cpp or runtime).
+        // Also includes reflection types not in ReflectionAliasedTypes but with field mismatches.
+        if (IRBuilder.ReflectionAliasedTypes.Contains(ilName)
+            || ilName is "System.Reflection.RuntimePropertyInfo"
+               or "System.Reflection.Assembly" or "System.Reflection.RuntimeAssembly"
+               or "System.Reflection.TypeInfo")
+            return true;
+
+        // Object/ValueType/Array/Exception/Delegate: fundamental types fully provided by runtime
+        if (ilName is "System.Object" or "System.ValueType" or "System.Array"
+            or "System.Exception" or "System.Delegate" or "System.MulticastDelegate")
+            return true;
+
+        // Thread: instance methods access CLR-internal fields not in ManagedThread
+        if (ilName == "System.Threading.Thread")
+            return true;
+
+        // DefaultBinder: array type mismatches in generic IL patterns
+        if (ilName == "System.DefaultBinder")
+            return true;
+
+        // System.Type virtual methods that throw NotSupportedException("SubclassOverride"):
+        // These are implemented in core_methods.cpp using runtime TypeFlags, bypassing
+        // the need for RuntimeType vtable overrides (which are excluded as CoreRuntimeType).
+        if (ilName == "System.Type" && method.Name is "get_IsByRefLike" or "GetArrayRank"
+            or "GetGenericTypeDefinition" or "GetGenericArguments" or "MakeGenericType")
+            return true;
+
+        // RuntimeType, RuntimeTypeHandle, Enum, Type, TypeInfo, Assembly, RuntimeAssembly,
+        // RuntimePropertyInfo: allow methods with real compiled bodies through.
+        // Methods that couldn't compile (CLR-internal deps) have IrStubReason set.
+        if (method.IrStubReason != null)
+            return true;
+
+        // Method has a real IL-compiled body — emit it
+        return false;
+    }
+
+    /// <summary>
     /// Generate stub file: fallback implementations for methods that should be eliminated
-    /// by better tree-shaking. CoreRuntimeTypes methods are NOT included — the runtime
-    /// library (core_methods.cpp) provides their extern "C" definitions.
+    /// by better tree-shaking. Instance methods on CoreRuntimeTypes are NOT included —
+    /// the runtime library (core_methods.cpp) provides their extern "C" definitions.
     /// </summary>
     private GeneratedFile GenerateStubFile()
     {
@@ -594,7 +651,7 @@ public partial class CppCodeGenerator
                     // (by GenerateMissingMethodStubs). Generating stub bodies would conflict
                     // with the extern "C" definitions in core_methods.cpp (LNK2005).
                     // Skip ALL CoreRuntimeType stubs — missing impls surface as linker errors
-                    // and should be added to core_methods.cpp.
+                    // and should be added to core_methods.cpp or registered as ICalls.
                     _emittedMethodSignatures.Add(sig);
                     continue;
                 }

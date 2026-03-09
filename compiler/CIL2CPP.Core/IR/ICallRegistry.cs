@@ -75,11 +75,15 @@ public static class ICallRegistry
         RegisterICall("System.Array", "GetLength", 1, "cil2cpp::array_get_length_dim");
         RegisterICall("System.Array", "Copy", 5, "cil2cpp::array_copy");
         RegisterICall("System.Array", "Copy", 3, "cil2cpp::array_copy_simple");
-        RegisterICall("System.Array", "CopyImpl", 5, "cil2cpp::array_copy_impl");
+        // CopyImpl is a managed method (6 params including 'reliable' bool) — compiled from IL.
+        // CopySlow (called by CopyImpl) bridges to the runtime copy implementation.
+        RegisterICall("System.Array", "CopySlow", 5, "cil2cpp::array_copy");
         RegisterICall("System.Array", "Clone", 0, "cil2cpp::array_clone");
         RegisterICall("System.Array", "Reverse", 3, "cil2cpp::array_reverse");
         RegisterICall("System.Array", "get_NativeLength", 0, "cil2cpp::array_get_native_length");
-        RegisterICall("System.Array", "GetValue", 1, "cil2cpp::array_get_value");
+        RegisterICallTyped("System.Array", "GetValue", 1, "System.Int32", "cil2cpp::array_get_value");
+        RegisterICall("System.Array", "InternalGetValue", 1, "cil2cpp::array_internal_get_value");
+        RegisterICall("System.Array", "InternalSetValue", 2, "cil2cpp::array_internal_set_value");
         RegisterICall("System.Array", "GetCorElementTypeOfElementType", 0, "cil2cpp::array_get_cor_element_type");
 
         // ===== System.Delegate / System.MulticastDelegate =====
@@ -88,6 +92,21 @@ public static class ICallRegistry
         RegisterICall("System.MulticastDelegate", "Combine", 2, "cil2cpp::delegate_combine");
         RegisterICall("System.MulticastDelegate", "Remove", 2, "cil2cpp::delegate_remove");
         RegisterICall("System.Delegate", "InternalAlloc", 1, "cil2cpp::icall::Delegate_InternalAlloc");
+
+        // ===== System.Type =====
+        // Type methods with runtime implementations that access TypeInfo directly.
+        // Prevents IL compilation from conflicting with core_methods.cpp.
+        RegisterICall("System.Type", "get_IsClass", 0, "cil2cpp::icall::Type_get_IsClass");
+        RegisterICall("System.Type", "get_BaseType", 0, "cil2cpp::icall::Type_get_BaseType");
+        RegisterICall("System.Type", "get_FullName", 0, "cil2cpp::icall::Type_get_FullName");
+        RegisterICall("System.Type", "get_Namespace", 0, "cil2cpp::icall::Type_get_Namespace");
+
+        // ===== System.RuntimeType =====
+        RegisterICall("System.RuntimeType", "AllocateValueType", 2, "cil2cpp::icall::RuntimeType_AllocateValueType");
+
+        // ===== System.Reflection.RuntimeAssembly =====
+        // Satellite assemblies don't exist in AOT — always return nullptr.
+        RegisterICall("System.Reflection.RuntimeAssembly", "InternalGetSatelliteAssembly", 3, "cil2cpp::icall::RuntimeAssembly_InternalGetSatelliteAssembly");
 
         // ===== System.Enum =====
         RegisterICall("System.Enum", "InternalBoxEnum", 2, "cil2cpp::icall::Enum_InternalBoxEnum");
@@ -275,6 +294,14 @@ public static class ICallRegistry
             "cil2cpp::icall::Thread_get_ManagedThreadId");
         RegisterICall("System.Threading.Thread", "InternalFinalize", 0,
             "cil2cpp::icall::Thread_InternalFinalize");
+        RegisterICall("System.Threading.Thread", "Join", 0,
+            "cil2cpp::icall::Thread_Join");
+        RegisterICallTyped("System.Threading.Thread", "Join", 1, "System.Int32",
+            "cil2cpp::icall::Thread_Join_Timeout");
+        RegisterICall("System.Threading.Thread", "Start", 0,
+            "cil2cpp::icall::Thread_Start");
+        RegisterICall("System.Threading.Thread", "LongSpinWaitInternal", 1,
+            "cil2cpp::icall::Thread_LongSpinWait");
 
         // ===== System.Environment =====
         RegisterICall("System.Environment", "get_NewLine", 0, "cil2cpp::icall::Environment_get_NewLine");

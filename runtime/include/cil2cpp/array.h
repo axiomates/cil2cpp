@@ -131,6 +131,12 @@ uintptr_t array_get_native_length(void* arr);
 /// System.Array::GetValue(int) — get element boxed as Object*.
 void* array_get_value(void* arr, Int32 index);
 
+/// System.Array::InternalGetValue — get element by flattened index.
+void* array_internal_get_value(void* arr, intptr_t flattenedIndex);
+
+/// System.Array::InternalSetValue — set element by flattened index.
+void array_internal_set_value(void* arr, void* value, intptr_t flattenedIndex);
+
 /// System.Array::CopyImpl — internal copy used by BCL.
 void array_copy_impl(void* src, Int32 srcIndex, void* dst, Int32 dstIndex, Int32 length);
 

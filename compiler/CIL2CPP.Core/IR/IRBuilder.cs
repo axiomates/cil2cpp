@@ -68,7 +68,7 @@ public partial class IRBuilder
         // Threading types — struct defined in threading.h / cancellation.h
         "System.Threading.Thread",
         // Phase IV.2: CancellationToken removed — simple value type, now compiled from BCL IL
-        "System.Threading.CancellationTokenSource",
+        // CancellationTokenSource removed — pure BCL type, all methods compile from IL
 
         // TypedReference + ArgIterator — struct defined in typed_reference.h
         "System.TypedReference",
@@ -138,7 +138,6 @@ public partial class IRBuilder
         // Thread: instance methods access CLR-internal fields (f_DONT_USE_InternalThread, f_priority)
         // that don't exist on cil2cpp::ManagedThread runtime struct
         "System.Threading.Thread",
-        "System.Threading.CancellationTokenSource",
         // RuntimeType: aliased to cil2cpp::Type but IL methods reference internal CLR fields
         "System.RuntimeType",
         // DefaultBinder: reflection binder methods have array type mismatches (Object* vs Array*)
@@ -155,7 +154,8 @@ public partial class IRBuilder
     /// </summary>
     internal static readonly HashSet<string> SkipAllMethodsTypes = new()
     {
-        // RuntimeTypeHandle: static methods are QCall wrappers (ObjectHandleOnStack, void** pointer levels)
+        // RuntimeTypeHandle: static methods have pointer level mismatches (void* vs void**)
+        // and call QCall wrappers with ObjectHandleOnStack — cannot compile from IL.
         "System.RuntimeTypeHandle",
         // TypedReference + ArgIterator: all methods handled by runtime / icall
         "System.TypedReference",
@@ -399,6 +399,15 @@ public partial class IRBuilder
     private bool _inFilterRegion;
     private int _endfilterOffset = -1;
 
+    // Leave-crossing tracking — per-method data for leave dispatch across protected regions.
+    // Maps leave instruction offset → (targetOffset, innermostCrossedTryStart, innermostCrossedTryEnd, fromHandlerBody)
+    // FromHandlerBody: true when leave is from catch/filter handler body (needs inline context restore)
+    private Dictionary<int, (int TargetOffset, int InnermostTryStart, int InnermostTryEnd, bool FromHandlerBody)>? _leaveCrossingTargets;
+
+    // Leave dispatch info per region — maps (TryStart,TryEnd) → list of (targetOffset, chainRegion?)
+    private Dictionary<(int TryStart, int TryEnd),
+        List<(int TargetOffset, (int TryStart, int TryEnd)? ChainRegion)>>? _regionLeaveDispatch;
+
     // Set by Build() before BuildInternal()
     private AssemblySet _assemblySet = null!;
     private ReachabilityResult _reachability = null!;
@@ -640,6 +649,7 @@ public partial class IRBuilder
                         if (_reachability.IsReachable(methodDef.GetCecilMethod()))
                             methodBodies.Add((methodDef, irMethod));
                     }
+
                 }
 
                 // Detect record types:
@@ -811,6 +821,7 @@ public partial class IRBuilder
             }
 
             ConvertMethodBody(methodDef, irMethod);
+
         }
 
         // Pass 6.1: Compile generic method specializations discovered during Pass 6.

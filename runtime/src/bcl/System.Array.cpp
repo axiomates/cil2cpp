@@ -196,6 +196,34 @@ void* array_get_value(void* raw, Int32 index) {
     return box_raw(data + index * elem_size, elem_size, arr->element_type);
 }
 
+void* array_internal_get_value(void* raw, intptr_t flattenedIndex) {
+    // Same as array_get_value but with intptr_t index (used by BCL internal paths)
+    return array_get_value(raw, static_cast<Int32>(flattenedIndex));
+}
+
+void array_internal_set_value(void* raw, void* value, intptr_t flattenedIndex) {
+    auto* arr = static_cast<Array*>(raw);
+    if (!arr) throw_null_reference();
+    auto index = static_cast<Int32>(flattenedIndex);
+    array_bounds_check(arr, index);
+
+    size_t elem_size = arr->element_type->element_size;
+    if (elem_size == 0) {
+        // Reference type
+        auto** data = static_cast<void**>(array_data(arr));
+        data[index] = value;
+    } else {
+        // Value type — unbox the value and copy
+        char* data = static_cast<char*>(array_data(arr));
+        if (value) {
+            char* unboxed = static_cast<char*>(value) + sizeof(Object);
+            std::memcpy(data + index * elem_size, unboxed, elem_size);
+        } else {
+            std::memset(data + index * elem_size, 0, elem_size);
+        }
+    }
+}
+
 void array_copy_impl(void* raw_src, Int32 srcIndex, void* raw_dst, Int32 dstIndex, Int32 length) {
     array_copy(static_cast<Array*>(raw_src), srcIndex,
                static_cast<Array*>(raw_dst), dstIndex, length);

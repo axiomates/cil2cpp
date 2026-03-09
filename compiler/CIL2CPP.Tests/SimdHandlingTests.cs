@@ -123,6 +123,8 @@ public class SimdHandlingTests
     [InlineData("System_Runtime_Intrinsics_X86_Sse2_Add")]
     [InlineData("System_Runtime_Intrinsics_Arm_AdvSimd_Add")]
     [InlineData("System_Runtime_Intrinsics_Wasm_PackedSimd_Add")]
+    [InlineData("System_Runtime_Intrinsics_Vector256_ShuffleUnsafe")]
+    [InlineData("System_Runtime_Intrinsics_Vector512_Create")]
     public void SimdIntrinsicCall_ReplacedWithDeadCode(string functionName)
     {
         // X86/Arm/Wasm intrinsic calls in dead branches get render-time replacement
@@ -137,13 +139,11 @@ public class SimdHandlingTests
 
     [Theory]
     [InlineData("System_Runtime_Intrinsics_Vector128_1_System_Byte_op_Addition")]
-    [InlineData("System_Runtime_Intrinsics_Vector256_ShuffleUnsafe")]
-    [InlineData("System_Runtime_Intrinsics_Vector512_Create")]
     [InlineData("System_Numerics_Vector_1_System_Single_op_Multiply")]
     public void SimdContainerCall_InLiveCode_MethodBlockedAsStub(string functionName)
     {
-        // SIMD container method calls in live code should block the method
-        // (these are inherently SIMD methods, not scalar fallback paths)
+        // SIMD generic type instance methods (Vector128<T>.op_*, Vector<T>.op_*)
+        // access opaque struct fields — block the method and emit a stub instead
         var module = CreateModuleWithSimdCall(functionName);
         var gen = new CppCodeGenerator(module);
         var output = gen.Generate();

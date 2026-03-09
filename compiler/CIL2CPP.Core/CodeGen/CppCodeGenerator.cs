@@ -689,16 +689,17 @@ public partial class CppCodeGenerator
             {
                 if (instr is IR.IRCall call && !string.IsNullOrEmpty(call.FunctionName)
                     && _undeclaredFunctionNames.Contains(call.FunctionName)
-                    && !IsSimdIntrinsicFunction(call.FunctionName))
+                    && !IsSimdIntrinsicFunction(call.FunctionName)
+                    && !IsSimdStaticHelperFunction(call.FunctionName))
                 {
                     return true;
                 }
-                // Note: SIMD intrinsic calls (X86/Arm/Wasm) are NOT flagged here because
+                // Note: SIMD intrinsic calls (X86/Arm/Wasm) and SIMD static helper methods
+                // (Vector128.LoadUnsafe, Vector128.Create, etc.) are NOT flagged here because
                 // they're always in feature-switch-guarded dead branches. They're replaced
                 // with default values at render time in GenerateMethodImpl.
-                // SIMD container method calls (Vector128<T>.*, Vector128.Create, etc.) ARE
-                // flagged — methods that genuinely use SIMD in live code paths must be blocked
-                // since opaque SIMD structs don't have real fields.
+                // SIMD generic type instance methods (Vector128<T>.op_*, field access) ARE
+                // flagged — methods that access opaque SIMD struct fields must be blocked.
                 if (instr is IR.IRNewObj newObj && !string.IsNullOrEmpty(newObj.CtorName)
                     && _undeclaredFunctionNames.Contains(newObj.CtorName))
                     return true;
@@ -720,6 +721,28 @@ public partial class CppCodeGenerator
         return functionName.StartsWith("System_Runtime_Intrinsics_X86_")
             || functionName.StartsWith("System_Runtime_Intrinsics_Arm_")
             || functionName.StartsWith("System_Runtime_Intrinsics_Wasm_");
+    }
+
+    /// <summary>
+    /// Non-generic SIMD static helper methods (Vector128.LoadUnsafe, Vector128.Create,
+    /// Vector128.ShuffleUnsafe, etc.) that are always in dead-code branches.
+    /// Matches the non-generic type's static methods but NOT generic instance methods
+    /// (Vector128&lt;T&gt;.op_*, field access) which may access opaque struct fields.
+    /// </summary>
+    private static bool IsSimdStaticHelperFunction(string functionName)
+    {
+        // Non-generic Vector types: System_Runtime_Intrinsics_Vector128_MethodName
+        // Generic types have _1_ after the size: System_Runtime_Intrinsics_Vector128_1_TypeName_Method
+        // Also cover System.Numerics.Vector static helpers
+        return (functionName.StartsWith("System_Runtime_Intrinsics_Vector64_")
+                && !functionName.StartsWith("System_Runtime_Intrinsics_Vector64_1_"))
+            || (functionName.StartsWith("System_Runtime_Intrinsics_Vector128_")
+                && !functionName.StartsWith("System_Runtime_Intrinsics_Vector128_1_"))
+            || (functionName.StartsWith("System_Runtime_Intrinsics_Vector256_")
+                && !functionName.StartsWith("System_Runtime_Intrinsics_Vector256_1_"))
+            || (functionName.StartsWith("System_Runtime_Intrinsics_Vector512_")
+                && !functionName.StartsWith("System_Runtime_Intrinsics_Vector512_1_"))
+            || functionName.StartsWith("System_Runtime_Intrinsics_Scalar_1_");
     }
 
     /// <summary>

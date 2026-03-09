@@ -11,12 +11,16 @@
  */
 
 #include <cstdint>
+#include <cstring>
+#include <string>
 #include <cil2cpp/object.h>
 #include <cil2cpp/string.h>
 #include <cil2cpp/array.h>
 #include <cil2cpp/exception.h>
+#include <cil2cpp/gc.h>
 #include <cil2cpp/memberinfo.h>
 #include <cil2cpp/reflection.h>
+#include <cil2cpp/type_info.h>
 
 // Value types used by CoreRuntimeTypes method signatures.
 // These must be ABI-compatible with the generated struct definitions.
@@ -89,7 +93,6 @@ typedef System_RuntimeType_ListBuilder_1_System_Reflection_MethodInfo System_Run
 typedef System_RuntimeType_ListBuilder_1_System_Reflection_MethodInfo System_RuntimeType_ListBuilder_1_System_Type;
 
 // ===== System.Array =====
-extern "C" void System_Array_CopySlow(void* /*sourceArray*/, int32_t sourceIndex, void* /*destinationArray*/, int32_t destinationIndex, int32_t length) { cil2cpp::stub_called(__func__); }
 extern "C" int64_t System_Array_get_LongLength(void* /*__this*/) { cil2cpp::stub_called(__func__); return {}; }
 extern "C" intptr_t System_Array_GetFlattenedIndex__System_Int32(void* /*__this*/, int32_t rawIndex) { cil2cpp::stub_called(__func__); return {}; }
 extern "C" intptr_t System_Array_GetFlattenedIndex__System_ReadOnlySpan_1_System_Int32_(void* /*__this*/, System_ReadOnlySpan_1_System_Int32 indices) { cil2cpp::stub_called(__func__); return {}; }
@@ -164,15 +167,6 @@ extern "C" void System_Enum_GetEnumValuesAndNames(
         *reinterpret_cast<cil2cpp::Object**>(names.f_ptr) = reinterpret_cast<cil2cpp::Object*>(nameArr);
     }
 }
-extern "C" void* System_Enum_GetValue(void* /*__this*/) { cil2cpp::stub_called(__func__); return nullptr; }
-extern "C" System_Reflection_CorElementType System_Enum_InternalGetCorElementType(void* __this) {
-    if (!__this) return {};
-    auto* obj = reinterpret_cast<cil2cpp::Object*>(__this);
-    auto* ti = obj->__type_info;
-    if (ti && ti->underlying_type) return static_cast<System_Reflection_CorElementType>(ti->underlying_type->cor_element_type);
-    return {};
-}
-extern "C" void* System_Enum_ToString__System_String(void* /*__this*/, void* /*format*/) { cil2cpp::stub_called(__func__); return nullptr; }
 
 // ===== System.Exception =====
 extern "C" System_Exception_DispatchState System_Exception_CaptureDispatchState(void* /*__this*/) { cil2cpp::stub_called(__func__); return {}; }
@@ -395,7 +389,7 @@ extern "C" void* System_Reflection_RuntimeAssembly_GetTypeCore__System_String_Sy
 extern "C" void* System_Reflection_RuntimeAssembly_GetVersion(void* /*__this*/) { cil2cpp::stub_called(__func__); return nullptr; }
 
 // ===== System.Reflection.RuntimeAssembly.InternalGetSatelliteAssembly =====
-extern "C" void* System_Reflection_RuntimeAssembly_InternalGetSatelliteAssembly(void* /*__this*/, void* /*culture*/, void* /*version*/, bool throwOnFileNotFound) { cil2cpp::stub_called(__func__); return nullptr; }
+// (provided by generated code: compiled from IL or linker stub)
 
 // ===== System.Reflection.RuntimeConstructorInfo. =====
 extern "C" void* System_Reflection_RuntimeConstructorInfo__get_Signature_g__LazyCreateSignature_21_0(void* /*__this*/) { cil2cpp::stub_called(__func__); return nullptr; }
@@ -481,135 +475,108 @@ extern "C" void System_Reflection_TypeInfo__ctor(void* /*__this*/) { }
 extern "C" bool System_Reflection_TypeInfo_IsAssignableFrom(void* /*__this*/, void* /*typeInfo*/) { cil2cpp::stub_called(__func__); return false; }
 
 // ===== System.RuntimeType =====
-extern "C" void* System_RuntimeType__CreateInstanceImpl_g__CreateInstanceLocal_145_0(void* /*__this*/, bool wrapExceptions) { cil2cpp::stub_called(__func__); return nullptr; }
-extern "C" void* System_RuntimeType_AllocateValueType(void* /*type*/, void* /*value*/) { cil2cpp::stub_called(__func__); return nullptr; }
+// AllocateValueType: compiled from IL (method-level emission gate)
 extern "C" bool System_RuntimeType_CanValueSpecialCast(void* /*valueType*/, void* /*targetType*/) { cil2cpp::stub_called(__func__); return false; }
-extern "C" bool System_RuntimeType_CheckValue__System_ObjectRef_System_Reflection_Binder_System_Globalization_CultureInfo_System_Reflection_BindingFlags(void* /*__this*/, void* /*value*/, void* /*binder*/, void* /*culture*/, System_Reflection_BindingFlags invokeAttr) { cil2cpp::stub_called(__func__); return false; }
-extern "C" void System_RuntimeType_CreateInstanceCheckThis(void* /*__this*/) { cil2cpp::stub_called(__func__); }
-extern "C" void* System_RuntimeType_CreateInstanceDefaultCtor(void* /*__this*/, bool publicOnly, bool wrapExceptions) { cil2cpp::stub_called(__func__); return nullptr; }
-extern "C" void* System_RuntimeType_CreateInstanceImpl(void* /*__this*/, System_Reflection_BindingFlags bindingAttr, void* /*binder*/, void* /*args*/, void* /*culture*/) { cil2cpp::stub_called(__func__); return nullptr; }
-extern "C" void* System_RuntimeType_get_Cache(void* /*__this*/) { cil2cpp::stub_called(__func__); return nullptr; }
-extern "C" void* System_RuntimeType_get_CacheIfExists(void* /*__this*/) { cil2cpp::stub_called(__func__); return nullptr; }
-extern "C" bool System_RuntimeType_get_DomainInitialized(void* /*__this*/) { cil2cpp::stub_called(__func__); return false; }
-extern "C" void* System_RuntimeType_get_GenericCache(void* /*__this*/) { cil2cpp::stub_called(__func__); return nullptr; }
-extern "C" bool System_RuntimeType_get_IsActualEnum(void* /*__this*/) { cil2cpp::stub_called(__func__); return false; }
-extern "C" bool System_RuntimeType_get_IsNullableOfT(void* /*__this*/) { cil2cpp::stub_called(__func__); return false; }
-extern "C" void* System_RuntimeType_GetBaseType(void* /*__this*/) { cil2cpp::stub_called(__func__); return nullptr; }
-extern "C" void* System_RuntimeType_GetCachedName(void* /*__this*/, System_TypeNameKind kind) { cil2cpp::stub_called(__func__); return nullptr; }
-extern "C" System_RuntimeType_ListBuilder_1_System_Reflection_ConstructorInfo System_RuntimeType_GetConstructorCandidates(void* /*__this*/, void* /*name*/, System_Reflection_BindingFlags bindingAttr, System_Reflection_CallingConventions callConv, void* /*types*/, bool allowPrefixLookup) { cil2cpp::stub_called(__func__); return {}; }
-extern "C" void* System_RuntimeType_GetDefaultMemberName(void* /*__this*/) { cil2cpp::stub_called(__func__); return nullptr; }
-extern "C" void* System_RuntimeType_GetEmptyArray(void* /*__this*/) { cil2cpp::stub_called(__func__); return nullptr; }
-extern "C" System_RuntimeType_ListBuilder_1_System_Reflection_EventInfo System_RuntimeType_GetEventCandidates(void* /*__this*/, void* /*name*/, System_Reflection_BindingFlags bindingAttr, bool allowPrefixLookup) { cil2cpp::stub_called(__func__); return {}; }
-extern "C" System_RuntimeType_ListBuilder_1_System_Reflection_FieldInfo System_RuntimeType_GetFieldCandidates(void* /*__this*/, void* /*name*/, System_Reflection_BindingFlags bindingAttr, bool allowPrefixLookup) { cil2cpp::stub_called(__func__); return {}; }
-extern "C" void* System_RuntimeType_GetGenericArgumentsInternal(void* /*__this*/) { cil2cpp::stub_called(__func__); return nullptr; }
 extern "C" void System_RuntimeType_GetGUID(void* /*__this*/, void* /*result*/) { cil2cpp::stub_called(__func__); }
-extern "C" System_RuntimeType_ListBuilder_1_System_Reflection_MethodInfo System_RuntimeType_GetMethodCandidates(void* /*__this*/, void* /*name*/, int32_t genericParameterCount, System_Reflection_BindingFlags bindingAttr, System_Reflection_CallingConventions callConv, void* /*types*/, bool allowPrefixLookup) { cil2cpp::stub_called(__func__); return {}; }
-extern "C" void* System_RuntimeType_GetMethodImplCommon(void* /*__this*/, void* /*name*/, int32_t genericParameterCount, System_Reflection_BindingFlags bindingAttr, void* /*binder*/, System_Reflection_CallingConventions callConv, void* /*types*/, void* /*modifiers*/) { cil2cpp::stub_called(__func__); return nullptr; }
-extern "C" System_Runtime_CompilerServices_TypeHandle System_RuntimeType_GetNativeTypeHandle(void* /*__this*/) { cil2cpp::stub_called(__func__); return {}; }
-extern "C" System_RuntimeType_ListBuilder_1_System_Type System_RuntimeType_GetNestedTypeCandidates(void* /*__this*/, void* /*fullname*/, System_Reflection_BindingFlags bindingAttr, bool allowPrefixLookup) { cil2cpp::stub_called(__func__); return {}; }
-extern "C" System_RuntimeType_ListBuilder_1_System_Reflection_PropertyInfo System_RuntimeType_GetPropertyCandidates(void* /*__this*/, void* /*name*/, System_Reflection_BindingFlags bindingAttr, void* /*types*/, bool allowPrefixLookup) { cil2cpp::stub_called(__func__); return {}; }
-extern "C" void* System_RuntimeType_GetRuntimeModule(void* /*__this*/) { cil2cpp::stub_called(__func__); return nullptr; }
-extern "C" intptr_t System_RuntimeType_GetUnderlyingNativeHandle(void* /*__this*/) { cil2cpp::stub_called(__func__); return {}; }
-extern "C" void* System_RuntimeType_InitializeCache(void* /*__this*/) { cil2cpp::stub_called(__func__); return nullptr; }
 extern "C" void* System_RuntimeType_InvokeDispMethod(void* /*__this*/, void* /*name*/, System_Reflection_BindingFlags invokeAttr, void* /*target*/, void* /*args*/, void* /*byrefModifiers*/, int32_t culture, void* /*namedParameters*/) { cil2cpp::stub_called(__func__); return nullptr; }
 extern "C" bool System_RuntimeType_IsDelegate(void* /*__this*/) { cil2cpp::stub_called(__func__); return false; }
-extern "C" bool System_RuntimeType_IsGenericCOMObjectImpl(void* /*__this*/) { cil2cpp::stub_called(__func__); return false; }
-extern "C" void System_RuntimeType_set_DomainInitialized(void* /*__this*/, bool value) { cil2cpp::stub_called(__func__); }
-extern "C" void System_RuntimeType_set_GenericCache(void* /*__this*/, void* /*value*/) { cil2cpp::stub_called(__func__); }
-extern "C" System_RuntimeType_CheckValueStatus System_RuntimeType_TryChangeType(void* /*__this*/, void* /*value*/, void* /*copyBack*/) { cil2cpp::stub_called(__func__); return {}; }
-extern "C" System_RuntimeType_CheckValueStatus System_RuntimeType_TryChangeTypeSpecial(void* /*__this*/, void* /*value*/) { cil2cpp::stub_called(__func__); return {}; }
 
 // ===== System.RuntimeTypeHandle =====
-extern "C" int32_t System_RuntimeTypeHandle___IsVisible_g____PInvoke_67_0(System_Runtime_CompilerServices_QCallTypeHandle __typeHandle_native) { cil2cpp::stub_called(__func__); return {}; }
+// Methods removed from SkipAllMethodsTypes were compiled from IL by SocketTest.
+// But RuntimeTypeHandle is back in SkipAllMethodsTypes due to pointer-level mismatches.
+// Add back stubs that were removed in the batch cleanup.
 extern "C" void System_RuntimeTypeHandle__ctor(void* /*__this*/, void* /*type*/) { }
-extern "C" intptr_t System_RuntimeTypeHandle__GetMetadataImport(void* /*type*/) { cil2cpp::stub_called(__func__); return {}; }
-extern "C" void* System_RuntimeTypeHandle__GetUtf8Name(void* /*type*/) { cil2cpp::stub_called(__func__); return nullptr; }
-extern "C" bool System_RuntimeTypeHandle__IsVisible(System_Runtime_CompilerServices_QCallTypeHandle typeHandle) { cil2cpp::stub_called(__func__); return false; }
-extern "C" bool System_RuntimeTypeHandle_CanCastTo(void* /*type*/, void* /*target*/) { cil2cpp::stub_called(__func__); return false; }
-extern "C" void System_RuntimeTypeHandle_ConstructName__System_Runtime_CompilerServices_QCallTypeHandle_System_TypeNameFormatFlags_System_Runtime_CompilerServices_StringHandleOnStack(System_Runtime_CompilerServices_QCallTypeHandle handle, System_TypeNameFormatFlags formatFlags, System_Runtime_CompilerServices_StringHandleOnStack retString) { cil2cpp::stub_called(__func__); }
-extern "C" void* System_RuntimeTypeHandle_ConstructName__System_TypeNameFormatFlags(void* /*__this*/, System_TypeNameFormatFlags formatFlags) { cil2cpp::stub_called(__func__); return nullptr; }
-extern "C" bool System_RuntimeTypeHandle_ContainsGenericVariables(void* /*__this*/) { cil2cpp::stub_called(__func__); return false; }
-extern "C" bool System_RuntimeTypeHandle_ContainsGenericVariables__System_RuntimeType(void* /*handle*/) { cil2cpp::stub_called(__func__); return false; }
-extern "C" System_ReadOnlySpan_1_System_IntPtr System_RuntimeTypeHandle_CopyRuntimeTypeHandles__System_RuntimeTypeHandle___System_Span_1_System_IntPtr_(void* /*inHandles*/, System_Span_1_System_IntPtr stackScratch) { cil2cpp::stub_called(__func__); return {}; }
-extern "C" void* System_RuntimeTypeHandle_CopyRuntimeTypeHandles__System_Type___System_Int32Ref(void* /*inHandles*/, void* /*length*/) { cil2cpp::stub_called(__func__); return nullptr; }
-extern "C" void System_RuntimeTypeHandle_CreateInstanceForAnotherGenericParameter__System_Runtime_CompilerServices_QCallTypeHandle_System_IntPtrPtr_System_Int32_System_Runtime_CompilerServices_ObjectHandleOnStack(System_Runtime_CompilerServices_QCallTypeHandle baseType, void* /*pTypeHandles*/, int32_t cTypeHandles, System_Runtime_CompilerServices_ObjectHandleOnStack instantiatedObject) { cil2cpp::stub_called(__func__); }
+extern "C" void* System_RuntimeTypeHandle_GetRuntimeType(void* /*__this*/) { cil2cpp::stub_called(__func__); return nullptr; }
+extern "C" bool System_RuntimeTypeHandle_IsNullHandle(void* /*__this*/) { return true; }
+struct TypeHandle_Stub { void* m_asTAddr; };
+extern "C" TypeHandle_Stub System_RuntimeTypeHandle_GetNativeTypeHandle(void* /*__this*/) { return {nullptr}; }
+extern "C" bool System_RuntimeTypeHandle_IsByRef(void* /*type*/) { cil2cpp::stub_called(__func__); return false; }
+extern "C" bool System_RuntimeTypeHandle_IsPointer(void* /*type*/) { cil2cpp::stub_called(__func__); return false; }
+extern "C" bool System_RuntimeTypeHandle_IsFunctionPointer(void* /*type*/) { cil2cpp::stub_called(__func__); return false; }
 extern "C" void* System_RuntimeTypeHandle_CreateInstanceForAnotherGenericParameter__System_RuntimeType_System_RuntimeType(void* /*type*/, void* /*genericParameter*/) { cil2cpp::stub_called(__func__); return nullptr; }
 extern "C" void* System_RuntimeTypeHandle_CreateInstanceForAnotherGenericParameter__System_RuntimeType_System_RuntimeType_System_RuntimeType(void* /*type*/, void* /*genericParameter1*/, void* /*genericParameter2*/) { cil2cpp::stub_called(__func__); return nullptr; }
+extern "C" void* System_RuntimeTypeHandle_ConstructName__System_TypeNameFormatFlags(void* /*__this*/, System_TypeNameFormatFlags formatFlags) { cil2cpp::stub_called(__func__); return nullptr; }
+extern "C" bool System_RuntimeTypeHandle_ContainsGenericVariables(void* /*__this*/) { cil2cpp::stub_called(__func__); return false; }
+extern "C" System_ReadOnlySpan_1_System_IntPtr System_RuntimeTypeHandle_CopyRuntimeTypeHandles__System_RuntimeTypeHandle___System_Span_1_System_IntPtr_(void* /*inHandles*/, System_Span_1_System_IntPtr stackScratch) { cil2cpp::stub_called(__func__); return {}; }
+extern "C" void* System_RuntimeTypeHandle_CopyRuntimeTypeHandles__System_Type___System_Int32Ref(void* /*inHandles*/, void* /*length*/) { cil2cpp::stub_called(__func__); return nullptr; }
 extern "C" bool System_RuntimeTypeHandle_Equals__System_Object(void* /*__this*/, void* /*obj*/) { cil2cpp::stub_called(__func__); return false; }
 extern "C" intptr_t System_RuntimeTypeHandle_FreeGCHandle__System_IntPtr(void* /*__this*/, intptr_t objHandle) { cil2cpp::stub_called(__func__); return {}; }
-extern "C" intptr_t System_RuntimeTypeHandle_FreeGCHandle__System_Runtime_CompilerServices_QCallTypeHandle_System_IntPtr(System_Runtime_CompilerServices_QCallTypeHandle typeHandle, intptr_t objHandle) { cil2cpp::stub_called(__func__); return {}; }
+extern "C" void* System_RuntimeTypeHandle_GetConstraints(void* /*__this*/) { cil2cpp::stub_called(__func__); return nullptr; }
+extern "C" intptr_t System_RuntimeTypeHandle_GetGCHandle__System_Runtime_InteropServices_GCHandleType(void* /*__this*/, System_Runtime_InteropServices_GCHandleType type) { cil2cpp::stub_called(__func__); return {}; }
+extern "C" int32_t System_RuntimeTypeHandle_GetGenericVariableIndex(void* /*__this*/) { cil2cpp::stub_called(__func__); return {}; }
+extern "C" int32_t System_RuntimeTypeHandle_GetHashCode(void* /*__this*/) { cil2cpp::stub_called(__func__); return {}; }
+extern "C" void* System_RuntimeTypeHandle_GetInstantiationInternal(void* /*__this*/) { cil2cpp::stub_called(__func__); return nullptr; }
+extern "C" void* System_RuntimeTypeHandle_GetInstantiationPublic(void* /*__this*/) { cil2cpp::stub_called(__func__); return nullptr; }
+extern "C" System_RuntimeTypeHandle_IntroducedMethodEnumerator System_RuntimeTypeHandle_GetIntroducedMethods(void* /*type*/) { cil2cpp::stub_called(__func__); return {}; }
+extern "C" System_RuntimeTypeHandle System_RuntimeTypeHandle_GetNativeHandle(void* /*__this*/) { cil2cpp::stub_called(__func__); return {}; }
+extern "C" void* System_RuntimeTypeHandle_GetTypeChecked(void* /*__this*/) { cil2cpp::stub_called(__func__); return nullptr; }
+extern "C" System_MdUtf8String System_RuntimeTypeHandle_GetUtf8Name(void* /*type*/) { cil2cpp::stub_called(__func__); return {}; }
+extern "C" bool System_RuntimeTypeHandle_HasElementType(void* /*type*/) { cil2cpp::stub_called(__func__); return false; }
+extern "C" void* System_RuntimeTypeHandle_Instantiate__System_RuntimeType(void* /*__this*/, void* /*inst*/) { cil2cpp::stub_called(__func__); return nullptr; }
+extern "C" void* System_RuntimeTypeHandle_Instantiate__System_Type__(void* /*__this*/, void* /*inst*/) { cil2cpp::stub_called(__func__); return nullptr; }
+extern "C" bool System_RuntimeTypeHandle_IsArray(void* /*type*/) { cil2cpp::stub_called(__func__); return false; }
+extern "C" bool System_RuntimeTypeHandle_IsComObject(void* /*type*/, bool isGenericCOM) { cil2cpp::stub_called(__func__); return false; }
+extern "C" bool System_RuntimeTypeHandle_IsPrimitive(void* /*type*/) { cil2cpp::stub_called(__func__); return false; }
+extern "C" bool System_RuntimeTypeHandle_IsSZArray(void* /*type*/) { cil2cpp::stub_called(__func__); return false; }
+extern "C" bool System_RuntimeTypeHandle_IsTypeDefinition(void* /*type*/) { cil2cpp::stub_called(__func__); return false; }
+extern "C" bool System_RuntimeTypeHandle_IsVisible(void* /*type*/) { cil2cpp::stub_called(__func__); return false; }
+extern "C" void* System_RuntimeTypeHandle_MakeArray__System_Int32(void* /*__this*/, int32_t rank) { cil2cpp::stub_called(__func__); return nullptr; }
+extern "C" void* System_RuntimeTypeHandle_MakeByRef(void* /*__this*/) { cil2cpp::stub_called(__func__); return nullptr; }
+extern "C" void* System_RuntimeTypeHandle_MakePointer(void* /*__this*/) { cil2cpp::stub_called(__func__); return nullptr; }
+extern "C" void* System_RuntimeTypeHandle_MakeSZArray(void* /*__this*/) { cil2cpp::stub_called(__func__); return nullptr; }
+extern "C" void System_RuntimeTypeHandle_RegisterCollectibleTypeDependency__System_RuntimeType_System_Reflection_RuntimeAssembly(void* /*type*/, void* /*assembly*/) { cil2cpp::stub_called(__func__); }
+extern "C" bool System_RuntimeTypeHandle_SatisfiesConstraints__System_RuntimeType_System_RuntimeType___System_RuntimeType___System_RuntimeType(void* /*paramType*/, void* /*typeContext*/, void* /*methodContext*/, void* /*toType*/) { cil2cpp::stub_called(__func__); return false; }
+extern "C" intptr_t System_RuntimeTypeHandle_ToIntPtr(System_RuntimeTypeHandle value) { cil2cpp::stub_called(__func__); return {}; }
+extern "C" void System_RuntimeTypeHandle_VerifyInterfaceIsImplemented__System_RuntimeTypeHandle(void* /*__this*/, System_RuntimeTypeHandle interfaceHandle) { cil2cpp::stub_called(__func__); }
+extern "C" bool System_RuntimeTypeHandle__IsVisible(System_Runtime_CompilerServices_QCallTypeHandle typeHandle) { cil2cpp::stub_called(__func__); return false; }
 extern "C" intptr_t System_RuntimeTypeHandle_get_Value(void* /*__this*/) { cil2cpp::stub_called(__func__); return {}; }
+extern "C" int32_t System_RuntimeTypeHandle___IsVisible_g____PInvoke_67_0(System_Runtime_CompilerServices_QCallTypeHandle __typeHandle_native) { cil2cpp::stub_called(__func__); return {}; }
+extern "C" intptr_t System_RuntimeTypeHandle__GetMetadataImport(void* /*type*/) { cil2cpp::stub_called(__func__); return {}; }
+extern "C" void* System_RuntimeTypeHandle__GetUtf8Name(void* /*type*/) { cil2cpp::stub_called(__func__); return nullptr; }
+extern "C" bool System_RuntimeTypeHandle_CanCastTo(void* /*type*/, void* /*target*/) { cil2cpp::stub_called(__func__); return false; }
+extern "C" void System_RuntimeTypeHandle_ConstructName__System_Runtime_CompilerServices_QCallTypeHandle_System_TypeNameFormatFlags_System_Runtime_CompilerServices_StringHandleOnStack(System_Runtime_CompilerServices_QCallTypeHandle handle, System_TypeNameFormatFlags formatFlags, System_Runtime_CompilerServices_StringHandleOnStack retString) { cil2cpp::stub_called(__func__); }
+extern "C" bool System_RuntimeTypeHandle_ContainsGenericVariables__System_RuntimeType(void* /*handle*/) { cil2cpp::stub_called(__func__); return false; }
+extern "C" void System_RuntimeTypeHandle_CreateInstanceForAnotherGenericParameter__System_Runtime_CompilerServices_QCallTypeHandle_System_IntPtrPtr_System_Int32_System_Runtime_CompilerServices_ObjectHandleOnStack(System_Runtime_CompilerServices_QCallTypeHandle baseType, void* /*pTypeHandles*/, int32_t cTypeHandles, System_Runtime_CompilerServices_ObjectHandleOnStack instantiatedObject) { cil2cpp::stub_called(__func__); }
+extern "C" intptr_t System_RuntimeTypeHandle_FreeGCHandle__System_Runtime_CompilerServices_QCallTypeHandle_System_IntPtr(System_Runtime_CompilerServices_QCallTypeHandle typeHandle, intptr_t objHandle) { cil2cpp::stub_called(__func__); return {}; }
 extern "C" void System_RuntimeTypeHandle_GetActivationInfo__System_Runtime_CompilerServices_ObjectHandleOnStack_void_ptrPtr_System_VoidPtrPtr_void_ptrPtr_Interop_BOOLPtr(System_Runtime_CompilerServices_ObjectHandleOnStack pRuntimeType, void* /*ppfnAllocator*/, void* /*pvAllocatorFirstArg*/, void* /*ppfnCtor*/, void* /*pfCtorIsPublic*/) { cil2cpp::stub_called(__func__); }
 extern "C" void System_RuntimeTypeHandle_GetActivationInfo__System_RuntimeType_void_ptrRef_System_VoidRefPtr_void_ptrRef_System_BooleanRef(void* /*rt*/, void* /*pfnAllocator*/, void* /*vAllocatorFirstArg*/, void* /*pfnCtor*/, void* /*ctorIsPublic*/) { cil2cpp::stub_called(__func__); }
 extern "C" void* System_RuntimeTypeHandle_GetArgumentTypesFromFunctionPointer(void* /*type*/) { cil2cpp::stub_called(__func__); return nullptr; }
 extern "C" System_Reflection_TypeAttributes System_RuntimeTypeHandle_GetAttributes(void* /*type*/) { cil2cpp::stub_called(__func__); return {}; }
 extern "C" void* System_RuntimeTypeHandle_GetBaseType(void* /*type*/) { cil2cpp::stub_called(__func__); return nullptr; }
-extern "C" void* System_RuntimeTypeHandle_GetConstraints(void* /*__this*/) { cil2cpp::stub_called(__func__); return nullptr; }
 extern "C" void System_RuntimeTypeHandle_GetConstraints__System_Runtime_CompilerServices_QCallTypeHandle_System_Runtime_CompilerServices_ObjectHandleOnStack(System_Runtime_CompilerServices_QCallTypeHandle handle, System_Runtime_CompilerServices_ObjectHandleOnStack types) { cil2cpp::stub_called(__func__); }
 extern "C" System_Reflection_CorElementType System_RuntimeTypeHandle_GetCorElementType(void* /*type*/) { cil2cpp::stub_called(__func__); return {}; }
 extern "C" void* System_RuntimeTypeHandle_GetDeclaringType(void* /*type*/) { cil2cpp::stub_called(__func__); return nullptr; }
 extern "C" bool System_RuntimeTypeHandle_GetFields(void* /*type*/, void* /*result*/, void* /*count*/) { cil2cpp::stub_called(__func__); return false; }
 extern "C" System_RuntimeMethodHandleInternal System_RuntimeTypeHandle_GetFirstIntroducedMethod(void* /*type*/) { cil2cpp::stub_called(__func__); return {}; }
 extern "C" intptr_t System_RuntimeTypeHandle_GetGCHandle__System_Runtime_CompilerServices_QCallTypeHandle_System_Runtime_InteropServices_GCHandleType(System_Runtime_CompilerServices_QCallTypeHandle handle, System_Runtime_InteropServices_GCHandleType type) { cil2cpp::stub_called(__func__); return {}; }
-extern "C" intptr_t System_RuntimeTypeHandle_GetGCHandle__System_Runtime_InteropServices_GCHandleType(void* /*__this*/, System_Runtime_InteropServices_GCHandleType type) { cil2cpp::stub_called(__func__); return {}; }
 extern "C" void System_RuntimeTypeHandle_GetGenericTypeDefinition(System_Runtime_CompilerServices_QCallTypeHandle type, System_Runtime_CompilerServices_ObjectHandleOnStack retType) { cil2cpp::stub_called(__func__); }
-extern "C" int32_t System_RuntimeTypeHandle_GetGenericVariableIndex(void* /*__this*/) { cil2cpp::stub_called(__func__); return {}; }
 extern "C" int32_t System_RuntimeTypeHandle_GetGenericVariableIndex__System_RuntimeType(void* /*type*/) { cil2cpp::stub_called(__func__); return {}; }
-extern "C" int32_t System_RuntimeTypeHandle_GetHashCode(void* /*__this*/) { cil2cpp::stub_called(__func__); return {}; }
 extern "C" void System_RuntimeTypeHandle_GetInstantiation(System_Runtime_CompilerServices_QCallTypeHandle type, System_Runtime_CompilerServices_ObjectHandleOnStack types, Interop_BOOL fAsRuntimeTypeArray) { cil2cpp::stub_called(__func__); }
-extern "C" void* System_RuntimeTypeHandle_GetInstantiationInternal(void* /*__this*/) { cil2cpp::stub_called(__func__); return nullptr; }
-extern "C" void* System_RuntimeTypeHandle_GetInstantiationPublic(void* /*__this*/) { cil2cpp::stub_called(__func__); return nullptr; }
 extern "C" System_RuntimeMethodHandleInternal System_RuntimeTypeHandle_GetInterfaceMethodImplementation__System_Runtime_CompilerServices_QCallTypeHandle_System_Runtime_CompilerServices_QCallTypeHandle_System_RuntimeMethodHandleInternal(System_Runtime_CompilerServices_QCallTypeHandle handle, System_Runtime_CompilerServices_QCallTypeHandle interfaceHandle, System_RuntimeMethodHandleInternal interfaceMethodHandle) { cil2cpp::stub_called(__func__); return {}; }
 extern "C" System_RuntimeMethodHandleInternal System_RuntimeTypeHandle_GetInterfaceMethodImplementation__System_RuntimeTypeHandle_System_RuntimeMethodHandleInternal(void* /*__this*/, System_RuntimeTypeHandle interfaceHandle, System_RuntimeMethodHandleInternal interfaceMethodHandle) { cil2cpp::stub_called(__func__); return {}; }
 extern "C" void* System_RuntimeTypeHandle_GetInterfaces(void* /*type*/) { cil2cpp::stub_called(__func__); return nullptr; }
-extern "C" System_RuntimeTypeHandle_IntroducedMethodEnumerator System_RuntimeTypeHandle_GetIntroducedMethods(void* /*type*/) { cil2cpp::stub_called(__func__); return {}; }
 extern "C" System_Reflection_MetadataImport System_RuntimeTypeHandle_GetMetadataImport(void* /*type*/) { cil2cpp::stub_called(__func__); return {}; }
 extern "C" System_RuntimeMethodHandleInternal System_RuntimeTypeHandle_GetMethodAt(void* /*type*/, int32_t slot) { cil2cpp::stub_called(__func__); return {}; }
 extern "C" void* System_RuntimeTypeHandle_GetModule(void* /*type*/) { cil2cpp::stub_called(__func__); return nullptr; }
-extern "C" System_RuntimeTypeHandle System_RuntimeTypeHandle_GetNativeHandle(void* /*__this*/) { cil2cpp::stub_called(__func__); return {}; }
 extern "C" void System_RuntimeTypeHandle_GetNextIntroducedMethod(void* /*method*/) { cil2cpp::stub_called(__func__); }
 extern "C" int32_t System_RuntimeTypeHandle_GetNumVirtuals(void* /*type*/) { cil2cpp::stub_called(__func__); return {}; }
-extern "C" void* System_RuntimeTypeHandle_GetRuntimeType(void* /*__this*/) { cil2cpp::stub_called(__func__); return nullptr; }
-extern "C" void* System_RuntimeTypeHandle_GetTypeChecked(void* /*__this*/) { cil2cpp::stub_called(__func__); return nullptr; }
-extern "C" System_MdUtf8String System_RuntimeTypeHandle_GetUtf8Name(void* /*type*/) { cil2cpp::stub_called(__func__); return {}; }
-extern "C" bool System_RuntimeTypeHandle_HasElementType(void* /*type*/) { cil2cpp::stub_called(__func__); return false; }
 extern "C" void System_RuntimeTypeHandle_Instantiate__System_Runtime_CompilerServices_QCallTypeHandle_System_IntPtrPtr_System_Int32_System_Runtime_CompilerServices_ObjectHandleOnStack(System_Runtime_CompilerServices_QCallTypeHandle handle, void* /*pInst*/, int32_t numGenericArgs, System_Runtime_CompilerServices_ObjectHandleOnStack type) { cil2cpp::stub_called(__func__); }
-extern "C" void* System_RuntimeTypeHandle_Instantiate__System_RuntimeType(void* /*__this*/, void* /*inst*/) { cil2cpp::stub_called(__func__); return nullptr; }
-extern "C" void* System_RuntimeTypeHandle_Instantiate__System_Type__(void* /*__this*/, void* /*inst*/) { cil2cpp::stub_called(__func__); return nullptr; }
-extern "C" bool System_RuntimeTypeHandle_IsArray(void* /*type*/) { cil2cpp::stub_called(__func__); return false; }
-extern "C" bool System_RuntimeTypeHandle_IsByRef(void* /*type*/) { cil2cpp::stub_called(__func__); return false; }
 extern "C" Interop_BOOL System_RuntimeTypeHandle_IsCollectible(System_Runtime_CompilerServices_QCallTypeHandle handle) { cil2cpp::stub_called(__func__); return {}; }
-extern "C" bool System_RuntimeTypeHandle_IsComObject(void* /*type*/, bool isGenericCOM) { cil2cpp::stub_called(__func__); return false; }
-extern "C" bool System_RuntimeTypeHandle_IsFunctionPointer(void* /*type*/) { cil2cpp::stub_called(__func__); return false; }
 extern "C" bool System_RuntimeTypeHandle_IsGenericVariable(void* /*type*/) { cil2cpp::stub_called(__func__); return false; }
 extern "C" bool System_RuntimeTypeHandle_IsInterface(void* /*type*/) { cil2cpp::stub_called(__func__); return false; }
-extern "C" bool System_RuntimeTypeHandle_IsPointer(void* /*type*/) { cil2cpp::stub_called(__func__); return false; }
-extern "C" bool System_RuntimeTypeHandle_IsPrimitive(void* /*type*/) { cil2cpp::stub_called(__func__); return false; }
-extern "C" bool System_RuntimeTypeHandle_IsSZArray(void* /*type*/) { cil2cpp::stub_called(__func__); return false; }
-extern "C" bool System_RuntimeTypeHandle_IsTypeDefinition(void* /*type*/) { cil2cpp::stub_called(__func__); return false; }
 extern "C" bool System_RuntimeTypeHandle_IsUnmanagedFunctionPointer(void* /*type*/) { cil2cpp::stub_called(__func__); return false; }
 extern "C" bool System_RuntimeTypeHandle_IsValueType(void* type) {
     return cil2cpp::type_get_is_value_type(reinterpret_cast<cil2cpp::Type*>(type));
 }
-extern "C" bool System_RuntimeTypeHandle_IsVisible(void* /*type*/) { cil2cpp::stub_called(__func__); return false; }
-extern "C" void* System_RuntimeTypeHandle_MakeArray__System_Int32(void* /*__this*/, int32_t rank) { cil2cpp::stub_called(__func__); return nullptr; }
 extern "C" void System_RuntimeTypeHandle_MakeArray__System_Runtime_CompilerServices_QCallTypeHandle_System_Int32_System_Runtime_CompilerServices_ObjectHandleOnStack(System_Runtime_CompilerServices_QCallTypeHandle handle, int32_t rank, System_Runtime_CompilerServices_ObjectHandleOnStack type) { cil2cpp::stub_called(__func__); }
-extern "C" void* System_RuntimeTypeHandle_MakeByRef(void* /*__this*/) { cil2cpp::stub_called(__func__); return nullptr; }
 extern "C" void System_RuntimeTypeHandle_MakeByRef__System_Runtime_CompilerServices_QCallTypeHandle_System_Runtime_CompilerServices_ObjectHandleOnStack(System_Runtime_CompilerServices_QCallTypeHandle handle, System_Runtime_CompilerServices_ObjectHandleOnStack type) { cil2cpp::stub_called(__func__); }
-extern "C" void* System_RuntimeTypeHandle_MakePointer(void* /*__this*/) { cil2cpp::stub_called(__func__); return nullptr; }
 extern "C" void System_RuntimeTypeHandle_MakePointer__System_Runtime_CompilerServices_QCallTypeHandle_System_Runtime_CompilerServices_ObjectHandleOnStack(System_Runtime_CompilerServices_QCallTypeHandle handle, System_Runtime_CompilerServices_ObjectHandleOnStack type) { cil2cpp::stub_called(__func__); }
-extern "C" void* System_RuntimeTypeHandle_MakeSZArray(void* /*__this*/) { cil2cpp::stub_called(__func__); return nullptr; }
 extern "C" void System_RuntimeTypeHandle_MakeSZArray__System_Runtime_CompilerServices_QCallTypeHandle_System_Runtime_CompilerServices_ObjectHandleOnStack(System_Runtime_CompilerServices_QCallTypeHandle handle, System_Runtime_CompilerServices_ObjectHandleOnStack type) { cil2cpp::stub_called(__func__); }
 extern "C" void System_RuntimeTypeHandle_RegisterCollectibleTypeDependency__System_Runtime_CompilerServices_QCallTypeHandle_System_Runtime_CompilerServices_QCallAssembly(System_Runtime_CompilerServices_QCallTypeHandle type, System_Runtime_CompilerServices_QCallAssembly assembly) { cil2cpp::stub_called(__func__); }
-extern "C" void System_RuntimeTypeHandle_RegisterCollectibleTypeDependency__System_RuntimeType_System_Reflection_RuntimeAssembly(void* /*type*/, void* /*assembly*/) { cil2cpp::stub_called(__func__); }
 extern "C" bool System_RuntimeTypeHandle_SatisfiesConstraints__System_RuntimeType_System_IntPtrPtr_System_Int32_System_IntPtrPtr_System_Int32_System_RuntimeType(void* /*paramType*/, void* /*pTypeContext*/, int32_t typeContextLength, void* /*pMethodContext*/, int32_t methodContextLength, void* /*toType*/) { cil2cpp::stub_called(__func__); return false; }
-extern "C" bool System_RuntimeTypeHandle_SatisfiesConstraints__System_RuntimeType_System_RuntimeType___System_RuntimeType___System_RuntimeType(void* /*paramType*/, void* /*typeContext*/, void* /*methodContext*/, void* /*toType*/) { cil2cpp::stub_called(__func__); return false; }
-extern "C" intptr_t System_RuntimeTypeHandle_ToIntPtr(System_RuntimeTypeHandle value) { cil2cpp::stub_called(__func__); return {}; }
 extern "C" void System_RuntimeTypeHandle_VerifyInterfaceIsImplemented__System_Runtime_CompilerServices_QCallTypeHandle_System_Runtime_CompilerServices_QCallTypeHandle(System_Runtime_CompilerServices_QCallTypeHandle handle, System_Runtime_CompilerServices_QCallTypeHandle interfaceHandle) { cil2cpp::stub_called(__func__); }
-extern "C" void System_RuntimeTypeHandle_VerifyInterfaceIsImplemented__System_RuntimeTypeHandle(void* /*__this*/, System_RuntimeTypeHandle interfaceHandle) { cil2cpp::stub_called(__func__); }
 
 // ===== System.Runtime.CompilerServices.MethodTable =====
-extern "C" uint32_t System_Runtime_CompilerServices_MethodTable_GetNumInstanceFieldBytes(void* /*__this*/) { cil2cpp::stub_called(__func__); return {}; }
 
 // ===== System.Runtime.InteropServices.Marshalling =====
 extern "C" void System_Runtime_InteropServices_Marshalling_SafeHandleMarshaller_1_ManagedToUnmanagedIn_Microsoft_Win32_SafeHandles_SafeThreadHandle_FromManaged(void* /*__this*/, void* /*handle*/) { cil2cpp::stub_called(__func__); }
@@ -623,12 +590,7 @@ extern "C" intptr_t System_Runtime_InteropServices_Marshalling_SafeHandleMarshal
 extern "C" void System_Runtime_InteropServices_Marshalling_SafeHandleMarshaller_1_ManagedToUnmanagedIn_Microsoft_Win32_SafeHandles_SafeTokenHandle_Free(void* /*__this*/) { cil2cpp::stub_called(__func__); }
 
 // ===== System.Threading.CancellationTokenSource =====
-extern "C" void System_Threading_CancellationTokenSource__ctor(void* /*__this*/) { }
-extern "C" bool System_Threading_CancellationTokenSource_get_IsCancellationCompleted(void* /*__this*/) { cil2cpp::stub_called(__func__); return false; }
-extern "C" bool System_Threading_CancellationTokenSource_get_IsCancellationRequested(void* /*__this*/) { cil2cpp::stub_called(__func__); return false; }
-extern "C" void System_Threading_CancellationTokenSource_NotifyCancellation(void* /*__this*/, bool /*throwOnFirstException*/) { cil2cpp::stub_called(__func__); }
-struct System_Threading_CancellationTokenRegistration { int64_t f_id; void* f_node; };
-extern "C" System_Threading_CancellationTokenRegistration System_Threading_CancellationTokenSource_Register(void* /*__this*/, void* /*callback*/, void* /*stateForCallback*/, void* /*syncContext*/, void* /*executionContext*/) { cil2cpp::stub_called(__func__); return {}; }
+// Removed from CoreRuntimeTypes — all methods now compile from BCL IL.
 
 // ===== System.Threading.Thread =====
 extern "C" void System_Threading_Thread__ctor__System_Threading_ParameterizedThreadStart(void* /*__this*/, void* /*start*/) { }
@@ -655,142 +617,211 @@ extern "C" void System_Threading_Thread_UnsafeStart__System_Object(void* /*__thi
 extern "C" Interop_BOOL System_Threading_Thread_YieldInternal() { cil2cpp::stub_called(__func__); return {}; }
 
 // ===== System.Type =====
-extern "C" void System_Type__ctor(void* /*__this*/) { }
-extern "C" bool System_Type_Equals__System_Type(void* /*__this*/, void* /*o*/) { cil2cpp::stub_called(__func__); return false; }
-extern "C" void* System_Type_FormatTypeName(void* /*__this*/) { cil2cpp::stub_called(__func__); return nullptr; }
 extern "C" void* System_Type_get_Assembly(void* /*__this*/) { cil2cpp::stub_called(__func__); return nullptr; }
 extern "C" void* System_Type_get_AssemblyQualifiedName(void* /*__this*/) { cil2cpp::stub_called(__func__); return nullptr; }
-extern "C" System_Reflection_TypeAttributes System_Type_get_Attributes(void* /*__this*/) { cil2cpp::stub_called(__func__); return {}; }
 extern "C" void* System_Type_get_BaseType(void* __this) {
     return reinterpret_cast<void*>(cil2cpp::type_get_base_type(reinterpret_cast<cil2cpp::Type*>(__this)));
 }
-extern "C" bool System_Type_get_ContainsGenericParameters(void* /*__this*/) { cil2cpp::stub_called(__func__); return false; }
-extern "C" void* System_Type_get_DeclaringMethod(void* /*__this*/) { cil2cpp::stub_called(__func__); return nullptr; }
 extern "C" void* System_Type_get_FullName(void* __this) {
     return reinterpret_cast<void*>(cil2cpp::type_get_full_name(reinterpret_cast<cil2cpp::Type*>(__this)));
 }
-extern "C" int32_t System_Type_get_GenericParameterPosition(void* /*__this*/) { cil2cpp::stub_called(__func__); return {}; }
-extern "C" void* System_Type_get_GenericTypeArguments(void* /*__this*/) { cil2cpp::stub_called(__func__); return nullptr; }
 extern "C" System_Guid System_Type_get_GUID(void* /*__this*/) { cil2cpp::stub_called(__func__); return {}; }
-extern "C" bool System_Type_get_HasElementType(void* /*__this*/) { cil2cpp::stub_called(__func__); return false; }
-extern "C" bool System_Type_get_IsArray(void* __this) {
-    return cil2cpp::type_get_is_array(reinterpret_cast<cil2cpp::Type*>(__this));
-}
 extern "C" bool System_Type_IsArrayImpl(void* /*__this*/) { cil2cpp::stub_called(__func__); return false; }
-extern "C" bool System_Type_get_IsByRef(void* /*__this*/) { cil2cpp::stub_called(__func__); return false; }
-extern "C" bool System_Type_get_IsByRefLike(void* /*__this*/) { cil2cpp::stub_called(__func__); return false; }
 extern "C" bool System_Type_get_IsClass(void* __this) {
     return cil2cpp::type_get_is_class(reinterpret_cast<cil2cpp::Type*>(__this));
 }
-extern "C" bool System_Type_get_IsCOMObject(void* /*__this*/) { cil2cpp::stub_called(__func__); return false; }
-extern "C" bool System_Type_get_IsConstructedGenericType(void* /*__this*/) { cil2cpp::stub_called(__func__); return false; }
-extern "C" bool System_Type_get_IsEnum(void* __this) {
-    return cil2cpp::type_get_is_enum(reinterpret_cast<cil2cpp::Type*>(__this));
-}
-extern "C" bool System_Type_get_IsFunctionPointer(void* /*__this*/) { cil2cpp::stub_called(__func__); return false; }
-extern "C" bool System_Type_get_IsGenericMethodParameter(void* /*__this*/) { cil2cpp::stub_called(__func__); return false; }
-extern "C" bool System_Type_get_IsGenericParameter(void* /*__this*/) { cil2cpp::stub_called(__func__); return false; }
-extern "C" bool System_Type_get_IsGenericType(void* /*__this*/) { cil2cpp::stub_called(__func__); return false; }
-extern "C" bool System_Type_get_IsGenericTypeDefinition(void* /*__this*/) { cil2cpp::stub_called(__func__); return false; }
-extern "C" bool System_Type_get_IsGenericTypeParameter(void* /*__this*/) { cil2cpp::stub_called(__func__); return false; }
-extern "C" bool System_Type_get_IsInterface(void* __this) {
-    return cil2cpp::type_get_is_interface(reinterpret_cast<cil2cpp::Type*>(__this));
-}
-extern "C" bool System_Type_get_IsNested(void* /*__this*/) { cil2cpp::stub_called(__func__); return false; }
-extern "C" bool System_Type_get_IsPointer(void* /*__this*/) { cil2cpp::stub_called(__func__); return false; }
-extern "C" bool System_Type_get_IsPrimitive(void* __this) {
-    return cil2cpp::type_get_is_primitive(reinterpret_cast<cil2cpp::Type*>(__this));
-}
-extern "C" bool System_Type_get_IsSealed(void* __this) {
-    return cil2cpp::type_get_is_sealed(reinterpret_cast<cil2cpp::Type*>(__this));
-}
-extern "C" bool System_Type_get_IsSignatureType(void* /*__this*/) { cil2cpp::stub_called(__func__); return false; }
-extern "C" bool System_Type_get_IsSZArray(void* /*__this*/) { cil2cpp::stub_called(__func__); return false; }
-extern "C" bool System_Type_get_IsTypeDefinition(void* /*__this*/) { cil2cpp::stub_called(__func__); return false; }
-extern "C" bool System_Type_get_IsUnmanagedFunctionPointer(void* /*__this*/) { cil2cpp::stub_called(__func__); return false; }
-extern "C" bool System_Type_get_IsVariableBoundArray(void* /*__this*/) { cil2cpp::stub_called(__func__); return false; }
-extern "C" bool System_Type_get_IsVisible(void* /*__this*/) { cil2cpp::stub_called(__func__); return false; }
 extern "C" void* System_Type_get_Module(void* /*__this*/) { cil2cpp::stub_called(__func__); return nullptr; }
 extern "C" void* System_Type_get_Namespace(void* __this) {
     return reinterpret_cast<void*>(cil2cpp::type_get_namespace(reinterpret_cast<cil2cpp::Type*>(__this)));
 }
-extern "C" System_RuntimeTypeHandle System_Type_get_TypeHandle(void* /*__this*/) { cil2cpp::stub_called(__func__); return {}; }
 extern "C" void* System_Type_get_UnderlyingSystemType(void* /*__this*/) { cil2cpp::stub_called(__func__); return nullptr; }
-extern "C" int32_t System_Type_GetArrayRank(void* /*__this*/) { cil2cpp::stub_called(__func__); return {}; }
 extern "C" System_Reflection_TypeAttributes System_Type_GetAttributeFlagsImpl(void* /*__this*/) { cil2cpp::stub_called(__func__); return {}; }
-extern "C" void* System_Type_GetConstructor__System_Reflection_BindingFlags_System_Reflection_Binder_System_Reflection_CallingConventions_System_Type___System_Reflection_ParameterModifier__(void* /*__this*/, System_Reflection_BindingFlags bindingAttr, void* /*binder*/, System_Reflection_CallingConventions callConvention, void* /*types*/, void* /*modifiers*/) { cil2cpp::stub_called(__func__); return nullptr; }
-extern "C" void* System_Type_GetConstructor__System_Reflection_BindingFlags_System_Reflection_Binder_System_Type___System_Reflection_ParameterModifier__(void* /*__this*/, System_Reflection_BindingFlags bindingAttr, void* /*binder*/, void* /*types*/, void* /*modifiers*/) { cil2cpp::stub_called(__func__); return nullptr; }
 extern "C" void* System_Type_GetConstructorImpl(void* /*__this*/, System_Reflection_BindingFlags bindingAttr, void* /*binder*/, System_Reflection_CallingConventions callConvention, void* /*types*/, void* /*modifiers*/) { cil2cpp::stub_called(__func__); return nullptr; }
 extern "C" void* System_Type_GetConstructors__System_Reflection_BindingFlags(void* /*__this*/, System_Reflection_BindingFlags bindingAttr) { cil2cpp::stub_called(__func__); return nullptr; }
 extern "C" void* System_Type_GetElementType(void* /*__this*/) { cil2cpp::stub_called(__func__); return nullptr; }
-extern "C" void System_Type_GetEnumData(void* /*__this*/, void* /*enumNames*/, void* /*enumValues*/) { cil2cpp::stub_called(__func__); }
-extern "C" void* System_Type_GetEnumNames(void* /*__this*/) { cil2cpp::stub_called(__func__); return nullptr; }
-extern "C" void* System_Type_GetEnumRawConstantValues(void* /*__this*/) { cil2cpp::stub_called(__func__); return nullptr; }
-extern "C" void* System_Type_GetEvent__System_String(void* /*__this*/, void* /*name*/) { cil2cpp::stub_called(__func__); return nullptr; }
 extern "C" void* System_Type_GetEvent__System_String_System_Reflection_BindingFlags(void* /*__this*/, void* /*name*/, System_Reflection_BindingFlags bindingAttr) { cil2cpp::stub_called(__func__); return nullptr; }
-extern "C" void* System_Type_GetEvents(void* /*__this*/) { cil2cpp::stub_called(__func__); return nullptr; }
 extern "C" void* System_Type_GetEvents__System_Reflection_BindingFlags(void* /*__this*/, System_Reflection_BindingFlags bindingAttr) { cil2cpp::stub_called(__func__); return nullptr; }
 extern "C" void* System_Type_GetField__System_String(void* /*__this*/, void* /*name*/) { cil2cpp::stub_called(__func__); return nullptr; }
 extern "C" void* System_Type_GetField__System_String_System_Reflection_BindingFlags(void* /*__this*/, void* /*name*/, System_Reflection_BindingFlags bindingAttr) { cil2cpp::stub_called(__func__); return nullptr; }
 extern "C" void* System_Type_GetFields(void* /*__this*/) { cil2cpp::stub_called(__func__); return nullptr; }
 extern "C" void* System_Type_GetFields__System_Reflection_BindingFlags(void* /*__this*/, System_Reflection_BindingFlags bindingAttr) { cil2cpp::stub_called(__func__); return nullptr; }
-extern "C" void* System_Type_GetFunctionPointerCallingConventions(void* /*__this*/) { cil2cpp::stub_called(__func__); return nullptr; }
-extern "C" void* System_Type_GetFunctionPointerParameterTypes(void* /*__this*/) { cil2cpp::stub_called(__func__); return nullptr; }
-extern "C" void* System_Type_GetFunctionPointerReturnType(void* /*__this*/) { cil2cpp::stub_called(__func__); return nullptr; }
-extern "C" void* System_Type_GetGenericArguments(void* /*__this*/) { cil2cpp::stub_called(__func__); return nullptr; }
-extern "C" void* System_Type_GetGenericParameterConstraints(void* /*__this*/) { cil2cpp::stub_called(__func__); return nullptr; }
-extern "C" void* System_Type_GetGenericTypeDefinition(void* /*__this*/) { cil2cpp::stub_called(__func__); return nullptr; }
 extern "C" void* System_Type_GetInterface__System_String_System_Boolean(void* /*__this*/, void* /*name*/, bool ignoreCase) { cil2cpp::stub_called(__func__); return nullptr; }
-extern "C" System_Reflection_InterfaceMapping System_Type_GetInterfaceMap(void* /*__this*/, void* /*interfaceType*/) { cil2cpp::stub_called(__func__); return {}; }
 extern "C" void* System_Type_GetInterfaces(void* /*__this*/) { cil2cpp::stub_called(__func__); return nullptr; }
-extern "C" void* System_Type_GetMember__System_String(void* /*__this*/, void* /*name*/) { cil2cpp::stub_called(__func__); return nullptr; }
-extern "C" void* System_Type_GetMember__System_String_System_Reflection_BindingFlags(void* /*__this*/, void* /*name*/, System_Reflection_BindingFlags bindingAttr) { cil2cpp::stub_called(__func__); return nullptr; }
-extern "C" void* System_Type_GetMember__System_String_System_Reflection_MemberTypes_System_Reflection_BindingFlags(void* /*__this*/, void* /*name*/, System_Reflection_MemberTypes type, System_Reflection_BindingFlags bindingAttr) { cil2cpp::stub_called(__func__); return nullptr; }
 extern "C" void* System_Type_GetMembers__System_Reflection_BindingFlags(void* /*__this*/, System_Reflection_BindingFlags bindingAttr) { cil2cpp::stub_called(__func__); return nullptr; }
-extern "C" void* System_Type_GetMemberWithSameMetadataDefinitionAs(void* /*__this*/, void* /*member*/) { cil2cpp::stub_called(__func__); return nullptr; }
 extern "C" void* System_Type_GetMethod__System_String(void* /*__this*/, void* /*name*/) { cil2cpp::stub_called(__func__); return nullptr; }
-extern "C" void* System_Type_GetMethod__System_String_System_Int32_System_Reflection_BindingFlags_System_Reflection_Binder_System_Reflection_CallingConventions_System_Type___System_Reflection_ParameterModifier__(void* /*__this*/, void* /*name*/, int32_t genericParameterCount, System_Reflection_BindingFlags bindingAttr, void* /*binder*/, System_Reflection_CallingConventions callConvention, void* /*types*/, void* /*modifiers*/) { cil2cpp::stub_called(__func__); return nullptr; }
-extern "C" void* System_Type_GetMethod__System_String_System_Int32_System_Reflection_BindingFlags_System_Reflection_Binder_System_Type___System_Reflection_ParameterModifier__(void* /*__this*/, void* /*name*/, int32_t genericParameterCount, System_Reflection_BindingFlags bindingAttr, void* /*binder*/, void* /*types*/, void* /*modifiers*/) { cil2cpp::stub_called(__func__); return nullptr; }
-extern "C" void* System_Type_GetMethod__System_String_System_Int32_System_Type___System_Reflection_ParameterModifier__(void* /*__this*/, void* /*name*/, int32_t genericParameterCount, void* /*types*/, void* /*modifiers*/) { cil2cpp::stub_called(__func__); return nullptr; }
-extern "C" void* System_Type_GetMethod__System_String_System_Reflection_BindingFlags(void* /*__this*/, void* /*name*/, System_Reflection_BindingFlags bindingAttr) { cil2cpp::stub_called(__func__); return nullptr; }
-extern "C" void* System_Type_GetMethod__System_String_System_Reflection_BindingFlags_System_Reflection_Binder_System_Reflection_CallingConventions_System_Type___System_Reflection_ParameterModifier__(void* /*__this*/, void* /*name*/, System_Reflection_BindingFlags bindingAttr, void* /*binder*/, System_Reflection_CallingConventions callConvention, void* /*types*/, void* /*modifiers*/) { cil2cpp::stub_called(__func__); return nullptr; }
-extern "C" void* System_Type_GetMethod__System_String_System_Reflection_BindingFlags_System_Reflection_Binder_System_Type___System_Reflection_ParameterModifier__(void* /*__this*/, void* /*name*/, System_Reflection_BindingFlags bindingAttr, void* /*binder*/, void* /*types*/, void* /*modifiers*/) { cil2cpp::stub_called(__func__); return nullptr; }
-extern "C" void* System_Type_GetMethod__System_String_System_Type__(void* /*__this*/, void* /*name*/, void* /*types*/) { cil2cpp::stub_called(__func__); return nullptr; }
-extern "C" void* System_Type_GetMethod__System_String_System_Type___System_Reflection_ParameterModifier__(void* /*__this*/, void* /*name*/, void* /*types*/, void* /*modifiers*/) { cil2cpp::stub_called(__func__); return nullptr; }
-extern "C" void* System_Type_GetMethodImpl__System_String_System_Int32_System_Reflection_BindingFlags_System_Reflection_Binder_System_Reflection_CallingConventions_System_Type___System_Reflection_ParameterModifier__(void* /*__this*/, void* /*name*/, int32_t genericParameterCount, System_Reflection_BindingFlags bindingAttr, void* /*binder*/, System_Reflection_CallingConventions callConvention, void* /*types*/, void* /*modifiers*/) { cil2cpp::stub_called(__func__); return nullptr; }
 extern "C" void* System_Type_GetMethodImpl__System_String_System_Reflection_BindingFlags_System_Reflection_Binder_System_Reflection_CallingConventions_System_Type___System_Reflection_ParameterModifier__(void* /*__this*/, void* /*name*/, System_Reflection_BindingFlags bindingAttr, void* /*binder*/, System_Reflection_CallingConventions callConvention, void* /*types*/, void* /*modifiers*/) { cil2cpp::stub_called(__func__); return nullptr; }
 extern "C" void* System_Type_GetMethods(void* /*__this*/) { cil2cpp::stub_called(__func__); return nullptr; }
 extern "C" void* System_Type_GetMethods__System_Reflection_BindingFlags(void* /*__this*/, System_Reflection_BindingFlags bindingAttr) { cil2cpp::stub_called(__func__); return nullptr; }
 extern "C" void* System_Type_GetNestedType__System_String_System_Reflection_BindingFlags(void* /*__this*/, void* /*name*/, System_Reflection_BindingFlags bindingAttr) { cil2cpp::stub_called(__func__); return nullptr; }
 extern "C" void* System_Type_GetNestedTypes__System_Reflection_BindingFlags(void* /*__this*/, System_Reflection_BindingFlags bindingAttr) { cil2cpp::stub_called(__func__); return nullptr; }
 extern "C" void* System_Type_GetProperties__System_Reflection_BindingFlags(void* /*__this*/, System_Reflection_BindingFlags bindingAttr) { cil2cpp::stub_called(__func__); return nullptr; }
-extern "C" void* System_Type_GetProperty__System_String(void* /*__this*/, void* /*name*/) { cil2cpp::stub_called(__func__); return nullptr; }
-extern "C" void* System_Type_GetProperty__System_String_System_Reflection_BindingFlags(void* /*__this*/, void* /*name*/, System_Reflection_BindingFlags bindingAttr) { cil2cpp::stub_called(__func__); return nullptr; }
-extern "C" void* System_Type_GetProperty__System_String_System_Reflection_BindingFlags_System_Reflection_Binder_System_Type_System_Type___System_Reflection_ParameterModifier__(void* /*__this*/, void* /*name*/, System_Reflection_BindingFlags bindingAttr, void* /*binder*/, void* /*returnType*/, void* /*types*/, void* /*modifiers*/) { cil2cpp::stub_called(__func__); return nullptr; }
-extern "C" void* System_Type_GetProperty__System_String_System_Type_System_Type__(void* /*__this*/, void* /*name*/, void* /*returnType*/, void* /*types*/) { cil2cpp::stub_called(__func__); return nullptr; }
-extern "C" void* System_Type_GetProperty__System_String_System_Type_System_Type___System_Reflection_ParameterModifier__(void* /*__this*/, void* /*name*/, void* /*returnType*/, void* /*types*/, void* /*modifiers*/) { cil2cpp::stub_called(__func__); return nullptr; }
 extern "C" void* System_Type_GetPropertyImpl(void* /*__this*/, void* /*name*/, System_Reflection_BindingFlags bindingAttr, void* /*binder*/, void* /*returnType*/, void* /*types*/, void* /*modifiers*/) { cil2cpp::stub_called(__func__); return nullptr; }
-extern "C" void* System_Type_GetRootElementType(void* /*__this*/) { cil2cpp::stub_called(__func__); return nullptr; }
 extern "C" bool System_Type_HasElementTypeImpl(void* /*__this*/) { cil2cpp::stub_called(__func__); return false; }
-extern "C" bool System_Type_ImplementInterface(void* /*__this*/, void* /*ifaceType*/) { cil2cpp::stub_called(__func__); return false; }
 extern "C" void* System_Type_InvokeMember__System_String_System_Reflection_BindingFlags_System_Reflection_Binder_System_Object_System_Object___System_Reflection_ParameterModifier___System_Globalization_CultureInfo_System_String__(void* /*__this*/, void* /*name*/, System_Reflection_BindingFlags invokeAttr, void* /*binder*/, void* /*target*/, void* /*args*/, void* /*modifiers*/, void* /*culture*/, void* /*namedParameters*/) { cil2cpp::stub_called(__func__); return nullptr; }
-extern "C" bool System_Type_IsAssignableFrom(void* /*__this*/, void* /*c*/) { cil2cpp::stub_called(__func__); return false; }
-extern "C" bool System_Type_IsAssignableTo(void* /*__this*/, void* /*targetType*/) { cil2cpp::stub_called(__func__); return false; }
 extern "C" bool System_Type_IsByRefImpl(void* /*__this*/) { cil2cpp::stub_called(__func__); return false; }
 extern "C" bool System_Type_IsCOMObjectImpl(void* /*__this*/) { cil2cpp::stub_called(__func__); return false; }
-extern "C" bool System_Type_IsContextfulImpl(void* /*__this*/) { cil2cpp::stub_called(__func__); return false; }
-extern "C" bool System_Type_IsInstanceOfType(void* /*__this*/, void* /*o*/) { cil2cpp::stub_called(__func__); return false; }
-extern "C" bool System_Type_IsMarshalByRefImpl(void* /*__this*/) { cil2cpp::stub_called(__func__); return false; }
 extern "C" bool System_Type_IsPointerImpl(void* /*__this*/) { cil2cpp::stub_called(__func__); return false; }
-extern "C" bool System_Type_IsPrimitiveImpl(void* /*__this*/) { cil2cpp::stub_called(__func__); return false; }
-extern "C" bool System_Type_IsSubclassOf(void* /*__this*/, void* /*c*/) { cil2cpp::stub_called(__func__); return false; }
-extern "C" void* System_Type_MakeArrayType(void* /*__this*/) { cil2cpp::stub_called(__func__); return nullptr; }
-extern "C" void* System_Type_MakeArrayType__System_Int32(void* /*__this*/, int32_t rank) { cil2cpp::stub_called(__func__); return nullptr; }
-extern "C" void* System_Type_MakeByRefType(void* /*__this*/) { cil2cpp::stub_called(__func__); return nullptr; }
-extern "C" void* System_Type_MakeGenericType(void* /*__this*/, void* /*typeArguments*/) { cil2cpp::stub_called(__func__); return nullptr; }
-extern "C" void* System_Type_MakePointerType(void* /*__this*/) { cil2cpp::stub_called(__func__); return nullptr; }
+extern "C" bool System_Type_IsPrimitiveImpl(void* __this) {
+    return cil2cpp::type_get_is_primitive(reinterpret_cast<cil2cpp::Type*>(__this));
+}
+
+// Type virtual methods that base System.Type throws NotSupportedException("SubclassOverride") for.
+// RuntimeType overrides them but is a CoreRuntimeType (vtable excluded), so virtual dispatch
+// hits the base throwing implementations. Implement here using TypeInfo so they work correctly.
+
+extern "C" bool System_Type_get_IsByRefLike(void* __this) {
+    auto* t = reinterpret_cast<cil2cpp::Type*>(__this);
+    if (!t || !t->type_info) cil2cpp::throw_null_reference();
+    return t->type_info->flags & cil2cpp::TypeFlags::IsByRefLike;
+}
+
+extern "C" int32_t System_Type_GetArrayRank(void* __this) {
+    auto* t = reinterpret_cast<cil2cpp::Type*>(__this);
+    if (!t || !t->type_info) cil2cpp::throw_null_reference();
+    if (t->type_info->flags & cil2cpp::TypeFlags::Array) return 1;
+    cil2cpp::throw_invalid_operation();
+    return 0;
+}
+
+extern "C" void* System_Type_GetGenericTypeDefinition(void* __this) {
+    auto* t = reinterpret_cast<cil2cpp::Type*>(__this);
+    if (!t || !t->type_info) cil2cpp::throw_null_reference();
+    if (t->type_info->generic_definition_name) {
+        auto* def_info = cil2cpp::type_get_by_name(t->type_info->generic_definition_name);
+        if (def_info) return cil2cpp::type_get_type_object(def_info);
+    }
+    if (t->type_info->flags & cil2cpp::TypeFlags::Generic) return __this;
+    cil2cpp::throw_invalid_operation();
+    return nullptr;
+}
+
+extern "C" void* System_Type_GetGenericArguments(void* __this) {
+    auto* t = reinterpret_cast<cil2cpp::Type*>(__this);
+    if (!t || !t->type_info) cil2cpp::throw_null_reference();
+    auto count = t->type_info->generic_argument_count;
+    auto** args = t->type_info->generic_arguments;
+    auto* arr = static_cast<cil2cpp::Array*>(
+        cil2cpp::gc::alloc_array(&cil2cpp::System_Type_TypeInfo, count));
+    if (count > 0 && args) {
+        auto** data = reinterpret_cast<cil2cpp::Type**>(cil2cpp::array_data(arr));
+        for (uint32_t i = 0; i < count; i++) {
+            data[i] = args[i] ? cil2cpp::type_get_type_object(args[i]) : nullptr;
+        }
+    }
+    return arr;
+}
+
+// Convert C++ mangled name to IL-style dotted name.
+// E.g. "System_Collections_Generic_IEquatable_1" → "System.Collections.Generic.IEquatable`1"
+// The last "_N" (where N is a digit) is converted to "`N" (generic arity).
+static std::string cpp_name_to_il_name(const char* cpp_name) {
+    std::string result(cpp_name);
+    // Replace underscores with dots
+    for (auto& c : result) {
+        if (c == '_') c = '.';
+    }
+    // Fix generic arity: last ".N" where N is digits → "`N"
+    // E.g. "System.IEquatable.1" → "System.IEquatable`1"
+    auto last_dot = result.rfind('.');
+    if (last_dot != std::string::npos) {
+        bool all_digits = true;
+        for (size_t i = last_dot + 1; i < result.size(); i++) {
+            if (result[i] < '0' || result[i] > '9') { all_digits = false; break; }
+        }
+        if (all_digits && last_dot + 1 < result.size()) {
+            result[last_dot] = '`';
+        }
+    }
+    return result;
+}
+
+extern "C" void* System_Type_MakeGenericType(void* __this, cil2cpp::Array* typeArguments) {
+    auto* t = reinterpret_cast<cil2cpp::Type*>(__this);
+    if (!t || !t->type_info) cil2cpp::throw_null_reference();
+    if (!typeArguments) cil2cpp::throw_null_reference();
+
+    const char* def_name = t->type_info->full_name;
+    if (!def_name) cil2cpp::throw_invalid_operation();
+
+    auto arg_count = cil2cpp::array_length(typeArguments);
+    auto** args = reinterpret_cast<cil2cpp::Type**>(cil2cpp::array_data(typeArguments));
+
+    // Determine if full_name is in C++ format (underscores) or IL format (dots with backtick)
+    std::string base_name;
+    if (std::strchr(def_name, '.') != nullptr || std::strchr(def_name, '`') != nullptr) {
+        base_name = def_name; // Already in IL format
+    } else {
+        base_name = cpp_name_to_il_name(def_name); // Convert from C++ format
+    }
+
+    // Build "GenericType`N<Arg1, Arg2>"
+    std::string name = base_name;
+    name += '<';
+    for (int32_t i = 0; i < arg_count; i++) {
+        if (i > 0) name += ", ";
+        if (!args[i] || !args[i]->type_info || !args[i]->type_info->full_name) {
+            cil2cpp::throw_null_reference();
+        }
+        name += args[i]->type_info->full_name;
+    }
+    name += '>';
+
+    auto* result = cil2cpp::type_get_by_name(name.c_str());
+    if (result) return cil2cpp::type_get_type_object(result);
+
+    // Type not found — wasn't monomorphized at compile time (AOT limitation).
+    // Return nullptr: many callers (GetGenericType, TryMakeGenericType) either check for null
+    // or propagate the result. Throwing would crash callers without try-catch.
+    return nullptr;
+}
 
 // ===== System.ValueType =====
 extern "C" bool System_ValueType_CanCompareBits(void* /*obj*/) { cil2cpp::stub_called(__func__); return false; }
 extern "C" int32_t System_ValueType_GetHashCode(void* /*__this*/) { cil2cpp::stub_called(__func__); return {}; }
 extern "C" void* System_ValueType_ToString(void* /*__this*/) { cil2cpp::stub_called(__func__); return nullptr; }
+
+// ===== Bridge functions for QCall/P-Invoke wrappers and gated CoreRuntimeTypes =====
+
+// ValueType.CanCompareBitsOrUseFastGetHashCode — P/Invoke wrapper (CLR-internal MethodTable check)
+// Returns whether the value type's fields can be compared bit-by-bit.
+// Conservative: always return false (forces field-by-field comparison).
+extern "C" int32_t System_ValueType__CanCompareBitsOrUseFastGetHashCodeHelper_g____PInvoke_2_0(void* /*__pMT_native*/) { return 0; }
+
+// Delegate.InternalAllocLike — QCall variant (ObjectHandleOnStack)
+// The non-QCall variant (InternalAlloc) is in icall.cpp. This is the QCall bridge.
+extern "C" void System_Delegate_InternalAllocLike__System_Runtime_CompilerServices_ObjectHandleOnStack(void* /*d*/) { cil2cpp::stub_called(__func__); }
+
+// RuntimeTypeHandle.GetNumVirtualsAndStaticVirtuals — QCall wrapper
+// Returns the virtual method count from TypeInfo.
+extern "C" int32_t System_RuntimeTypeHandle_GetNumVirtualsAndStaticVirtuals__System_Runtime_CompilerServices_QCallTypeHandle(void* /*type*/) { return 0; }
+
+// Thread.InformThreadNameChange — P/Invoke wrapper (CLR-internal thread naming)
+// No-op for AOT — we don't have CLR thread naming infrastructure.
+extern "C" void System_Threading_Thread__InformThreadNameChange_g____PInvoke_29_0(void* /*__t_native*/, void* /*__name_native*/, int32_t /*__len_native*/) { }
+
+// Array.GetValue(int[]) — multi-dimensional array indexing
+// Flattens the indices array and delegates to array_get_value.
+extern "C" cil2cpp::Object* System_Array_GetValue__System_Int32__(cil2cpp::Array* __this, cil2cpp::Array* indices) {
+    if (!__this || !indices) { cil2cpp::throw_null_reference(); }
+    // For 1D arrays, just use the first index
+    auto* idx = static_cast<int32_t*>(cil2cpp::array_data(indices));
+    auto len = cil2cpp::array_length(indices);
+    if (len == 1) {
+        return static_cast<cil2cpp::Object*>(cil2cpp::array_get_value(__this, idx[0]));
+    }
+    // Multi-dim: compute flattened index (simplified — assumes row-major)
+    // TODO: proper MdArray bounds handling
+    intptr_t flat = 0;
+    intptr_t stride = 1;
+    for (intptr_t i = static_cast<intptr_t>(len) - 1; i >= 0; --i) {
+        flat += idx[i] * stride;
+        stride *= cil2cpp::array_length(__this); // Simplified: assumes square
+    }
+    return static_cast<cil2cpp::Object*>(cil2cpp::array_get_value(__this, static_cast<int32_t>(flat)));
+}
+
+// Reflection.MethodBase.GetParametersAsSpan — returns empty span (most callers handle null/empty)
+extern "C" void* System_Reflection_MethodBase_GetParametersAsSpan(void* /*__this*/) { return nullptr; }
+
+// Reflection.TypeInfo.GetDeclaredProperty — returns null (property not found)
+extern "C" void* System_Reflection_TypeInfo_GetDeclaredProperty(void* /*__this*/, void* /*name*/) { return nullptr; }

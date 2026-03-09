@@ -1177,10 +1177,16 @@ public partial class CppCodeGenerator
             {
                 if (method.IsAbstract || method.IsInternalCall) continue;
                 if (method.BasicBlocks.Count == 0 && !method.IsPInvoke) continue;
-                if (method.IrStubReason != null) continue;
                 if (method.HasICallMapping) continue;
                 if (isSkippedType0) continue;
-                if (!method.IsStatic && IRBuilder.CoreRuntimeTypes.Contains(type.ILFullName)) continue;
+                // Mirror EmitMethodsForType: CoreRuntimeTypes methods with real compiled bodies
+                // (IrStubReason == null) are now emitted from IL — scan their callees.
+                if (!method.IsStatic && IRBuilder.CoreRuntimeTypes.Contains(type.ILFullName))
+                {
+                    if (ShouldKeepCoreRuntimeMethodGate(type, method))
+                        continue;
+                }
+                else if (method.IrStubReason != null) continue;
                 if (HasInvalidCppSignature(method)) continue;
                 if (HasGenericBodyTypeConflict(type, method)) continue;
 

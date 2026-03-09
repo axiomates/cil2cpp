@@ -166,6 +166,10 @@ Int32 Thread_GetPriorityNative(void* __this);
 void Thread_SetPriorityNative(void* __this, Int32 priority);
 Int32 Thread_get_ManagedThreadId(void* __this);
 void Thread_InternalFinalize(void* __this);
+void Thread_Join(void* __this);
+Boolean Thread_Join_Timeout(void* __this, Int32 timeout_ms);
+void Thread_Start(void* __this);
+void Thread_LongSpinWait(Int32 iterations);
 
 // System.Runtime.CompilerServices.RuntimeHelpers
 void RuntimeHelpers_InitializeArray(Object* array, void* fieldHandle);
@@ -306,6 +310,18 @@ bool Ascii_ContainsNonAsciiByte_Sse2(uint32_t sseMask);
 // The bool overload is used by scalar loop; Vector overloads unused (SIMD disabled).
 bool SpanHelpers_DontNegate_NegateIfNeeded(bool equals);
 bool SpanHelpers_Negate_NegateIfNeeded(bool equals);
+
+// System.Type property ICalls — wrapper functions that cast void* to Type*.
+Boolean Type_get_IsClass(void* thisPtr);
+void* Type_get_BaseType(void* thisPtr);
+void* Type_get_FullName(void* thisPtr);
+void* Type_get_Namespace(void* thisPtr);
+
+// RuntimeType.AllocateValueType: allocate a boxed value type.
+Object* RuntimeType_AllocateValueType(void* thisType, Object* value);
+
+// Satellite assemblies don't exist in AOT — always returns nullptr.
+void* RuntimeAssembly_InternalGetSatelliteAssembly(void* thisPtr, void* culture, void* version, bool throwOnFileNotFound);
 
 } // namespace icall
 

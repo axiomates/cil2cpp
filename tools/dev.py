@@ -517,6 +517,29 @@ def _get_dotnet_output(csproj_path):
     return r.stdout.strip()
 
 
+def _compare_output_with_skip(got, expected, skip_lines=None):
+    """Compare output line-by-line, skipping specified 0-based line indices.
+
+    Use this for tests where specific lines have non-deterministic output
+    (e.g., hash codes based on memory addresses).
+    """
+    got_lines = got.strip().split('\n')
+    exp_lines = expected.strip().split('\n')
+    if len(got_lines) != len(exp_lines):
+        raise RuntimeError(
+            f"Line count mismatch: got {len(got_lines)}, expected {len(exp_lines)}\n"
+            f"  Got:\n{got}\n  Expected:\n{expected}")
+    skip = skip_lines or set()
+    mismatches = []
+    for i, (g, e) in enumerate(zip(got_lines, exp_lines)):
+        if i in skip:
+            continue
+        if g.strip() != e.strip():
+            mismatches.append(f"  line {i+1}: got '{g.strip()}', expected '{e.strip()}'")
+    if mismatches:
+        raise RuntimeError("Output mismatch:\n" + "\n".join(mismatches))
+
+
 def cmd_integration(args):
     """Run integration tests — active projects: HelloWorld, ArrayTest, FeatureTest.
 
@@ -680,11 +703,18 @@ def cmd_integration(args):
     runner.step(f"CMake build ({config})", at_cmake_build)
     runner.step("Run and compare C++ vs .NET output", at_run_verify)
 
-    # ===== Phase 3: FeatureTest (codegen-only — comprehensive language features) =====
-    header("Phase 3: FeatureTest (codegen-only, 100+ language features)")
+    # ===== Phase 3: FeatureTest (100+ language features) =====
+    header("Phase 3: FeatureTest (100+ language features)")
 
     ft_sample = TESTPROJECTS_DIR / "FeatureTest" / "FeatureTest.csproj"
     ft_output = temp_dir / "featuretest_output"
+    ft_build = ft_output / "build"
+    dotnet_ft_output = ""
+
+    def ft_dotnet_run():
+        nonlocal dotnet_ft_output
+        dotnet_ft_output = _get_dotnet_output(ft_sample)
+        print(f"    .NET output: {repr(dotnet_ft_output[:200])}")
 
     def ft_codegen():
         run(["dotnet", "run", "--project", str(CLI_PROJECT), "--",
@@ -696,19 +726,38 @@ def cmd_integration(args):
                    "main.cpp", "CMakeLists.txt"]:
             if not (ft_output / f).exists():
                 raise RuntimeError(f"Missing: {f}")
+        if not list(ft_output.glob("FeatureTest_methods_*.cpp")):
+            raise RuntimeError("No FeatureTest_methods_*.cpp files found")
 
-    def ft_cpp_not_empty():
-        # Total source content across all generated files
-        all_src = "".join(f.read_text(encoding="utf-8", errors="replace")
-                          for f in sorted(ft_output.glob("FeatureTest_*.cpp")))
-        if len(all_src) < 100000:
-            raise RuntimeError(f"FeatureTest source files unexpectedly small: {len(all_src)} bytes")
-        if "Program_Main" not in all_src:
-            raise RuntimeError("Entry point Program_Main not found in FeatureTest source files")
+    def ft_cmake_configure():
+        run(["cmake", "-B", str(ft_build), "-S", str(ft_output),
+             "-G", generator, *cmake_arch,
+             f"-DCMAKE_PREFIX_PATH={runtime_prefix}"],
+            capture=True)
 
+    def ft_cmake_build():
+        run(["cmake", "--build", str(ft_build), "--config", config],
+            capture=True)
+
+    def ft_run_verify():
+        exe = _exe_path(ft_build, config, "FeatureTest")
+        if not exe.exists():
+            raise RuntimeError(f"Executable not found: {exe}")
+        r = subprocess.run([str(exe)], capture_output=True, text=True, check=False,
+                           encoding="utf-8", errors="replace", timeout=60)
+        if r.returncode != 0:
+            raise RuntimeError(f"FeatureTest exited with code {r.returncode}\nstderr: {r.stderr}")
+        got = r.stdout.strip()
+        # Lines 41 and 100 (0-based: 40, 99) contain Object.GetHashCode() values
+        # which are address-based and non-deterministic — skip them.
+        _compare_output_with_skip(got, dotnet_ft_output, skip_lines={40, 99})
+
+    runner.step("Get .NET reference output", ft_dotnet_run)
     runner.step("Codegen FeatureTest", ft_codegen)
     runner.step("Generated files exist", ft_files_exist)
-    runner.step("FeatureTest source files have entry point and are substantial", ft_cpp_not_empty)
+    runner.step("CMake configure", ft_cmake_configure)
+    runner.step(f"CMake build ({config})", ft_cmake_build)
+    runner.step("Run and compare C++ vs .NET output", ft_run_verify)
 
     # ===== Phase 4: ArglistTest (varargs + TypedReference) =====
     header("Phase 4: ArglistTest (varargs, mkrefany, refanyval)")
@@ -934,8 +983,81 @@ def cmd_integration(args):
     runner.step(f"CMake build ({config})", fst_cmake_build)
     runner.step("Run and compare C++ vs .NET output", fst_run_verify)
 
+    # ===== Phase 8: SocketTest (TCP sockets, DNS) =====
+    header("Phase 8: SocketTest (TCP sockets, DNS)")
+
+    sk_sample = TESTPROJECTS_DIR / "SocketTest" / "SocketTest.csproj"
+    sk_output = temp_dir / "sockettest_output"
+    sk_build = sk_output / "build"
+    dotnet_sk_output = ""
+
+    def sk_dotnet_run():
+        nonlocal dotnet_sk_output
+        dotnet_sk_output = _get_dotnet_output(sk_sample)
+        print(f"    .NET output: {repr(dotnet_sk_output[:200])}")
+
+    def sk_codegen():
+        run(["dotnet", "run", "--project", str(CLI_PROJECT), "--",
+             "codegen", "-i", str(sk_sample), "-o", str(sk_output)],
+            capture=True)
+
+    def sk_files_exist():
+        for f in ["SocketTest.h", "SocketTest_data.cpp", "SocketTest_stubs.cpp",
+                   "main.cpp", "CMakeLists.txt"]:
+            if not (sk_output / f).exists():
+                raise RuntimeError(f"Missing: {f}")
+        if not list(sk_output.glob("SocketTest_methods_*.cpp")):
+            raise RuntimeError("No SocketTest_methods_*.cpp files found")
+
+    def sk_cmake_configure():
+        run(["cmake", "-B", str(sk_build), "-S", str(sk_output),
+             "-G", generator, *cmake_arch,
+             f"-DCMAKE_PREFIX_PATH={runtime_prefix}"],
+            capture=True)
+
+    def sk_cmake_build():
+        run(["cmake", "--build", str(sk_build), "--config", config],
+            capture=True)
+
+    def sk_run_verify():
+        exe = _exe_path(sk_build, config, "SocketTest")
+        if not exe.exists():
+            raise RuntimeError(f"Executable not found: {exe}")
+        r = subprocess.run([str(exe)], capture_output=True, text=True, check=False,
+                           encoding="utf-8", errors="replace", timeout=30)
+        if r.returncode != 0:
+            raise RuntimeError(f"SocketTest exited with code {r.returncode}\nstderr: {r.stderr}")
+        got = r.stdout.strip()
+        # Compare the stable parts of output. Skip:
+        # - Line 12 (0-based: 11): port number varies per run
+        # - Lines 21+ (0-based: 20+): DNS section differs (AOT DNS not yet supported)
+        # - Last line "=== Done ===" must match
+        got_lines = got.split('\n')
+        exp_lines = dotnet_sk_output.split('\n')
+        mismatches = []
+        # Compare lines before port line
+        for i in range(min(11, len(got_lines), len(exp_lines))):
+            if got_lines[i].strip() != exp_lines[i].strip():
+                mismatches.append(f"  line {i+1}: got '{got_lines[i].strip()}', expected '{exp_lines[i].strip()}'")
+        # Compare lines after port line, before DNS section (lines 13-20, 0-based 12-19)
+        for i in range(12, min(20, len(got_lines), len(exp_lines))):
+            if got_lines[i].strip() != exp_lines[i].strip():
+                mismatches.append(f"  line {i+1}: got '{got_lines[i].strip()}', expected '{exp_lines[i].strip()}'")
+        # Verify last line is "=== Done ==="
+        if got_lines[-1].strip() != "=== Done ===":
+            mismatches.append(f"  last line: got '{got_lines[-1].strip()}', expected '=== Done ==='")
+        if mismatches:
+            raise RuntimeError("Output mismatch:\n" + "\n".join(mismatches))
+
+    runner.step("Get .NET reference output", sk_dotnet_run)
+    runner.step("Codegen SocketTest", sk_codegen)
+    runner.step("Generated files exist", sk_files_exist)
+    runner.step("CMake configure", sk_cmake_configure)
+    runner.step(f"CMake build ({config})", sk_cmake_build)
+    runner.step("Run and compare C++ vs .NET output", sk_run_verify)
+
     # NOTE: Other test projects (Library, Debug, StringLiterals,
-    # SocketTest, HttpTest, NuGetSimpleTest, JsonSGTest, HttpGetTest) are disabled.
+    # HttpTest, NuGetSimpleTest, JsonSGTest, HttpGetTest) are disabled.
     # Enable them phase-by-phase as issues are fixed.
 
     # ===== Cleanup =====

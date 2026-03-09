@@ -28,6 +28,13 @@ public partial class IRBuilder
             {
                 val = $"({local.CppTypeName}){val}";
             }
+            // SIMD struct locals: when a SIMD operation is replaced with 0 (e.g., AsByte() on
+            // a dead-code path), storing int 0 to a Vector128/256/512 struct is a C++ type error.
+            // Use value-initialization {} instead.
+            else if (val is "0" && local.CppTypeName.StartsWith("System_Runtime_Intrinsics_Vector"))
+            {
+                val = "{}";
+            }
         }
         block.Instructions.Add(new IRAssign
         {
@@ -1364,11 +1371,35 @@ public partial class IRBuilder
 
         // Collect arguments (in reverse order from stack)
         var args = new List<string>();
+        var argEntries = new List<StackEntry>();
         for (int i = 0; i < methodRef.Parameters.Count; i++)
         {
-            args.Add(stack.PopExpr());
+            var entry = stack.PopEntry();
+            args.Add(entry.Expr);
+            argEntries.Add(entry);
         }
         args.Reverse();
+        argEntries.Reverse();
+
+        // For icalls: RuntimeTypeHandle/RuntimeMethodHandle/RuntimeFieldHandle are value type
+        // structs wrapping a single pointer. The C++ icall expects void*, so extract the inner
+        // pointer field. Only apply when the stack entry is actually a struct (has matching CppType),
+        // NOT when it's already a pointer (e.g. TypeInfo* from ldtoken).
+        if (mappedName != null)
+        {
+            for (int i = 0; i < args.Count && i < methodRef.Parameters.Count; i++)
+            {
+                var paramType = methodRef.Parameters[i].ParameterType;
+                var entryType = argEntries[i].CppType;
+                if (paramType.FullName == "System.RuntimeTypeHandle"
+                    && entryType != null
+                    && entryType.Contains("RuntimeTypeHandle")
+                    && !entryType.EndsWith("*"))
+                {
+                    args[i] = $"(void*){args[i]}.f_m_type";
+                }
+            }
+        }
 
         // Handle varargs call sites: package extra arguments into VarArgHandle.
         // The handle is stored separately to avoid CastArgumentsToParameterTypes
@@ -1701,7 +1732,12 @@ public partial class IRBuilder
             // Fallback: if static constrained call wasn't resolved, try operator intrinsics
             // for non-primitive types too. These are well-known operators from numeric interfaces
             // (IBitwiseOperators, IComparisonOperators, etc.) that map to C++ operators.
-            if (!resolvedStaticConstraint)
+            // Skip SIMD vector types — opaque structs don't support native C++ operators.
+            if (!resolvedStaticConstraint
+                && !constrainedCppType.Contains("Vector128_")
+                && !constrainedCppType.Contains("Vector256_")
+                && !constrainedCppType.Contains("Vector512_")
+                && !constrainedCppType.Contains("Vector64_"))
             {
                 var cppOp = TryGetIntrinsicOperator(methodRef.Name);
                 if (cppOp != null)
@@ -1906,6 +1942,7 @@ public partial class IRBuilder
             // IntPtr/UIntPtr are value types but aliased to intptr_t/uintptr_t (scalars).
             // They need casts from pointer types (C++ rejects implicit void*→intptr_t).
             if (paramType is not Mono.Cecil.PointerType
+                && paramType is not Mono.Cecil.ArrayType
                 && paramType.FullName is not "System.IntPtr" and not "System.UIntPtr")
             {
                 bool isValueParam = false;
@@ -2311,13 +2348,12 @@ public partial class IRBuilder
                         }
                     }
                 }
-                // Fallback 2: if IRType not available, use Cecil for RuntimeProvided types
+                // Fallback 2: if IRType lookup didn't resolve, use Cecil metadata
+                // to disambiguate constructor overloads by appending parameter type suffix
                 if (!resolved)
                 {
                     var declTypeDef = ctorRef.DeclaringType.Resolve();
-                    if (declTypeDef != null
-                        && RuntimeProvidedTypes.Contains(declTypeDef.FullName)
-                        && !CoreRuntimeTypes.Contains(declTypeDef.FullName))
+                    if (declTypeDef != null)
                     {
                         var overloadCount = declTypeDef.Methods.Count(m => m.Name == ".ctor");
                         if (overloadCount > 1)

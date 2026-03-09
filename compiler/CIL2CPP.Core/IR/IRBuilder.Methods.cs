@@ -383,6 +383,7 @@ public partial class IRBuilder
         // Build exception handler event map (IL offset -> list of events)
         var exceptionEvents = new SortedDictionary<int, List<ExceptionEvent>>();
         var openedTryRegions = new HashSet<(int Start, int End)>();
+        var emittedLeaveLabels = new HashSet<(int TryStart, int TryEnd)>();
         if (methodDef.HasExceptionHandlers)
         {
             foreach (var handler in methodDef.GetExceptionHandlers())
@@ -420,16 +421,107 @@ public partial class IRBuilder
             }
         }
 
-        // Collect try-finally regions for leave instruction handling.
-        // When a 'leave' crosses a try-finally boundary (offset in try region, target >= TryEnd),
-        // we suppress the goto and let execution fall through to the finally block naturally.
-        var tryFinallyRegions = new List<(int TryStart, int TryEnd)>();
+        // Collect ALL protected regions for leave instruction handling.
+        // Each region has: try body range, handler type, and handler body range.
+        var tryProtectedRegions = new List<(int TryStart, int TryEnd,
+            Mono.Cecil.Cil.ExceptionHandlerType Type, int HandlerStart, int HandlerEnd)>();
         if (methodDef.HasExceptionHandlers)
         {
             foreach (var handler in methodDef.GetExceptionHandlers())
             {
-                if (handler.HandlerType == Mono.Cecil.Cil.ExceptionHandlerType.Finally)
-                    tryFinallyRegions.Add((handler.TryStart, handler.TryEnd));
+                tryProtectedRegions.Add((handler.TryStart, handler.TryEnd,
+                    handler.HandlerType, handler.HandlerStart, handler.HandlerEnd));
+            }
+        }
+
+        // Pre-scan: find leave instructions that cross protected region boundaries.
+        // Two crossing types:
+        //   1. Leave from try body (offset in [TryStart,TryEnd)) with target >= TryEnd
+        //   2. Leave from handler body (offset in [HandlerStart,HandlerEnd)) with target >= HandlerEnd
+        // Type 1 uses __leave_body_end_ label (falls through if/else to END_TRY).
+        // Type 2 uses inline context restore (different if/else branch, can't goto try body label).
+        _leaveCrossingTargets = null;
+        var regionsNeedingLeaveExit = new HashSet<(int TryStart, int TryEnd)>();
+        _regionLeaveDispatch = new Dictionary<(int TryStart, int TryEnd),
+            List<(int TargetOffset, (int TryStart, int TryEnd)? ChainRegion)>>();
+
+        if (tryProtectedRegions.Count > 0)
+        {
+            var crossings = new Dictionary<int, (int TargetOffset, int InnermostTryStart,
+                int InnermostTryEnd, bool FromHandlerBody)>();
+
+            foreach (var instr in instructions)
+            {
+                if (instr.OpCode != Code.Leave && instr.OpCode != Code.Leave_S) continue;
+                var target = ((Instruction)instr.Operand!).Offset;
+
+                // Find all protected regions this leave crosses
+                var crossedRegions = new List<((int TryStart, int TryEnd) Key, bool FromHandler)>();
+                foreach (var r in tryProtectedRegions)
+                {
+                    var key = (r.TryStart, r.TryEnd);
+                    // Leave from try body crossing out
+                    if (instr.Offset >= r.TryStart && instr.Offset < r.TryEnd && target >= r.TryEnd)
+                    {
+                        crossedRegions.Add((key, false));
+                    }
+                    // Leave from handler body crossing out (catch/filter only; leave from finally is illegal CIL)
+                    else if (r.Type != Mono.Cecil.Cil.ExceptionHandlerType.Finally
+                             && instr.Offset >= r.HandlerStart && instr.Offset < r.HandlerEnd
+                             && target >= r.HandlerEnd)
+                    {
+                        crossedRegions.Add((key, true));
+                    }
+                }
+                if (crossedRegions.Count == 0) continue;
+
+                // Find innermost (smallest range) — use TryEnd-TryStart for try body,
+                // HandlerEnd-TryStart for handler body, to get the tightest enclosing region
+                var innermost = crossedRegions
+                    .OrderBy(c => c.Key.TryEnd - c.Key.TryStart)
+                    .First();
+                crossings[instr.Offset] = (target, innermost.Key.TryStart, innermost.Key.TryEnd,
+                    innermost.FromHandler);
+
+                // Build dispatch info for each crossed region
+                foreach (var (rKey, fromHandler) in crossedRegions)
+                {
+                    // For leave from try body: need __leave_body_end_ label
+                    if (!fromHandler)
+                        regionsNeedingLeaveExit.Add(rKey);
+
+                    if (!_regionLeaveDispatch.ContainsKey(rKey))
+                        _regionLeaveDispatch[rKey] = new();
+
+                    if (_regionLeaveDispatch[rKey].Any(d => d.TargetOffset == target))
+                        continue;
+
+                    // Find innermost enclosing protected region that the target also crosses
+                    (int TryStart, int TryEnd)? chainRegion = null;
+                    int smallestChainRange = int.MaxValue;
+                    foreach (var e in tryProtectedRegions)
+                    {
+                        var eKey = (e.TryStart, e.TryEnd);
+                        if (eKey == rKey) continue;
+                        // E encloses R's try range and target crosses E
+                        if (e.TryStart <= rKey.TryStart && e.TryEnd >= rKey.TryEnd && target >= e.TryEnd)
+                        {
+                            int range = e.TryEnd - e.TryStart;
+                            if (range < smallestChainRange)
+                            {
+                                smallestChainRange = range;
+                                chainRegion = eKey;
+                            }
+                        }
+                    }
+                    _regionLeaveDispatch[rKey].Add((target, chainRegion));
+                }
+            }
+
+            if (crossings.Count > 0)
+            {
+                _leaveCrossingTargets = crossings;
+                block.Instructions.Add(new IRRawCpp { Code = "int __leave_target = 0;" });
             }
         }
 
@@ -473,6 +565,20 @@ public partial class IRBuilder
                             }
                             break;
                         case ExceptionEventKind.CatchBegin:
+                        {
+                            // Emit leave exit label before first catch handler (for leave from try body).
+                            // The label is inside the try body; falling through the else-if chain
+                            // naturally reaches CIL2CPP_END_TRY cleanup.
+                            var catchLeaveKey = (evt.TryStart, evt.TryEnd);
+                            if (regionsNeedingLeaveExit.Contains(catchLeaveKey)
+                                && !emittedLeaveLabels.Contains(catchLeaveKey))
+                            {
+                                emittedLeaveLabels.Add(catchLeaveKey);
+                                block.Instructions.Add(new IRLabel
+                                {
+                                    LabelName = $"__leave_body_end_{evt.TryStart:X4}_{evt.TryEnd:X4}"
+                                });
+                            }
                             // Exception handler entry is reachable even after throw/ret —
                             // resume code generation (fixes missing catch body instructions)
                             skipDeadCode = false;
@@ -487,7 +593,20 @@ public partial class IRBuilder
                             // IL pushes exception onto stack at catch entry
                             stack.Push(new StackEntry("__exc_ctx.current_exception", "cil2cpp::Object*"));
                             break;
+                        }
                         case ExceptionEventKind.FilterBegin:
+                        {
+                            // Emit leave exit label before filter (for leave from try body)
+                            var filterLeaveKey = (evt.TryStart, evt.TryEnd);
+                            if (regionsNeedingLeaveExit.Contains(filterLeaveKey)
+                                && !emittedLeaveLabels.Contains(filterLeaveKey))
+                            {
+                                emittedLeaveLabels.Add(filterLeaveKey);
+                                block.Instructions.Add(new IRLabel
+                                {
+                                    LabelName = $"__leave_body_end_{evt.TryStart:X4}_{evt.TryEnd:X4}"
+                                });
+                            }
                             skipDeadCode = false;
                             stack.Clear();
                             block.Instructions.Add(new IRFilterBegin());
@@ -499,6 +618,7 @@ public partial class IRBuilder
                             _inFilterRegion = true;
                             _endfilterOffset = FindEndfilterOffset(instructions, instr.Offset);
                             break;
+                        }
                         case ExceptionEventKind.FilterHandlerBegin:
                             skipDeadCode = false;
                             stack.Clear();
@@ -508,6 +628,12 @@ public partial class IRBuilder
                         case ExceptionEventKind.FinallyBegin:
                             skipDeadCode = false;
                             stack.Clear();
+                            // Emit leave exit label before finally — leave instructions that
+                            // cross this try-finally jump here to skip remaining try body code
+                            // while still allowing the finally to run via natural fallthrough.
+                            var finallyKey = (evt.TryStart, evt.TryEnd);
+                            if (regionsNeedingLeaveExit.Contains(finallyKey))
+                                block.Instructions.Add(new IRLabel { LabelName = $"__leave_body_end_{evt.TryStart:X4}_{evt.TryEnd:X4}" });
                             block.Instructions.Add(new IRFinallyBegin());
                             break;
                         case ExceptionEventKind.HandlerEnd:
@@ -521,6 +647,25 @@ public partial class IRBuilder
                                     || e.Kind == ExceptionEventKind.FinallyBegin));
                             if (!hasFollowingHandlerSameTry)
                                 block.Instructions.Add(new IRTryEnd());
+                            // After END_TRY for any protected region with crossing leaves, emit dispatch
+                            var handlerEndKey = (evt.TryStart, evt.TryEnd);
+                            if (_regionLeaveDispatch.TryGetValue(handlerEndKey, out var dispatches))
+                            {
+                                var safeTargets = dispatches.Where(d => d.ChainRegion == null).ToList();
+                                var chainTargets = dispatches.Where(d => d.ChainRegion != null).ToList();
+
+                                var dispatchCode = new System.Text.StringBuilder("if (__leave_target != 0) { ");
+                                foreach (var (targetOff, _) in safeTargets)
+                                    dispatchCode.Append($"if (__leave_target == {targetOff}) {{ __leave_target = 0; goto IL_{targetOff:X4}; }} ");
+                                if (chainTargets.Count > 0)
+                                {
+                                    // Chain to innermost enclosing protected region's leave exit
+                                    var chainRegion = chainTargets[0].ChainRegion!.Value;
+                                    dispatchCode.Append($"goto __leave_body_end_{chainRegion.TryStart:X4}_{chainRegion.TryEnd:X4}; ");
+                                }
+                                dispatchCode.Append('}');
+                                block.Instructions.Add(new IRRawCpp { Code = dispatchCode.ToString() });
+                            }
                             break;
                     }
                 }
@@ -631,7 +776,7 @@ public partial class IRBuilder
 
             try
             {
-                ConvertInstruction(instr, block, stack, irMethod, ref tempCounter, branchMergeVars, branchTargetStacks, branchTargets, tryFinallyRegions, ref lastCondBranchStackDepth, brTernaryMerges, featureSwitchDeadRanges);
+                ConvertInstruction(instr, block, stack, irMethod, ref tempCounter, branchMergeVars, branchTargetStacks, branchTargets, ref lastCondBranchStackDepth, brTernaryMerges, featureSwitchDeadRanges);
             }
             catch
             {
@@ -778,7 +923,7 @@ public partial class IRBuilder
     private void ConvertInstruction(ILInstruction instr, IRBasicBlock block, Stack<StackEntry> stack,
         IRMethod method, ref int tempCounter, Dictionary<int, string> branchMergeVars,
         Dictionary<int, StackEntry[]> branchTargetStacks, HashSet<int> branchTargets,
-        List<(int TryStart, int TryEnd)> tryFinallyRegions, ref int? lastCondBranchStackDepth,
+        ref int? lastCondBranchStackDepth,
         Dictionary<int, StackEntry[]> brTernaryMerges,
         List<(int Start, int End)>? featureSwitchDeadRanges = null)
     {
@@ -2136,13 +2281,62 @@ public partial class IRBuilder
                 var target = (Instruction)instr.Operand!;
                 stack.Clear(); // leave clears the evaluation stack
 
-                // Check if this leave crosses a try-finally boundary.
-                // If so, suppress the goto — execution falls through to the finally block naturally.
-                bool crossesFinally = tryFinallyRegions.Any(r =>
-                    instr.Offset >= r.TryStart && instr.Offset < r.TryEnd && target.Offset >= r.TryEnd);
+                if (_leaveCrossingTargets != null
+                    && _leaveCrossingTargets.TryGetValue(instr.Offset, out var crossInfo))
+                {
+                    if (crossInfo.FromHandlerBody)
+                    {
+                        // Leave from catch/filter handler body: can't goto label in try body
+                        // (different if/else branch). Inline the context restore, then chain
+                        // to enclosing region or goto target directly.
+                        block.Instructions.Add(new IRRawCpp
+                            { Code = "cil2cpp::g_exception_context = __exc_ctx.previous;" });
 
-                if (!crossesFinally)
+                        // Check if there's an enclosing region to chain to
+                        var myKey = (crossInfo.InnermostTryStart, crossInfo.InnermostTryEnd);
+                        (int TryStart, int TryEnd)? chainRegion = null;
+                        if (_regionLeaveDispatch.TryGetValue(myKey, out var dispatches))
+                        {
+                            var entry = dispatches.FirstOrDefault(d => d.TargetOffset == crossInfo.TargetOffset);
+                            chainRegion = entry.ChainRegion;
+                        }
+
+                        if (chainRegion != null)
+                        {
+                            // Chain to enclosing region's leave mechanism
+                            block.Instructions.Add(new IRRawCpp
+                                { Code = $"__leave_target = {crossInfo.TargetOffset};" });
+                            block.Instructions.Add(new IRBranch
+                            {
+                                TargetLabel = $"__leave_body_end_{chainRegion.Value.TryStart:X4}_{chainRegion.Value.TryEnd:X4}"
+                            });
+                        }
+                        else
+                        {
+                            // No enclosing region — go directly to target
+                            block.Instructions.Add(new IRBranch
+                                { TargetLabel = $"IL_{target.Offset:X4}" });
+                        }
+                    }
+                    else
+                    {
+                        // Leave from try body: set leave target and jump to __leave_body_end_ label.
+                        // For try-finally: finally runs via natural fallthrough.
+                        // For try-catch: falls through if/else chain to END_TRY cleanup.
+                        // Dispatch code after END_TRY routes to the correct target.
+                        block.Instructions.Add(new IRRawCpp
+                            { Code = $"__leave_target = {crossInfo.TargetOffset};" });
+                        block.Instructions.Add(new IRBranch
+                        {
+                            TargetLabel = $"__leave_body_end_{crossInfo.InnermostTryStart:X4}_{crossInfo.InnermostTryEnd:X4}"
+                        });
+                    }
+                }
+                else
+                {
+                    // Leave doesn't cross any protected region — emit direct goto
                     block.Instructions.Add(new IRBranch { TargetLabel = $"IL_{target.Offset:X4}" });
+                }
                 break;
             }
 
@@ -2385,8 +2579,15 @@ public partial class IRBuilder
             {
                 var targetMethod = (MethodReference)instr.Operand!;
                 var targetTypeCpp = GetMangledTypeNameForRef(targetMethod.DeclaringType);
+                // Check if the target method has an ICall mapping — use the ICall name
+                // instead of the IL mangled name (e.g., Object.ReferenceEquals → cil2cpp::object_reference_equals)
                 string methodCppName;
-                if (targetMethod is GenericInstanceMethod ldftnGim)
+                var ldftnICallName = ICallRegistry.Lookup(targetMethod);
+                if (ldftnICallName != null)
+                {
+                    methodCppName = ldftnICallName;
+                }
+                else if (targetMethod is GenericInstanceMethod ldftnGim)
                 {
                     // Generic method: include monomorphized type args in the mangled name
                     var elemMethod = ldftnGim.ElementMethod;
