@@ -6,8 +6,19 @@
 
 #include <cstdint>
 #include <cstddef>
+#include <cstring>
 
 namespace cil2cpp {
+
+// Safe bitcast for IL interop: reinterprets any value as the target type.
+// Used for dead code branches where generic type parameters produce
+// type-mismatched casts (e.g., struct → intptr_t in Enum.TryFormat).
+template<typename To, typename From>
+inline To bitcast_to(From val) {
+    To result{};
+    std::memcpy(&result, &val, sizeof(To) < sizeof(From) ? sizeof(To) : sizeof(From));
+    return result;
+}
 
 // .NET primitive type mappings
 using Boolean = bool;

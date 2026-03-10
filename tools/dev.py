@@ -1056,8 +1056,72 @@ def cmd_integration(args):
     runner.step(f"CMake build ({config})", sk_cmake_build)
     runner.step("Run and compare C++ vs .NET output", sk_run_verify)
 
+    # ===== Phase 9: HttpGetTest (HTTP client, async/await) =====
+    header("Phase 9: HttpGetTest (HTTP client, async/await)")
+
+    hg_sample = TESTPROJECTS_DIR / "HttpGetTest" / "HttpGetTest.csproj"
+    hg_output = temp_dir / "httpgettest_output"
+    hg_build = hg_output / "build"
+    dotnet_hg_output = ""
+
+    def hg_dotnet_run():
+        nonlocal dotnet_hg_output
+        dotnet_hg_output = _get_dotnet_output(hg_sample)
+        print(f"    .NET output: {repr(dotnet_hg_output[:200])}")
+
+    def hg_codegen():
+        run(["dotnet", "run", "--project", str(CLI_PROJECT), "--",
+             "codegen", "-i", str(hg_sample), "-o", str(hg_output)],
+            capture=True)
+
+    def hg_files_exist():
+        for f in ["HttpGetTest.h", "HttpGetTest_data.cpp", "HttpGetTest_stubs.cpp",
+                   "main.cpp", "CMakeLists.txt"]:
+            if not (hg_output / f).exists():
+                raise RuntimeError(f"Missing: {f}")
+        if not list(hg_output.glob("HttpGetTest_methods_*.cpp")):
+            raise RuntimeError("No HttpGetTest_methods_*.cpp files found")
+
+    def hg_cmake_configure():
+        run(["cmake", "-B", str(hg_build), "-S", str(hg_output),
+             "-G", generator, *cmake_arch,
+             f"-DCMAKE_PREFIX_PATH={runtime_prefix}"],
+            capture=True)
+
+    def hg_cmake_build():
+        run(["cmake", "--build", str(hg_build), "--config", config],
+            capture=True)
+
+    def hg_run_verify():
+        exe = _exe_path(hg_build, config, "HttpGetTest")
+        if not exe.exists():
+            raise RuntimeError(f"Executable not found: {exe}")
+        r = subprocess.run([str(exe)], capture_output=True, text=True, check=False,
+                           encoding="utf-8", errors="replace", timeout=30)
+        if r.returncode != 0:
+            raise RuntimeError(f"HttpGetTest exited with code {r.returncode}\nstderr: {r.stderr}")
+        got = r.stdout.strip()
+        expected = dotnet_hg_output.strip()
+        if got != expected:
+            got_lines = got.split('\n')
+            exp_lines = expected.split('\n')
+            mismatches = []
+            for i in range(max(len(got_lines), len(exp_lines))):
+                g = got_lines[i].strip() if i < len(got_lines) else "<missing>"
+                e = exp_lines[i].strip() if i < len(exp_lines) else "<missing>"
+                if g != e:
+                    mismatches.append(f"  line {i+1}: got '{g}', expected '{e}'")
+            raise RuntimeError("Output mismatch:\n" + "\n".join(mismatches))
+
+    runner.step("Get .NET reference output", hg_dotnet_run)
+    runner.step("Codegen HttpGetTest", hg_codegen)
+    runner.step("Generated files exist", hg_files_exist)
+    runner.step("CMake configure", hg_cmake_configure)
+    runner.step(f"CMake build ({config})", hg_cmake_build)
+    runner.step("Run and compare C++ vs .NET output", hg_run_verify)
+
     # NOTE: Other test projects (Library, Debug, StringLiterals,
-    # HttpTest, NuGetSimpleTest, JsonSGTest, HttpGetTest) are disabled.
+    # HttpTest, NuGetSimpleTest, JsonSGTest) are disabled.
     # Enable them phase-by-phase as issues are fixed.
 
     # ===== Cleanup =====

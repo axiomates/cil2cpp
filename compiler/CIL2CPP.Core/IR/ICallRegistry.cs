@@ -34,6 +34,7 @@ public static class ICallRegistry
         RegisterICall("System.Exception", "GetType", 0, "cil2cpp::object_get_type_managed");
         // Exception constructors and property accessors — Exception is a RuntimeProvided type
         // so its IL bodies are MissingBody. These ICalls provide field access.
+        RegisterICall("System.Exception", ".ctor", 0, "cil2cpp::exception_ctor_default");
         RegisterICall("System.Exception", ".ctor", 1, "cil2cpp::exception_ctor_string");
         RegisterICall("System.Exception", ".ctor", 2, "cil2cpp::exception_ctor_string_exception");
         RegisterICall("System.Exception", "get_Message", 0, "cil2cpp::exception_get_message");
@@ -41,6 +42,7 @@ public static class ICallRegistry
         RegisterICall("System.Exception", "get_HResult", 0, "cil2cpp::exception_get_hresult");
         RegisterICall("System.Exception", "set_HResult", 1, "cil2cpp::exception_set_hresult");
         RegisterICall("System.Exception", "get_StackTrace", 0, "cil2cpp::exception_get_stack_trace");
+        RegisterICall("System.Exception", "get_Data", 0, "cil2cpp::exception_get_data");
 
         // ===== System.Object (virtual methods — runtime default implementations) =====
         // These have IL bodies in BCL but are called through vtable dispatch.
@@ -85,6 +87,8 @@ public static class ICallRegistry
         RegisterICall("System.Array", "InternalGetValue", 1, "cil2cpp::array_internal_get_value");
         RegisterICall("System.Array", "InternalSetValue", 2, "cil2cpp::array_internal_set_value");
         RegisterICall("System.Array", "GetCorElementTypeOfElementType", 0, "cil2cpp::array_get_cor_element_type");
+        RegisterICall("System.Array", "CopyTo", 2, "cil2cpp::array_copy_to");
+        RegisterICall("System.Array", "IsValueOfElementType", 1, "cil2cpp::array_is_value_of_element_type");
 
         // ===== System.Delegate / System.MulticastDelegate =====
         RegisterICall("System.Delegate", "Combine", 2, "cil2cpp::delegate_combine");
@@ -117,9 +121,11 @@ public static class ICallRegistry
         // IL methods access f_value field which doesn't exist on a scalar alias.
         RegisterICallTyped("System.IntPtr", ".ctor", 1, "System.Int32", "cil2cpp::icall::IntPtr_ctor_i32");
         RegisterICallTyped("System.IntPtr", ".ctor", 1, "System.Int64", "cil2cpp::icall::IntPtr_ctor_i64");
+        RegisterICallTyped("System.IntPtr", ".ctor", 1, "System.Void*", "cil2cpp::icall::IntPtr_ctor_ptr");
         RegisterICall("System.IntPtr", "ToPointer", 0, "cil2cpp::icall::IntPtr_ToPointer");
         RegisterICallTyped("System.UIntPtr", ".ctor", 1, "System.UInt32", "cil2cpp::icall::UIntPtr_ctor_u32");
         RegisterICallTyped("System.UIntPtr", ".ctor", 1, "System.UInt64", "cil2cpp::icall::UIntPtr_ctor_u64");
+        RegisterICallTyped("System.UIntPtr", ".ctor", 1, "System.Void*", "cil2cpp::icall::UIntPtr_ctor_ptr");
         RegisterICall("System.UIntPtr", "ToPointer", 0, "cil2cpp::icall::UIntPtr_ToPointer");
 
         // ===== System.Char (ICU-backed classification + case conversion) =====
@@ -165,8 +171,8 @@ public static class ICallRegistry
             "cil2cpp::globalization::compareinfo_compare_string_string_2");
         RegisterICall("System.Globalization.CompareInfo", "Compare", 7,
             "cil2cpp::globalization::compareinfo_compare_substring");
-        RegisterICall("System.Globalization.CompareInfo", "IndexOf", 5,
-            "cil2cpp::globalization::compareinfo_index_of");
+        RegisterICallTyped("System.Globalization.CompareInfo", "IndexOf", 5,
+            "System.String", "cil2cpp::globalization::compareinfo_index_of");
         RegisterICallTyped("System.Globalization.CompareInfo", "IsPrefix", 3,
             "System.String", "cil2cpp::globalization::compareinfo_is_prefix");
         RegisterICallTyped("System.Globalization.CompareInfo", "IsSuffix", 3,
@@ -347,6 +353,15 @@ public static class ICallRegistry
         RegisterICall("System.Runtime.InteropServices.Marshal", "FreeCoTaskMem", 1, "cil2cpp::icall::Marshal_FreeCoTaskMem");
         RegisterICall("System.Runtime.InteropServices.Marshal", "GetLastPInvokeError", 0, "cil2cpp::get_last_pinvoke_error");
         RegisterICall("System.Runtime.InteropServices.Marshal", "SetLastPInvokeError", 1, "cil2cpp::set_last_pinvoke_error");
+
+        // Marshal.TryGetStructMarshalStub: QCall returning marshal stub info.
+        // In AOT, no struct marshal stubs exist — return false.
+        RegisterICall("System.Runtime.InteropServices.Marshal", "TryGetStructMarshalStub", 3,
+            "cil2cpp::icall::Marshal_TryGetStructMarshalStub");
+        // Marshal.StructureToPtr: copies managed struct to native memory.
+        // IL body uses FunctionPointerType refs that cause codegen issues. ICall does simple memcpy.
+        RegisterICall("System.Runtime.InteropServices.Marshal", "StructureToPtr", 3,
+            "cil2cpp::icall::Marshal_StructureToPtr");
 
         // ===== SafeHandle =====
         RegisterICall("System.Runtime.InteropServices.SafeHandle", ".ctor", 2, "cil2cpp::icall::SafeHandle__ctor");
@@ -736,6 +751,8 @@ public static class ICallRegistry
             "cil2cpp::icall::ThreadPoolWorkQueue_Enqueue");
         RegisterICall("System.Threading.WindowsThreadPool", "RequestWorkerThread", 0,
             "cil2cpp::icall::ThreadPool_RequestWorkerThread"); // same impl
+        RegisterICall("System.Threading.ThreadPool", "BindHandlePortableCore", 1,
+            "cil2cpp::icall::ThreadPool_BindHandlePortableCore");
 
         // ===== System.Threading.Interlocked (additional) =====
         RegisterICallTyped("System.Threading.Interlocked", "ExchangeAdd", 2, "System.Int32&",

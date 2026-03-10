@@ -37,6 +37,8 @@ void Marshal_FreeHGlobal(intptr_t hglobal);
 intptr_t Marshal_AllocCoTaskMem(Int32 cb);
 void Marshal_FreeCoTaskMem(intptr_t ptr);
 Object* Marshal_StringToCoTaskMemUni(Object* str);
+Boolean Marshal_TryGetStructMarshalStub(void* structureTypeHandle, void* marshalStub, void* sizeOf);
+void Marshal_StructureToPtr(void* structure, intptr_t ptr, Boolean fDeleteOld);
 
 // System.HashCode / System.Marvin (RNG seed)
 uint64_t HashCode_GenerateGlobalSeed();
@@ -111,9 +113,11 @@ intptr_t NativeLibrary_GetSymbol(intptr_t handle, Object* name);
 // IL methods access f_value field which doesn't exist on a scalar.
 inline void IntPtr_ctor_i32(intptr_t* self, Int32 value) { *self = static_cast<intptr_t>(value); }
 inline void IntPtr_ctor_i64(intptr_t* self, Int64 value) { *self = static_cast<intptr_t>(value); }
+inline void IntPtr_ctor_ptr(intptr_t* self, void* value) { *self = reinterpret_cast<intptr_t>(value); }
 inline void* IntPtr_ToPointer(intptr_t* self) { return reinterpret_cast<void*>(*self); }
 inline void UIntPtr_ctor_u32(uintptr_t* self, UInt32 value) { *self = static_cast<uintptr_t>(value); }
 inline void UIntPtr_ctor_u64(uintptr_t* self, UInt64 value) { *self = static_cast<uintptr_t>(value); }
+inline void UIntPtr_ctor_ptr(uintptr_t* self, void* value) { *self = reinterpret_cast<uintptr_t>(value); }
 inline void* UIntPtr_ToPointer(uintptr_t* self) { return reinterpret_cast<void*>(*self); }
 
 // System.Type
@@ -201,6 +205,7 @@ void ThreadPool_ReportThreadStatus(bool isWorking);
 void ThreadPool_RequestWorkerThread();
 bool ThreadPoolWorkQueue_Dispatch();
 void ThreadPoolWorkQueue_Enqueue(void* __this, Object* callback, bool forceGlobal);
+bool ThreadPool_BindHandlePortableCore(void* osHandle);
 
 // System.Math (double)
 double Math_Abs_double(double value);

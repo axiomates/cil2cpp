@@ -80,7 +80,7 @@ public class IRCall : IRInstruction
             var castArgs = BuildCastArgs();
             // CLR throws NullReferenceException on callvirt with null this — emit null check
             var nullCheck = $"cil2cpp::null_check((void*){thisExpr}); ";
-            call = $"(({fnPtrType})(cil2cpp::type_get_interface_vtable_checked(((cil2cpp::Object*){thisExpr})->__type_info, &{InterfaceTypeCppName}_TypeInfo)->methods[{VTableSlot}]))({castArgs})";
+            call = $"(({fnPtrType})(cil2cpp::obj_get_interface_vtable(((cil2cpp::Object*){thisExpr}), &{InterfaceTypeCppName}_TypeInfo)->methods[{VTableSlot}]))({castArgs})";
             var stmt = ResultVar != null ? $"{ResultVar} = {call};" : $"{call};";
             return nullCheck + stmt;
         }
@@ -133,6 +133,11 @@ public class IRNewObj : IRInstruction
     public string CtorName { get; set; } = "";
     public List<string> CtorArgs { get; } = new();
     public string ResultVar { get; set; } = "";
+    /// <summary>
+    /// IL parameter key for deferred disambiguation fixup (Pass 3.7).
+    /// Set when the constructor name couldn't be disambiguated at emit time.
+    /// </summary>
+    public string? DeferredDisambigKey { get; set; }
 
     public override string ToCpp()
     {
@@ -477,8 +482,19 @@ public class IRTryBegin : IRInstruction
 public class IRCatchBegin : IRInstruction
 {
     public string? ExceptionTypeCppName { get; set; }
-    public override string ToCpp() => ExceptionTypeCppName != null
-        ? $"CIL2CPP_CATCH({ExceptionTypeCppName})" : "CIL2CPP_CATCH_ALL";
+    /// <summary>True when this catch follows a filter handler in the same try block.
+    /// Uses inline if(!__exc_caught) instead of the } else if (...) macro chain.</summary>
+    public bool AfterFilter { get; set; }
+    public override string ToCpp()
+    {
+        if (!AfterFilter)
+            return ExceptionTypeCppName != null
+                ? $"CIL2CPP_CATCH({ExceptionTypeCppName})" : "CIL2CPP_CATCH_ALL";
+        // After a filter: we're already inside the else block, use conditional check
+        if (ExceptionTypeCppName != null)
+            return $"if (!__exc_caught && cil2cpp::object_is_instance_of(reinterpret_cast<cil2cpp::Object*>(__exc_ctx.current_exception), &{ExceptionTypeCppName}_TypeInfo)) {{ __exc_caught = true;";
+        return "if (!__exc_caught) { __exc_caught = true;";
+    }
 }
 
 public class IRFinallyBegin : IRInstruction
@@ -493,13 +509,23 @@ public class IRTryEnd : IRInstruction
 
 public class IRFilterBegin : IRInstruction
 {
-    public override string ToCpp() => "CIL2CPP_FILTER_BEGIN";
+    /// <summary>True if this is the first handler in the try block (needs } else { to enter handler chain).</summary>
+    public bool IsFirst { get; set; } = true;
+    public override string ToCpp() => IsFirst ? "CIL2CPP_FILTER_BEGIN" : "// filter (chained)";
 }
 
 public class IREndFilter : IRInstruction
 {
+    /// <summary>Complete filter result check: accepts (sets __exc_caught) or rethrows.
+    /// CIL2CPP_RETHROW transfers control away, so handler body only runs on acceptance.</summary>
     public override string ToCpp() =>
-        "if (__filter_result) { __exc_caught = true; } else { CIL2CPP_RETHROW; }";
+        $"if (__filter_result) {{ __exc_caught = true; }} else {{ CIL2CPP_RETHROW; }}";
+}
+
+/// <summary>Marks the end of a filter handler body (no-op — IREndFilter is self-contained).</summary>
+public class IRFilterHandlerEnd : IRInstruction
+{
+    public override string ToCpp() => "// end filter handler";
 }
 
 public class IRThrow : IRInstruction
@@ -587,7 +613,7 @@ public class IRDelegateInvoke : IRInstruction
             var instanceParamTypes = new List<string> { "cil2cpp::Object*" };
             instanceParamTypes.AddRange(ParamTypes);
             var instanceFnPtr = $"{ReturnTypeCpp}(*)({string.Join(", ", instanceParamTypes)})";
-            var instanceArgs = new List<string> { $"{delExpr}->target" };
+            var instanceArgs = new List<string> { $"cil2cpp::delegate_adjust_target({delExpr}->target)" };
             instanceArgs.AddRange(castedArgs);
             var instanceCall = $"(({instanceFnPtr})({delExpr}->method_ptr))({string.Join(", ", instanceArgs)})";
 

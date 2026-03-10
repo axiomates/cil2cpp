@@ -315,6 +315,13 @@ InterfaceVTable* type_get_interface_vtable(TypeInfo* type, TypeInfo* interface_t
 InterfaceVTable* type_get_interface_vtable_checked(TypeInfo* type, TypeInfo* interface_type);
 
 /**
+ * Object-aware interface vtable lookup. Handles array generic interface dispatch
+ * (T[] implements IList<T>, ICollection<T>, IEnumerable<T>, IReadOnlyList<T>, IReadOnlyCollection<T>).
+ * Falls back to type_get_interface_vtable_checked for non-array objects.
+ */
+InterfaceVTable* obj_get_interface_vtable(Object* obj, TypeInfo* interface_type);
+
+/**
  * Get type by full name (for reflection).
  */
 TypeInfo* type_get_by_name(const char* full_name);

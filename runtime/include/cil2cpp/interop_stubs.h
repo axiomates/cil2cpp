@@ -34,7 +34,7 @@ inline int32_t interop_globalization_get_locale_name(
     if (!localeName || bufferLength <= 0) return 0;
     auto len = string_length(localeName);
     if (len <= 0 || len >= bufferLength) return 0;
-    std::memcpy(buffer, &localeName->f_firstChar, len * sizeof(char16_t));
+    std::memcpy(buffer, &localeName->f__firstChar, len * sizeof(char16_t));
     buffer[len] = 0;
     return 1;
 }
@@ -59,8 +59,8 @@ inline int32_t interop_globalization_get_locale_info_string(
     case 80:  return write("+");   // PositiveSign
     case 81:  return write("-");   // NegativeSign
     case 105: return write("NaN"); // NaNSymbol
-    case 106: buffer[0] = 0x221E; buffer[1] = 0; return 1; // PositiveInfinitySymbol ∞
-    case 107: buffer[0] = u'-'; buffer[1] = 0x221E; buffer[2] = 0; return 1; // NegativeInfinitySymbol -∞
+    case 106: buffer[0] = 0x221E; buffer[1] = 0; return 1;   // PositiveInfinitySymbol (∞)
+    case 107: buffer[0] = u'-'; buffer[1] = 0x221E; buffer[2] = 0; return 2; // NegativeInfinitySymbol (-∞)
     // Currency
     case 20:  return write("$");   // CurrencySymbol
     case 22:  return write(".");   // CurrencyDecimalSeparator
@@ -105,12 +105,10 @@ inline int32_t interop_user32_stub(Args...) { return 0; }
 template<typename... Args>
 inline int32_t interop_bcrypt_stub(Args...) { return 0; }
 
-// ===== Interop.Ucrtbase stubs =====
-// Forward to C stdlib malloc/free
-template<typename... Args>
-inline void* interop_ucrtbase_malloc(Args...) { return nullptr; }
-template<typename... Args>
-inline void interop_ucrtbase_free(Args...) {}
+// ===== Interop.Ucrtbase =====
+// Forward to C stdlib malloc/free/calloc/realloc
+inline void* interop_ucrtbase_malloc(uintptr_t size) { return std::malloc(static_cast<size_t>(size)); }
+inline void interop_ucrtbase_free(void* ptr) { std::free(ptr); }
 
 // ===== System.Array.InternalCreate stub =====
 template<typename... Args>

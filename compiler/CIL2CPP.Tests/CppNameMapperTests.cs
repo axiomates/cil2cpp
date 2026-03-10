@@ -173,9 +173,9 @@ public class CppNameMapperTests
     // ===== MangleFieldName =====
 
     [Theory]
-    [InlineData("_myField", "f_myField")]
+    [InlineData("_myField", "f__myField")]
     [InlineData("publicField", "f_publicField")]
-    [InlineData("__x", "f_x")]
+    [InlineData("__x", "f___x")]
     public void MangleFieldName_AddsPrefix(string input, string expected)
     {
         Assert.Equal(expected, CppNameMapper.MangleFieldName(input));

@@ -6,6 +6,7 @@
 #pragma once
 
 #include "object.h"
+#include "type_info.h"
 #include <type_traits>
 
 namespace cil2cpp {
@@ -142,5 +143,15 @@ void array_copy_impl(void* src, Int32 srcIndex, void* dst, Int32 dstIndex, Int32
 
 /// System.Array::GetCorElementTypeOfElementType — returns CorElementType enum.
 Int32 array_get_cor_element_type(void* arr);
+
+/// System.Array::CopyTo(Array, int) — copy this array into dest starting at index.
+void array_copy_to(void* __this, void* dest, Int32 index);
+
+/// System.Array::IsValueOfElementType(object) — check if value's type matches element type.
+Boolean array_is_value_of_element_type(void* __this, void* value);
+
+/// Array generic interface vtable adapter: T[] implements IList<T>, ICollection<T>, etc.
+/// Returns a synthesized InterfaceVTable for array-to-generic-interface dispatch, or nullptr.
+InterfaceVTable* array_get_generic_interface_vtable(TypeInfo* array_type, TypeInfo* interface_type);
 
 } // namespace cil2cpp

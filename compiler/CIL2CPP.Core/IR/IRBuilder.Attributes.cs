@@ -87,7 +87,7 @@ public partial class IRBuilder
             {
                 TypeName = typeName,
                 Kind = AttributeArgKind.Enum,
-                Value = Convert.ToInt64(arg.Value),
+                Value = arg.Value is ulong u ? unchecked((long)u) : Convert.ToInt64(arg.Value),
             };
         }
 

@@ -463,6 +463,15 @@ public class IRInstructionTests
         Assert.Contains("CIL2CPP_RETHROW", code);
     }
 
+    [Fact]
+    public void IRFilterHandlerEnd_ToCpp()
+    {
+        var instr = new IRFilterHandlerEnd();
+        var code = instr.ToCpp();
+        // IRFilterHandlerEnd is now a no-op marker (IREndFilter is self-contained)
+        Assert.NotNull(code);
+    }
+
     // ===== Phase 2: Interface dispatch ToCpp =====
 
     [Fact]
@@ -481,7 +490,7 @@ public class IRInstructionTests
         };
         instr.Arguments.Add("__this");
         var code = instr.ToCpp();
-        Assert.Contains("type_get_interface_vtable_checked", code);
+        Assert.Contains("obj_get_interface_vtable", code);
         Assert.Contains("methods[0]", code);
         Assert.Contains("ISpeak_TypeInfo", code);
     }

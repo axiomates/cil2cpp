@@ -21,50 +21,57 @@ struct Array; // forward declaration for Exception fields
 struct Exception : Object {
     // All BCL fields in declaration order (must match System.Exception field layout exactly
     // for compatibility with AOT-compiled IL that inherits from Exception)
-    Object* f_exceptionMethod;           // System.Exception._exceptionMethod (MethodBase*)
-    String* f_message;                   // System.Exception._message
-    Object* f_data;                      // System.Exception._data (IDictionary*)
-    Exception* f_innerException;         // System.Exception._innerException
-    String* f_helpURL;                   // System.Exception._helpURL
-    Array* f_stackTrace;                 // System.Exception._stackTrace (Object[])
-    Array* f_watsonBuckets;              // System.Exception._watsonBuckets (byte[])
-    String* f_stackTraceString;          // System.Exception._stackTraceString
-    String* f_remoteStackTraceString;    // System.Exception._remoteStackTraceString
-    Array* f_dynamicMethods;             // System.Exception._dynamicMethods (Object[])
-    String* f_source;                    // System.Exception._source
-    UIntPtr f_ipForWatsonBuckets;        // System.Exception._ipForWatsonBuckets
-    IntPtr f_xptrs;                      // System.Exception._xptrs
-    Int32 f_xcode;                       // System.Exception._xcode
-    Int32 f_HResult;                     // System.Exception._HResult
+    Object* f__exceptionMethod;           // System.Exception._exceptionMethod (MethodBase*)
+    String* f__message;                   // System.Exception._message
+    Object* f__data;                      // System.Exception._data (IDictionary*)
+    Exception* f__innerException;         // System.Exception._innerException
+    String* f__helpURL;                   // System.Exception._helpURL
+    Array* f__stackTrace;                 // System.Exception._stackTrace (Object[])
+    Array* f__watsonBuckets;              // System.Exception._watsonBuckets (byte[])
+    String* f__stackTraceString;          // System.Exception._stackTraceString
+    String* f__remoteStackTraceString;    // System.Exception._remoteStackTraceString
+    Array* f__dynamicMethods;             // System.Exception._dynamicMethods (Object[])
+    String* f__source;                    // System.Exception._source
+    UIntPtr f__ipForWatsonBuckets;        // System.Exception._ipForWatsonBuckets
+    IntPtr f__xptrs;                      // System.Exception._xptrs
+    Int32 f__xcode;                       // System.Exception._xcode
+    Int32 f__HResult;                     // System.Exception._HResult
 
     // Convenience aliases for runtime C++ code
-    String*& message() { return f_message; }
-    Exception*& inner_exception() { return f_innerException; }
-    String*& stack_trace() { return f_stackTraceString; }
+    String*& message() { return f__message; }
+    Exception*& inner_exception() { return f__innerException; }
+    String*& stack_trace() { return f__stackTraceString; }
 };
 
 // --- Exception ICall implementations (RuntimeProvided type — IL bodies are MissingBody) ---
+inline void exception_ctor_default(Exception* __this) {
+    // No-op: fields already zero-initialized by GC allocation.
+    (void)__this;
+}
 inline void exception_ctor_string(Exception* __this, String* message) {
-    __this->f_message = message;
+    __this->f__message = message;
 }
 inline void exception_ctor_string_exception(Exception* __this, String* message, Exception* inner) {
-    __this->f_message = message;
-    __this->f_innerException = inner;
+    __this->f__message = message;
+    __this->f__innerException = inner;
 }
 inline String* exception_get_message(Exception* __this) {
-    return __this->f_message;
+    return __this->f__message;
 }
 inline Exception* exception_get_inner_exception(Exception* __this) {
-    return __this->f_innerException;
+    return __this->f__innerException;
 }
 inline int32_t exception_get_hresult(Exception* __this) {
-    return __this->f_HResult;
+    return __this->f__HResult;
 }
 inline void exception_set_hresult(Exception* __this, int32_t value) {
-    __this->f_HResult = value;
+    __this->f__HResult = value;
 }
 inline String* exception_get_stack_trace(Exception* __this) {
-    return __this->f_stackTraceString;
+    return __this->f__stackTraceString;
+}
+inline Object* exception_get_data(Exception* __this) {
+    return reinterpret_cast<Object*>(__this->f__data);
 }
 
 // --- SystemException hierarchy ---
@@ -73,17 +80,17 @@ struct IndexOutOfRangeException : Exception {};
 struct InvalidCastException : Exception {};
 struct InvalidOperationException : Exception {};
 struct ObjectDisposedException : InvalidOperationException {
-    String* f_objectName;  // System.ObjectDisposedException._objectName
+    String* f__objectName;  // System.ObjectDisposedException._objectName
 };
 struct NotSupportedException : Exception {};
 struct PlatformNotSupportedException : NotSupportedException {};
 struct NotImplementedException : Exception {};
 struct ArgumentException : Exception {
-    String* f_paramName;   // System.ArgumentException._paramName
+    String* f__paramName;   // System.ArgumentException._paramName
 };
 struct ArgumentNullException : ArgumentException {};
 struct ArgumentOutOfRangeException : ArgumentException {
-    Object* f_actualValue;
+    Object* f__actualValue;
 };
 struct ArithmeticException : Exception {};
 struct OverflowException : ArithmeticException {};
@@ -92,14 +99,14 @@ struct FormatException : Exception {};
 struct RankException : Exception {};
 struct ArrayTypeMismatchException : Exception {};
 struct TypeInitializationException : Exception {
-    String* f_typeName;  // System.TypeInitializationException._typeName
+    String* f__typeName;  // System.TypeInitializationException._typeName
 };
 struct TimeoutException : Exception {};
 
 // --- Task-related exceptions ---
 struct AggregateException : Exception {
-    void* f_innerExceptions;  // ReadOnlyCollection<Exception> — BCL: AggregateException._innerExceptions
-    void* f_rocView;          // ReadOnlyCollection<Exception> — BCL: AggregateException._rocView (cached view)
+    void* f__innerExceptions;  // ReadOnlyCollection<Exception> — BCL: AggregateException._innerExceptions
+    void* f__rocView;          // ReadOnlyCollection<Exception> — BCL: AggregateException._rocView (cached view)
 };
 
 // Forward declaration for CancellationToken (full definition in cancellation.h)
@@ -109,20 +116,23 @@ struct CancellationTokenSource;
 // OperationCanceledException needs it as a field. cancellation.h includes exception.h,
 // so this definition is available everywhere without circular dependencies.
 struct CancellationToken {
-    CancellationTokenSource* f_source;
+    CancellationTokenSource* f__source;
 };
 
 struct OperationCanceledException : Exception {
-    CancellationToken f_cancellationToken;  // System.OperationCanceledException._cancellationToken
+    CancellationToken f__cancellationToken;  // System.OperationCanceledException._cancellationToken
 };
 struct TaskCanceledException : OperationCanceledException {
-    void* f_canceledTask;  // System.Threading.Tasks.TaskCanceledException._canceledTask
+    void* f__canceledTask;  // System.Threading.Tasks.TaskCanceledException._canceledTask
 };
 
 // --- IO ---
 struct IOException : Exception {};
 struct FileNotFoundException : IOException {};
 struct DirectoryNotFoundException : IOException {};
+
+// --- Reflection ---
+struct MissingMethodException : Exception {};
 
 // --- Collections ---
 struct KeyNotFoundException : Exception {};
@@ -197,6 +207,7 @@ extern thread_local ExceptionContext* g_exception_context;
 [[noreturn]] void throw_io_exception(const char* message);
 [[noreturn]] void throw_file_not_found(const char* path);
 [[noreturn]] void throw_directory_not_found(const char* path);
+[[noreturn]] void throw_missing_method();
 
 /**
  * Get current exception (in catch block).

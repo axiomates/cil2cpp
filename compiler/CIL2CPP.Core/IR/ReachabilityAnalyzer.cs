@@ -777,17 +777,61 @@ public class ReachabilityAnalyzer
     {
         if (method.Parameters.Count == 0)
             return "";
-        return string.Join(",", method.Parameters.Select(p =>
+        return string.Join(",", method.Parameters.Select(p => NormalizeParamType(p.ParameterType)));
+    }
+
+    /// <summary>
+    /// Normalize a parameter type for virtual dispatch matching.
+    /// Recursively replaces GenericParameter names (T, TKey, etc.) with !N/!!N format
+    /// so ParamSignaturesMatch's generic fallback triggers correctly.
+    /// Handles both top-level GenericParameter and GenericParameter nested inside
+    /// GenericInstanceType (e.g., ReadOnlySpan&lt;T&gt; → ReadOnlySpan&lt;!0&gt;).
+    /// </summary>
+    private static string NormalizeParamType(TypeReference type)
+    {
+        if (type is GenericParameter gp)
+            return gp.Type == GenericParameterType.Type ? $"!{gp.Position}" : $"!!{gp.Position}";
+
+        if (type is GenericInstanceType git)
         {
-            // Normalize GenericParameter names (T, TKey, TValue, etc.) to !N format
-            // so ParamSignaturesMatch's generic fallback ("contains '!'") triggers correctly.
-            // Without this, IEqualityComparer<T>.GetHashCode(T) has sig="T" which doesn't match
-            // OrdinalComparer.GetHashCode(String) sig="System.String", and the "!" fallback
-            // doesn't trigger because "T" doesn't contain '!'.
-            if (p.ParameterType is GenericParameter gp)
-                return gp.Type == GenericParameterType.Type ? $"!{gp.Position}" : $"!!{gp.Position}";
-            return p.ParameterType.FullName;
-        }));
+            // Check if any generic argument contains a GenericParameter
+            bool hasGenericParam = false;
+            foreach (var arg in git.GenericArguments)
+            {
+                if (ContainsGenericParameter(arg))
+                {
+                    hasGenericParam = true;
+                    break;
+                }
+            }
+            if (hasGenericParam)
+            {
+                var args = string.Join(",", git.GenericArguments.Select(NormalizeParamType));
+                return $"{git.ElementType.FullName}<{args}>";
+            }
+        }
+
+        if (type is ByReferenceType byRef)
+            return NormalizeParamType(byRef.ElementType) + "&";
+
+        if (type is ArrayType arr)
+            return NormalizeParamType(arr.ElementType) + "[]";
+
+        if (type is PointerType ptr)
+            return NormalizeParamType(ptr.ElementType) + "*";
+
+        return type.FullName;
+    }
+
+    private static bool ContainsGenericParameter(TypeReference type)
+    {
+        if (type is GenericParameter) return true;
+        if (type is GenericInstanceType git)
+            return git.GenericArguments.Any(ContainsGenericParameter);
+        if (type is ByReferenceType byRef) return ContainsGenericParameter(byRef.ElementType);
+        if (type is ArrayType arr) return ContainsGenericParameter(arr.ElementType);
+        if (type is PointerType ptr) return ContainsGenericParameter(ptr.ElementType);
+        return false;
     }
 
     private bool IsUserAssembly(TypeDefinition type)

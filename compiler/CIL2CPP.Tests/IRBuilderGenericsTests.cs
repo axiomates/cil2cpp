@@ -540,7 +540,7 @@ public class IRBuilderGenericsTests
             && t.ILFullName.Contains("System.Int32"));
         Assert.NotNull(tcsInt);
         Assert.False(tcsInt!.IsValueType);
-        Assert.Contains(tcsInt.Fields, f => f.CppName == "f_task");
+        Assert.Contains(tcsInt.Fields, f => f.CppName == "f__task");
     }
 
     [Fact]

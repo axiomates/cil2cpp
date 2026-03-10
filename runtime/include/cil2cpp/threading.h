@@ -95,11 +95,11 @@ struct ManagedThread : Object {
     Delegate* start_delegate;   // ThreadStart delegate
     Int32 managed_id;           // Managed thread ID
     std::atomic<Int32> state;   // 0=unstarted, 1=running, 2=stopped
-    void* f_executionContext;        // BCL: Thread._executionContext (ExecutionContext)
-    void* f_synchronizationContext;  // BCL: Thread._synchronizationContext (SynchronizationContext)
-    String* f_name;                  // BCL: Thread._name
-    void* f_startHelper;             // BCL: Thread._startHelper (StartHelper)
-    bool f_mayNeedResetForThreadPool; // BCL: Thread._mayNeedResetForThreadPool
+    void* f__executionContext;        // BCL: Thread._executionContext (ExecutionContext)
+    void* f__synchronizationContext;  // BCL: Thread._synchronizationContext (SynchronizationContext)
+    String* f__name;                  // BCL: Thread._name
+    void* f__startHelper;             // BCL: Thread._startHelper (StartHelper)
+    bool f__mayNeedResetForThreadPool; // BCL: Thread._mayNeedResetForThreadPool
     bool is_background;              // Thread.IsBackground flag
 };
 

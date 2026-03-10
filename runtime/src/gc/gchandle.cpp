@@ -2,11 +2,12 @@
  * CIL2CPP Runtime - GCHandle Implementation
  *
  * Handle table backed by a vector + free list.
- * - Normal/Pinned: strong reference via GC_MALLOC_UNCOLLECTABLE slot.
- * - Weak/WeakTrackResurrection: uses BoehmGC's GC_register_disappearing_link
- *   so the handle is automatically cleared when the object is collected.
- *   BoehmGC treats both Weak and WeakTrackResurrection the same (no distinction
- *   for resurrection tracking in conservative GC).
+ * - Normal/Pinned: strong reference (kept in GC-visible table).
+ * - Weak/WeakTrackResurrection: stored as raw pointers. Currently
+ *   weak handles do NOT auto-clear when the object is collected.
+ *   This is a known limitation — BoehmGC's GC_register_disappearing_link
+ *   deadlocks when other threads are blocked in native calls (e.g. accept()).
+ *   Proper fix: GC-safe transitions before blocking native calls.
  */
 
 #include <cil2cpp/gchandle.h>
@@ -29,13 +30,16 @@ std::mutex g_handle_mutex;
 std::vector<HandleEntry> g_handle_table;
 std::vector<int32_t> g_free_list;
 
-// Handle encoding: index + 1 (0 is reserved for "no handle")
+// Handle encoding: (index + 1) << 1 — always even.
+// .NET's managed GCHandle uses the low bit as a "pinned" flag
+// (OR 1 for pinned, AND ~1 in GetHandleValue). Our internal handles
+// must be even so the low bit is available for that flag.
 intptr_t encode_handle(int32_t index) {
-    return static_cast<intptr_t>(index + 1);
+    return static_cast<intptr_t>((index + 1) << 1);
 }
 
 int32_t decode_handle(intptr_t handle) {
-    return static_cast<int32_t>(handle) - 1;
+    return static_cast<int32_t>(handle >> 1) - 1;
 }
 
 bool is_weak_type(GCHandleType type) {
@@ -66,11 +70,16 @@ intptr_t gchandle_alloc(void* obj, GCHandleType type) {
 
     g_handle_table[index] = { obj, type, true };
 
-    // For weak handles, register a disappearing link with BoehmGC.
-    // When the object is collected, BoehmGC will set the link to NULL.
-    if (is_weak_type(type) && obj != nullptr) {
-        GC_register_disappearing_link(&g_handle_table[index].object);
-    }
+    // NOTE: We intentionally do NOT call GC_register_disappearing_link here.
+    // That function acquires BoehmGC's internal allocation lock, which can
+    // deadlock if another GC-registered thread is blocked in a native call
+    // (e.g. accept(), recv()). BoehmGC tries to stop-the-world to synchronize,
+    // but can't properly handle threads suspended in kernel calls.
+    //
+    // This means weak handles won't auto-clear on collection. Since BoehmGC
+    // is conservative GC (may not collect objects with ambiguous roots anyway),
+    // this is acceptable. The proper fix is GC-safe transitions before blocking
+    // native calls (future work).
 
     return encode_handle(index);
 }
@@ -84,10 +93,6 @@ void gchandle_free(intptr_t handle) {
 
     auto& entry = g_handle_table[index];
     if (entry.allocated) {
-        // Unregister disappearing link for weak handles
-        if (is_weak_type(entry.type) && entry.object != nullptr) {
-            GC_unregister_disappearing_link(&entry.object);
-        }
         entry.allocated = false;
         entry.object = nullptr;
         g_free_list.push_back(index);
@@ -114,18 +119,7 @@ void gchandle_set(intptr_t handle, void* obj) {
 
     auto& entry = g_handle_table[index];
     if (entry.allocated) {
-        // Update disappearing link for weak handles
-        if (is_weak_type(entry.type)) {
-            if (entry.object != nullptr) {
-                GC_unregister_disappearing_link(&entry.object);
-            }
-            entry.object = obj;
-            if (obj != nullptr) {
-                GC_register_disappearing_link(&entry.object);
-            }
-        } else {
-            entry.object = obj;
-        }
+        entry.object = obj;
     }
 }
 

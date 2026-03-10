@@ -1060,8 +1060,8 @@ public class IRBuilderFeaturesTests
             && t.ILFullName.StartsWith("System.Span`1<"));
         Assert.NotNull(spanInt);
         Assert.True(spanInt.IsValueType);
-        Assert.True(spanInt.Fields.Any(f => f.CppName == "f_reference"));
-        Assert.True(spanInt.Fields.Any(f => f.CppName == "f_length"));
+        Assert.True(spanInt.Fields.Any(f => f.CppName == "f__reference"));
+        Assert.True(spanInt.Fields.Any(f => f.CppName == "f__length"));
     }
 
     [Fact]

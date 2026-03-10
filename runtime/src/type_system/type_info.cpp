@@ -11,6 +11,16 @@
 #include <unordered_map>
 #include <string>
 #include <cstring>
+#include <cstdio>
+
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#include <dbghelp.h>
+#pragma comment(lib, "dbghelp.lib")
+#endif
 
 namespace cil2cpp {
 
@@ -139,21 +149,78 @@ InterfaceVTable* type_get_interface_vtable(TypeInfo* type, TypeInfo* interface_t
         }
         current = current->base_type;
     }
-    return nullptr;
+    // Array generic interface adapter: T[] implements ICollection<T>, IList<T>, etc.
+    return array_get_generic_interface_vtable(type, interface_type);
 }
 
 InterfaceVTable* type_get_interface_vtable_checked(TypeInfo* type, TypeInfo* interface_type) {
     auto* result = type_get_interface_vtable(type, interface_type);
     if (!result) {
-#ifndef NDEBUG
         fprintf(stderr, "[InvalidCast] type_get_interface_vtable_checked FAILED: type='%s' does not implement interface='%s'\n",
             type ? (type->full_name ? type->full_name : "?") : "null",
             interface_type ? (interface_type->full_name ? interface_type->full_name : "?") : "null");
-        fflush(stderr);
+#ifdef _WIN32
+        {
+            void* stack[32];
+            USHORT frames = CaptureStackBackTrace(0, 32, stack, NULL);
+            HANDLE process = GetCurrentProcess();
+            SymInitialize(process, NULL, TRUE);
+            for (USHORT i = 0; i < frames && i < 12; i++) {
+                char buf[sizeof(SYMBOL_INFO) + 256];
+                SYMBOL_INFO* sym = (SYMBOL_INFO*)buf;
+                sym->SizeOfStruct = sizeof(SYMBOL_INFO);
+                sym->MaxNameLen = 255;
+                if (SymFromAddr(process, (DWORD64)stack[i], NULL, sym))
+                    fprintf(stderr, "  [%u] %s\n", i, sym->Name);
+            }
+            SymCleanup(process);
+        }
 #endif
+        fflush(stderr);
         throw_invalid_cast();
     }
     return result;
+}
+
+InterfaceVTable* obj_get_interface_vtable(Object* obj, TypeInfo* interface_type) {
+    if (!obj) throw_null_reference();
+
+    // First try normal lookup on the object's type
+    auto* result = type_get_interface_vtable(obj->__type_info, interface_type);
+    if (result) return result;
+
+    // Check if this is an array: arrays have element_type == __type_info
+    // Array layout: Object { __type_info, __sync_block } + element_type + length + data
+    auto* as_arr = reinterpret_cast<Array*>(obj);
+    if (as_arr->element_type == obj->__type_info && as_arr->length >= 0) {
+        // This is an array — try the array generic interface adapter
+        result = array_get_generic_interface_vtable(obj->__type_info, interface_type);
+        if (result) return result;
+    }
+
+    // Not found — throw InvalidCastException with diagnostic info
+    fprintf(stderr, "[InvalidCast] obj_get_interface_vtable FAILED: type='%s' does not implement interface='%s'\n",
+        (obj->__type_info && obj->__type_info->full_name) ? obj->__type_info->full_name : "?",
+        (interface_type && interface_type->full_name) ? interface_type->full_name : "?");
+#ifdef _WIN32
+    {
+        void* stack[16];
+        USHORT frames = CaptureStackBackTrace(0, 16, stack, NULL);
+        HANDLE process = GetCurrentProcess();
+        SymInitialize(process, NULL, TRUE);
+        for (USHORT i = 0; i < frames && i < 8; i++) {
+            char buf[sizeof(SYMBOL_INFO) + 256];
+            SYMBOL_INFO* sym = (SYMBOL_INFO*)buf;
+            sym->SizeOfStruct = sizeof(SYMBOL_INFO);
+            sym->MaxNameLen = 255;
+            if (SymFromAddr(process, (DWORD64)stack[i], NULL, sym))
+                fprintf(stderr, "  [%u] %s\n", i, sym->Name);
+        }
+        SymCleanup(process);
+    }
+#endif
+    fflush(stderr);
+    throw_invalid_cast();
 }
 
 TypeInfo* type_get_by_name(const char* full_name) {
@@ -266,12 +333,10 @@ Object* object_cast(Object* obj, TypeInfo* type) {
     if (object_is_instance_of(obj, type)) {
         return obj;
     }
-#ifndef NDEBUG
     fprintf(stderr, "[InvalidCast] object_cast FAILED: obj type='%s' cannot cast to '%s'\n",
         (obj && obj->__type_info && obj->__type_info->full_name) ? obj->__type_info->full_name : "?",
         (type && type->full_name) ? type->full_name : "?");
     fflush(stderr);
-#endif
     throw_invalid_cast();
 }
 

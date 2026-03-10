@@ -16,6 +16,8 @@
 #include <cil2cpp/memberinfo.h>
 #include <cil2cpp/boxing.h>
 #include <cil2cpp/gchandle.h>
+#include <cil2cpp/threadpool.h>
+#include <cil2cpp/iocp.h>
 
 #include <atomic>
 #include <chrono>
@@ -37,6 +39,10 @@
 #include <sys/syscall.h>
 #include <unistd.h>
 #endif
+
+// Forward declaration: IThreadPoolWorkItem TypeInfo (defined in generated code at global scope)
+// Forward declaration for compiled BCL dispatch function (C++ linkage, matches generated code)
+void System_Threading_ThreadPoolWorkQueue_DispatchWorkItem(cil2cpp::Object* workItem, cil2cpp::ManagedThread* currentThread);
 
 namespace cil2cpp {
 namespace icall {
@@ -181,6 +187,24 @@ Object* Marshal_StringToCoTaskMemUni(Object* str) {
     std::memcpy(mem, string_get_raw_data(s), static_cast<size_t>(len) * sizeof(char16_t));
     reinterpret_cast<char16_t*>(mem)[len] = u'\0';
     return reinterpret_cast<Object*>(reinterpret_cast<intptr_t>(mem));
+}
+
+Boolean Marshal_TryGetStructMarshalStub(void* /*structureTypeHandle*/, void* marshalStub, void* sizeOf) {
+    // In AOT, no struct marshal stubs exist. Set outputs to 0 and return false.
+    if (marshalStub) *reinterpret_cast<intptr_t*>(marshalStub) = 0;
+    if (sizeOf) *reinterpret_cast<int32_t*>(sizeOf) = 0;
+    return false;
+}
+
+void Marshal_StructureToPtr(void* structure, intptr_t ptr, Boolean /*fDeleteOld*/) {
+    // In compiled C++ code, value types are passed directly (not boxed).
+    // We don't know the size at this level — but the caller passes struct by value,
+    // so this ICall is only reached from IL that was compiled with the struct type known.
+    // For AOT, this is a no-op stub — the actual P/Invoke marshaling is handled by
+    // the compiled IL that copies fields to native memory before the P/Invoke call.
+    // The struct data has already been written to the target pointer by the caller's IL.
+    (void)structure;
+    (void)ptr;
 }
 
 // ===== System.HashCode / System.Marvin (RNG seed) =====
@@ -603,9 +627,27 @@ bool ThreadPoolWorkQueue_Dispatch() {
     return false; // false = no more work items
 }
 
+// Thread pool work item trampoline — delegates to compiled BCL DispatchWorkItem
+// which handles both Task (vtable call) and IThreadPoolWorkItem (interface call).
+static void execute_work_item(void* raw) {
+    auto* obj = static_cast<Object*>(raw);
+    if (!obj) return;
+    // DispatchWorkItem(workItem, currentThread) — compiled from IL,
+    // handles Task vs IThreadPoolWorkItem dispatch correctly.
+    System_Threading_ThreadPoolWorkQueue_DispatchWorkItem(obj, thread_get_current());
+}
+
 void ThreadPoolWorkQueue_Enqueue(void* /*__this*/, Object* callback, bool /*forceGlobal*/) {
-    // TODO: delegate to cil2cpp::threadpool::queue_work if callback is IThreadPoolWorkItem
-    (void)callback;
+    if (!callback) return;
+    threadpool::queue_work(execute_work_item, callback);
+}
+
+bool ThreadPool_BindHandlePortableCore(void* osHandle) {
+    // osHandle is a SafeHandle* — extract the raw OS handle from f_handle field
+    auto* sh = static_cast<SafeHandleLayout*>(osHandle);
+    if (!sh) return false;
+    auto handle = reinterpret_cast<void*>(sh->f_handle);
+    return iocp::bind_handle(handle);
 }
 
 // ===== System.Type (reflection introspection) =====

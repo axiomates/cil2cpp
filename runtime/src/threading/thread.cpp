@@ -82,6 +82,11 @@ void start(ManagedThread* t) {
     if (!t) throw_null_reference();
     if (t->state.load(std::memory_order_acquire) != 0) throw_invalid_operation();
 
+    // Assign managed ID if not yet set (IL-constructed threads skip thread::create)
+    if (t->managed_id == 0) {
+        t->managed_id = g_next_managed_id.fetch_add(1, std::memory_order_relaxed);
+    }
+
     // Create the native thread
     auto* native = new std::thread(thread_entry, t);
     t->native_handle = native;

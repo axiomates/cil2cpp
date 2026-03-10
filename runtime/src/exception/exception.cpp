@@ -11,12 +11,16 @@
 #include <type_traits>
 
 // Platform-specific headers for stack trace capture
+#ifdef _WIN32
+    #ifndef WIN32_LEAN_AND_MEAN
+    #define WIN32_LEAN_AND_MEAN
+    #endif
+    #include <windows.h>
+    #include <dbghelp.h>
+    #pragma comment(lib, "dbghelp.lib")
+#endif
 #ifdef CIL2CPP_DEBUG
     #if defined(CIL2CPP_WINDOWS)
-        #ifndef WIN32_LEAN_AND_MEAN
-        #define WIN32_LEAN_AND_MEAN
-        #endif
-        #include <windows.h>
         #include <dbghelp.h>
     #elif defined(CIL2CPP_POSIX)
         #include <execinfo.h>
@@ -64,8 +68,8 @@ extern TypeInfo KeyNotFoundException_TypeInfo;
         if (obj->__type_info && obj->__type_info->name) typeName = obj->__type_info->name;
         const char* msg = "(no msg)";
         char* msgBuf = nullptr;
-        if (ex->f_message) {
-            msgBuf = string_to_utf8(ex->f_message);
+        if (ex->f__message) {
+            msgBuf = string_to_utf8(ex->f__message);
             if (msgBuf) msg = msgBuf;
         }
         fprintf(stderr, "DBG THROW: type=%s msg=%s\n", typeName, msg); fflush(stderr);
@@ -87,8 +91,8 @@ extern TypeInfo KeyNotFoundException_TypeInfo;
     // Runtime throw_* functions already set this via create_exception(),
     // but user code (throw new Exception(...)) goes through newobj + .ctor
     // which doesn't capture a trace — so we capture it here at throw time.
-    if (ex && !ex->f_stackTraceString) {
-        ex->f_stackTraceString = capture_stack_trace();
+    if (ex && !ex->f__stackTraceString) {
+        ex->f__stackTraceString = capture_stack_trace();
     }
 
     // Skip contexts that are in catch (state=1) or finally (state=2) state.
@@ -112,8 +116,8 @@ extern TypeInfo KeyNotFoundException_TypeInfo;
 
     // No exception handler — unhandled exception
     fprintf(stderr, "\nUnhandled exception: ");
-    if (ex && ex->f_message) {
-        auto msg = string_to_utf8(ex->f_message);
+    if (ex && ex->f__message) {
+        auto msg = string_to_utf8(ex->f__message);
         if (msg) {
             fprintf(stderr, "%s\n", msg);
             free(msg);
@@ -124,14 +128,15 @@ extern TypeInfo KeyNotFoundException_TypeInfo;
         fprintf(stderr, "(no message)\n");
     }
 
-    if (ex && ex->f_stackTraceString) {
-        auto trace = string_to_utf8(ex->f_stackTraceString);
+    if (ex && ex->f__stackTraceString) {
+        auto trace = string_to_utf8(ex->f__stackTraceString);
         if (trace) {
             fprintf(stderr, "Stack trace:\n%s", trace);
             free(trace);
         }
     }
 
+    fflush(stderr);
     std::abort();
 }
 
@@ -140,10 +145,10 @@ static T* create_exception(TypeInfo* type, const char* message) {
     static_assert(std::is_base_of_v<Exception, T>, "T must derive from Exception");
     T* ex = static_cast<T*>(gc::alloc(sizeof(T), type));
     if (message) {
-        ex->f_message = string_literal(message);
+        ex->f__message = string_literal(message);
     }
-    ex->f_innerException = nullptr;
-    ex->f_stackTraceString = capture_stack_trace();
+    ex->f__innerException = nullptr;
+    ex->f__stackTraceString = capture_stack_trace();
     return ex;
 }
 
@@ -613,6 +618,7 @@ EXCEPTION_TYPEINFO(KeyNotFoundException,            "System.Collections.Generic"
 EXCEPTION_TYPEINFO(IOException,                    "System.IO", "System.IO.IOException",                    Exception)
 EXCEPTION_TYPEINFO(FileNotFoundException,          "System.IO", "System.IO.FileNotFoundException",          IOException)
 EXCEPTION_TYPEINFO(DirectoryNotFoundException,     "System.IO", "System.IO.DirectoryNotFoundException",     IOException)
+EXCEPTION_TYPEINFO(MissingMethodException,         "System", "System.MissingMethodException",               Exception)
 
 #undef EXCEPTION_TYPEINFO
 
@@ -632,6 +638,12 @@ EXCEPTION_TYPEINFO(DirectoryNotFoundException,     "System.IO", "System.IO.Direc
     char buf[512];
     snprintf(buf, sizeof(buf), "Could not find a part of the path '%s'.", path ? path : "");
     Exception* ex = create_exception(&DirectoryNotFoundException_TypeInfo, buf);
+    throw_exception(ex);
+}
+
+[[noreturn]] void throw_missing_method() {
+    Exception* ex = create_exception(&MissingMethodException_TypeInfo,
+                                      "No parameterless constructor defined for type.");
     throw_exception(ex);
 }
 

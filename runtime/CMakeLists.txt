@@ -110,6 +110,7 @@ set(RUNTIME_SOURCES
     src/async/task.cpp
     src/async/threadpool.cpp
     src/async/cancellation.cpp
+    src/async/iocp.cpp
     src/async/async_enumerable.cpp
     src/threading/monitor.cpp
     src/threading/interlocked.cpp

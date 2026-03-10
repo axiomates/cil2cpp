@@ -201,15 +201,11 @@ public static class CppNameMapper
         var backtickIdx = ilTypeName.IndexOf('`');
         if (backtickIdx > 0 && ilTypeName.Contains('<'))
         {
-            // Find the generic '<' after the backtick, not an earlier '<' from
-            // compiler-generated names like "<InvokeAsync>d__7`1<...>"
-            var angleBracket = ilTypeName.IndexOf('<', backtickIdx);
+            var angleBracket = FindGenericArgsOpen(ilTypeName, backtickIdx);
             if (angleBracket > 0)
             {
                 var openTypeName = ilTypeName[..angleBracket];
                 var argsStr = ilTypeName[(angleBracket + 1)..^1];
-                // Use ParseGenericArgs for correct handling of nested generics
-                // (Split(',') breaks on commas inside nested angle brackets)
                 var args = ParseGenericArgs(argsStr);
                 return MangleGenericInstanceTypeName(openTypeName, args);
             }
@@ -315,13 +311,9 @@ public static class CppNameMapper
         var backtickIdx = ilFullName.IndexOf('`');
         if (backtickIdx > 0 && ilFullName.Contains('<') && ilFullName.EndsWith(">"))
         {
-            // Find the generic '<' that comes AFTER the backtick, not an earlier '<' from
-            // compiler-generated names like "<InvokeAsync>d__7`1<...>".
-            // The generic '<' immediately follows the arity suffix (e.g., `1<, `2<).
-            var angleBracket = ilFullName.IndexOf('<', backtickIdx);
+            var angleBracket = FindGenericArgsOpen(ilFullName, backtickIdx);
             if (angleBracket < 0)
             {
-                // No '<' after backtick — not actually a generic instance
                 return MangleTypeName(ilFullName);
             }
             var openTypeName = ilFullName[..angleBracket];
@@ -333,6 +325,28 @@ public static class CppNameMapper
             return $"{baseName}_{string.Join("_", cleanArgs)}";
         }
         return MangleTypeName(ilFullName);
+    }
+
+    /// <summary>
+    /// Find the position of the outermost generic '&lt;' that matches the closing '&gt;' at the end of the string.
+    /// Scans backward from the end to correctly handle compiler-generated names like
+    /// "&lt;WaitForConnectionAsync&gt;d__6" which contain '&lt;&gt;' that are NOT generic brackets.
+    /// Returns -1 if no matching '&lt;' is found at or after <paramref name="minPos"/>.
+    /// </summary>
+    internal static int FindGenericArgsOpen(string name, int minPos = 0)
+    {
+        if (!name.EndsWith(">")) return -1;
+        int depth = 0;
+        for (int i = name.Length - 1; i >= minPos; i--)
+        {
+            if (name[i] == '>') depth++;
+            else if (name[i] == '<')
+            {
+                depth--;
+                if (depth == 0) return i;
+            }
+        }
+        return -1;
     }
 
     /// <summary>
@@ -394,9 +408,11 @@ public static class CppNameMapper
     /// </summary>
     public static string MangleFieldName(string fieldName)
     {
-        // Remove leading underscore common in C# private fields
-        var name = fieldName.TrimStart('_');
-        if (name.Length == 0) name = fieldName;
+        // Preserve leading underscores to avoid field name collisions.
+        // Base class 'handle' → f_handle, derived class '_handle' → f__handle.
+        // Stripping underscores caused SafeHandle.handle and SafeFreeCredentials._handle
+        // to both map to f_handle, silently dropping the derived field from struct layout.
+        var name = fieldName;
 
         // Handle compiler-generated backing field names like <Name>k__BackingField
         name = name.Replace("<", "_").Replace(">", "_");

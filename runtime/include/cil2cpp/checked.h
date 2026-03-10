@@ -15,26 +15,34 @@ namespace cil2cpp {
 
 // Signed checked arithmetic
 
-template<typename T>
-T checked_add(T a, T b) {
-    static_assert(std::is_signed_v<T>, "Use checked_add_un for unsigned types");
+template<typename T1, typename T2>
+auto checked_add(T1 a_, T2 b_) {
+    using CT = std::common_type_t<T1, T2>;
+    using T = std::conditional_t<std::is_unsigned_v<CT>, std::make_signed_t<CT>, CT>;
+    T a = static_cast<T>(a_), b = static_cast<T>(b_);
     if (b > 0 && a > std::numeric_limits<T>::max() - b) throw_overflow();
     if (b < 0 && a < std::numeric_limits<T>::min() - b) throw_overflow();
     return a + b;
 }
 
-template<typename T>
-T checked_sub(T a, T b) {
-    static_assert(std::is_signed_v<T>, "Use checked_sub_un for unsigned types");
+template<typename T1, typename T2>
+auto checked_sub(T1 a_, T2 b_) {
+    using CT = std::common_type_t<T1, T2>;
+    using T = std::conditional_t<std::is_unsigned_v<CT>, std::make_signed_t<CT>, CT>;
+    T a = static_cast<T>(a_), b = static_cast<T>(b_);
     if (b < 0 && a > std::numeric_limits<T>::max() + b) throw_overflow();
     if (b > 0 && a < std::numeric_limits<T>::min() + b) throw_overflow();
     return a - b;
 }
 
-template<typename T>
-T checked_mul(T a, T b) {
-    static_assert(std::is_signed_v<T>, "Use checked_mul_un for unsigned types");
-    if (a == 0 || b == 0) return 0;
+template<typename T1, typename T2>
+auto checked_mul(T1 a_, T2 b_) {
+    // IL mul.ovf operates on signed types, but operands may have mismatched
+    // signedness (e.g., uint64_t × int64_t). Promote to int64_t for safety.
+    using CT = std::common_type_t<T1, T2>;
+    using T = std::conditional_t<std::is_unsigned_v<CT>, std::make_signed_t<CT>, CT>;
+    T a = static_cast<T>(a_), b = static_cast<T>(b_);
+    if (a == 0 || b == 0) return static_cast<T>(0);
     if (a > 0) {
         if (b > 0) {
             if (a > std::numeric_limits<T>::max() / b) throw_overflow();

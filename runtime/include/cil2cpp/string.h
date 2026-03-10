@@ -14,17 +14,17 @@ namespace cil2cpp {
  */
 struct String : Object {
     // Length of the string (number of UTF-16 code units)
-    // IL field name: _stringLength → f_stringLength
+    // IL field name: _stringLength → f__stringLength
     union {
         Int32 length;
-        Int32 f_stringLength;
+        Int32 f__stringLength;
     };
 
     // UTF-16 character data (flexible array member)
-    // IL field name: _firstChar → f_firstChar
+    // IL field name: _firstChar → f__firstChar
     union {
         Char chars[1];
-        Char f_firstChar;
+        Char f__firstChar;
     };
 
     // Get the length of the string
@@ -114,7 +114,7 @@ inline Char string_get_chars(String* str, Int32 index) {
 }
 
 inline Char* string_get_raw_data(String* str) {
-    return str ? &str->f_firstChar : nullptr;
+    return str ? &str->f__firstChar : nullptr;
 }
 
 /**

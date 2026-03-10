@@ -6,6 +6,7 @@
 #include <cil2cpp/gchandle.h>
 #include <cil2cpp/unicode.h>
 #include <cil2cpp/globalization.h>
+#include <cil2cpp/iocp.h>
 
 #ifdef CIL2CPP_WINDOWS
 #ifndef WIN32_LEAN_AND_MEAN
@@ -29,6 +30,7 @@ void runtime_init() {
     threadpool::init();
     unicode::init();
     globalization::init();
+    iocp::init();
 
 #ifdef CIL2CPP_WINDOWS
     // Force UTF-8 console mode. The BCL Console chain selects encoding based on
@@ -45,6 +47,7 @@ void runtime_set_args(int argc, char** argv) {
 }
 
 void runtime_shutdown() {
+    iocp::shutdown();
     globalization::shutdown();
     threadpool::shutdown();
     gc::collect();

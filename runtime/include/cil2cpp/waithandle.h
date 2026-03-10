@@ -30,7 +30,7 @@ struct String;
  * BCL IL accesses f_waitHandle (SafeWaitHandle) which holds the OS handle.
  */
 struct ManagedWaitHandle : Object {
-    void* f_waitHandle;     // SafeWaitHandle (generated flat struct, not our type)
+    void* f__waitHandle;     // SafeWaitHandle (generated flat struct, not our type)
 };
 
 /**

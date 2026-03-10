@@ -9,6 +9,72 @@ public partial class IRBuilder
     // Active generic type parameter map (set during ConvertMethodBodyWithGenerics)
     private Dictionary<string, string>? _activeTypeParamMap;
 
+    /// <summary>
+    /// Collect ALL generic parameters for a type, including parameters from declaring (parent) types.
+    /// Cecil's TypeDefinition.GenericParameters only includes the type's OWN params, but
+    /// GenericInstanceType.GenericArguments includes ALL params (parent + nested) in parent-first order.
+    /// For example, AsyncTaskMethodBuilder`1/AsyncStateMachineBox`1:
+    ///   - GenericParameters = [TStateMachine] (only the nested type's own param)
+    ///   - GenericArguments = [TResult, TStateMachine] (parent's TResult + nested's TStateMachine)
+    /// This method returns [TResult, TStateMachine] by walking the declaring type chain.
+    /// </summary>
+    private static List<GenericParameter> CollectAllGenericParameters(TypeDefinition type)
+    {
+        // Fast path: no declaring type → just use the type's own params
+        if (type.DeclaringType == null || !type.DeclaringType.HasGenericParameters)
+            return type.HasGenericParameters ? new List<GenericParameter>(type.GenericParameters) : new();
+
+        var chain = new List<TypeDefinition>();
+        var current = type;
+        while (current != null)
+        {
+            chain.Add(current);
+            current = current.DeclaringType;
+        }
+        chain.Reverse(); // outermost first
+
+        var allParams = new List<GenericParameter>();
+        foreach (var t in chain)
+        {
+            if (t.HasGenericParameters)
+                allParams.AddRange(t.GenericParameters);
+        }
+        return allParams;
+    }
+
+    /// <summary>
+    /// Build a type parameter map for a generic instantiation, correctly handling nested generic types.
+    /// When openType.GenericParameters.Count matches typeArguments.Count, uses direct mapping.
+    /// When they differ (nested type with parent args), walks the declaring type chain.
+    /// </summary>
+    private static Dictionary<string, string> BuildTypeParamMap(TypeDefinition openType, List<string> typeArguments)
+    {
+        var typeParamMap = new Dictionary<string, string>();
+        if (openType.GenericParameters.Count == typeArguments.Count)
+        {
+            // Direct mapping — counts match (non-nested, or nested with same param count as parent)
+            for (int i = 0; i < openType.GenericParameters.Count && i < typeArguments.Count; i++)
+                typeParamMap[openType.GenericParameters[i].Name] = typeArguments[i];
+        }
+        else
+        {
+            // Nested generic type — collect all params from the declaring chain
+            var allParams = CollectAllGenericParameters(openType);
+            if (allParams.Count == typeArguments.Count)
+            {
+                for (int i = 0; i < allParams.Count; i++)
+                    typeParamMap[allParams[i].Name] = typeArguments[i];
+            }
+            else
+            {
+                // Fallback: map what we can with direct params (shouldn't normally happen)
+                for (int i = 0; i < openType.GenericParameters.Count && i < typeArguments.Count; i++)
+                    typeParamMap[openType.GenericParameters[i].Name] = typeArguments[i];
+            }
+        }
+        return typeParamMap;
+    }
+
     // Deferred generic specialization bodies — collected in Pass 1.5, converted after Pass 3.3
     // (disambiguation). Converting bodies before disambiguation causes call sites to use
     // pre-disambiguation names (e.g., Dictionary__ctor instead of Dictionary__ctor__System_Int32).
@@ -233,6 +299,20 @@ public partial class IRBuilder
     }
 
     /// <summary>
+    /// <summary>
+    /// Checks if a type is a compiler-generated closure/display class.
+    /// These types have methods invoked indirectly through delegates, so
+    /// _calledSpecializedMethods won't track them. Their methods should
+    /// always be compiled when the type is discovered.
+    /// </summary>
+    private static bool IsCompilerGeneratedClosureType(Mono.Cecil.TypeDefinition typeDef)
+    {
+        if (typeDef == null) return false;
+        var name = typeDef.Name;
+        // C# compiler-generated: <>c__DisplayClass, <>c, <..>d__ (async state machines)
+        return name.StartsWith("<>") || name.Contains("__DisplayClass");
+    }
+
     /// Detects recursive generic instantiations where the open type appears
     /// nested within its own type arguments (e.g., DE&lt;DE&lt;DE&lt;BDD&gt;&gt;&gt;).
     /// This causes infinite growth during fixpoint monomorphization.
@@ -318,6 +398,12 @@ public partial class IRBuilder
         return false;
     }
 
+    /// <summary>
+    /// Build a type parameter map for a generic type, including parent type params for nested types.
+    /// For nested types like AsyncTaskMethodBuilder`1/AsyncStateMachineBox`1, the GenericParameters
+    /// on the nested type only includes its own params, but GenericInstanceType.GenericArguments
+    /// includes ALL params (parent + nested). This method collects params from the full chain.
+    /// </summary>
     private void CollectGenericType(TypeReference typeRef)
     {
         if (typeRef is not GenericInstanceType git) return;
@@ -380,14 +466,32 @@ public partial class IRBuilder
     /// </summary>
     private void EnsureComparerCompanionType(string openTypeName, List<string> typeArgs)
     {
-        string? companionOpenName = openTypeName switch
+        // Determine which companion types are needed for AOT.
+        // CreateDefaultComparer/CreateDefaultEqualityComparer use MakeGenericType +
+        // CreateInstanceForAnotherGenericParameter at runtime, so we must pre-generate
+        // all possible result types for the given T.
+        string[]? companionOpenNames = openTypeName switch
         {
-            "System.Collections.Generic.EqualityComparer`1" => "System.Collections.Generic.ObjectEqualityComparer`1",
-            "System.Collections.Generic.Comparer`1" => "System.Collections.Generic.ObjectComparer`1",
+            "System.Collections.Generic.Comparer`1" => new[] {
+                "System.Collections.Generic.ObjectComparer`1",
+                "System.Collections.Generic.GenericComparer`1",
+                "System.IComparable`1",  // needed by MakeGenericType check
+            },
+            "System.Collections.Generic.EqualityComparer`1" => new[] {
+                "System.Collections.Generic.ObjectEqualityComparer`1",
+                "System.Collections.Generic.GenericEqualityComparer`1",
+                "System.IEquatable`1",  // needed by MakeGenericType check
+            },
             _ => null
         };
-        if (companionOpenName == null) return;
+        if (companionOpenNames == null) return;
 
+        foreach (var companionOpenName in companionOpenNames)
+            EnsureGenericCompanionInstantiation(companionOpenName, typeArgs);
+    }
+
+    private void EnsureGenericCompanionInstantiation(string companionOpenName, List<string> typeArgs)
+    {
         var companionKey = $"{companionOpenName}<{string.Join(",", typeArgs)}>";
         if (_genericInstantiations.ContainsKey(companionKey)) return;
 
@@ -506,6 +610,12 @@ public partial class IRBuilder
             && (info.MethodName.Contains("Intrinsics") || info.MethodName.Contains("Numerics")))
             return;
 
+        // Skip methods that reference SIMD types in parameters, locals, or body instructions.
+        // E.g., IndexOfAnyVectorized<Negate, Default> takes Vector256<byte>* parameter —
+        // accessing fields on the opaque SIMD struct causes C++ errors.
+        if (ReferencesSimdTypes(cecilMethod))
+            return;
+
         // Find the declaring IRType
         if (!_typeCache.TryGetValue(info.DeclaringTypeName, out var declaringIrType))
             return;
@@ -597,12 +707,40 @@ public partial class IRBuilder
             // (callers are redirected to the ICall function by EmitMethodCall)
             if (irMethod.HasICallMapping) return;
 
+            // For abstract interface methods (static abstract/virtual), resolve to the
+            // implementing type's concrete method body. This handles constrained calls like:
+            //   constrained. Byte call INumberBase<Byte>.TryConvertToChecked<Int32>(...)
+            var bodyMethod = cecilMethod;
+            if (cecilMethod.IsAbstract && cecilMethod.DeclaringType.IsInterface)
+            {
+                bodyMethod = ResolveInterfaceMethodImplementation(cecilMethod, declaringIrType, typeParamMap);
+                if (bodyMethod != null && bodyMethod.HasBody)
+                    irMethod.IsAbstract = false; // Resolved to concrete implementation
+            }
+
+            // If body comes from a different method (e.g. resolved interface implementation),
+            // rebuild locals from the actual body method since it may have different/more locals.
+            if (bodyMethod != null && bodyMethod != cecilMethod && bodyMethod.HasBody)
+            {
+                irMethod.Locals.Clear();
+                var localParamMap = BuildMethodLevelGenericParamMap(bodyMethod, typeParamMap);
+                foreach (var localDef in bodyMethod.Body.Variables)
+                {
+                    var localTypeName = ResolveGenericTypeName(localDef.VariableType, localParamMap);
+                    irMethod.Locals.Add(new IRLocal
+                    {
+                        Index = localDef.Index,
+                        CppName = $"loc_{localDef.Index}",
+                        CppTypeName = ResolveTypeForDecl(localTypeName),
+                    });
+                }
+            }
+
             // Convert method body with generic substitution context
-            // (not added to methodBodies — we convert immediately with the type param map)
-            if (cecilMethod.HasBody && !cecilMethod.IsAbstract)
+            if (bodyMethod != null && bodyMethod.HasBody)
             {
                 // Skip methods with CLR-internal dependencies — generate stub instead
-                if (HasClrInternalDependencies(cecilMethod))
+                if (HasClrInternalDependencies(bodyMethod))
                 {
                     GenerateStubBody(irMethod);
                 }
@@ -612,12 +750,66 @@ public partial class IRBuilder
                     // exist as IRTypes before body conversion. E.g., Array.Sort<String> body
                     // calls IArraySortHelper<String>.Sort() — the interface type must be in
                     // _typeCache for virtual dispatch resolution in EmitMethodCall.
-                    EnsureBodyReferencedTypesExist(cecilMethod, typeParamMap);
+                    EnsureBodyReferencedTypesExist(bodyMethod, typeParamMap);
 
-                    var methodInfo = new IL.MethodInfo(cecilMethod);
+                    var methodInfo = new IL.MethodInfo(bodyMethod);
                     ConvertMethodBodyWithGenerics(methodInfo, irMethod, typeParamMap);
                 }
             }
+    }
+
+    /// <summary>
+    /// Resolve an abstract interface method to its implementing type's concrete method.
+    /// For generic interfaces like INumberBase&lt;Byte&gt;, the implementing type is typically
+    /// one of the generic arguments (e.g., Byte implements INumberBase&lt;Byte&gt;).
+    /// </summary>
+    private Mono.Cecil.MethodDefinition? ResolveInterfaceMethodImplementation(
+        Mono.Cecil.MethodDefinition interfaceMethod,
+        IRType declaringIrType,
+        Dictionary<string, string> typeParamMap)
+    {
+        // The declaring type is a generic interface specialization like INumberBase<Byte>.
+        // Find the implementing type by checking each generic argument's type definition
+        // for explicit interface implementations of this method.
+        var interfaceTypeDef = interfaceMethod.DeclaringType;
+
+        // Collect candidate implementing types from the generic arguments
+        var candidateTypeNames = new List<string>();
+        if (declaringIrType.GenericArguments != null)
+            candidateTypeNames.AddRange(declaringIrType.GenericArguments);
+
+        foreach (var candidateName in candidateTypeNames)
+        {
+            // Resolve the candidate type to a Cecil TypeDefinition
+            Mono.Cecil.TypeDefinition? candidateTypeDef = null;
+            foreach (var asm in _assemblySet.LoadedAssemblies.Values)
+            {
+                candidateTypeDef = asm.MainModule.GetType(candidateName);
+                if (candidateTypeDef != null) break;
+            }
+            if (candidateTypeDef == null) continue;
+
+            // Search for explicit interface method implementations (overrides)
+            foreach (var method in candidateTypeDef.Methods)
+            {
+                if (!method.HasOverrides) continue;
+                foreach (var ovr in method.Overrides)
+                {
+                    var ovrDeclaring = ovr.DeclaringType;
+                    if (ovrDeclaring is GenericInstanceType ovrGit)
+                        ovrDeclaring = ovrGit.ElementType;
+
+                    if (ovrDeclaring.FullName == interfaceTypeDef.FullName
+                        && ovr.Name == interfaceMethod.Name
+                        && ovr.Parameters.Count == interfaceMethod.Parameters.Count)
+                    {
+                        return method;
+                    }
+                }
+            }
+        }
+
+        return null;
     }
 
     /// <summary>
@@ -707,6 +899,13 @@ public partial class IRBuilder
         foreach (var local in cecilMethod.Body.Variables)
             TryCollectResolvedGenericType(local.VariableType, typeParamMap);
 
+        // Constrained static abstract interface method resolution:
+        // When a generic method body has "constrained. !!T call IFace<!!T>::Method()",
+        // and !!T resolves to a concrete type (e.g., int32), we must ensure the concrete
+        // implementation's body is compiled. The reachability analyzer can't resolve these
+        // because !!T is unresolved during open-method analysis.
+        EnsureConstrainedMethodBodiesExist(cecilMethod, typeParamMap);
+
         // Fixpoint: create types → base chain/interface auto-discovery may find more → iterate
         if (_genericInstantiations.Count > prevCount)
         {
@@ -726,6 +925,238 @@ public partial class IRBuilder
     }
 
     /// <summary>
+    /// Scan a generic method body for constrained. + call/callvirt patterns and ensure
+    /// the resolved concrete method implementations have compiled bodies.
+    /// This handles the case where the reachability analyzer can't resolve constrained
+    /// calls with generic type parameters (!!T) that only become concrete during specialization.
+    /// </summary>
+    private void EnsureConstrainedMethodBodiesExist(MethodDefinition cecilMethod, Dictionary<string, string> typeParamMap)
+    {
+        if (!cecilMethod.HasBody) return;
+
+        foreach (var instr in cecilMethod.Body.Instructions)
+        {
+            if (instr.OpCode.Code != Code.Constrained) continue;
+            var constrainedTypeRef = instr.Operand as TypeReference;
+            if (constrainedTypeRef == null) continue;
+
+            var nextInstr = instr.Next;
+            if (nextInstr == null) continue;
+            if (nextInstr.OpCode.Code is not (Code.Call or Code.Callvirt)) continue;
+            var methodRef = nextInstr.Operand as MethodReference;
+            if (methodRef == null) continue;
+
+            // Only handle static abstract interface method calls.
+            // Instance virtual constrained calls (e.g., Object.GetHashCode) are handled
+            // by the normal virtual dispatch mechanism and don't need body compilation.
+            if (methodRef.HasThis) continue;
+            try
+            {
+                var declType = methodRef.DeclaringType;
+                if (declType is GenericInstanceType git) declType = git.ElementType;
+                var resolved = declType.Resolve();
+                if (resolved == null || !resolved.IsInterface) continue;
+            }
+            catch { continue; }
+
+            // Resolve the constrained type through the generic type parameter map
+            var resolvedTypeName = ResolveGenericTypeName(constrainedTypeRef, typeParamMap);
+            if (resolvedTypeName.StartsWith("!!") || resolvedTypeName.StartsWith("!")) continue; // Still unresolved
+
+            // Find the IRType for the resolved constrained type
+            var irType = _typeCache.GetValueOrDefault(resolvedTypeName);
+            if (irType == null) continue;
+
+            // Skip non-value types (constrained calls on reference types use virtual dispatch).
+            if (!irType.IsValueType) continue;
+            // Skip non-primitive types that have aliases to C++ primitives (e.g., Utf16Char → char16_t).
+            // Their method bodies construct the IL struct type, but the return type maps to the
+            // primitive alias, causing C++ type mismatches. Standard primitives (Int32 → int32_t)
+            // are fine because their methods use the primitive type consistently.
+            if (!irType.IsPrimitiveType)
+            {
+                var mappedCppName = CppNameMapper.GetCppTypeName(resolvedTypeName);
+                var mangledName = CppNameMapper.MangleTypeName(resolvedTypeName);
+                if (mappedCppName != mangledName) continue; // Has a non-standard alias
+            }
+
+            // Find the implementing method on the constrained type
+            var targetMethodName = methodRef.Name;
+            var targetParamCount = methodRef.Parameters.Count;
+
+            foreach (var irMethod in irType.Methods)
+            {
+                if (irMethod.BasicBlocks.Count > 0) continue; // Already has body
+                if (irMethod.Parameters.Count != targetParamCount) continue;
+                if (irMethod.IsInternalCall || irMethod.HasICallMapping) continue;
+
+                // Match by name — exact match or explicit interface impl suffix
+                bool nameMatch = irMethod.Name == targetMethodName;
+                if (!nameMatch)
+                {
+                    var lastDot = irMethod.Name.LastIndexOf('.');
+                    if (lastDot >= 0 && irMethod.Name.AsSpan(lastDot + 1).SequenceEqual(targetMethodName))
+                        nameMatch = true;
+                }
+                if (!nameMatch) continue;
+
+                // Found a method that matches but has no body — compile it from Cecil.
+                // Only compile if the reachability analyzer missed it (otherwise Pass 6 will handle it).
+                var cecilTypeDef = constrainedTypeRef.Resolve();
+                if (cecilTypeDef == null)
+                {
+                    // Try to find via assembly set (for types resolved through typeParamMap)
+                    foreach (var asm in _assemblySet.LoadedAssemblies.Values)
+                    {
+                        cecilTypeDef = asm.MainModule.GetType(resolvedTypeName);
+                        if (cecilTypeDef != null) break;
+                    }
+                }
+                if (cecilTypeDef == null) break;
+
+                // Find the matching Cecil method
+                MethodDefinition? cecilTargetMethod = null;
+                foreach (var m in cecilTypeDef.Methods)
+                {
+                    if (m.Parameters.Count != targetParamCount) continue;
+                    bool mNameMatch = m.Name == targetMethodName;
+                    if (!mNameMatch)
+                    {
+                        var lastDot = m.Name.LastIndexOf('.');
+                        if (lastDot >= 0 && m.Name.AsSpan(lastDot + 1).SequenceEqual(targetMethodName))
+                            mNameMatch = true;
+                    }
+                    if (mNameMatch && m.HasBody)
+                    {
+                        cecilTargetMethod = m;
+                        break;
+                    }
+                }
+
+                if (cecilTargetMethod != null)
+                {
+                    // Skip methods already marked reachable — their bodies will be compiled in Pass 6.
+                    if (_reachability.IsReachable(cecilTargetMethod)) break;
+
+                    // Skip methods with CLR-internal dependencies (SIMD intrinsics, etc.)
+                    if (HasClrInternalDependencies(cecilTargetMethod)) break;
+
+                    // Skip methods that reference SIMD vector types — their bodies use
+                    // Vector128/256/512 which get dead-code-replaced with type mismatches.
+                    if (ReferencesSimdTypes(cecilTargetMethod)) break;
+
+                    // Build locals from Cecil method body
+                    irMethod.Locals.Clear();
+                    foreach (var localDef in cecilTargetMethod.Body.Variables)
+                    {
+                        var localTypeName = ResolveGenericTypeName(localDef.VariableType, typeParamMap);
+                        irMethod.Locals.Add(new IRLocal
+                        {
+                            Index = localDef.Index,
+                            CppName = $"loc_{localDef.Index}",
+                            CppTypeName = ResolveTypeForDecl(localTypeName),
+                        });
+                    }
+
+                    // Compile the body
+                    var methodInfo = new IL.MethodInfo(cecilTargetMethod);
+                    ConvertMethodBody(methodInfo, irMethod);
+
+                    // Discover secondary generic dependencies in the compiled body
+                    // (e.g. Byte.Max calls Math.Max<byte> which needs specialization)
+                    EnsureBodyReferencedTypesExist(cecilTargetMethod, typeParamMap);
+
+                    // Compile transitive unreachable callees (e.g. Byte.Max → Math.Max(byte,byte))
+                    CompileTransitiveUnreachableCallees(cecilTargetMethod);
+                }
+                break; // Only compile one match per constrained call
+            }
+        }
+    }
+
+    /// <summary>
+    /// Recursively compile bodies of non-reachable methods called from a newly compiled body.
+    /// This handles transitive reachability gaps from constrained call chains:
+    /// e.g. Byte.Max (constrained, compiled above) → Math.Max(byte,byte) (unreachable, stub).
+    /// Without this, the callee remains a default-return stub causing runtime errors.
+    /// </summary>
+    private void CompileTransitiveUnreachableCallees(MethodDefinition cecilMethod)
+    {
+        if (!cecilMethod.HasBody) return;
+
+        var worklist = new Queue<MethodDefinition>();
+        var visited = new HashSet<string>();
+        worklist.Enqueue(cecilMethod);
+        visited.Add(cecilMethod.FullName);
+
+        while (worklist.Count > 0)
+        {
+            var current = worklist.Dequeue();
+            foreach (var instr in current.Body.Instructions)
+            {
+                if (instr.OpCode.Code is not (Code.Call or Code.Callvirt)) continue;
+                if (instr.Operand is not MethodReference calledRef) continue;
+                // Skip generic method calls — handled by CollectGenericMethod/CreateGenericMethodSpecializations
+                if (calledRef is GenericInstanceMethod) continue;
+                // Skip calls on generic types — handled by generic specialization pipeline
+                if (calledRef.DeclaringType is GenericInstanceType) continue;
+
+                MethodDefinition? calledDef;
+                try { calledDef = calledRef.Resolve(); }
+                catch { continue; }
+                if (calledDef == null || !calledDef.HasBody) continue;
+                if (_reachability.IsReachable(calledDef)) continue;
+                if (!visited.Add(calledDef.FullName)) continue;
+                if (HasClrInternalDependencies(calledDef)) continue;
+                if (ReferencesSimdTypes(calledDef)) continue;
+
+                // Find the corresponding IRMethod (match by name + parameter types)
+                var declTypeName = calledDef.DeclaringType.FullName;
+                if (!_typeCache.TryGetValue(declTypeName, out var declIrType)) continue;
+
+                IRMethod? targetIrMethod = null;
+                foreach (var m in declIrType.Methods)
+                {
+                    if (m.BasicBlocks.Count > 0) continue; // Already has body
+                    if (m.Name != calledDef.Name) continue;
+                    if (m.Parameters.Count != calledDef.Parameters.Count) continue;
+                    // Match parameter types (IL types) to identify the correct overload
+                    bool paramsMatch = true;
+                    for (int i = 0; i < calledDef.Parameters.Count; i++)
+                    {
+                        var expectedILType = calledDef.Parameters[i].ParameterType.FullName;
+                        if (m.Parameters[i].ILTypeName != expectedILType)
+                        {
+                            paramsMatch = false;
+                            break;
+                        }
+                    }
+                    if (paramsMatch) { targetIrMethod = m; break; }
+                }
+                if (targetIrMethod == null) continue;
+
+                // Build locals and compile
+                targetIrMethod.Locals.Clear();
+                foreach (var localDef in calledDef.Body.Variables)
+                {
+                    targetIrMethod.Locals.Add(new IRLocal
+                    {
+                        Index = localDef.Index,
+                        CppName = $"loc_{localDef.Index}",
+                        CppTypeName = ResolveTypeForDecl(
+                            ResolveGenericTypeName(localDef.VariableType, new Dictionary<string, string>())),
+                    });
+                }
+
+                var methodInfo = new IL.MethodInfo(calledDef);
+                ConvertMethodBody(methodInfo, targetIrMethod);
+
+                // Queue this method for transitive scanning
+                worklist.Enqueue(calledDef);
+            }
+        }
+    }
+
     /// <summary>
     /// Create specialized IRTypes for each generic instantiation found in Pass 0.
     /// All generic types (user + BCL) are monomorphized from their Cecil definitions.
@@ -754,9 +1185,7 @@ public partial class IRBuilder
             var openType = info.CecilOpenType;
 
             // Build type parameter map
-            var typeParamMap = new Dictionary<string, string>();
-            for (int i = 0; i < openType.GenericParameters.Count && i < info.TypeArguments.Count; i++)
-                typeParamMap[openType.GenericParameters[i].Name] = info.TypeArguments[i];
+            var typeParamMap = BuildTypeParamMap(openType, info.TypeArguments);
 
             // Validate generic constraints
             if (openType.HasGenericParameters)
@@ -898,6 +1327,17 @@ public partial class IRBuilder
                         IsStaticConstructor = methodDef.IsConstructor && methodDef.IsStatic,
                     };
 
+                    // Propagate explicit interface overrides (.override directive)
+                    // Needed for BuildInterfaceImpls (Pass 5) to match interface methods
+                    if (methodDef.HasOverrides)
+                    {
+                        foreach (var ovr in methodDef.Overrides)
+                        {
+                            var resolvedTypeName = ResolveGenericTypeName(ovr.DeclaringType, typeParamMap);
+                            irMethod.ExplicitOverrides.Add((resolvedTypeName, ovr.Name));
+                        }
+                    }
+
                     // Propagate HasICallMapping for methods with icall mappings
                     if (ICallRegistry.Lookup(openType.FullName, methodDef.Name, methodDef.Parameters.Count) != null)
                         irMethod.HasICallMapping = true;
@@ -956,6 +1396,13 @@ public partial class IRBuilder
                         else if (methodDef.IsConstructor)
                         {
                             shouldCompile = true; // constructors always compiled
+                        }
+                        else if (IsCompilerGeneratedClosureType(info.CecilOpenType))
+                        {
+                            // Compiler-generated display class / closure types (<>c, __DisplayClass)
+                            // have methods invoked through delegates, not direct callvirt/call.
+                            // _calledSpecializedMethods won't track them, so always compile.
+                            shouldCompile = true;
                         }
                         else if (methodDef.IsVirtual)
                         {
@@ -1040,15 +1487,13 @@ public partial class IRBuilder
             if (info.CecilOpenType == null) continue;
             if (!_typeCache.TryGetValue(key, out var irType)) continue;
 
-            // For already-resolved types, only re-check missing base types
-            // (the base type may have been created by a later fixpoint iteration)
+            // For already-resolved types, re-check missing base types and interfaces
+            // (they may have been created by a later fixpoint iteration)
             if (alreadyResolved)
             {
+                var typeParamMap2 = BuildTypeParamMap(info.CecilOpenType, info.TypeArguments);
                 if (irType.BaseType == null && info.CecilOpenType.BaseType != null && !irType.IsValueType)
                 {
-                    var typeParamMap2 = new Dictionary<string, string>();
-                    for (int i = 0; i < info.CecilOpenType.GenericParameters.Count && i < info.TypeArguments.Count; i++)
-                        typeParamMap2[info.CecilOpenType.GenericParameters[i].Name] = info.TypeArguments[i];
                     var baseName2 = ResolveGenericTypeName(info.CecilOpenType.BaseType, typeParamMap2);
                     if (_typeCache.TryGetValue(baseName2, out var baseType2))
                     {
@@ -1056,13 +1501,19 @@ public partial class IRBuilder
                         CalculateInstanceSize(irType);
                     }
                 }
+                // Re-check interfaces — some may have been created after initial resolution
+                var existingIfaceNames = new HashSet<string>(irType.Interfaces.Select(i => i.ILFullName));
+                foreach (var iface in info.CecilOpenType.Interfaces)
+                {
+                    var ifaceName2 = ResolveGenericTypeName(iface.InterfaceType, typeParamMap2);
+                    if (!existingIfaceNames.Contains(ifaceName2) && _typeCache.TryGetValue(ifaceName2, out var ifaceType2))
+                        irType.Interfaces.Add(ifaceType2);
+                }
                 continue;
             }
 
             var openType = info.CecilOpenType;
-            var typeParamMap = new Dictionary<string, string>();
-            for (int i = 0; i < openType.GenericParameters.Count && i < info.TypeArguments.Count; i++)
-                typeParamMap[openType.GenericParameters[i].Name] = info.TypeArguments[i];
+            var typeParamMap = BuildTypeParamMap(openType, info.TypeArguments);
 
             // Base type — auto-discover generic base types for demand-driven pipeline
             if (openType.BaseType != null && !irType.IsValueType)
@@ -1074,21 +1525,23 @@ public partial class IRBuilder
                     TryCollectResolvedGenericType(openType.BaseType, typeParamMap);
             }
 
-            // Interfaces — auto-discover generic interface types (filtered by dispatch)
+            // Interfaces — resolve and add all interfaces from Cecil metadata.
+            // If the interface type already exists in cache, always add it (type correctness).
+            // Only use dispatch filtering to gate *creation* of new interface types.
             foreach (var iface in openType.Interfaces)
             {
-                // Skip generic interfaces that are never dispatched on
-                if (iface.InterfaceType is GenericInstanceType ifaceGit)
-                {
-                    var openName = ifaceGit.ElementType.FullName;
-                    if (!_dispatchedInterfaces.Contains(openName))
-                        continue;
-                }
                 var ifaceName = ResolveGenericTypeName(iface.InterfaceType, typeParamMap);
                 if (_typeCache.TryGetValue(ifaceName, out var ifaceType))
+                {
                     irType.Interfaces.Add(ifaceType);
-                else if (iface.InterfaceType is GenericInstanceType)
-                    TryCollectResolvedGenericType(iface.InterfaceType, typeParamMap);
+                }
+                else if (iface.InterfaceType is GenericInstanceType ifaceGit)
+                {
+                    // Only auto-discover new generic interface types if dispatched on
+                    var openName = ifaceGit.ElementType.FullName;
+                    if (_dispatchedInterfaces.Contains(openName))
+                        TryCollectResolvedGenericType(iface.InterfaceType, typeParamMap);
+                }
             }
 
             // Static constructor flag — set if cctor body was converted OR is deferred.
@@ -1168,9 +1621,7 @@ public partial class IRBuilder
             var openType = info.CecilOpenType;
             if (openType == null) continue;
 
-            var typeParamMap = new Dictionary<string, string>();
-            for (int i = 0; i < openType.GenericParameters.Count && i < info.TypeArguments.Count; i++)
-                typeParamMap[openType.GenericParameters[i].Name] = info.TypeArguments[i];
+            var typeParamMap = BuildTypeParamMap(openType, info.TypeArguments);
 
             var irType = new IRType
             {
@@ -1456,11 +1907,11 @@ public partial class IRBuilder
         if (!resolvedTypeName.Contains('<')) return;
 
         // Parse: "Outer/Inner`1<Arg1,Arg2>" → openTypeName="Outer/Inner`1", args=["Arg1","Arg2"]
-        // Find the generic '<' after the backtick to skip '<' in compiler-generated names
+        // Use backward scan to find the correct generic '<', skipping compiler-generated '<>'
         var backtickIdx = resolvedTypeName.IndexOf('`');
         var ltIdx = backtickIdx > 0
-            ? resolvedTypeName.IndexOf('<', backtickIdx)
-            : resolvedTypeName.IndexOf('<');
+            ? CppNameMapper.FindGenericArgsOpen(resolvedTypeName, backtickIdx)
+            : CppNameMapper.FindGenericArgsOpen(resolvedTypeName);
         if (ltIdx < 0) return;
         var openTypeName = resolvedTypeName[..ltIdx];
         var argsStr = resolvedTypeName[(ltIdx + 1)..^1]; // strip < and >
@@ -1783,14 +2234,17 @@ public partial class IRBuilder
                     ? new Dictionary<string, string>(_activeTypeParamMap)
                     : new Dictionary<string, string>();
 
-                for (int i = 0; i < openType.GenericParameters.Count && i < git.GenericArguments.Count; i++)
+                // For nested generic types, openType.GenericParameters only has the type's own
+                // params, but git.GenericArguments has ALL params (parent + nested).
+                // Walk the declaring chain when counts don't match.
+                var genericParams = openType.GenericParameters.Count == git.GenericArguments.Count
+                    ? (IList<GenericParameter>)openType.GenericParameters
+                    : CollectAllGenericParameters(openType);
+                for (int i = 0; i < genericParams.Count && i < git.GenericArguments.Count; i++)
                 {
-                    var paramName = openType.GenericParameters[i].Name;
-                    // Resolve the argument through active map (handles nested generics)
+                    var paramName = genericParams[i].Name;
                     var argResolved = ResolveTypeRefOperand(git.GenericArguments[i]);
                     localMap[paramName] = argResolved;
-                    // Also add position-based key (!0, !1, etc.) for Cecil field types
-                    // that use position syntax instead of named parameters
                     localMap[$"!{i}"] = argResolved;
                 }
 
@@ -1885,6 +2339,21 @@ public partial class IRBuilder
                     else
                         _deferredGenericBodies.Add((cecilMethod, irMethod, typeParamMap));
                 }
+            }
+
+            // If new generic types were discovered during body compilation
+            // (e.g., display classes, closures referenced in locals/instructions),
+            // create their type shells and method shells now. This ensures
+            // compiler-generated types get their methods compiled in subsequent batches.
+            if (_genericInstantiations.Count > _resolvedGenericTypeKeys.Count)
+            {
+                CreateGenericSpecializations();
+                int prevNested;
+                do
+                {
+                    prevNested = _genericInstantiations.Count;
+                    CreateNestedGenericSpecializations();
+                } while (_genericInstantiations.Count > prevNested);
             }
 
             // If new types were discovered during body compilation, build VTables
@@ -2282,12 +2751,7 @@ public partial class IRBuilder
         if (typeRef is GenericInstanceType git)
         {
             var openTypeName = git.ElementType.FullName;
-            var typeArgs = git.GenericArguments.Select(a =>
-            {
-                if (a is GenericParameter gp && _activeTypeParamMap != null)
-                    return _activeTypeParamMap.TryGetValue(gp.Name, out var r) ? r : a.FullName;
-                return a.FullName;
-            }).ToList();
+            var typeArgs = git.GenericArguments.Select(a => ResolveCacheKey(a)).ToList();
             return $"{openTypeName}<{string.Join(",", typeArgs)}>";
         }
 
@@ -2343,18 +2807,43 @@ public partial class IRBuilder
         var backtickIdx = key.IndexOf('`');
         if (backtickIdx > 0 && key.Contains('<'))
         {
-            // Find the generic '<' after the backtick, not an earlier '<' from
-            // compiler-generated names like "<InvokeAsync>d__7`1<...>"
-            var angleBracket = key.IndexOf('<', backtickIdx);
+            var angleBracket = CppNameMapper.FindGenericArgsOpen(key, backtickIdx);
             if (angleBracket > 0)
             {
                 var openTypeName = key[..angleBracket];
                 var argsStr = key[(angleBracket + 1)..^1];
                 var args = CppNameMapper.ParseGenericArgs(argsStr);
-                return CppNameMapper.MangleGenericInstanceTypeName(openTypeName, args);
+                var mangledName = CppNameMapper.MangleGenericInstanceTypeName(openTypeName, args);
+                return mangledName;
             }
         }
         return CppNameMapper.MangleTypeName(key);
+    }
+
+    /// <summary>
+    /// Look up the canonical mangled C++ name for an IL type name string.
+    /// First checks _typeCache for the IRType's CppName (matches header struct definition).
+    /// Then tries MangleGenericInstanceTypeName for generic types (avoids trailing underscore).
+    /// Falls back to MangleTypeNameClean for non-generic types.
+    /// </summary>
+    private string LookupMangledTypeName(string ilTypeName)
+    {
+        if (_typeCache.TryGetValue(ilTypeName, out var irType))
+            return irType.CppName;
+        // For generic instance types, use the same split-and-mangle approach as GetMangledTypeNameForRef
+        var backtickIdx = ilTypeName.IndexOf('`');
+        if (backtickIdx > 0 && ilTypeName.Contains('<'))
+        {
+            var angleBracket = CppNameMapper.FindGenericArgsOpen(ilTypeName, backtickIdx);
+            if (angleBracket > 0)
+            {
+                var openTypeName = ilTypeName[..angleBracket];
+                var argsStr = ilTypeName[(angleBracket + 1)..^1];
+                var args = CppNameMapper.ParseGenericArgs(argsStr);
+                return CppNameMapper.MangleGenericInstanceTypeName(openTypeName, args);
+            }
+        }
+        return CppNameMapper.MangleTypeNameClean(ilTypeName);
     }
 
     /// <summary>
@@ -2415,9 +2904,7 @@ public partial class IRBuilder
         var backtickIdx = ilTypeName.IndexOf('`');
         if (backtickIdx > 0 && ilTypeName.Contains('<'))
         {
-            // Find the generic '<' after the backtick, not an earlier '<' from
-            // compiler-generated names like "<InvokeAsync>d__7`1<...>"
-            var angleBracket = ilTypeName.IndexOf('<', backtickIdx);
+            var angleBracket = CppNameMapper.FindGenericArgsOpen(ilTypeName, backtickIdx);
             if (angleBracket < 0) goto fallback;
             var openTypeName = ilTypeName[..angleBracket];
             var argsStr = ilTypeName[(angleBracket + 1)..^1];

@@ -217,7 +217,7 @@ cil2cpp::Object* ThrowHelper_GetArgumentException(Int32 resource) {
     auto* ex = static_cast<ArgumentException*>(
         gc::alloc(sizeof(ArgumentException), &ArgumentException_TypeInfo));
     if (resource >= 0 && resource < g_resource_strings_count) {
-        ex->f_message = string_create_utf8(g_resource_strings[resource]);
+        ex->f__message = string_create_utf8(g_resource_strings[resource]);
     }
     return reinterpret_cast<Object*>(ex);
 }
@@ -226,10 +226,10 @@ cil2cpp::Object* ThrowHelper_GetArgumentException2(Int32 resource, Int32 argumen
     auto* ex = static_cast<ArgumentException*>(
         gc::alloc(sizeof(ArgumentException), &ArgumentException_TypeInfo));
     if (resource >= 0 && resource < g_resource_strings_count) {
-        ex->f_message = string_create_utf8(g_resource_strings[resource]);
+        ex->f__message = string_create_utf8(g_resource_strings[resource]);
     }
     if (argument >= 0 && argument < g_argument_names_count) {
-        ex->f_paramName = string_create_utf8(g_argument_names[argument]);
+        ex->f__paramName = string_create_utf8(g_argument_names[argument]);
     }
     return reinterpret_cast<Object*>(ex);
 }
@@ -238,7 +238,7 @@ cil2cpp::Object* ThrowHelper_GetArgumentOutOfRangeException(Int32 argument) {
     auto* ex = static_cast<ArgumentOutOfRangeException*>(
         gc::alloc(sizeof(ArgumentOutOfRangeException), &ArgumentOutOfRangeException_TypeInfo));
     if (argument >= 0 && argument < g_argument_names_count) {
-        ex->f_paramName = string_create_utf8(g_argument_names[argument]);
+        ex->f__paramName = string_create_utf8(g_argument_names[argument]);
     }
     return reinterpret_cast<Object*>(ex);
 }
@@ -247,7 +247,7 @@ cil2cpp::Object* ThrowHelper_GetInvalidOperationException(Int32 resource) {
     auto* ex = static_cast<InvalidOperationException*>(
         gc::alloc(sizeof(InvalidOperationException), &InvalidOperationException_TypeInfo));
     if (resource >= 0 && resource < g_resource_strings_count) {
-        ex->f_message = string_create_utf8(g_resource_strings[resource]);
+        ex->f__message = string_create_utf8(g_resource_strings[resource]);
     }
     return reinterpret_cast<Object*>(ex);
 }

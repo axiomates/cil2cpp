@@ -296,16 +296,16 @@ public partial class CppCodeGenerator
         CollectUnknownValueTypesFromSizeof(userTypes, definedTypeNames, unknownValueTypeStubs);
         foreach (var stubName in unknownValueTypeStubs)
         {
-            // Span/ReadOnlySpan opaque stubs need f_reference + f_length for field access
+            // Span/ReadOnlySpan opaque stubs need f__reference + f__length for field access
             if (stubName.StartsWith("System_Span_1_") || stubName.StartsWith("System_ReadOnlySpan_1_"))
             {
-                sb.AppendLine($"struct {stubName} {{ void* f_reference; int32_t f_length; }}; // opaque Span stub");
+                sb.AppendLine($"struct {stubName} {{ void* f__reference; int32_t f__length; }}; // opaque Span stub");
                 opaqueSpanStubs.Add(stubName);
             }
-            // SafeHandleMarshaller ManagedToUnmanagedIn stubs need f_addRefd + f_handle for marshalling
+            // SafeHandleMarshaller ManagedToUnmanagedIn stubs need f__addRefd + f__handle for marshalling
             else if (stubName.Contains("SafeHandleMarshaller_1_ManagedToUnmanagedIn_"))
             {
-                sb.AppendLine($"struct {stubName} {{ bool f_addRefd; void* f_handle; }}; // SafeHandle marshaller stub");
+                sb.AppendLine($"struct {stubName} {{ bool f__addRefd; void* f__handle; }}; // SafeHandle marshaller stub");
                 opaqueSafeHandleMarshallerStubs.Add(stubName);
             }
             // SIMD vector types need correct-size opaque buffers (dead code but sizeof must be correct)
@@ -441,7 +441,7 @@ public partial class CppCodeGenerator
 
         // Generate trivial method declarations for opaque Span/ReadOnlySpan stubs.
         // These types were discovered from BCL code locals/params but aren't full IRType objects.
-        // The methods are trivial (get_Length returns f_length, get_IsEmpty returns f_length==0).
+        // The methods are trivial (get_Length returns f__length, get_IsEmpty returns f__length==0).
         _opaqueSpanStubs = opaqueSpanStubs;
         if (opaqueSpanStubs.Count > 0)
         {

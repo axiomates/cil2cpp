@@ -6,6 +6,7 @@
 #pragma once
 
 #include "object.h"
+#include "type_info.h"
 
 namespace cil2cpp {
 
@@ -48,5 +49,18 @@ Object* delegate_remove(Object* source, Object* value);
  */
 Int32 delegate_get_invocation_count(Delegate* del);
 Delegate* delegate_get_invocation_item(Delegate* del, Int32 index);
+
+/**
+ * Adjust delegate target for value type instance methods.
+ * When a delegate targets a boxed value type, the method_ptr expects an unboxed
+ * pointer (past the Object header), but target points to the boxed Object.
+ * This function checks the TypeInfo flags and adjusts accordingly.
+ */
+inline Object* delegate_adjust_target(Object* target) {
+    if (target && (target->__type_info->flags & TypeFlags::ValueType)) {
+        return reinterpret_cast<Object*>(reinterpret_cast<char*>(target) + sizeof(Object));
+    }
+    return target;
+}
 
 } // namespace cil2cpp

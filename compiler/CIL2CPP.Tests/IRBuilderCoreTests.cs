@@ -310,7 +310,7 @@ public class IRBuilderCoreTests
         var module = BuildHelloWorld();
         var calc = module.FindType("Calculator")!;
         var resultField = calc.Fields.First(f => f.Name == "_result");
-        Assert.Equal("f_result", resultField.CppName);
+        Assert.Equal("f__result", resultField.CppName);
     }
 
     // ===== Build path with explicit AssemblySet + Reachability =====

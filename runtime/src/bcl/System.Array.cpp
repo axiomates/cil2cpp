@@ -9,6 +9,9 @@
 #include <cil2cpp/type_info.h>
 #include <cil2cpp/boxing.h>
 #include <cstring>
+#include <mutex>
+#include <string>
+#include <unordered_map>
 
 namespace cil2cpp {
 
@@ -235,6 +238,237 @@ Int32 array_get_cor_element_type(void* arr) {
         return static_cast<Int32>(a->element_type->cor_element_type);
     }
     return 0; // ELEMENT_TYPE_END — indicates unknown
+}
+
+void array_copy_to(void* raw_this, void* raw_dest, Int32 index) {
+    auto* src = static_cast<Array*>(raw_this);
+    if (!src) throw_null_reference();
+    if (!raw_dest) throw_argument_null();
+    array_copy(src, 0, static_cast<Array*>(raw_dest), index, src->length);
+}
+
+Boolean array_is_value_of_element_type(void* raw_this, void* raw_value) {
+    auto* arr = static_cast<Array*>(raw_this);
+    auto* obj = static_cast<Object*>(raw_value);
+    if (!arr || !obj) return false;
+    return obj->__type_info == arr->element_type;
+}
+
+// ===== Array Generic Interface VTable Adapter =====
+//
+// In .NET, T[] implements IList<T>, ICollection<T>, IEnumerable<T>,
+// IReadOnlyList<T>, IReadOnlyCollection<T>. The CLR provides these at runtime.
+// In AOT, we synthesize interface vtable entries when dispatch is attempted.
+
+namespace {
+
+// ICollection<T> adapter methods (void* __this is an Array*)
+int32_t array_iface_get_count(void* __this) {
+    return static_cast<cil2cpp::Array*>(__this)->length;
+}
+
+bool array_iface_get_is_readonly(void* /*__this*/) {
+    return true;  // Arrays are fixed-size
+}
+
+void array_iface_add(void* /*__this*/, void* /*item*/) {
+    cil2cpp::throw_not_supported();
+}
+
+void array_iface_clear(void* /*__this*/) {
+    cil2cpp::throw_not_supported();
+}
+
+bool array_iface_contains(void* __this, void* item) {
+    auto* arr = static_cast<cil2cpp::Array*>(__this);
+    auto** data = static_cast<void**>(cil2cpp::array_data(arr));
+    for (int32_t i = 0; i < arr->length; i++) {
+        if (data[i] == item) return true;  // Reference equality for objects
+    }
+    return false;
+}
+
+void array_iface_copy_to(void* __this, void* dest_array, int32_t arrayIndex) {
+    auto* src = static_cast<cil2cpp::Array*>(__this);
+    if (!dest_array) cil2cpp::throw_argument_null();
+    cil2cpp::array_copy(src, 0, static_cast<cil2cpp::Array*>(dest_array), arrayIndex, src->length);
+}
+
+bool array_iface_remove(void* /*__this*/, void* /*item*/) {
+    cil2cpp::throw_not_supported();
+}
+
+// IList<T> adapter methods
+void* array_iface_get_item(void* __this, int32_t index) {
+    auto* arr = static_cast<cil2cpp::Array*>(__this);
+    cil2cpp::array_bounds_check(arr, index);
+    auto** data = static_cast<void**>(cil2cpp::array_data(arr));
+    return data[index];
+}
+
+void array_iface_set_item(void* __this, int32_t index, void* value) {
+    auto* arr = static_cast<cil2cpp::Array*>(__this);
+    cil2cpp::array_bounds_check(arr, index);
+    auto** data = static_cast<void**>(cil2cpp::array_data(arr));
+    data[index] = value;
+}
+
+int32_t array_iface_index_of(void* __this, void* item) {
+    auto* arr = static_cast<cil2cpp::Array*>(__this);
+    auto** data = static_cast<void**>(cil2cpp::array_data(arr));
+    for (int32_t i = 0; i < arr->length; i++) {
+        if (data[i] == item) return i;
+    }
+    return -1;
+}
+
+void array_iface_insert(void* /*__this*/, int32_t /*index*/, void* /*item*/) {
+    cil2cpp::throw_not_supported();
+}
+
+void array_iface_remove_at(void* /*__this*/, int32_t /*index*/) {
+    cil2cpp::throw_not_supported();
+}
+
+// Layout shared by all SZGenericArrayEnumerator<T> specializations.
+// All monomorphized versions have identical field layout, only TypeInfo differs.
+struct SZGenericArrayEnumeratorLayout {
+    cil2cpp::TypeInfo* __type_info;
+    cil2cpp::UInt32 __sync_block;
+    int32_t f__index;
+    int32_t f__endIndex;
+    cil2cpp::Array* f__array;
+};
+
+// IEnumerable<T>.GetEnumerator — creates SZGenericArrayEnumerator<T> for this array.
+void* array_iface_get_enumerator(void* raw_this) {
+    auto* arr = static_cast<cil2cpp::Array*>(raw_this);
+    if (!arr) cil2cpp::throw_null_reference();
+
+    // Look up SZGenericArrayEnumerator<ElementType> from the type registry.
+    const char* elem_name = arr->element_type ? arr->element_type->full_name : nullptr;
+    cil2cpp::TypeInfo* enum_type = nullptr;
+    if (elem_name) {
+        std::string type_name = "System.SZGenericArrayEnumerator`1<";
+        type_name += elem_name;
+        type_name += ">";
+        enum_type = cil2cpp::type_get_by_name(type_name.c_str());
+    }
+    // Fallback for element types without a specialized enumerator:
+    // use SZGenericArrayEnumerator<Object> (works for all reference-type arrays).
+    if (!enum_type) {
+        enum_type = cil2cpp::type_get_by_name("System.SZGenericArrayEnumerator`1<System.Object>");
+    }
+    if (!enum_type) {
+        cil2cpp::throw_not_supported();
+    }
+
+    auto* obj = cil2cpp::object_alloc(enum_type);
+    auto* layout = reinterpret_cast<SZGenericArrayEnumeratorLayout*>(obj);
+    layout->f__index = -1;
+    layout->f__endIndex = arr->length;
+    layout->f__array = arr;
+    return obj;
+}
+
+// Static vtable data for array interface adapters.
+// Method ordering must match the interface method order in generated code.
+
+// ICollection<T>: get_Count, get_IsReadOnly, Add, Clear, Contains, CopyTo, Remove
+static void* g_array_icollection_methods[] = {
+    (void*)&array_iface_get_count,
+    (void*)&array_iface_get_is_readonly,
+    (void*)&array_iface_add,
+    (void*)&array_iface_clear,
+    (void*)&array_iface_contains,
+    (void*)&array_iface_copy_to,
+    (void*)&array_iface_remove,
+};
+
+// IList<T>: get_Item, set_Item, IndexOf, Insert, RemoveAt
+static void* g_array_ilist_methods[] = {
+    (void*)&array_iface_get_item,
+    (void*)&array_iface_set_item,
+    (void*)&array_iface_index_of,
+    (void*)&array_iface_insert,
+    (void*)&array_iface_remove_at,
+};
+
+// IReadOnlyCollection<T>: get_Count
+static void* g_array_ireadonlycollection_methods[] = {
+    (void*)&array_iface_get_count,
+};
+
+// IReadOnlyList<T>: get_Item
+static void* g_array_ireadonlylist_methods[] = {
+    (void*)&array_iface_get_item,
+};
+
+// IEnumerable<T>: GetEnumerator
+static void* g_array_ienumerable_methods[] = {
+    (void*)&array_iface_get_enumerator,
+};
+
+// Cache: one InterfaceVTable per (interface_type) that we've synthesized.
+// Thread-safe access: single-threaded initialization is fine since .NET doesn't
+// guarantee thread safety for array interface dispatch in practice.
+static std::unordered_map<cil2cpp::TypeInfo*, cil2cpp::InterfaceVTable> g_array_iface_cache;
+static std::mutex g_array_iface_mutex;
+
+// Check if interface is one of the array-compatible generic collection interfaces.
+// Uses full_name prefix matching since Tier-2 interface TypeInfos may not have generic_definition_name.
+bool is_array_generic_collection_interface(cil2cpp::TypeInfo* iface_type, void**& methods, uint32_t& count) {
+    if (!iface_type || !iface_type->full_name) return false;
+
+    const char* name = iface_type->full_name;
+    if (std::strncmp(name, "System.Collections.Generic.ICollection`1<", 41) == 0) {
+        methods = g_array_icollection_methods; count = 7; return true;
+    }
+    if (std::strncmp(name, "System.Collections.Generic.IList`1<", 35) == 0) {
+        methods = g_array_ilist_methods; count = 5; return true;
+    }
+    if (std::strncmp(name, "System.Collections.Generic.IReadOnlyCollection`1<", 49) == 0) {
+        methods = g_array_ireadonlycollection_methods; count = 1; return true;
+    }
+    if (std::strncmp(name, "System.Collections.Generic.IReadOnlyList`1<", 43) == 0) {
+        methods = g_array_ireadonlylist_methods; count = 1; return true;
+    }
+    if (std::strncmp(name, "System.Collections.Generic.IEnumerable`1<", 41) == 0) {
+        methods = g_array_ienumerable_methods; count = 1; return true;
+    }
+    return false;
+}
+
+} // anonymous namespace
+
+InterfaceVTable* array_get_generic_interface_vtable(TypeInfo* type, TypeInfo* interface_type) {
+    // Check if 'type' is actually an array element type (arrays have element_type == __type_info)
+    // This function is only called when normal interface vtable lookup fails.
+    // For arrays, the __type_info IS the element TypeInfo, and we need to check if the
+    // interface matches T[] → ICollection<T>, IList<T>, etc.
+
+    if (!interface_type) return nullptr;
+
+    void** methods = nullptr;
+    uint32_t count = 0;
+    if (!is_array_generic_collection_interface(interface_type, methods, count))
+        return nullptr;
+
+    // Verify the interface's type argument matches the array's element type.
+    // The array's __type_info is the element TypeInfo, but here 'type' is the calling
+    // object's TypeInfo. We can't verify element type here since we don't have the
+    // object pointer — trust that object_is_instance_of already verified compatibility.
+
+    std::lock_guard lock(g_array_iface_mutex);
+    auto it = g_array_iface_cache.find(interface_type);
+    if (it != g_array_iface_cache.end())
+        return &it->second;
+
+    auto& vtable = g_array_iface_cache[interface_type];
+    vtable.interface_type = interface_type;
+    vtable.methods = methods;
+    vtable.method_count = count;
+    return &vtable;
 }
 
 } // namespace cil2cpp

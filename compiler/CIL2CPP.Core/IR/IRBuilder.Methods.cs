@@ -168,6 +168,9 @@ public partial class IRBuilder
         // Local variables
         foreach (var localDef in methodDef.GetLocalVariables())
         {
+            // TEMP DIAG: dump locals for AllocateNativeOverlapped
+            if (irMethod.Name.Contains("AllocateNativeOverlapped"))
+                Console.Error.WriteLine($"[DIAG] {irMethod.Name} loc_{localDef.Index}: IL={localDef.TypeName} -> C++={ResolveTypeForDecl(localDef.TypeName)} pinned={localDef.IsPinned}");
             irMethod.Locals.Add(new IRLocal
             {
                 Index = localDef.Index,
@@ -282,15 +285,23 @@ public partial class IRBuilder
                 {
                     foreach (var instr in block.Instructions)
                     {
-                        if (instr is not IRCall call) continue;
-                        if (call.DeferredDisambigKey == null) continue;
-
-                        // Rebuild the lookup key using the stored IL param key
-                        var lookupKey = $"{call.FunctionName}|{call.DeferredDisambigKey}";
-                        if (_module.DisambiguatedMethodNames.TryGetValue(lookupKey, out var disambiguated))
+                        if (instr is IRCall call && call.DeferredDisambigKey != null)
                         {
-                            call.FunctionName = disambiguated;
-                            call.DeferredDisambigKey = null; // resolved
+                            var lookupKey = $"{call.FunctionName}|{call.DeferredDisambigKey}";
+                            if (_module.DisambiguatedMethodNames.TryGetValue(lookupKey, out var disambiguated))
+                            {
+                                call.FunctionName = disambiguated;
+                                call.DeferredDisambigKey = null;
+                            }
+                        }
+                        else if (instr is IRNewObj newObj && newObj.DeferredDisambigKey != null)
+                        {
+                            var lookupKey = $"{newObj.CtorName}|{newObj.DeferredDisambigKey}";
+                            if (_module.DisambiguatedMethodNames.TryGetValue(lookupKey, out var disambiguated2))
+                            {
+                                newObj.CtorName = disambiguated2;
+                                newObj.DeferredDisambigKey = null;
+                            }
                         }
                     }
                 }
@@ -326,6 +337,10 @@ public partial class IRBuilder
         _constrainedType = null;
         _inFilterRegion = false;
         _endfilterOffset = -1;
+        _trysWithHandlerEmitted.Clear();
+        _trysWithFilter.Clear();
+        _currentFilterSkipLabel = null;
+        _afterFilterCatchOpen = false;
         var block = new IRBasicBlock { Id = 0 };
         irMethod.BasicBlocks.Add(block);
 
@@ -398,6 +413,15 @@ public partial class IRBuilder
                 }
                 else if (handler.HandlerType == Mono.Cecil.Cil.ExceptionHandlerType.Finally)
                 {
+                    AddExceptionEvent(exceptionEvents, handler.HandlerStart,
+                        new ExceptionEvent(ExceptionEventKind.FinallyBegin, null,
+                            handler.TryStart, handler.TryEnd));
+                }
+                else if (handler.HandlerType == Mono.Cecil.Cil.ExceptionHandlerType.Fault)
+                {
+                    // Fault handlers run only on exception (like finally but not on normal exit).
+                    // Emit as finally — our CIL2CPP_END_TRY macro handles both paths.
+                    // The fault body typically calls Dispose() in iterator state machines.
                     AddExceptionEvent(exceptionEvents, handler.HandlerStart,
                         new ExceptionEvent(ExceptionEventKind.FinallyBegin, null,
                             handler.TryStart, handler.TryEnd));
@@ -589,29 +613,51 @@ public partial class IRBuilder
                             // System.Object catch is equivalent to catch-all
                             var catchTypeCpp = evt.CatchTypeName is not null and not "System.Object"
                                 ? CppNameMapper.GetCppTypeName(evt.CatchTypeName)?.TrimEnd('*').TrimEnd() : null;
-                            block.Instructions.Add(new IRCatchBegin { ExceptionTypeCppName = catchTypeCpp });
+                            var catchTryKey = (evt.TryStart, evt.TryEnd);
+                            bool afterFilter = _trysWithFilter.Contains(catchTryKey);
+                            _trysWithHandlerEmitted.Add(catchTryKey);
+                            // Close previous after-filter catch scope if open
+                            if (afterFilter && _afterFilterCatchOpen)
+                            {
+                                block.Instructions.Add(new IRRawCpp { Code = "}" });
+                                _afterFilterCatchOpen = false;
+                            }
+                            block.Instructions.Add(new IRCatchBegin
+                            {
+                                ExceptionTypeCppName = catchTypeCpp,
+                                AfterFilter = afterFilter
+                            });
+                            if (afterFilter) _afterFilterCatchOpen = true;
                             // IL pushes exception onto stack at catch entry
                             stack.Push(new StackEntry("__exc_ctx.current_exception", "cil2cpp::Object*"));
                             break;
                         }
                         case ExceptionEventKind.FilterBegin:
                         {
-                            // Emit leave exit label before filter (for leave from try body)
-                            var filterLeaveKey = (evt.TryStart, evt.TryEnd);
-                            if (regionsNeedingLeaveExit.Contains(filterLeaveKey)
-                                && !emittedLeaveLabels.Contains(filterLeaveKey))
+                            var filterTryKey = (evt.TryStart, evt.TryEnd);
+                            bool isFirst = !_trysWithHandlerEmitted.Contains(filterTryKey);
+                            _trysWithHandlerEmitted.Add(filterTryKey);
+                            _trysWithFilter.Add(filterTryKey);
+
+                            // Emit leave exit label before first handler (for leave from try body)
+                            if (isFirst)
                             {
-                                emittedLeaveLabels.Add(filterLeaveKey);
-                                block.Instructions.Add(new IRLabel
+                                var filterLeaveKey = filterTryKey;
+                                if (regionsNeedingLeaveExit.Contains(filterLeaveKey)
+                                    && !emittedLeaveLabels.Contains(filterLeaveKey))
                                 {
-                                    LabelName = $"__leave_body_end_{evt.TryStart:X4}_{evt.TryEnd:X4}"
-                                });
+                                    emittedLeaveLabels.Add(filterLeaveKey);
+                                    block.Instructions.Add(new IRLabel
+                                    {
+                                        LabelName = $"__leave_body_end_{evt.TryStart:X4}_{evt.TryEnd:X4}"
+                                    });
+                                }
                             }
                             skipDeadCode = false;
                             stack.Clear();
-                            block.Instructions.Add(new IRFilterBegin());
-                            // Declare __filter_result in the filter scope (before any labels)
-                            block.Instructions.Add(new IRRawCpp { Code = "int32_t __filter_result = 0;" });
+                            block.Instructions.Add(new IRFilterBegin { IsFirst = isFirst });
+                            // Reset for this filter evaluation (declaration is at method scope in codegen)
+                            block.Instructions.Add(new IRRawCpp { Code = "__filter_result = 0;" });
                             // IL pushes exception onto stack for filter evaluation
                             stack.Push(new StackEntry("(cil2cpp::Exception*)__exc_ctx.current_exception", "cil2cpp::Exception*"));
                             // Track filter region for endfilter scoping fix
@@ -637,6 +683,18 @@ public partial class IRBuilder
                             block.Instructions.Add(new IRFinallyBegin());
                             break;
                         case ExceptionEventKind.HandlerEnd:
+                            // Close filter handler if-scope if we're ending a filter handler
+                            if (_currentFilterSkipLabel != null)
+                            {
+                                block.Instructions.Add(new IRFilterHandlerEnd());
+                                _currentFilterSkipLabel = null;
+                            }
+                            // Close after-filter catch scope if open
+                            if (_afterFilterCatchOpen)
+                            {
+                                block.Instructions.Add(new IRRawCpp { Code = "}" });
+                                _afterFilterCatchOpen = false;
+                            }
                             // Don't emit END_TRY if another handler (catch/filter) follows
                             // at the same offset for the SAME try block.
                             var hasFollowingHandlerSameTry = events.Any(e =>
@@ -1073,6 +1131,8 @@ public partial class IRBuilder
                 var stArgDef = instr.Operand as ParameterDefinition;
                 int stArgIdx = stArgDef?.Index ?? 0;
                 if (!method.IsStatic) stArgIdx++;
+                // Stack aliasing fix: materialize any stack entries referencing this arg
+                MaterializeStackAliases(block, stack, GetArgName(method, stArgIdx), ref tempCounter);
                 var stArgVal = stack.PopExpr();
                 // For pointer-type parameters, add explicit cast to handle implicit upcasts
                 // (e.g., EqualityComparer<T>* → IEqualityComparer<T>*) and uintptr_t→void*
@@ -1139,14 +1199,14 @@ public partial class IRBuilder
             }
 
             // ===== Store Locals =====
-            case Code.Stloc_0: EmitStoreLocal(block, stack, method, 0); break;
-            case Code.Stloc_1: EmitStoreLocal(block, stack, method, 1); break;
-            case Code.Stloc_2: EmitStoreLocal(block, stack, method, 2); break;
-            case Code.Stloc_3: EmitStoreLocal(block, stack, method, 3); break;
+            case Code.Stloc_0: EmitStoreLocal(block, stack, method, 0, ref tempCounter); break;
+            case Code.Stloc_1: EmitStoreLocal(block, stack, method, 1, ref tempCounter); break;
+            case Code.Stloc_2: EmitStoreLocal(block, stack, method, 2, ref tempCounter); break;
+            case Code.Stloc_3: EmitStoreLocal(block, stack, method, 3, ref tempCounter); break;
             case Code.Stloc_S:
             case Code.Stloc:
                 var stLocDef = instr.Operand as VariableDefinition;
-                EmitStoreLocal(block, stack, method, stLocDef?.Index ?? 0);
+                EmitStoreLocal(block, stack, method, stLocDef?.Index ?? 0, ref tempCounter);
                 break;
 
             // ===== Arithmetic =====
@@ -1442,10 +1502,12 @@ public partial class IRBuilder
                     _pendingVolatile = false;
                 }
 
-                // Scalar alias interception: types like IntPtr/UIntPtr/Boolean/Char are aliased
-                // to C++ scalars (intptr_t, bool, char16_t). IL accesses m_value field but C++
-                // scalars have no fields — emit direct value read instead.
-                if (fieldRef.Name == "m_value" && CppNameMapper.IsPrimitive(fieldRef.DeclaringType.FullName))
+                // Scalar alias interception: types like IntPtr/UIntPtr/Boolean/Char/Utf16Char
+                // are aliased to C++ scalars (intptr_t, bool, char16_t). IL accesses their
+                // backing field (m_value, _value, value) but C++ scalars have no fields —
+                // emit direct value read instead.
+                if ((fieldRef.Name is "m_value" or "_value" or "value")
+                    && CppNameMapper.IsPrimitive(fieldRef.DeclaringType.FullName))
                 {
                     var tmp = $"__t{tempCounter++}";
                     var lfFieldTypeName = ResolveFieldTypeRef(fieldRef);
@@ -1454,7 +1516,7 @@ public partial class IRBuilder
                     if (obj.StartsWith("&"))
                         readExpr = obj[1..]; // &loc_N → loc_N (value of the local)
                     else if (obj == "__this" || (objEntry.CppType?.EndsWith("*") == true))
-                        readExpr = $"*{obj}"; // pointer → dereference
+                        readExpr = $"*({lfFieldTypeCpp}*){obj}"; // cast to field type pointer, then dereference
                     else
                         readExpr = obj; // value → use directly
                     block.Instructions.Add(new IRRawCpp
@@ -1492,6 +1554,15 @@ public partial class IRBuilder
                     var declTypeName = GetMangledTypeNameForRef(fieldRef.DeclaringType);
                     castToType = declTypeName;
                 }
+                // intptr_t/uintptr_t field access: IL uses native int as pointer to struct
+                // (P/Invoke returns, SafeHandle.DangerousGetHandle results).
+                // Cast the native int to the declaring struct type pointer.
+                if (castToType == null && !isValueAccess
+                    && objEntry.CppType is "intptr_t" or "uintptr_t")
+                {
+                    var declTypeName = GetMangledTypeNameForRef(fieldRef.DeclaringType);
+                    castToType = declTypeName;
+                }
                 var tmp2 = $"__t{tempCounter++}";
                 var lfFieldTypeName2 = ResolveFieldTypeRef(fieldRef);
                 var lfFieldTypeCpp2 = CppNameMapper.GetCppTypeForDecl(lfFieldTypeName2);
@@ -1517,8 +1588,9 @@ public partial class IRBuilder
                 bool isVolatileStore = _pendingVolatile;
                 _pendingVolatile = false;
 
-                // Scalar alias interception: stfld m_value on primitive alias → direct write
-                if (fieldRef.Name == "m_value" && CppNameMapper.IsPrimitive(fieldRef.DeclaringType.FullName))
+                // Scalar alias interception: stfld on primitive alias backing field → direct write
+                if ((fieldRef.Name is "m_value" or "_value" or "value")
+                    && CppNameMapper.IsPrimitive(fieldRef.DeclaringType.FullName))
                 {
                     string writeExpr;
                     if (obj.StartsWith("&"))
@@ -1552,6 +1624,19 @@ public partial class IRBuilder
                     // Use (void*) intermediate to handle flat struct model (no C++ inheritance)
                     val = $"({fieldTypeCpp})(void*){val}";
                 }
+                // IntPtr/UIntPtr ↔ pointer bridging: .NET allows implicit conversion
+                // between IntPtr and pointers, but C++ intptr_t is an integer type
+                else if ((fieldTypeCpp == "intptr_t" || fieldTypeCpp == "uintptr_t")
+                    && val != "nullptr" && val != "0"
+                    && !val.StartsWith("(intptr_t)") && !val.StartsWith("(uintptr_t)"))
+                {
+                    val = $"({fieldTypeCpp}){val}";
+                }
+                // void* field from intptr_t/other value
+                else if (fieldTypeCpp == "void*" && val != "nullptr" && val != "0")
+                {
+                    val = $"(void*){val}";
+                }
                 // Pass stack CppType to detect pointer values not tracked in TempVarTypes
                 var isValueAccess = IsValueTypeAccess(fieldRef.DeclaringType, obj, method, objEntry.CppType);
                 string? stCastToType = null;
@@ -1564,6 +1649,13 @@ public partial class IRBuilder
                 }
                 // void* parameter field store: same as ldfld void* fix
                 if (stCastToType == null && !isValueAccess && objEntry.CppType == "void*")
+                {
+                    var stDeclTypeName = GetMangledTypeNameForRef(fieldRef.DeclaringType);
+                    stCastToType = stDeclTypeName;
+                }
+                // intptr_t/uintptr_t field store: same as ldfld intptr_t fix
+                if (stCastToType == null && !isValueAccess
+                    && objEntry.CppType is "intptr_t" or "uintptr_t")
                 {
                     var stDeclTypeName = GetMangledTypeNameForRef(fieldRef.DeclaringType);
                     stCastToType = stDeclTypeName;
@@ -1665,6 +1757,18 @@ public partial class IRBuilder
                 {
                     val = $"({sfieldTypeCpp})(void*){val}";
                 }
+                // IntPtr/UIntPtr ↔ pointer bridging for static fields
+                else if ((sfieldTypeCpp == "intptr_t" || sfieldTypeCpp == "uintptr_t")
+                    && val != "nullptr" && val != "0"
+                    && !val.StartsWith("(intptr_t)") && !val.StartsWith("(uintptr_t)"))
+                {
+                    val = $"({sfieldTypeCpp}){val}";
+                }
+                else if (sfieldTypeCpp.EndsWith("*"))
+                {
+                    // Pointer field from intptr_t/other value — cast through void* for type safety
+                    val = sfieldTypeCpp == "void*" ? $"(void*){val}" : $"({sfieldTypeCpp})(void*){val}";
+                }
                 block.Instructions.Add(new IRStaticFieldAccess
                 {
                     TypeCppName = typeCppName,
@@ -1686,8 +1790,9 @@ public partial class IRBuilder
                 var objEntry = stack.PopEntry();
                 var obj = objEntry.Expr.Length > 0 ? objEntry.Expr : "__this";
 
-                // Scalar alias interception: ldflda m_value on primitive alias → address of the value itself
-                if (fieldRef.Name == "m_value" && CppNameMapper.IsPrimitive(fieldRef.DeclaringType.FullName))
+                // Scalar alias interception: ldflda on primitive alias backing field → address of the value itself
+                if ((fieldRef.Name is "m_value" or "_value" or "value")
+                    && CppNameMapper.IsPrimitive(fieldRef.DeclaringType.FullName))
                 {
                     var tmp = $"__t{tempCounter++}";
                     var fldaTypeName = ResolveFieldTypeRef(fieldRef);
@@ -1714,6 +1819,12 @@ public partial class IRBuilder
                 var fieldName = CppNameMapper.MangleFieldName(fieldRef.Name);
                 // void* parameter field address: cast to declaring type first
                 if (objEntry.CppType == "void*")
+                {
+                    var declTypeName = GetMangledTypeNameForRef(fieldRef.DeclaringType);
+                    obj = $"(({declTypeName}*){obj})";
+                }
+                // intptr_t/uintptr_t field address: treat native int as pointer to struct
+                else if (objEntry.CppType is "intptr_t" or "uintptr_t")
                 {
                     var declTypeName = GetMangledTypeNameForRef(fieldRef.DeclaringType);
                     obj = $"(({declTypeName}*){obj})";
@@ -1822,9 +1933,12 @@ public partial class IRBuilder
                 }
                 else
                 {
+                    // Reference types: cast through void* to handle Object* ← ConcreteType*
+                    // mismatches (e.g., array_get returns Object* but stobj target is ConcreteType*)
+                    var cppRefType = CppNameMapper.GetCppTypeForDecl(resolvedName);
                     block.Instructions.Add(new IRRawCpp
                     {
-                        Code = $"*{addr} = {val};"
+                        Code = $"*{addr} = ({cppRefType})(void*){val};"
                     });
                 }
                 break;
@@ -1890,10 +2004,22 @@ public partial class IRBuilder
                 var cppType = GetIndirectType(instr.OpCode);
                 var val = stack.PopExpr();
                 var addr = stack.PopExprOr("nullptr");
-                block.Instructions.Add(new IRRawCpp
+                // stind.i (native int): use bitcast_to for safe struct→intptr_t conversion.
+                // The IL may store pointers/structs via stind.i which is invalid as a C-style cast.
+                if (instr.OpCode == Code.Stind_I)
                 {
-                    Code = $"*({cppType}*){addr} = ({cppType}){val};"
-                });
+                    block.Instructions.Add(new IRRawCpp
+                    {
+                        Code = $"*({cppType}*){addr} = cil2cpp::bitcast_to<{cppType}>({val});"
+                    });
+                }
+                else
+                {
+                    block.Instructions.Add(new IRRawCpp
+                    {
+                        Code = $"*({cppType}*){addr} = ({cppType}){val};"
+                    });
+                }
                 break;
             }
 
@@ -2350,6 +2476,8 @@ public partial class IRBuilder
                 // The result was already saved to __filter_result before scope boundaries.
                 if (stack.Count > 0) stack.Pop();
                 block.Instructions.Add(new IREndFilter());
+                // Mark that we need to close the filter handler scope at HandlerEnd
+                _currentFilterSkipLabel = "__filter_handler_open";
                 _inFilterRegion = false;
                 _endfilterOffset = -1;
                 break;
@@ -2407,8 +2535,18 @@ public partial class IRBuilder
             {
                 var typeRef = (TypeReference)instr.Operand!;
                 var resolvedName = ResolveTypeRefOperand(typeRef);
-                var val = stack.PopExpr();
+                var valEntry = stack.PopEntry();
+                var val = valEntry.Expr;
                 var tmp = $"__t{tempCounter++}";
+                // When boxing as IntPtr/UIntPtr, the stack may hold a pointer type
+                // (e.g., QUIC_HANDLE*). In IL, native ints and pointers are
+                // interchangeable, but in C++ we need an explicit cast.
+                if (resolvedName is "System.IntPtr" or "System.UIntPtr"
+                    && valEntry.CppType != null && valEntry.CppType.EndsWith("*"))
+                {
+                    var castType = resolvedName == "System.IntPtr" ? "intptr_t" : "uintptr_t";
+                    val = $"({castType}){val}";
+                }
 
                 if (IsNullableType(typeRef))
                 {
@@ -2469,11 +2607,12 @@ public partial class IRBuilder
                         // Value type: use box<T> template
                         // For primitives, use the C++ type name (int32_t) for template,
                         // but the mangled IL name (System_Int32) for TypeInfo reference.
-                        // Use MangleTypeNameClean to avoid trailing underscore from generic '>' mangling.
+                        // Use LookupMangledTypeName to match header's struct name (avoids
+                        // trailing underscore from MangleTypeNameClean for nested generic types).
                         var typeCpp = CppNameMapper.IsPrimitive(resolvedName)
                             ? CppNameMapper.GetCppTypeName(resolvedName)
-                            : CppNameMapper.MangleTypeNameClean(resolvedName);
-                        var typeInfoCpp = CppNameMapper.MangleTypeNameClean(resolvedName);
+                            : LookupMangledTypeName(resolvedName);
+                        var typeInfoCpp = LookupMangledTypeName(resolvedName);
                         block.Instructions.Add(new IRBox
                         {
                             ValueExpr = val,

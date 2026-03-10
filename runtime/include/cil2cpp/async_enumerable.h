@@ -23,15 +23,15 @@ extern thread_local Task* g_async_iter_current_task;
 // ── Non-generic ValueTask (for DisposeAsync) ──
 // Field names match BCL IL: System.Threading.Tasks.ValueTask._obj, _token, _continueOnCapturedContext
 struct ValueTaskVoid {
-    Object* f_obj;                     // IValueTaskSource or Task (null = completed)
-    int16_t f_token;
-    bool f_continueOnCapturedContext;
+    Object* f__obj;                     // IValueTaskSource or Task (null = completed)
+    int16_t f__token;
+    bool f__continueOnCapturedContext;
 };
 
 // ── Non-generic ValueTaskAwaiter ──
 // Field name matches BCL IL: System.Runtime.CompilerServices.ValueTaskAwaiter._value
 struct ValueTaskAwaiterVoid {
-    ValueTaskVoid f_value;
+    ValueTaskVoid f__value;
 };
 
 // ── AsyncIteratorMethodBuilder ──

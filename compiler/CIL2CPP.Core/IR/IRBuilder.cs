@@ -112,7 +112,10 @@ public partial class IRBuilder
         }
 
         // Check for field/method references to BCL compiler-generated generic types
-        // (display classes like System.Enum.<>c__63<T>) whose specializations may not exist
+        // (display classes like System.Enum.<>c__63<T>) whose specializations may not exist.
+        // Only block if the open type can't be resolved (missing Cecil definition).
+        // Resolvable display classes will be discovered and compiled by the demand-driven
+        // generic specialization fixpoint in ConvertDeferredGenericBodies.
         foreach (var instr in cecilMethod.Body.Instructions)
         {
             TypeReference? refType = null;
@@ -130,13 +133,43 @@ public partial class IRBuilder
                     if (!string.IsNullOrEmpty(ns) &&
                         (ns.StartsWith("System") || ns.StartsWith("Internal") || ns.StartsWith("Microsoft")))
                     {
-                        reason = $"BCL compiler-generated generic '{elemType.FullName}'";
-                        return true;
+                        // If the open type resolves, it can be compiled — let demand-driven
+                        // discovery handle it. Only block truly unresolvable types.
+                        var resolved = elemType.Resolve();
+                        if (resolved == null)
+                        {
+                            reason = $"BCL compiler-generated generic '{elemType.FullName}' (unresolvable)";
+                            return true;
+                        }
                     }
                 }
             }
         }
 
+        return false;
+    }
+
+    /// <summary>
+    /// Check if a method body references SIMD vector types (Vector128/256/512) in locals,
+    /// parameters, or return type. Such methods produce SIMD dead-code replacements that
+    /// cause type mismatches when compiled.
+    /// </summary>
+    internal static bool ReferencesSimdTypes(Mono.Cecil.MethodDefinition cecilMethod)
+    {
+        static bool IsSimdType(string? name) =>
+            name != null && (name.Contains("Vector128") || name.Contains("Vector256")
+                || name.Contains("Vector512") || name.Contains("Vector64"));
+
+        // Only check the method's external interface (return type + parameter types).
+        // Body-level SIMD references (locals, instructions) are handled by:
+        //   1. FeatureSwitchResolver: eliminates dead branches (IsHardwareAccelerated → brfalse)
+        //   2. IsSimdDeadCodeFunction: replaces SIMD calls at render time
+        //   3. CallsUndeclaredFunction: stubs methods with surviving undeclared SIMD calls
+        // This avoids false positives on methods like MemoryExtensions.IndexOfAnyInRange<T>
+        // that reference Vector128.IsHardwareAccelerated in dead-code branches.
+        if (IsSimdType(cecilMethod.ReturnType?.FullName)) return true;
+        foreach (var p in cecilMethod.Parameters)
+            if (IsSimdType(p.ParameterType?.FullName)) return true;
         return false;
     }
 
@@ -181,7 +214,7 @@ public partial class IRBuilder
         {
             // Instance method on value type: 'this' is separate, Parameters[0] is the real param
             var paramName = irMethod.Parameters.Count >= 1 ? irMethod.Parameters[0].CppName : "type";
-            code = $"__this->f_ptr = (void*){paramName};";
+            code = $"__this->f__ptr = (void*){paramName};";
         }
         // ObjectHandleOnStack.Create<T>(T** o) — wrap pointer in struct
         else if (declType == "System.Runtime.CompilerServices.ObjectHandleOnStack" && name == "Create")
@@ -262,6 +295,15 @@ public partial class IRBuilder
     // Exception filter tracking — set during filter evaluation region (FilterStart → endfilter)
     private bool _inFilterRegion;
     private int _endfilterOffset = -1;
+
+    // Multi-filter tracking: try regions that already have a filter/catch handler emitted,
+    // and regions that have at least one filter (for IRCatchBegin.AfterFilter).
+    private HashSet<(int TryStart, int TryEnd)> _trysWithHandlerEmitted = new();
+    private HashSet<(int TryStart, int TryEnd)> _trysWithFilter = new();
+    // Current filter handler's skip label (for IRFilterHandlerEnd emission)
+    private string? _currentFilterSkipLabel;
+    // True when an after-filter catch's if-block is open and needs closing at HandlerEnd
+    private bool _afterFilterCatchOpen;
 
     // Leave-crossing tracking — per-method data for leave dispatch across protected regions.
     // Maps leave instruction offset → (targetOffset, innermostCrossedTryStart, innermostCrossedTryEnd, fromHandlerBody)
@@ -637,10 +679,31 @@ public partial class IRBuilder
             BuildVTableRecursive(irType, _vtableBuilt);
         }
 
+        // Pass 4.5: Re-resolve interfaces for non-generic types.
+        // Pass 2.4 only adds interfaces already in _typeCache at that point.
+        // Types created later (e.g., IThreadPoolWorkItem materialized by generic
+        // specialization) are missed. Back-fill them now before BuildInterfaceImpls.
+        foreach (var typeDef in _allTypes)
+        {
+            if (typeDef.HasGenericParameters) continue;
+            if (_typeCache.TryGetValue(typeDef.FullName, out var irType4))
+            {
+                var existingIfaces = new HashSet<string>(irType4.Interfaces.Select(i => i.ILFullName));
+                foreach (var ifaceName in typeDef.InterfaceNames)
+                {
+                    if (!existingIfaces.Contains(ifaceName)
+                        && _typeCache.TryGetValue(ifaceName, out var iface))
+                    {
+                        irType4.Interfaces.Add(iface);
+                    }
+                }
+            }
+        }
+
         // Pass 5: Build interface implementation maps
         foreach (var irType in _module.Types)
         {
-            if (!irType.IsInterface && !irType.IsValueType)
+            if (!irType.IsInterface)
                 BuildInterfaceImpls(irType);
         }
 

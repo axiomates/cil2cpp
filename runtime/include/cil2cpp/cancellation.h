@@ -24,11 +24,11 @@ struct Task;
 struct CancellationTokenSource {
     TypeInfo* __type_info;
     UInt32 __sync_block;
-    Int32 f_state;            // _state: 0 = active, 1 = canceled, 2 = disposed
-    Boolean f_disposed;       // _disposed
-    void* f_timer;            // _timer (ITimer)
-    void* f_kernelEvent;      // _kernelEvent (ManualResetEvent)
-    void* f_registrations;    // _registrations (Registrations)
+    Int32 f__state;            // _state: 0 = active, 1 = canceled, 2 = disposed
+    Boolean f__disposed;       // _disposed
+    void* f__timer;            // _timer (ITimer)
+    void* f__kernelEvent;      // _kernelEvent (ManualResetEvent)
+    void* f__registrations;    // _registrations (Registrations)
 };
 
 // CancellationToken is defined in exception.h (needed by OperationCanceledException).
@@ -48,14 +48,14 @@ void cts_cancel_after(CancellationTokenSource* cts, Int32 milliseconds);
 /** Check if cancellation has been requested. Thread-safe (acquire load). */
 inline Boolean cts_is_cancellation_requested(CancellationTokenSource* cts) {
     if (!cts) return false;
-    return std::atomic_ref<Int32>(cts->f_state).load(std::memory_order_acquire) == 1;
+    return std::atomic_ref<Int32>(cts->f__state).load(std::memory_order_acquire) == 1;
 }
 
 /** Dispose the token source (prevents further cancellation). Thread-safe CAS. */
 inline void cts_dispose(CancellationTokenSource* cts) {
     if (!cts) return;
     Int32 expected = 0;
-    std::atomic_ref<Int32>(cts->f_state).compare_exchange_strong(
+    std::atomic_ref<Int32>(cts->f__state).compare_exchange_strong(
         expected, 2, std::memory_order_acq_rel);
 }
 
@@ -68,13 +68,13 @@ inline CancellationToken cts_get_token(CancellationTokenSource* cts) {
 
 /** Check if cancellation has been requested. Thread-safe (acquire load). */
 inline Boolean ct_is_cancellation_requested(CancellationToken token) {
-    if (!token.f_source) return false;
-    return std::atomic_ref<Int32>(token.f_source->f_state).load(std::memory_order_acquire) == 1;
+    if (!token.f__source) return false;
+    return std::atomic_ref<Int32>(token.f__source->f__state).load(std::memory_order_acquire) == 1;
 }
 
 /** Check if this token can be canceled (has a non-null source). */
 inline Boolean ct_can_be_canceled(CancellationToken token) {
-    return token.f_source != nullptr;
+    return token.f__source != nullptr;
 }
 
 /** Throw OperationCanceledException if cancellation requested. */

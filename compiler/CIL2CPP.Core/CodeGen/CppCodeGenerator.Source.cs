@@ -319,8 +319,8 @@ public partial class CppCodeGenerator
             {
                 var lenSig = $"int32_t {spanType}_get_Length({spanType}* __this)";
                 var emptySig = $"bool {spanType}_get_IsEmpty({spanType}* __this)";
-                sb.AppendLine($"{lenSig} {{ return __this->f_length; }}");
-                sb.AppendLine($"{emptySig} {{ return __this->f_length == 0; }}");
+                sb.AppendLine($"{lenSig} {{ return __this->f__length; }}");
+                sb.AppendLine($"{emptySig} {{ return __this->f__length == 0; }}");
                 // Register as emitted so stubs generator doesn't duplicate them
                 _emittedMethodSignatures.Add(lenSig);
                 _emittedMethodSignatures.Add(emptySig);
@@ -413,7 +413,8 @@ public partial class CppCodeGenerator
             if (method.HasICallMapping) continue;
             if (HasInvalidCppSignature(method)) continue;
             if (HasGenericBodyTypeConflict(type, method)) continue;
-            if (CallsUndeclaredFunction(method)) continue;
+            if (CallsUndeclaredFunction(method))
+                continue;
             if (!_emittedMethodSignatures.Add(method.GetCppSignature())) continue;
             // Direct render — compile from IL
             GenerateMethodImpl(sb, method);
@@ -479,17 +480,17 @@ public partial class CppCodeGenerator
             sb.AppendLine($"// SafeHandleMarshaller ManagedToUnmanagedIn: {typeName}");
             // FromManaged: store handle + DangerousAddRef
             sb.AppendLine($"void {typeName}_FromManaged({typeName}* __this, void* handle) {{");
-            sb.AppendLine($"    __this->f_handle = handle;");
-            sb.AppendLine($"    cil2cpp::icall::SafeHandle_DangerousAddRef(handle, &__this->f_addRefd);");
+            sb.AppendLine($"    __this->f__handle = handle;");
+            sb.AppendLine($"    cil2cpp::icall::SafeHandle_DangerousAddRef(handle, &__this->f__addRefd);");
             sb.AppendLine($"}}");
             // ToUnmanaged: DangerousGetHandle → IntPtr
             sb.AppendLine($"intptr_t {typeName}_ToUnmanaged({typeName}* __this) {{");
-            sb.AppendLine($"    return cil2cpp::icall::SafeHandle_DangerousGetHandle(__this->f_handle);");
+            sb.AppendLine($"    return cil2cpp::icall::SafeHandle_DangerousGetHandle(__this->f__handle);");
             sb.AppendLine($"}}");
             // Free: DangerousRelease if addRefd
             sb.AppendLine($"void {typeName}_Free({typeName}* __this) {{");
-            sb.AppendLine($"    if (__this->f_addRefd) {{");
-            sb.AppendLine($"        cil2cpp::icall::SafeHandle_DangerousRelease(__this->f_handle);");
+            sb.AppendLine($"    if (__this->f__addRefd) {{");
+            sb.AppendLine($"        cil2cpp::icall::SafeHandle_DangerousRelease(__this->f__handle);");
             sb.AppendLine($"    }}");
             sb.AppendLine($"}}");
         }
@@ -710,6 +711,9 @@ public partial class CppCodeGenerator
             }
 
             sb.AppendLine($"{sig} {{");
+            sb.AppendLine($"#ifndef NDEBUG");
+            sb.AppendLine($"    cil2cpp::stub_called(\"{method.CppName}\");");
+            sb.AppendLine($"#endif");
             if (method.ReturnTypeCpp == "void" || string.IsNullOrEmpty(method.ReturnTypeCpp))
                 sb.AppendLine("    // TODO: compile from IL");
             else if (method.ReturnTypeCpp.EndsWith("*"))
@@ -965,13 +969,13 @@ public partial class CppCodeGenerator
         {
             var enumFields = type.StaticFields
                 .Where(f => f.ConstantValue != null)
-                .OrderBy(f => Convert.ToInt64(f.ConstantValue))
+                .OrderBy(f => EnumConstantToInt64(f.ConstantValue!))
                 .ToList();
             if (enumFields.Count > 0)
             {
                 enumCount = enumFields.Count;
                 var namesArr = string.Join(", ", enumFields.Select(f => $"\"{f.Name}\""));
-                var valuesArr = string.Join(", ", enumFields.Select(f => $"{Convert.ToInt64(f.ConstantValue)}LL"));
+                var valuesArr = string.Join(", ", enumFields.Select(f => $"{EnumConstantToInt64(f.ConstantValue!)}LL"));
                 sb.AppendLine($"static const char* {type.CppName}_enum_names[] = {{ {namesArr} }};");
                 sb.AppendLine($"static int64_t {type.CppName}_enum_values[] = {{ {valuesArr} }};");
                 enumNamesExpr = $"{type.CppName}_enum_names";
@@ -1078,6 +1082,12 @@ public partial class CppCodeGenerator
         var allInstructions = method.BasicBlocks.SelectMany(b => b.Instructions).ToList();
         bool hasLabels = allInstructions.Any(i => i is IRLabel);
 
+        // Declare __filter_result at method scope if any filter handlers exist.
+        // Must be at method scope because CIL2CPP_FILTER_BEGIN opens an else-scope
+        // and the variable must be visible across all filters and handler bodies.
+        if (allInstructions.Any(i => i is IRFilterBegin))
+            sb.AppendLine("    int32_t __filter_result = 0;");
+
         // Pre-declare temp variables used across label scopes
         // (variables declared inside one { } label scope can't be used in another)
         // Also track cross-scope pointer vars for explicit cast wrapping below.
@@ -1102,6 +1112,11 @@ public partial class CppCodeGenerator
                     var initVal = typeName.EndsWith("*") ? "nullptr" : "{}";
                     sb.AppendLine($"    {typeName} {varName} = {initVal};");
                     if (typeName.EndsWith("*"))
+                        crossScopePtrVars[varName] = typeName;
+                    // Track intptr_t/uintptr_t vars: in IL, native int and pointers are
+                    // freely interchangeable. Cross-scope merges may assign pointer values
+                    // (uint8_t*, void*, etc.) to intptr_t vars without explicit conv.i/conv.u.
+                    else if (typeName is "intptr_t" or "uintptr_t")
                         crossScopePtrVars[varName] = typeName;
                 }
                 declaredTemps.Add(varName);
@@ -1134,7 +1149,27 @@ public partial class CppCodeGenerator
 
                 // Exception handling instructions must be at function scope
                 // (CIL2CPP_TRY/CATCH/FINALLY/END_TRY macros expand to { if / } else if / } })
-                if (instr is IRTryBegin or IRCatchBegin or IRFinallyBegin or IRFilterBegin or IRTryEnd)
+                // IRFilterBegin with IsFirst=false doesn't need scope closing (no } else { emitted)
+                // IRFilterHandlerEnd emits a skip label inside the else block
+                if (instr is IRTryBegin or IRFinallyBegin or IRTryEnd
+                    || (instr is IRFilterBegin fb && fb.IsFirst)
+                    || (instr is IRCatchBegin cb && !cb.AfterFilter))
+                {
+                    if (gotoScopeOpen)
+                    {
+                        sb.AppendLine("    }");
+                        gotoScopeOpen = false;
+                    }
+                    if (inLabelScope)
+                    {
+                        sb.AppendLine("    }");
+                        inLabelScope = false;
+                    }
+                }
+                // After-filter catches and non-first filters: close label scope but not macro scope
+                if ((instr is IRFilterBegin fb2 && !fb2.IsFirst)
+                    || (instr is IRCatchBegin cb2 && cb2.AfterFilter)
+                    || instr is IRFilterHandlerEnd)
                 {
                     if (gotoScopeOpen)
                     {
@@ -1208,6 +1243,23 @@ public partial class CppCodeGenerator
                     else
                     {
                         code = "(void)0; // SIMD dead-code";
+                    }
+                }
+
+                // EventSource diagnostic methods (behind IsEnabled() guards, always false in AOT)
+                if (instr is IRCall evtCall && IsEventSourceDiagnosticFunction(evtCall.FunctionName)
+                    && _undeclaredFunctionNames.Contains(evtCall.FunctionName))
+                {
+                    if (evtCall.ResultVar != null)
+                    {
+                        var type = evtCall.ResultTypeCpp ?? "int";
+                        var defaultVal = type.EndsWith("*") ? "nullptr" : "{}";
+                        code = $"{type} {evtCall.ResultVar} = {defaultVal}; // EventSource dead-code";
+                        declaredTemps.Add(evtCall.ResultVar);
+                    }
+                    else
+                    {
+                        code = "(void)0; // EventSource dead-code";
                     }
                 }
 
@@ -1626,6 +1678,22 @@ public partial class CppCodeGenerator
 
         var rhs = code[(eqIdx + 3)..].TrimEnd(';').Trim();
 
+        // intptr_t/uintptr_t pre-declared vars: in IL, native int and pointers are freely
+        // interchangeable. When a pointer (uint8_t*, void*, Object*, etc.) is assigned to
+        // an intptr_t/uintptr_t variable, wrap with a C-style cast.
+        if (preType is "intptr_t" or "uintptr_t")
+        {
+            // Already the correct type or already cast
+            if (rhs.StartsWith($"({preType})")) return code;
+            // Simple variable, function call, or expression — wrap with C-style cast
+            // Don't wrap if rhs is already intptr_t/uintptr_t compatible (numeric literal, etc.)
+            // Only wrap when rhs looks like a pointer expression (loc_N, __tN, function call)
+            if (rhs.StartsWith("loc_") || rhs.StartsWith("__t") || rhs.StartsWith("(uint8_t*)")
+                || rhs.StartsWith("(void*)") || rhs.StartsWith("(cil2cpp::"))
+                return $"{varName} = ({preType}){rhs};";
+            return code;
+        }
+
         // Has (void*) but missing target type — conv.u erased the type.
         // e.g., __t5 = (void*)__t8; → __t5 = (cil2cpp::String*)(void*)__t8;
         if (code.Contains("(void*)"))
@@ -1994,6 +2062,64 @@ public partial class CppCodeGenerator
         }
         if (emittedIfaceStubs.Count > 0) sb.AppendLine();
 
+        // Pre-pass: generate unboxing thunks for value type interface methods.
+        // When interface methods are called on boxed value types, the 'this' pointer
+        // points to the boxed Object (with header). Value type methods expect a pointer
+        // to the raw value data (past the Object header). Thunks adjust 'this' accordingly.
+        var unboxThunkNames = new Dictionary<string, string>(); // "methodCppName" → thunk name
+        var emittedUnboxThunks = new HashSet<string>();
+        foreach (var type in userTypes)
+        {
+            if (!type.IsValueType) continue;
+            var isCoreRt = type.IsRuntimeProvided && IRBuilder.CoreRuntimeTypes.Contains(type.ILFullName);
+            if (type.IsInterface || (isCoreRt && type.VTable.Count == 0) || type.InterfaceImpls.Count == 0) continue;
+
+            foreach (var impl in type.InterfaceImpls)
+            {
+                foreach (var m in impl.MethodImpls)
+                {
+                    if (m == null) continue;
+                    if (m.IsAbstract || m.IsStatic) continue;
+                    if (!_declaredFunctionNames.Contains(m.CppName)) continue;
+                    // Skip methods from CoreRuntimeTypes — they use nullptr in vtable
+                    var declType = m.DeclaringType;
+                    if (declType != null)
+                    {
+                        var isDeclCoreRt = declType.IsRuntimeProvided
+                            && IRBuilder.CoreRuntimeTypes.Contains(declType.ILFullName);
+                        if (isDeclCoreRt || !generatedMethodTypes.Contains(declType.CppName))
+                            continue;
+                    }
+                    // Skip methods with no body (abstract, interface stubs, etc.)
+                    if (m.BasicBlocks.Count == 0 && !emittedIfaceStubs.Contains(m.CppName))
+                        continue;
+                    if (unboxThunkNames.ContainsKey(m.CppName)) continue;
+
+                    var thunkName = $"{m.CppName}__unbox_thunk";
+                    if (!emittedUnboxThunks.Add(thunkName)) continue;
+
+                    // Build thunk: adjust 'this' from boxed Object* to raw value pointer
+                    var retType = SanitizeFuncPtrType(m.ReturnTypeCpp ?? "void");
+                    var paramDecls = new List<string> { "void* __this_boxed" };
+                    var argNames = new List<string>();
+                    // First arg to real method: unboxed value pointer
+                    argNames.Add($"reinterpret_cast<{m.DeclaringType!.CppName}*>(reinterpret_cast<char*>(__this_boxed) + sizeof(cil2cpp::Object))");
+                    foreach (var p in m.Parameters)
+                    {
+                        paramDecls.Add($"{p.CppTypeName} {p.Name}");
+                        argNames.Add(p.Name);
+                    }
+                    var retPrefix = retType == "void" ? "" : "return ";
+                    sb.AppendLine($"static {retType} {thunkName}({string.Join(", ", paramDecls)}) {{");
+                    sb.AppendLine($"    {retPrefix}{m.CppName}({string.Join(", ", argNames)});");
+                    sb.AppendLine("}");
+
+                    unboxThunkNames[m.CppName] = thunkName;
+                }
+            }
+        }
+        if (emittedUnboxThunks.Count > 0) sb.AppendLine();
+
         var constructedTypesIface = _module.ConstructedTypes;
         foreach (var type in userTypes)
         {
@@ -2033,6 +2159,9 @@ public partial class CppCodeGenerator
                     // Check if the function was actually declared in the header
                     if (!_declaredFunctionNames.Contains(m.CppName))
                         return "nullptr";
+                    // Value type interface methods need unboxing thunks
+                    if (typeRef.IsValueType && !m.IsStatic && unboxThunkNames.TryGetValue(m.CppName, out var thunkName))
+                        return $"(void*)&{thunkName}";
                     // If this method was stubbed by the pre-pass (no basic blocks),
                     // GetTypedMethodPointerCast returns "nullptr". Build cast manually.
                     if (emittedIfaceStubs.Contains(m.CppName))
@@ -2214,7 +2343,7 @@ public partial class CppCodeGenerator
         {
             if (type.IsRuntimeProvided || type.IsEnum || type.IsDelegate) continue;
             // Skip runtime exception types — their C++ struct layout is defined by the runtime
-            // and doesn't match the generated field layout (e.g., cil2cpp::ArgumentException has no f_paramName)
+            // and doesn't match the generated field layout (e.g., cil2cpp::ArgumentException has no f__paramName)
             if (CppNameMapper.IsRuntimeExceptionType(type.ILFullName)) continue;
             // Skip types not accessed via reflection — no FieldInfo[]/MethodInfo[] needed
             if (reflectionTargets.Count > 0 && !reflectionTargets.Contains(type.ILFullName)) continue;
@@ -2416,11 +2545,11 @@ public partial class CppCodeGenerator
             AttributeArgKind.Type => $".string_val = \"{EscapeCppString(arg.Value?.ToString() ?? "")}\"",
             AttributeArgKind.Float when arg.TypeName == "System.Single" => $".float_val = {FormatFloat(arg.Value!)}",
             AttributeArgKind.Float => $".float_val = {FormatDouble(arg.Value!)}",
-            AttributeArgKind.Enum => $".int_val = {Convert.ToInt64(arg.Value)}",
+            AttributeArgKind.Enum => $".int_val = {EnumConstantToInt64(arg.Value!)}",
             AttributeArgKind.Array => ".int_val = 0",  // value union unused for arrays
             AttributeArgKind.Int when arg.TypeName == "System.Boolean" => $".int_val = {((bool)arg.Value! ? 1 : 0)}",
             AttributeArgKind.Int when arg.TypeName == "System.Char" => $".int_val = {(int)(char)arg.Value!}",
-            _ => $".int_val = {Convert.ToInt64(arg.Value)}",
+            _ => $".int_val = {EnumConstantToInt64(arg.Value!)}",
         };
     }
 
@@ -2432,6 +2561,13 @@ public partial class CppCodeGenerator
 
     private static string FormatDouble(object val) =>
         ((double)val).ToString("G17", System.Globalization.CultureInfo.InvariantCulture);
+
+    /// <summary>
+    /// Convert an enum constant value to Int64, handling UInt64 values that exceed Int64.MaxValue
+    /// via unchecked two's-complement cast (bit-pattern preserving).
+    /// </summary>
+    private static long EnumConstantToInt64(object value) =>
+        value is ulong u ? unchecked((long)u) : Convert.ToInt64(value);
 
     /// <summary>
     /// Emit extern "C" declarations and managed wrapper functions for P/Invoke methods.
@@ -2462,15 +2598,19 @@ public partial class CppCodeGenerator
     {
         // Scan ALL module types (not just deduplicated userTypes) — partial classes like
         // Interop.Kernel32 span multiple assemblies, and deduplication drops P/Invoke methods
-        var pinvokeMethods = _module.Types
+        var allPInvokeMethods = _module.Types
             .Where(t => !t.IsInterface && !t.IsDelegate && !t.IsRuntimeProvided)
             .SelectMany(t => t.Methods)
-            .Where(m => m.IsPInvoke
-                        && !string.IsNullOrEmpty(m.PInvokeModule)
-                        && !InternalPInvokeModules.Contains(m.PInvokeModule!))
+            .Where(m => m.IsPInvoke && !string.IsNullOrEmpty(m.PInvokeModule))
             .ToList();
 
-        if (pinvokeMethods.Count == 0) return;
+        if (allPInvokeMethods.Count == 0) return;
+
+        // Exclude InternalPInvokeModules from extern declarations (they're available via system headers)
+        // but keep them for wrapper generation (the managed→native wrapper functions are still needed)
+        var pinvokeMethods = allPInvokeMethods
+            .Where(m => !InternalPInvokeModules.Contains(m.PInvokeModule!))
+            .ToList();
 
         // Filter out C stdlib functions and methods with delegate/function pointer parameters
         // (our codegen doesn't produce valid C function pointer types for extern "C" declarations)
@@ -2564,7 +2704,7 @@ public partial class CppCodeGenerator
         // Multiple __PInvoke inner methods with the same entry point and compatible types
         // each get their own wrapper (they may have different C++ names).
         sb.AppendLine("// ===== P/Invoke Wrappers =====");
-        foreach (var method in pinvokeMethods)
+        foreach (var method in allPInvokeMethods)
         {
             var entryPoint = method.PInvokeEntryPoint ?? method.Name;
             if (!declaredEntryPoints.Contains(entryPoint)) continue;
@@ -2642,10 +2782,17 @@ public partial class CppCodeGenerator
                 {
                     // ECMA-335: native int → target type for native calls
                     // Cast to the extern's parameter type (may be void*, int32_t*, etc.)
-                    var targetType = (externParamTypes != null && i < externParamTypes.Count)
-                        ? externParamTypes[i] : "void*";
-                    sb.AppendLine($"    auto __p{i} = reinterpret_cast<{targetType}>({param.CppName});");
-                    callArgs.Add($"__p{i}");
+                    if (externParamTypes != null && i < externParamTypes.Count)
+                    {
+                        var targetType = externParamTypes[i];
+                        sb.AppendLine($"    auto __p{i} = reinterpret_cast<{targetType}>({param.CppName});");
+                        callArgs.Add($"__p{i}");
+                    }
+                    else
+                    {
+                        // No extern declaration — pass through as-is (uintptr_t → size_t is implicit)
+                        callArgs.Add(param.CppName);
+                    }
                 }
                 else if (param.CppTypeName.EndsWith("*") && externParamTypes != null
                          && i < externParamTypes.Count && externParamTypes[i].EndsWith("*")
@@ -2951,6 +3098,25 @@ public partial class CppCodeGenerator
                     sb.AppendLine($"    cil2cpp::System_String_TypeInfo.interface_vtable_count = {stringType.InterfaceImpls.Count};");
                 }
             }
+        }
+
+        // Initialize String.Empty — a runtime-intrinsic field that .NET pre-initializes
+        // before any managed code runs. Since System.String is a RuntimeProvidedType,
+        // its .cctor is not compiled from IL, so we must set it here.
+        if (stringType != null)
+        {
+            sb.AppendLine("    // Initialize String.Empty (runtime-intrinsic)");
+            sb.AppendLine("    System_String_statics.f_Empty = cil2cpp::string_literal(\"\");");
+        }
+
+        // Register all TypeInfos with the runtime type registry.
+        // This enables MakeGenericType, type_get_by_name, and other
+        // runtime type lookup operations used by BCL reflection code.
+        sb.AppendLine("    // Register all TypeInfos for runtime type lookup");
+        foreach (var type in _userTypes)
+        {
+            if (!string.IsNullOrEmpty(type.ILFullName))
+                sb.AppendLine($"    cil2cpp::type_register(&{type.CppName}_TypeInfo);");
         }
 
         sb.AppendLine("}");

@@ -191,7 +191,7 @@ TEST_F(ExceptionTest, ThrownException_HasStackTrace) {
     } else {
         ASSERT_NE(ctx.current_exception, nullptr);
         // Stack trace should be set
-        EXPECT_NE(ctx.current_exception->f_stackTraceString, nullptr);
+        EXPECT_NE(ctx.current_exception->f__stackTraceString, nullptr);
     }
 
     g_exception_context = ctx.previous;
@@ -202,8 +202,8 @@ TEST_F(ExceptionTest, ThrownException_HasStackTrace) {
 TEST_F(ExceptionTest, UserThrownException_HasStackTrace) {
     // Simulate user throw: manually create exception (no stack trace), then throw_exception
     auto* ex = static_cast<Exception*>(gc::alloc(sizeof(Exception), &Exception_TypeInfo));
-    ex->f_message = string_literal("user error");
-    ex->f_stackTraceString = nullptr;  // User-created exceptions have no stack trace initially
+    ex->f__message = string_literal("user error");
+    ex->f__stackTraceString = nullptr;  // User-created exceptions have no stack trace initially
 
     ExceptionContext ctx;
     ctx.previous = g_exception_context;
@@ -216,8 +216,8 @@ TEST_F(ExceptionTest, UserThrownException_HasStackTrace) {
     } else {
         ASSERT_NE(ctx.current_exception, nullptr);
         // throw_exception should have captured stack trace
-        EXPECT_NE(ctx.current_exception->f_stackTraceString, nullptr);
-        EXPECT_GT(ctx.current_exception->f_stackTraceString->length, 0);
+        EXPECT_NE(ctx.current_exception->f__stackTraceString, nullptr);
+        EXPECT_GT(ctx.current_exception->f__stackTraceString->length, 0);
     }
 
     g_exception_context = ctx.previous;
@@ -236,7 +236,7 @@ TEST_F(ExceptionTest, NullReferenceException_HasMessage) {
         throw_null_reference();
     } else {
         ASSERT_NE(ctx.current_exception, nullptr);
-        EXPECT_NE(ctx.current_exception->f_message, nullptr);
+        EXPECT_NE(ctx.current_exception->f__message, nullptr);
     }
 
     g_exception_context = ctx.previous;
@@ -253,7 +253,7 @@ TEST_F(ExceptionTest, IndexOutOfRangeException_HasMessage) {
         throw_index_out_of_range();
     } else {
         ASSERT_NE(ctx.current_exception, nullptr);
-        EXPECT_NE(ctx.current_exception->f_message, nullptr);
+        EXPECT_NE(ctx.current_exception->f__message, nullptr);
     }
 
     g_exception_context = ctx.previous;
@@ -271,7 +271,7 @@ TEST_F(ExceptionTest, Exception_InnerException_IsNull) {
     } else {
         ASSERT_NE(ctx.current_exception, nullptr);
         // Default inner_exception should be null
-        EXPECT_EQ(ctx.current_exception->f_innerException, nullptr);
+        EXPECT_EQ(ctx.current_exception->f__innerException, nullptr);
     }
 
     g_exception_context = ctx.previous;
@@ -412,9 +412,9 @@ TEST_F(ExceptionTest, ThrowException_CustomException) {
     };
 
     Exception* ex = static_cast<Exception*>(gc::alloc(sizeof(Exception), &CustomExType));
-    ex->f_message = string_create_utf8("Custom error");
-    ex->f_innerException = nullptr;
-    ex->f_stackTraceString = nullptr;
+    ex->f__message = string_create_utf8("Custom error");
+    ex->f__innerException = nullptr;
+    ex->f__stackTraceString = nullptr;
 
     CIL2CPP_TRY
         throw_exception(ex);
@@ -769,8 +769,8 @@ TEST_F(ExceptionTest, ThrowInvalidOperation_HasCorrectMessage) {
     CIL2CPP_CATCH_ALL
         auto ex = get_current_exception();
         ASSERT_NE(ex, nullptr);
-        ASSERT_NE(ex->f_message, nullptr);
-        auto msg = string_to_utf8(ex->f_message);
+        ASSERT_NE(ex->f__message, nullptr);
+        auto msg = string_to_utf8(ex->f__message);
         EXPECT_NE(std::string(msg).find("Operation is not valid"), std::string::npos);
         free(msg);
     CIL2CPP_END_TRY

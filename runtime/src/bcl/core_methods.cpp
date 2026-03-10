@@ -21,6 +21,7 @@
 #include <cil2cpp/memberinfo.h>
 #include <cil2cpp/reflection.h>
 #include <cil2cpp/type_info.h>
+#include <cil2cpp/threading.h>
 
 // Value types used by CoreRuntimeTypes method signatures.
 // These must be ABI-compatible with the generated struct definitions.
@@ -60,11 +61,11 @@ struct System_Runtime_CompilerServices_TypeHandle { void* f_m_asTAddr; };
 struct System_RuntimeTypeHandle_IntroducedMethodEnumerator { void* f__handle; };
 
 // QCall handle types — must match generated struct layout
-struct System_Runtime_CompilerServices_QCallTypeHandle { void* f_ptr; intptr_t f_handle; };
-struct System_Runtime_CompilerServices_QCallAssembly { void* f_ptr; };
-struct System_Runtime_CompilerServices_ObjectHandleOnStack { void* f_ptr; };
-struct System_Runtime_CompilerServices_StringHandleOnStack { void* f_ptr; };
-struct System_Runtime_CompilerServices_StackCrawlMarkHandle { void* f_ptr; };
+struct System_Runtime_CompilerServices_QCallTypeHandle { void* f__ptr; intptr_t f__handle; };
+struct System_Runtime_CompilerServices_QCallAssembly { void* f__ptr; };
+struct System_Runtime_CompilerServices_ObjectHandleOnStack { void* f__ptr; };
+struct System_Runtime_CompilerServices_StringHandleOnStack { void* f__ptr; };
+struct System_Runtime_CompilerServices_StackCrawlMarkHandle { void* f__ptr; };
 
 // Span types (pointer + length)
 struct System_ReadOnlySpan_1_System_Int32 { void* f__reference; int32_t f__length; };
@@ -123,8 +124,8 @@ extern "C" void System_Enum_GetEnumValuesAndNames(
     System_Runtime_CompilerServices_ObjectHandleOnStack names,
     Interop_BOOL getNames)
 {
-    // QCallTypeHandle.f_ptr is RuntimeType** — dereference to get Type*
-    auto** rtPtr = reinterpret_cast<cil2cpp::Type**>(enumType.f_ptr);
+    // QCallTypeHandle.f__ptr is RuntimeType** — dereference to get Type*
+    auto** rtPtr = reinterpret_cast<cil2cpp::Type**>(enumType.f__ptr);
     if (!rtPtr || !*rtPtr) return;
     auto* ti = (*rtPtr)->type_info;
     if (!ti || !ti->enum_names) return;
@@ -154,8 +155,8 @@ extern "C" void System_Enum_GetEnumValuesAndNames(
             case 8: reinterpret_cast<uint64_t*>(data)[i] = static_cast<uint64_t>(v); break;
         }
     }
-    // ObjectHandleOnStack.f_ptr is Object** — write through it
-    *reinterpret_cast<cil2cpp::Object**>(values.f_ptr) = reinterpret_cast<cil2cpp::Object*>(valArr);
+    // ObjectHandleOnStack.f__ptr is Object** — write through it
+    *reinterpret_cast<cil2cpp::Object**>(values.f__ptr) = reinterpret_cast<cil2cpp::Object*>(valArr);
 
     // Create names array if requested
     if (getNames) {
@@ -164,7 +165,7 @@ extern "C" void System_Enum_GetEnumValuesAndNames(
         for (int32_t i = 0; i < count; i++) {
             nameData[i] = cil2cpp::string_literal(ti->enum_names[i]);
         }
-        *reinterpret_cast<cil2cpp::Object**>(names.f_ptr) = reinterpret_cast<cil2cpp::Object*>(nameArr);
+        *reinterpret_cast<cil2cpp::Object**>(names.f__ptr) = reinterpret_cast<cil2cpp::Object*>(nameArr);
     }
 }
 
@@ -179,7 +180,7 @@ extern "C" void System_Exception_RestoreDispatchState(void* /*__this*/, void* /*
 extern "C" void System_Exception_SaveStackTracesFromDeepCopy(void* /*exception*/, void* /*currentStackTrace*/, void* /*dynamicMethodArray*/) { cil2cpp::stub_called(__func__); }
 extern "C" void System_Exception_SetCurrentStackTrace(void* /*__this*/) { cil2cpp::stub_called(__func__); }
 extern "C" void* System_Exception_SetRemoteStackTrace(void* __this, void* stackTrace) {
-    if (__this) static_cast<cil2cpp::Exception*>(__this)->f_remoteStackTraceString = static_cast<cil2cpp::String*>(stackTrace);
+    if (__this) static_cast<cil2cpp::Exception*>(__this)->f__remoteStackTraceString = static_cast<cil2cpp::String*>(stackTrace);
     return __this;
 }
 extern "C" void* System_Exception_ToString(void* /*__this*/) { cil2cpp::stub_called(__func__); return nullptr; }
@@ -196,6 +197,9 @@ extern "C" void System_Reflection_Assembly_GetEntryAssemblyNative(System_Runtime
 extern "C" void System_Reflection_Assembly_GetExecutingAssemblyNative(System_Runtime_CompilerServices_StackCrawlMarkHandle stackMark, System_Runtime_CompilerServices_ObjectHandleOnStack retAssembly) { cil2cpp::stub_called(__func__); }
 extern "C" void* System_Reflection_Assembly_GetManifestResourceNames(void* /*__this*/) { cil2cpp::stub_called(__func__); return nullptr; }
 extern "C" void* System_Reflection_Assembly_GetManifestResourceStream__System_String(void* /*__this*/, void* /*name*/) { cil2cpp::stub_called(__func__); return nullptr; }
+extern "C" void* System_Reflection_Assembly_get_Location(void* /*__this*/) {
+    return reinterpret_cast<void*>(cil2cpp::string_literal(""));
+}
 extern "C" void* System_Reflection_Assembly_GetName(void* /*__this*/) { cil2cpp::stub_called(__func__); return nullptr; }
 extern "C" void* System_Reflection_Assembly_GetName__System_Boolean(void* /*__this*/, bool copiedName) { cil2cpp::stub_called(__func__); return nullptr; }
 extern "C" void* System_Reflection_Assembly_GetType__System_String_System_Boolean_System_Boolean(void* /*__this*/, void* /*name*/, bool throwOnError, bool ignoreCase) { cil2cpp::stub_called(__func__); return nullptr; }
@@ -215,6 +219,9 @@ extern "C" void* System_Reflection_FieldInfo_GetValue(void* __this, void* obj) {
     return cil2cpp::fieldinfo_get_value(reinterpret_cast<cil2cpp::ManagedFieldInfo*>(__this), reinterpret_cast<cil2cpp::Object*>(obj));
 }
 extern "C" void System_Reflection_FieldInfo_SetValue__System_Object_System_Object_System_Reflection_BindingFlags_System_Reflection_Binder_System_Globalization_CultureInfo(void* __this, void* obj, void* value, System_Reflection_BindingFlags invokeAttr, void* /*binder*/, void* /*culture*/) {
+    cil2cpp::fieldinfo_set_value(reinterpret_cast<cil2cpp::ManagedFieldInfo*>(__this), reinterpret_cast<cil2cpp::Object*>(obj), reinterpret_cast<cil2cpp::Object*>(value));
+}
+extern "C" void System_Reflection_FieldInfo_SetValue__System_Object_System_Object(void* __this, void* obj, void* value) {
     cil2cpp::fieldinfo_set_value(reinterpret_cast<cil2cpp::ManagedFieldInfo*>(__this), reinterpret_cast<cil2cpp::Object*>(obj), reinterpret_cast<cil2cpp::Object*>(value));
 }
 extern "C" System_RuntimeFieldHandle System_Reflection_FieldInfo_get_FieldHandle(void* /*__this*/) { cil2cpp::stub_called(__func__); return {}; }
@@ -493,13 +500,70 @@ extern "C" TypeHandle_Stub System_RuntimeTypeHandle_GetNativeTypeHandle(void* /*
 extern "C" bool System_RuntimeTypeHandle_IsByRef(void* /*type*/) { cil2cpp::stub_called(__func__); return false; }
 extern "C" bool System_RuntimeTypeHandle_IsPointer(void* /*type*/) { cil2cpp::stub_called(__func__); return false; }
 extern "C" bool System_RuntimeTypeHandle_IsFunctionPointer(void* /*type*/) { cil2cpp::stub_called(__func__); return false; }
-extern "C" void* System_RuntimeTypeHandle_CreateInstanceForAnotherGenericParameter__System_RuntimeType_System_RuntimeType(void* /*type*/, void* /*genericParameter*/) { cil2cpp::stub_called(__func__); return nullptr; }
-extern "C" void* System_RuntimeTypeHandle_CreateInstanceForAnotherGenericParameter__System_RuntimeType_System_RuntimeType_System_RuntimeType(void* /*type*/, void* /*genericParameter1*/, void* /*genericParameter2*/) { cil2cpp::stub_called(__func__); return nullptr; }
+// Helper: extract generic definition name from a closed generic full_name.
+// E.g., "System.Collections.Generic.GenericComparer`1<System.Int32>" → "System.Collections.Generic.GenericComparer`1"
+static std::string extract_generic_definition(const char* full_name) {
+    std::string s(full_name);
+    auto pos = s.find('<');
+    if (pos != std::string::npos)
+        return s.substr(0, pos);
+    return s;
+}
+
+extern "C" void* System_RuntimeTypeHandle_CreateInstanceForAnotherGenericParameter__System_RuntimeType_System_RuntimeType(
+    void* type, void* genericParameter)
+{
+    auto* templateType = reinterpret_cast<cil2cpp::Type*>(type);
+    auto* paramType = reinterpret_cast<cil2cpp::Type*>(genericParameter);
+    if (!templateType || !templateType->type_info || !paramType || !paramType->type_info)
+        return nullptr;
+
+    // Extract generic definition from template type
+    auto def = extract_generic_definition(templateType->type_info->full_name);
+    // Build closed generic name: "GenericDef`1<ParamType>"
+    std::string targetName = def + "<" + paramType->type_info->full_name + ">";
+
+    auto* targetInfo = cil2cpp::type_get_by_name(targetName.c_str());
+    if (!targetInfo) {
+        fprintf(stderr, "[AOT] CreateInstanceForAnotherGenericParameter: type '%s' not found (template='%s', param='%s')\n",
+            targetName.c_str(), templateType->type_info->full_name, paramType->type_info->full_name);
+        fflush(stderr);
+        return nullptr;
+    }
+
+    return cil2cpp::object_alloc(targetInfo);
+}
+
+extern "C" void* System_RuntimeTypeHandle_CreateInstanceForAnotherGenericParameter__System_RuntimeType_System_RuntimeType_System_RuntimeType(
+    void* type, void* genericParameter1, void* genericParameter2)
+{
+    auto* templateType = reinterpret_cast<cil2cpp::Type*>(type);
+    auto* param1 = reinterpret_cast<cil2cpp::Type*>(genericParameter1);
+    auto* param2 = reinterpret_cast<cil2cpp::Type*>(genericParameter2);
+    if (!templateType || !templateType->type_info || !param1 || !param1->type_info || !param2 || !param2->type_info)
+        return nullptr;
+
+    auto def = extract_generic_definition(templateType->type_info->full_name);
+    std::string targetName = def + "<" + param1->type_info->full_name + ", " + param2->type_info->full_name + ">";
+
+    auto* targetInfo = cil2cpp::type_get_by_name(targetName.c_str());
+    if (!targetInfo) {
+        fprintf(stderr, "[AOT] CreateInstanceForAnotherGenericParameter: type '%s' not found (template='%s')\n",
+            targetName.c_str(), templateType->type_info->full_name);
+        fflush(stderr);
+        return nullptr;
+    }
+
+    return cil2cpp::object_alloc(targetInfo);
+}
 extern "C" void* System_RuntimeTypeHandle_ConstructName__System_TypeNameFormatFlags(void* /*__this*/, System_TypeNameFormatFlags formatFlags) { cil2cpp::stub_called(__func__); return nullptr; }
 extern "C" bool System_RuntimeTypeHandle_ContainsGenericVariables(void* /*__this*/) { cil2cpp::stub_called(__func__); return false; }
 extern "C" System_ReadOnlySpan_1_System_IntPtr System_RuntimeTypeHandle_CopyRuntimeTypeHandles__System_RuntimeTypeHandle___System_Span_1_System_IntPtr_(void* /*inHandles*/, System_Span_1_System_IntPtr stackScratch) { cil2cpp::stub_called(__func__); return {}; }
 extern "C" void* System_RuntimeTypeHandle_CopyRuntimeTypeHandles__System_Type___System_Int32Ref(void* /*inHandles*/, void* /*length*/) { cil2cpp::stub_called(__func__); return nullptr; }
 extern "C" bool System_RuntimeTypeHandle_Equals__System_Object(void* /*__this*/, void* /*obj*/) { cil2cpp::stub_called(__func__); return false; }
+extern "C" bool System_RuntimeTypeHandle_Equals__System_RuntimeTypeHandle(System_RuntimeTypeHandle* __this, System_RuntimeTypeHandle other) {
+    return __this->f_m_type == other.f_m_type;
+}
 extern "C" intptr_t System_RuntimeTypeHandle_FreeGCHandle__System_IntPtr(void* /*__this*/, intptr_t objHandle) { cil2cpp::stub_called(__func__); return {}; }
 extern "C" void* System_RuntimeTypeHandle_GetConstraints(void* /*__this*/) { cil2cpp::stub_called(__func__); return nullptr; }
 extern "C" intptr_t System_RuntimeTypeHandle_GetGCHandle__System_Runtime_InteropServices_GCHandleType(void* /*__this*/, System_Runtime_InteropServices_GCHandleType type) { cil2cpp::stub_called(__func__); return {}; }
@@ -593,17 +657,27 @@ extern "C" void System_Runtime_InteropServices_Marshalling_SafeHandleMarshaller_
 // Removed from CoreRuntimeTypes — all methods now compile from BCL IL.
 
 // ===== System.Threading.Thread =====
-extern "C" void System_Threading_Thread__ctor__System_Threading_ParameterizedThreadStart(void* /*__this*/, void* /*start*/) { }
-extern "C" void System_Threading_Thread__ctor__System_Threading_ThreadStart(void* /*__this*/, void* /*start*/) { }
+extern "C" void System_Threading_Thread__ctor__System_Threading_ParameterizedThreadStart(void* __this, void* start) {
+    auto* t = reinterpret_cast<cil2cpp::ManagedThread*>(__this);
+    t->start_delegate = reinterpret_cast<cil2cpp::Delegate*>(start);
+}
+extern "C" void System_Threading_Thread__ctor__System_Threading_ThreadStart(void* __this, void* start) {
+    auto* t = reinterpret_cast<cil2cpp::ManagedThread*>(__this);
+    t->start_delegate = reinterpret_cast<cil2cpp::Delegate*>(start);
+}
 extern "C" void System_Threading_Thread__InformThreadNameChange_g____PInvoke_26_0(System_Threading_ThreadHandle __t_native, void* /*__name_native*/, int32_t __len_native) { cil2cpp::stub_called(__func__); }
-extern "C" bool System_Threading_Thread_get_IsBackground(void* /*__this*/) { cil2cpp::stub_called(__func__); return false; }
+extern "C" bool System_Threading_Thread_get_IsBackground(void* __this) {
+    return reinterpret_cast<cil2cpp::ManagedThread*>(__this)->is_background;
+}
 extern "C" bool System_Threading_Thread_get_IsThreadPoolThread(void* /*__this*/) { cil2cpp::stub_called(__func__); return false; }
 extern "C" System_Threading_ThreadPriority System_Threading_Thread_get_Priority(void* /*__this*/) { cil2cpp::stub_called(__func__); return {}; }
 extern "C" uint64_t System_Threading_Thread_GetCurrentOSThreadId() { cil2cpp::stub_called(__func__); return {}; }
 extern "C" System_Threading_ThreadHandle System_Threading_Thread_GetNativeHandle(void* /*__this*/) { cil2cpp::stub_called(__func__); return {}; }
 extern "C" void System_Threading_Thread_ResetThreadPoolThread(void* /*__this*/) { cil2cpp::stub_called(__func__); }
 extern "C" void System_Threading_Thread_ResetThreadPoolThreadSlow(void* /*__this*/) { cil2cpp::stub_called(__func__); }
-extern "C" void System_Threading_Thread_set_IsBackground(void* /*__this*/, bool value) { cil2cpp::stub_called(__func__); }
+extern "C" void System_Threading_Thread_set_IsBackground(void* __this, bool value) {
+    reinterpret_cast<cil2cpp::ManagedThread*>(__this)->is_background = value;
+}
 extern "C" void System_Threading_Thread_set_Name(void* /*__this*/, void* /*value*/) { cil2cpp::stub_called(__func__); }
 extern "C" void System_Threading_Thread_set_IsThreadPoolThread(void* /*__this*/, bool value) { cil2cpp::stub_called(__func__); }
 extern "C" void System_Threading_Thread_set_Priority(void* /*__this*/, System_Threading_ThreadPriority value) { cil2cpp::stub_called(__func__); }

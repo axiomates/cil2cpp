@@ -28,9 +28,9 @@ struct SafeHandleLayout {
     TypeInfo* __type_info;
     UInt32 __sync_block;
     intptr_t f_handle;
-    int32_t f_state;
-    bool f_ownsHandle;
-    bool f_fullyInitialized;
+    int32_t f__state;
+    bool f__ownsHandle;
+    bool f__fullyInitialized;
 };
 
 /// SafeHandle internal call implementations
@@ -40,9 +40,9 @@ namespace icall {
 inline void SafeHandle__ctor(void* self, intptr_t invalidHandleValue, bool ownsHandle) {
     auto* sh = static_cast<SafeHandleLayout*>(self);
     sh->f_handle = invalidHandleValue;
-    sh->f_state = static_cast<int32_t>(SafeHandleState::RefCountOne);
-    sh->f_ownsHandle = ownsHandle;
-    sh->f_fullyInitialized = true;
+    sh->f__state = static_cast<int32_t>(SafeHandleState::RefCountOne);
+    sh->f__ownsHandle = ownsHandle;
+    sh->f__fullyInitialized = true;
 }
 
 /// SafeHandle.DangerousGetHandle() → IntPtr
@@ -62,7 +62,7 @@ inline void SafeHandle_DangerousAddRef(void* self, bool* success) {
     constexpr int32_t refCountOne = static_cast<int32_t>(SafeHandleState::RefCountOne);
     constexpr int32_t closedBit = static_cast<int32_t>(SafeHandleState::Closed);
 
-    auto* atomic_state = reinterpret_cast<std::atomic<int32_t>*>(&sh->f_state);
+    auto* atomic_state = reinterpret_cast<std::atomic<int32_t>*>(&sh->f__state);
     int32_t old_state = atomic_state->load(std::memory_order_relaxed);
     for (;;) {
         if (old_state & closedBit) {
@@ -87,7 +87,7 @@ inline void SafeHandle_DangerousRelease(void* self) {
     constexpr int32_t refCountOne = static_cast<int32_t>(SafeHandleState::RefCountOne);
     constexpr int32_t closedBit = static_cast<int32_t>(SafeHandleState::Closed);
 
-    auto* atomic_state = reinterpret_cast<std::atomic<int32_t>*>(&sh->f_state);
+    auto* atomic_state = reinterpret_cast<std::atomic<int32_t>*>(&sh->f__state);
     int32_t old_state = atomic_state->load(std::memory_order_relaxed);
     for (;;) {
         int32_t new_state = old_state - refCountOne;
@@ -128,14 +128,14 @@ inline void SafeHandle_DangerousRelease(void* self) {
 
 /// SafeHandle.get_IsClosed() → bool
 inline bool SafeHandle_get_IsClosed(void* self) {
-    auto state = static_cast<SafeHandleLayout*>(self)->f_state;
+    auto state = static_cast<SafeHandleLayout*>(self)->f__state;
     return (state & static_cast<int32_t>(SafeHandleState::Closed)) != 0;
 }
 
 /// SafeHandle.SetHandleAsInvalid()
 inline void SafeHandle_SetHandleAsInvalid(void* self) {
     auto* sh = static_cast<SafeHandleLayout*>(self);
-    sh->f_state |= static_cast<int32_t>(SafeHandleState::Closed);
+    sh->f__state |= static_cast<int32_t>(SafeHandleState::Closed);
 }
 
 /// SafeHandle.Dispose(bool disposing)
@@ -143,13 +143,13 @@ inline void SafeHandle_SetHandleAsInvalid(void* self) {
 inline void SafeHandle_Dispose(void* self, bool disposing) {
     auto* sh = static_cast<SafeHandleLayout*>(self);
     // Skip if already closed
-    if (sh->f_state & static_cast<int32_t>(SafeHandleState::Closed))
+    if (sh->f__state & static_cast<int32_t>(SafeHandleState::Closed))
         return;
 
     // Call ReleaseHandle() via vtable if the handle is valid.
-    // SafeFileHandle now has an ICall .ctor that sets f_ownsHandle=true via
+    // SafeFileHandle now has an ICall .ctor that sets f__ownsHandle=true via
     // SafeHandle__ctor. For other SafeHandle-derived types whose .ctor is still
-    // stubbed, f_ownsHandle may be false (zero-init). Skip the check for safety.
+    // stubbed, f__ownsHandle may be false (zero-init). Skip the check for safety.
     if (sh->f_handle != 0 && sh->f_handle != -1) {
         auto* ti = sh->__type_info;
         if (ti && ti->vtable) {
@@ -173,7 +173,7 @@ inline void SafeHandle_Dispose(void* self, bool disposing) {
         }
     }
 
-    sh->f_state |= static_cast<int32_t>(SafeHandleState::Disposed) |
+    sh->f__state |= static_cast<int32_t>(SafeHandleState::Disposed) |
                     static_cast<int32_t>(SafeHandleState::Closed);
 }
 
@@ -199,14 +199,14 @@ inline void SafeFileHandle__ctor(void* self) {
         int32_t f_state;
         bool f_ownsHandle;
         bool f_fullyInitialized;
-        void* f_path;
-        int64_t f_length;
-        bool f_lengthCanBeCached;
-        int32_t f_fileOptions;
-        int32_t f_fileType;
+        void* f__path;
+        int64_t f__length;
+        bool f__lengthCanBeCached;
+        int32_t f__fileOptions;
+        int32_t f__fileType;
     };
     auto* sfh = static_cast<SafeFileHandleLayout*>(self);
-    sfh->f_fileType = -1;
+    sfh->f__fileType = -1;
 }
 
 } // namespace icall

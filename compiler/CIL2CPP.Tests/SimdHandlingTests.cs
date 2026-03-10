@@ -140,22 +140,20 @@ public class SimdHandlingTests
     [Theory]
     [InlineData("System_Runtime_Intrinsics_Vector128_1_System_Byte_op_Addition")]
     [InlineData("System_Numerics_Vector_1_System_Single_op_Multiply")]
-    public void SimdContainerCall_InLiveCode_MethodBlockedAsStub(string functionName)
+    public void SimdContainerCall_InLiveCode_RenderedWithDeadCodeReplacement(string functionName)
     {
         // SIMD generic type instance methods (Vector128<T>.op_*, Vector<T>.op_*)
-        // access opaque struct fields — block the method and emit a stub instead
+        // are in feature-switch-guarded dead branches (IsSupported=false on AOT).
+        // They're exempted by IsSimdDeadCodeFunction and rendered with default-value
+        // replacement at emit time — not blocked by CallsUndeclaredFunction.
         var module = CreateModuleWithSimdCall(functionName);
         var gen = new CppCodeGenerator(module);
         var output = gen.Generate();
 
-        // Method should NOT appear in method files (it's blocked by CallsUndeclaredFunction)
+        // Method SHOULD appear in method files (SIMD calls are exempted dead code)
         var source = output.MethodFiles.FirstOrDefault();
-        if (source != null)
-        {
-            Assert.DoesNotContain("TestClass_Test()", source.Content);
-        }
-        // Method should appear in stub file instead
-        Assert.Contains("TestClass_Test", output.StubFile.Content);
+        Assert.NotNull(source);
+        Assert.Contains("TestClass_Test()", source!.Content);
     }
 
     private static IRModule CreateModuleWithSimdCall(string functionName)

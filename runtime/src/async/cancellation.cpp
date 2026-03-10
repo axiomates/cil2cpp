@@ -18,7 +18,7 @@ extern TypeInfo CancellationTokenSource_TypeInfo;
 CancellationTokenSource* cts_create() {
     auto* cts = static_cast<CancellationTokenSource*>(
         gc::alloc(sizeof(CancellationTokenSource), &CancellationTokenSource_TypeInfo));
-    cts->f_state = 0;
+    cts->f__state = 0;
     return cts;
 }
 
@@ -26,7 +26,7 @@ void cts_cancel(CancellationTokenSource* cts) {
     if (!cts) return;
     // Atomic CAS: only cancel if currently active (state 0 -> 1)
     Int32 expected = 0;
-    std::atomic_ref<Int32>(cts->f_state).compare_exchange_strong(
+    std::atomic_ref<Int32>(cts->f__state).compare_exchange_strong(
         expected, 1, std::memory_order_acq_rel);
 }
 
@@ -73,8 +73,8 @@ void tcs_set_canceled(Task* task) {
         gc::alloc(sizeof(OperationCanceledException), nullptr));
     ex->__type_info = nullptr;
     ex->__sync_block = 0;
-    ex->f_message = string_create_utf8("The operation was canceled.");
-    ex->f_innerException = nullptr;
+    ex->f__message = string_create_utf8("The operation was canceled.");
+    ex->f__innerException = nullptr;
     task_fault(task, ex);
 }
 
