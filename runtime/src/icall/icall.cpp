@@ -536,19 +536,14 @@ Object* Enum_InternalBoxEnum(void* enumType, Int64 value) {
     return obj;
 }
 
-Int32 Enum_InternalGetCorElementType(void* enumType) {
-    // Returns the CorElementType for the underlying type of an enum.
-    // enumType is a RuntimeType* (cil2cpp::Type*) — extract the represented TypeInfo.
-    auto* typeObj = reinterpret_cast<Type*>(enumType);
-    if (!typeObj) return 0;
-    auto* typeInfo = typeObj->type_info;
+Int32 Enum_InternalGetCorElementType(void* methodTable) {
+    // Receives a MethodTable* which maps to TypeInfo* in our AOT runtime.
+    // Called from BCL IL: RuntimeHelpers.GetMethodTable(this) → InternalGetCorElementType(mt).
+    auto* typeInfo = reinterpret_cast<TypeInfo*>(methodTable);
+    if (!typeInfo) return 0;
     if (typeInfo && typeInfo->underlying_type && typeInfo->underlying_type->cor_element_type != 0) {
         return static_cast<Int32>(typeInfo->underlying_type->cor_element_type);
     }
-    // Fallback: infer from element_size when underlying_type is not set.
-    // NOTE: size-based inference cannot distinguish signed/unsigned types
-    // (e.g., byte vs sbyte are both 1 byte). Defaults to signed per ECMA convention.
-    // The primary path above (underlying_type->cor_element_type) is always correct.
     if (typeInfo) {
         switch (typeInfo->element_size) {
             case 1: return cor_element_type::I1;

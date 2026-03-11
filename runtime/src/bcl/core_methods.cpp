@@ -22,6 +22,7 @@
 #include <cil2cpp/reflection.h>
 #include <cil2cpp/type_info.h>
 #include <cil2cpp/threading.h>
+#include <cil2cpp/gchandle.h>
 
 // Value types used by CoreRuntimeTypes method signatures.
 // These must be ABI-compatible with the generated struct definitions.
@@ -486,17 +487,51 @@ extern "C" bool System_Reflection_TypeInfo_IsAssignableFrom(void* /*__this*/, vo
 extern "C" bool System_RuntimeType_CanValueSpecialCast(void* /*valueType*/, void* /*targetType*/) { cil2cpp::stub_called(__func__); return false; }
 extern "C" void System_RuntimeType_GetGUID(void* /*__this*/, void* /*result*/) { cil2cpp::stub_called(__func__); }
 extern "C" void* System_RuntimeType_InvokeDispMethod(void* /*__this*/, void* /*name*/, System_Reflection_BindingFlags invokeAttr, void* /*target*/, void* /*args*/, void* /*byrefModifiers*/, int32_t culture, void* /*namedParameters*/) { cil2cpp::stub_called(__func__); return nullptr; }
-extern "C" bool System_RuntimeType_IsDelegate(void* /*__this*/) { cil2cpp::stub_called(__func__); return false; }
+// RuntimeType.get_IsEnum / get_IsActualEnum / IsDelegate:
+// These methods in CoreCLR read MethodTable.f_ParentMethodTable to compare against
+// System.Enum or System.MulticastDelegate. Our TypeInfo struct has a different layout
+// (ParentMethodTable offset 16 = full_name, not base_type), so the IL-compiled bodies
+// read garbage. Provide correct implementations using TypeInfo.flags and base_type.
+extern "C" bool System_RuntimeType_get_IsEnum(void* __this) {
+    auto* t = reinterpret_cast<cil2cpp::Type*>(__this);
+    if (!t || !t->type_info) return false;
+    return t->type_info->flags & cil2cpp::TypeFlags::Enum;
+}
+extern "C" bool System_RuntimeType_get_IsActualEnum(void* __this) {
+    // IsActualEnum is identical to IsEnum for concrete types (non-generic-parameters)
+    auto* t = reinterpret_cast<cil2cpp::Type*>(__this);
+    if (!t || !t->type_info) return false;
+    return t->type_info->flags & cil2cpp::TypeFlags::Enum;
+}
+extern "C" bool System_RuntimeType_IsDelegate(void* __this) {
+    // Check if base_type is System.MulticastDelegate by name comparison.
+    // All delegate types inherit from MulticastDelegate.
+    auto* t = reinterpret_cast<cil2cpp::Type*>(__this);
+    if (!t || !t->type_info || !t->type_info->base_type) return false;
+    auto* base_name = t->type_info->base_type->full_name;
+    return base_name && std::strcmp(base_name, "System.MulticastDelegate") == 0;
+}
 
 // ===== System.RuntimeTypeHandle =====
 // Methods removed from SkipAllMethodsTypes were compiled from IL by SocketTest.
 // But RuntimeTypeHandle is back in SkipAllMethodsTypes due to pointer-level mismatches.
 // Add back stubs that were removed in the batch cleanup.
-extern "C" void System_RuntimeTypeHandle__ctor(void* /*__this*/, void* /*type*/) { }
+extern "C" void System_RuntimeTypeHandle__ctor(void* __this, void* type) {
+    // System_RuntimeTypeHandle is a struct with a single field f_m_type at offset 0.
+    // Store the RuntimeType pointer so GetGCHandle can retrieve it later.
+    *reinterpret_cast<void**>(__this) = type;
+}
 extern "C" void* System_RuntimeTypeHandle_GetRuntimeType(void* /*__this*/) { cil2cpp::stub_called(__func__); return nullptr; }
 extern "C" bool System_RuntimeTypeHandle_IsNullHandle(void* /*__this*/) { return true; }
 struct TypeHandle_Stub { void* m_asTAddr; };
-extern "C" TypeHandle_Stub System_RuntimeTypeHandle_GetNativeTypeHandle(void* /*__this*/) { return {nullptr}; }
+extern "C" TypeHandle_Stub System_RuntimeTypeHandle_GetNativeTypeHandle(void* __this) {
+    // __this is RuntimeTypeHandle* — field 0 is RuntimeType* (cil2cpp::Type*).
+    // Return the TypeInfo* as the TypeHandle value. TypeInfo* serves as our MethodTable*
+    // since CoreCLR's MethodTable concept maps to our TypeInfo.
+    auto* runtimeType = *reinterpret_cast<cil2cpp::Type**>(__this);
+    if (!runtimeType) return {nullptr};
+    return {runtimeType->type_info};
+}
 extern "C" bool System_RuntimeTypeHandle_IsByRef(void* /*type*/) { cil2cpp::stub_called(__func__); return false; }
 extern "C" bool System_RuntimeTypeHandle_IsPointer(void* /*type*/) { cil2cpp::stub_called(__func__); return false; }
 extern "C" bool System_RuntimeTypeHandle_IsFunctionPointer(void* /*type*/) { cil2cpp::stub_called(__func__); return false; }
@@ -556,7 +591,19 @@ extern "C" void* System_RuntimeTypeHandle_CreateInstanceForAnotherGenericParamet
 
     return cil2cpp::object_alloc(targetInfo);
 }
-extern "C" void* System_RuntimeTypeHandle_ConstructName__System_TypeNameFormatFlags(void* /*__this*/, System_TypeNameFormatFlags formatFlags) { cil2cpp::stub_called(__func__); return nullptr; }
+extern "C" void* System_RuntimeTypeHandle_ConstructName__System_TypeNameFormatFlags(void* __this, System_TypeNameFormatFlags formatFlags) {
+    // __this is RuntimeTypeHandle* — field 0 is RuntimeType* (cil2cpp::Type*).
+    // formatFlags: 0 = Name only, 1 = Namespace+Name (ToString), 3 = FullName
+    auto* runtimeType = *reinterpret_cast<cil2cpp::Type**>(__this);
+    if (!runtimeType || !runtimeType->type_info) return nullptr;
+    auto* ti = runtimeType->type_info;
+    if (formatFlags == 0) {
+        // FormatBasic — just the type name (e.g., "Int32")
+        return ti->name ? cil2cpp::string_literal(ti->name) : nullptr;
+    }
+    // FormatNamespace (1), FormatFullInst (3), etc. — use full_name
+    return ti->full_name ? cil2cpp::string_literal(ti->full_name) : nullptr;
+}
 extern "C" bool System_RuntimeTypeHandle_ContainsGenericVariables(void* /*__this*/) { cil2cpp::stub_called(__func__); return false; }
 extern "C" System_ReadOnlySpan_1_System_IntPtr System_RuntimeTypeHandle_CopyRuntimeTypeHandles__System_RuntimeTypeHandle___System_Span_1_System_IntPtr_(void* /*inHandles*/, System_Span_1_System_IntPtr stackScratch) { cil2cpp::stub_called(__func__); return {}; }
 extern "C" void* System_RuntimeTypeHandle_CopyRuntimeTypeHandles__System_Type___System_Int32Ref(void* /*inHandles*/, void* /*length*/) { cil2cpp::stub_called(__func__); return nullptr; }
@@ -564,9 +611,18 @@ extern "C" bool System_RuntimeTypeHandle_Equals__System_Object(void* /*__this*/,
 extern "C" bool System_RuntimeTypeHandle_Equals__System_RuntimeTypeHandle(System_RuntimeTypeHandle* __this, System_RuntimeTypeHandle other) {
     return __this->f_m_type == other.f_m_type;
 }
-extern "C" intptr_t System_RuntimeTypeHandle_FreeGCHandle__System_IntPtr(void* /*__this*/, intptr_t objHandle) { cil2cpp::stub_called(__func__); return {}; }
+extern "C" intptr_t System_RuntimeTypeHandle_FreeGCHandle__System_IntPtr(void* /*__this*/, intptr_t objHandle) {
+    cil2cpp::gchandle_free(objHandle);
+    return {};
+}
 extern "C" void* System_RuntimeTypeHandle_GetConstraints(void* /*__this*/) { cil2cpp::stub_called(__func__); return nullptr; }
-extern "C" intptr_t System_RuntimeTypeHandle_GetGCHandle__System_Runtime_InteropServices_GCHandleType(void* /*__this*/, System_Runtime_InteropServices_GCHandleType type) { cil2cpp::stub_called(__func__); return {}; }
+extern "C" intptr_t System_RuntimeTypeHandle_GetGCHandle__System_Runtime_InteropServices_GCHandleType(void* /*__this*/, System_Runtime_InteropServices_GCHandleType type) {
+    // Allocate an empty GCHandle slot (initially null). The caller stores the handle
+    // in RuntimeType.m_cache, then populates it via GCHandle.InternalCompareExchange
+    // with a RuntimeTypeCache object. Matches CoreCLR's CreateTypedHandle(NULL, type).
+    auto h = cil2cpp::gchandle_alloc(nullptr, static_cast<cil2cpp::GCHandleType>(type));
+    return h;
+}
 extern "C" int32_t System_RuntimeTypeHandle_GetGenericVariableIndex(void* /*__this*/) { cil2cpp::stub_called(__func__); return {}; }
 extern "C" int32_t System_RuntimeTypeHandle_GetHashCode(void* /*__this*/) { cil2cpp::stub_called(__func__); return {}; }
 extern "C" void* System_RuntimeTypeHandle_GetInstantiationInternal(void* /*__this*/) { cil2cpp::stub_called(__func__); return nullptr; }
@@ -580,7 +636,11 @@ extern "C" void* System_RuntimeTypeHandle_Instantiate__System_RuntimeType(void* 
 extern "C" void* System_RuntimeTypeHandle_Instantiate__System_Type__(void* /*__this*/, void* /*inst*/) { cil2cpp::stub_called(__func__); return nullptr; }
 extern "C" bool System_RuntimeTypeHandle_IsArray(void* /*type*/) { cil2cpp::stub_called(__func__); return false; }
 extern "C" bool System_RuntimeTypeHandle_IsComObject(void* /*type*/, bool isGenericCOM) { cil2cpp::stub_called(__func__); return false; }
-extern "C" bool System_RuntimeTypeHandle_IsPrimitive(void* /*type*/) { cil2cpp::stub_called(__func__); return false; }
+extern "C" bool System_RuntimeTypeHandle_IsPrimitive(void* type) {
+    // type is RuntimeType* (cil2cpp::Type*) — check TypeInfo flags
+    auto* t = reinterpret_cast<cil2cpp::Type*>(type);
+    return t && t->type_info && (t->type_info->flags & cil2cpp::TypeFlags::Primitive);
+}
 extern "C" bool System_RuntimeTypeHandle_IsSZArray(void* /*type*/) { cil2cpp::stub_called(__func__); return false; }
 extern "C" bool System_RuntimeTypeHandle_IsTypeDefinition(void* /*type*/) { cil2cpp::stub_called(__func__); return false; }
 extern "C" bool System_RuntimeTypeHandle_IsVisible(void* /*type*/) { cil2cpp::stub_called(__func__); return false; }
@@ -621,7 +681,13 @@ extern "C" System_RuntimeMethodHandleInternal System_RuntimeTypeHandle_GetInterf
 extern "C" void* System_RuntimeTypeHandle_GetInterfaces(void* /*type*/) { cil2cpp::stub_called(__func__); return nullptr; }
 extern "C" System_Reflection_MetadataImport System_RuntimeTypeHandle_GetMetadataImport(void* /*type*/) { cil2cpp::stub_called(__func__); return {}; }
 extern "C" System_RuntimeMethodHandleInternal System_RuntimeTypeHandle_GetMethodAt(void* /*type*/, int32_t slot) { cil2cpp::stub_called(__func__); return {}; }
-extern "C" void* System_RuntimeTypeHandle_GetModule(void* /*type*/) { cil2cpp::stub_called(__func__); return nullptr; }
+extern "C" void* System_RuntimeTypeHandle_GetModule(void* /*type*/) {
+    // Return a singleton zero-initialized RuntimeModule. The caller (RuntimeTypeCache ctor)
+    // uses it to check m_isGlobal = (module.RuntimeType == this). Since f_m_runtimeType is
+    // null, get_RuntimeType returns null, op_Equality(null, type) → false, m_isGlobal = false.
+    alignas(16) static uint8_t s_dummy_module[64] = {};
+    return s_dummy_module;
+}
 extern "C" void System_RuntimeTypeHandle_GetNextIntroducedMethod(void* /*method*/) { cil2cpp::stub_called(__func__); }
 extern "C" int32_t System_RuntimeTypeHandle_GetNumVirtuals(void* /*type*/) { cil2cpp::stub_called(__func__); return {}; }
 extern "C" void System_RuntimeTypeHandle_Instantiate__System_Runtime_CompilerServices_QCallTypeHandle_System_IntPtrPtr_System_Int32_System_Runtime_CompilerServices_ObjectHandleOnStack(System_Runtime_CompilerServices_QCallTypeHandle handle, void* /*pInst*/, int32_t numGenericArgs, System_Runtime_CompilerServices_ObjectHandleOnStack type) { cil2cpp::stub_called(__func__); }
@@ -652,6 +718,89 @@ extern "C" void System_Runtime_InteropServices_Marshalling_SafeHandleMarshaller_
 extern "C" void System_Runtime_InteropServices_Marshalling_SafeHandleMarshaller_1_ManagedToUnmanagedIn_Microsoft_Win32_SafeHandles_SafeTokenHandle_FromManaged(void* /*__this*/, void* /*handle*/) { cil2cpp::stub_called(__func__); }
 extern "C" intptr_t System_Runtime_InteropServices_Marshalling_SafeHandleMarshaller_1_ManagedToUnmanagedIn_Microsoft_Win32_SafeHandles_SafeTokenHandle_ToUnmanaged(void* /*__this*/) { cil2cpp::stub_called(__func__); return {}; }
 extern "C" void System_Runtime_InteropServices_Marshalling_SafeHandleMarshaller_1_ManagedToUnmanagedIn_Microsoft_Win32_SafeHandles_SafeTokenHandle_Free(void* /*__this*/) { cil2cpp::stub_called(__func__); }
+
+// ===== System.Runtime.CompilerServices.MethodTable =====
+// MethodTable properties read raw struct fields via Unsafe intrinsics in CoreCLR.
+// In CIL2CPP, GetNativeTypeHandle returns TypeInfo* as the MethodTable pointer,
+// so all MethodTable methods receive TypeInfo* and map CoreCLR concepts to TypeInfo flags.
+extern "C" bool System_Runtime_CompilerServices_MethodTable_get_IsValueType(void* __this) {
+    auto* ti = reinterpret_cast<cil2cpp::TypeInfo*>(__this);
+    return ti && (ti->flags & cil2cpp::TypeFlags::ValueType);
+}
+extern "C" bool System_Runtime_CompilerServices_MethodTable_get_IsNullable(void* /*__this*/) {
+    // TODO: check if type is Nullable<T> — for now false
+    return false;
+}
+extern "C" bool System_Runtime_CompilerServices_MethodTable_get_HasComponentSize(void* __this) {
+    auto* ti = reinterpret_cast<cil2cpp::TypeInfo*>(__this);
+    return ti && ti->element_size > 0;
+}
+extern "C" bool System_Runtime_CompilerServices_MethodTable_get_ContainsGCPointers(void* /*__this*/) {
+    // BoehmGC is a non-moving conservative collector: no write barriers needed,
+    // and all objects are inherently pinnable. Return false so Marshal.IsPinnable
+    // works correctly (GCHandle.Alloc with Pinned type).
+    return false;
+}
+extern "C" bool System_Runtime_CompilerServices_MethodTable_get_HasTypeEquivalence(void* /*__this*/) {
+    return false; // No type equivalence in AOT
+}
+extern "C" bool System_Runtime_CompilerServices_MethodTable_get_IsMultiDimensionalArray(void* /*__this*/) {
+    return false; // TODO: check MdArray flag if needed
+}
+extern "C" int32_t System_Runtime_CompilerServices_MethodTable_get_MultiDimensionalArrayRank(void* /*__this*/) {
+    return 0;
+}
+extern "C" bool System_Runtime_CompilerServices_MethodTable_get_HasInstantiation(void* __this) {
+    auto* ti = reinterpret_cast<cil2cpp::TypeInfo*>(__this);
+    return ti && (ti->flags & cil2cpp::TypeFlags::Generic);
+}
+extern "C" bool System_Runtime_CompilerServices_MethodTable_get_IsGenericTypeDefinition(void* /*__this*/) {
+    return false; // Closed generic types only in AOT
+}
+extern "C" bool System_Runtime_CompilerServices_MethodTable_get_IsConstructedGenericType(void* __this) {
+    auto* ti = reinterpret_cast<cil2cpp::TypeInfo*>(__this);
+    return ti && (ti->flags & cil2cpp::TypeFlags::Generic);
+}
+extern "C" bool System_Runtime_CompilerServices_MethodTable_get_IsInterface(void* __this) {
+    auto* ti = reinterpret_cast<cil2cpp::TypeInfo*>(__this);
+    return ti && (ti->flags & cil2cpp::TypeFlags::Interface);
+}
+extern "C" bool System_Runtime_CompilerServices_MethodTable_get_IsPrimitive(void* __this) {
+    auto* ti = reinterpret_cast<cil2cpp::TypeInfo*>(__this);
+    return ti && (ti->flags & cil2cpp::TypeFlags::Primitive);
+}
+extern "C" bool System_Runtime_CompilerServices_MethodTable_get_IsByRefLike(void* __this) {
+    auto* ti = reinterpret_cast<cil2cpp::TypeInfo*>(__this);
+    return ti && (ti->flags & cil2cpp::TypeFlags::IsByRefLike);
+}
+extern "C" bool System_Runtime_CompilerServices_MethodTable_get_HasFinalizer(void* __this) {
+    auto* ti = reinterpret_cast<cil2cpp::TypeInfo*>(__this);
+    return ti && ti->finalizer != nullptr;
+}
+extern "C" uint8_t System_Runtime_CompilerServices_MethodTable_GetPrimitiveCorElementType(void* __this) {
+    auto* ti = reinterpret_cast<cil2cpp::TypeInfo*>(__this);
+    if (!ti) return 0;
+    // For enum types, return the underlying primitive type's cor_element_type
+    // (e.g., ELEMENT_TYPE_I4 for int32 enums, ELEMENT_TYPE_I8 for uint64 enums).
+    // The BCL expects this to be a primitive element type, not ELEMENT_TYPE_VALUETYPE.
+    if ((ti->flags & cil2cpp::TypeFlags::Enum) && ti->underlying_type)
+        return ti->underlying_type->cor_element_type;
+    return ti->cor_element_type;
+}
+extern "C" void* System_Runtime_CompilerServices_MethodTable_GetArrayElementTypeHandle(void* __this) {
+    auto* ti = reinterpret_cast<cil2cpp::TypeInfo*>(__this);
+    return ti ? const_cast<cil2cpp::TypeInfo*>(ti->element_type_info) : nullptr;
+}
+extern "C" uint32_t System_Runtime_CompilerServices_MethodTable_GetNumInstanceFieldBytes(void* __this) {
+    auto* ti = reinterpret_cast<cil2cpp::TypeInfo*>(__this);
+    if (!ti) return 0;
+    // For value types, instance_size is the raw field size.
+    // For reference types, subtract the object header (TypeInfo* + sync_block).
+    if (ti->flags & cil2cpp::TypeFlags::ValueType)
+        return ti->instance_size;
+    constexpr uint32_t object_header_size = sizeof(void*) + sizeof(int32_t); // __type_info + __sync_block
+    return ti->instance_size > object_header_size ? ti->instance_size - object_header_size : 0;
+}
 
 // ===== System.Threading.CancellationTokenSource =====
 // Removed from CoreRuntimeTypes — all methods now compile from BCL IL.
@@ -742,6 +891,18 @@ extern "C" bool System_Type_IsPrimitiveImpl(void* __this) {
 // Type virtual methods that base System.Type throws NotSupportedException("SubclassOverride") for.
 // RuntimeType overrides them but is a CoreRuntimeType (vtable excluded), so virtual dispatch
 // hits the base throwing implementations. Implement here using TypeInfo so they work correctly.
+
+extern "C" bool System_Type_get_IsEnum(void* __this) {
+    auto* t = reinterpret_cast<cil2cpp::Type*>(__this);
+    if (!t || !t->type_info) cil2cpp::throw_null_reference();
+    return t->type_info->flags & cil2cpp::TypeFlags::Enum;
+}
+
+extern "C" bool System_Type_IsValueTypeImpl(void* __this) {
+    auto* t = reinterpret_cast<cil2cpp::Type*>(__this);
+    if (!t || !t->type_info) cil2cpp::throw_null_reference();
+    return t->type_info->flags & cil2cpp::TypeFlags::ValueType;
+}
 
 extern "C" bool System_Type_get_IsByRefLike(void* __this) {
     auto* t = reinterpret_cast<cil2cpp::Type*>(__this);

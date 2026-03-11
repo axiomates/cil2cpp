@@ -8,7 +8,14 @@ public partial class IRBuilder
 {
     private void EmitStoreLocal(IRBasicBlock block, Stack<StackEntry> stack, IRMethod method, int index, ref int tempCounter)
     {
-        var val = stack.PopExpr();
+        var entry = stack.PopEntry();
+        var val = entry.Expr;
+
+        // Track compile-time constant locals for dead branch elimination
+        if (entry.CompileTimeConstant.HasValue)
+            _compileTimeConstantLocals[index] = entry.CompileTimeConstant.Value;
+        else
+            _compileTimeConstantLocals.Remove(index);
 
         // Stack aliasing fix: before modifying a local, check if any remaining stack entry
         // symbolically references that local. If so, materialize those entries into temporaries.
@@ -298,7 +305,34 @@ public partial class IRBuilder
         // across branch paths (e.g., brtrue T; ceq; br M; T: ldc.i4.1; M: call).
         string? resultType = op is "==" or "!=" or "<" or ">" or "<=" or ">="
             ? "int32_t" : null;
-        stack.Push(new StackEntry(tmp, resultType));
+        // Propagate compile-time constants through comparison operators.
+        // Handles patterns like: IsSupported (=0) → ldc.i4.0 → ceq → brtrue
+        // When one operand has CompileTimeConstant and the other is a simple integer literal,
+        // we can infer the literal's value and compute the result at compile time.
+        int? resultConstant = null;
+        if (resultType != null)
+        {
+            int? leftConst = leftEntry.CompileTimeConstant ?? TryParseSimpleLiteral(leftEntry.Expr);
+            int? rightConst = rightEntry.CompileTimeConstant ?? TryParseSimpleLiteral(rightEntry.Expr);
+            // Only propagate if at least one operand was a true compile-time constant (from feature switches)
+            // to avoid false positives from regular integer comparisons.
+            if (leftConst.HasValue && rightConst.HasValue
+                && (leftEntry.CompileTimeConstant.HasValue || rightEntry.CompileTimeConstant.HasValue))
+            {
+                int l = leftConst.Value, r = rightConst.Value;
+                resultConstant = op switch
+                {
+                    "==" => l == r ? 1 : 0,
+                    "!=" => l != r ? 1 : 0,
+                    "<" => l < r ? 1 : 0,
+                    ">" => l > r ? 1 : 0,
+                    "<=" => l <= r ? 1 : 0,
+                    ">=" => l >= r ? 1 : 0,
+                    _ => null,
+                };
+            }
+        }
+        stack.Push(new StackEntry(tmp, resultType, resultConstant));
     }
 
     private void EmitComparisonBranch(IRBasicBlock block, Stack<StackEntry> stack, string op, ILInstruction instr,
@@ -819,7 +853,18 @@ public partial class IRBuilder
                 if (methodRef.HasThis && stack.Count > 0) stack.Pop();
                 var tmp = $"__t{tempCounter++}";
                 block.Instructions.Add(new IRRawCpp { Code = $"int32_t {tmp} = 0;", ResultVar = tmp, ResultTypeCpp = "int32_t" });
-                stack.Push(new StackEntry(tmp, "int32_t"));
+                stack.Push(new StackEntry(tmp, "int32_t", CompileTimeConstant: 0));
+                return;
+            }
+
+            // BCL vectorization support properties that wrap IsHardwareAccelerated — always false in AOT.
+            // These are cross-cutting helpers that check SIMD support and guard vectorized code paths.
+            if (methodRef.Name == "get_IsVectorizationSupported" && !methodRef.HasThis
+                && methodRef.Parameters.Count == 0)
+            {
+                var tmp = $"__t{tempCounter++}";
+                block.Instructions.Add(new IRRawCpp { Code = $"int32_t {tmp} = 0;", ResultVar = tmp, ResultTypeCpp = "int32_t" });
+                stack.Push(new StackEntry(tmp, "int32_t", CompileTimeConstant: 0));
                 return;
             }
         }
@@ -959,6 +1004,44 @@ public partial class IRBuilder
                 });
             }
             stack.Push(new StackEntry(tmp, $"{cppType}*"));
+            return;
+        }
+
+        // RuntimeHelpers.GetMethodTable(Object) — compiler intrinsic
+        // The BCL IL uses pointer arithmetic relative to CoreCLR's 8-byte object header
+        // to reach the MethodTable pointer. Our Object header is 16 bytes (TypeInfo* + sync_block),
+        // so the IL-compiled version reads garbage. Return __type_info directly.
+        if (methodRef.DeclaringType.FullName == "System.Runtime.CompilerServices.RuntimeHelpers"
+            && methodRef.Name == "GetMethodTable" && methodRef.Parameters.Count == 1)
+        {
+            var obj = stack.PopExprOr("nullptr");
+            var tmp = $"__t{tempCounter++}";
+            block.Instructions.Add(new IRRawCpp
+            {
+                Code = $"auto {tmp} = (System_Runtime_CompilerServices_MethodTable*)(((cil2cpp::Object*)({obj}))->__type_info);",
+                ResultVar = tmp,
+                ResultTypeCpp = "System_Runtime_CompilerServices_MethodTable*"
+            });
+            stack.Push(new StackEntry(tmp, "System_Runtime_CompilerServices_MethodTable*"));
+            return;
+        }
+
+        // RuntimeHelpers.GetRawData(Object) — compiler intrinsic
+        // The BCL IL uses RawData.f_Data at offset 12 (sizeof(MethodTable*) + sizeof(uint32_t)),
+        // but our Object has sizeof(Object) = 16 due to alignment padding after sync_block.
+        // box<>/unbox<> use sizeof(Object) for the data offset, so GetRawData must match.
+        if (methodRef.DeclaringType.FullName == "System.Runtime.CompilerServices.RuntimeHelpers"
+            && methodRef.Name == "GetRawData" && methodRef.Parameters.Count == 1)
+        {
+            var obj = stack.PopExprOr("nullptr");
+            var tmp = $"__t{tempCounter++}";
+            block.Instructions.Add(new IRRawCpp
+            {
+                Code = $"auto {tmp} = reinterpret_cast<uint8_t*>((cil2cpp::Object*)({obj})) + sizeof(cil2cpp::Object);",
+                ResultVar = tmp,
+                ResultTypeCpp = "uint8_t*"
+            });
+            stack.Push(new StackEntry(tmp, "uint8_t*"));
             return;
         }
 
@@ -1803,7 +1886,8 @@ public partial class IRBuilder
                 }
             }
 
-            var constrainedIrType = _typeCache.GetValueOrDefault(ResolveCacheKey(constrainedType));
+            var constrainedCacheKey = ResolveCacheKey(constrainedType);
+            var constrainedIrType = _typeCache.GetValueOrDefault(constrainedCacheKey);
             bool resolvedStaticConstraint = false;
             if (constrainedIrType != null)
             {
@@ -1836,9 +1920,155 @@ public partial class IRBuilder
                         && m.Parameters.Count == methodRef.Parameters.Count).ToList();
                     if (candidates.Count == 1)
                     {
-                        irCall.FunctionName = candidates[0].CppName;
-                        resolvedStaticConstraint = true;
+                        // Safety check: reject if parameter types obviously mismatch.
+                        // This prevents resolving SIMD overloads to scalar overloads when
+                        // the type was created on demand with only non-SIMD methods.
+                        bool paramMismatch = false;
+                        var candidate = candidates[0];
+                        for (int pi = 0; pi < candidate.Parameters.Count; pi++)
+                        {
+                            var irParamType = candidate.Parameters[pi].ILTypeName ?? candidate.Parameters[pi].CppTypeName;
+                            var refParamType = ResolveMethodRefParamType(methodRef, pi);
+                            // If one contains a SIMD vector type and the other doesn't, reject
+                            if (IsSimdTypeName(irParamType) != IsSimdTypeName(refParamType))
+                            { paramMismatch = true; break; }
+                        }
+                        if (!paramMismatch)
+                        {
+                            irCall.FunctionName = candidate.CppName;
+                            resolvedStaticConstraint = true;
+                        }
                     }
+                }
+            }
+
+            // ICall override for resolved constrained calls.
+            // When a constrained call resolves to a method on the constrained type
+            // (e.g., DontNegate.NegateIfNeeded), check if there's an ICall mapping
+            // for that specific type+method and redirect accordingly.
+            if (resolvedStaticConstraint && constrainedIrType?.ILFullName != null)
+            {
+                var constrainedIcall = ICallRegistry.Lookup(
+                    constrainedIrType.ILFullName, methodRef.Name, methodRef.Parameters.Count);
+                if (constrainedIcall != null)
+                    irCall.FunctionName = constrainedIcall;
+            }
+
+            // On-demand static method shell creation for constrained calls.
+            // When the constrained IRType exists but has no matching static method yet,
+            // create a method shell eagerly. EnsureConstrainedMethodBodiesExist will
+            // compile the body later.
+            // Skip SIMD parameter calls — these are dead-code branches and should not
+            // create shells that resolve to the wrong (scalar) overload.
+            bool hasSimdParams = false;
+            for (int pi = 0; pi < methodRef.Parameters.Count && !hasSimdParams; pi++)
+            {
+                var refParamType = ResolveMethodRefParamType(methodRef, pi);
+                if (IsSimdTypeName(refParamType))
+                    hasSimdParams = true;
+            }
+            // Also skip when the method ref has unresolvable method-level generic params (!!0, etc.)
+            // Use Cecil's type system for structural checking instead of string pattern matching.
+            bool hasUnresolvedGenericParams = false;
+            if (methodRef is not GenericInstanceMethod) // Resolved generic instances are OK
+            {
+                foreach (var p in methodRef.Parameters)
+                {
+                    if (ContainsMethodGenericParameter(p.ParameterType))
+                    { hasUnresolvedGenericParams = true; break; }
+                }
+                if (!hasUnresolvedGenericParams)
+                    hasUnresolvedGenericParams = ContainsMethodGenericParameter(methodRef.ReturnType);
+            }
+            // Skip GenericInstanceMethod calls — the implementation on the constrained type
+            // is itself a generic method definition (e.g., Single.TryConvertFromSaturating<TOther>).
+            // These need the generic method specialization pipeline, not a non-generic shell.
+            bool isGenericMethodCall = methodRef is GenericInstanceMethod;
+            if (!resolvedStaticConstraint && constrainedIrType != null
+                && constrainedIrType.IsValueType && !hasSimdParams && !hasUnresolvedGenericParams
+                && !isGenericMethodCall)
+            {
+                // First, check if a shell with matching Name + param count already exists
+                // (may have been created by a previous constrained call to the same method)
+                var existingShell = constrainedIrType.Methods.FirstOrDefault(m =>
+                    m.IsStatic && MatchesMethodName(m.Name, methodRef.Name)
+                    && m.Parameters.Count == methodRef.Parameters.Count);
+                if (existingShell != null)
+                {
+                    irCall.FunctionName = existingShell.CppName;
+                    resolvedStaticConstraint = true;
+                }
+                else
+                {
+                    var expectedCppName = CppNameMapper.MangleMethodName(
+                        constrainedIrType.CppName, methodRef.Name);
+
+                    // Build an augmented type param map that includes the interface's
+                    // generic params. When methodRef.DeclaringType is INumber<T> (resolved to
+                    // INumber<Char>), map the interface's own generic params (TSelf) to their
+                    // concrete values so parameter types like TSelf resolve to System.Char.
+                    var shellParamMap = _activeTypeParamMap != null
+                        ? new Dictionary<string, string>(_activeTypeParamMap)
+                        : new Dictionary<string, string>();
+                    {
+                        var declType = methodRef.DeclaringType;
+                        // Resolve through _activeTypeParamMap first to get concrete generic args
+                        if (declType is GenericInstanceType git)
+                        {
+                            var openIface = git.ElementType.Resolve();
+                            if (openIface?.HasGenericParameters == true)
+                            {
+                                for (int gi = 0; gi < openIface.GenericParameters.Count && gi < git.GenericArguments.Count; gi++)
+                                {
+                                    var gpName = openIface.GenericParameters[gi].Name; // e.g. "TSelf"
+                                    var concreteArg = _activeTypeParamMap != null
+                                        ? ResolveGenericTypeName(git.GenericArguments[gi], _activeTypeParamMap)
+                                        : git.GenericArguments[gi].FullName;
+                                    shellParamMap.TryAdd(gpName, concreteArg);
+                                }
+                            }
+                        }
+                    }
+                    var shellMethod = new IRMethod
+                    {
+                        Name = methodRef.Name,
+                        CppName = expectedCppName,
+                        DeclaringType = constrainedIrType,
+                        ReturnTypeCpp = ResolveTypeForDecl(
+                            shellParamMap.Count > 0
+                                ? ResolveGenericTypeName(methodRef.ReturnType, shellParamMap)
+                                : methodRef.ReturnType.FullName),
+                        IsStatic = true,
+                    };
+                    for (int pi = 0; pi < methodRef.Parameters.Count; pi++)
+                    {
+                        var paramDef = methodRef.Parameters[pi];
+                        var paramTypeName = shellParamMap.Count > 0
+                            ? ResolveGenericTypeName(paramDef.ParameterType, shellParamMap)
+                            : paramDef.ParameterType.FullName;
+                        var paramName = paramDef.Name.Length > 0 ? paramDef.Name : $"p{pi}";
+                        shellMethod.Parameters.Add(new IRParameter
+                        {
+                            Name = paramName,
+                            CppName = CppNameMapper.MangleIdentifier(paramName),
+                            CppTypeName = ResolveTypeForDecl(paramTypeName),
+                            ILTypeName = paramTypeName,
+                            Index = pi,
+                        });
+                    }
+
+                    // Disambiguate overloaded method names
+                    var existingWithSameName = constrainedIrType.Methods.Count(m => m.CppName == shellMethod.CppName);
+                    if (existingWithSameName > 0)
+                    {
+                        var paramSuffix = string.Join("_", shellMethod.Parameters.Select(p =>
+                            CppNameMapper.MangleTypeName(p.ILTypeName ?? p.CppTypeName)));
+                        shellMethod.CppName = $"{shellMethod.CppName}__{paramSuffix}";
+                    }
+
+                    constrainedIrType.Methods.Add(shellMethod);
+                    irCall.FunctionName = shellMethod.CppName;
+                    resolvedStaticConstraint = true;
                 }
             }
 
@@ -1846,11 +2076,7 @@ public partial class IRBuilder
             // for non-primitive types too. These are well-known operators from numeric interfaces
             // (IBitwiseOperators, IComparisonOperators, etc.) that map to C++ operators.
             // Skip SIMD vector types — opaque structs don't support native C++ operators.
-            if (!resolvedStaticConstraint
-                && !constrainedCppType.Contains("Vector128_")
-                && !constrainedCppType.Contains("Vector256_")
-                && !constrainedCppType.Contains("Vector512_")
-                && !constrainedCppType.Contains("Vector64_"))
+            if (!resolvedStaticConstraint && !IsSimdTypeName(constrainedCppType))
             {
                 var cppOp = TryGetIntrinsicOperator(methodRef.Name);
                 if (cppOp != null)
@@ -2785,7 +3011,9 @@ public partial class IRBuilder
                 // Use LastOrDefault: when method hiding creates duplicate-named entries,
                 // 'override' targets the most-derived slot (added last)
                 existing = irType.VTable.LastOrDefault(e => e.MethodName == method.Name
-                    && (e.Method == null || ParameterTypesMatch(e.Method, method)));
+                    && (e.Method != null
+                        ? ParameterTypesMatch(e.Method, method)
+                        : SeedSlotParamsMatch(e.MethodName, method)));
             }
             else
             {
@@ -2793,7 +3021,8 @@ public partial class IRBuilder
                 // System.Object's methods are newslot=true (they ARE the original declarations),
                 // but we pre-seed slots 0-2 so overrides in derived types find them.
                 // Without this, Object's methods create new slots 3-5, leaving seeds orphaned.
-                existing = irType.VTable.LastOrDefault(e => e.MethodName == method.Name && e.Method == null);
+                existing = irType.VTable.LastOrDefault(e => e.MethodName == method.Name
+                    && e.Method == null && SeedSlotParamsMatch(e.MethodName, method));
             }
 
             // For CoreRuntimeTypes, don't replace existing vtable entries with bodyless overrides.
@@ -2801,6 +3030,8 @@ public partial class IRBuilder
             // declaring type (e.g., System_Reflection_MemberInfo_get_Name), not the overriding
             // type (System_RuntimeType_get_Name). Keeping the original method reference in the
             // vtable preserves the correct CppName for codegen to find the extern "C" function.
+            // Note: for non-blanket-gated types (Enum, Type) where some methods compile from IL,
+            // FixupCoreRuntimeVTables() updates vtable entries post-body-compilation.
             bool skipOverride = isCoreRuntime && !method.IsAbstract && method.BasicBlocks.Count == 0
                 && !method.IsConstructor && !method.IsStaticConstructor && existing != null;
 
@@ -2826,6 +3057,73 @@ public partial class IRBuilder
                     DeclaringType = irType,
                 });
                 method.VTableSlot = slot;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Post-body-compilation fixup: update vtable entries for CoreRuntimeType overrides
+    /// that were skipped during Pass 4 (BuildVTable) because BasicBlocks.Count was 0.
+    /// Now that method bodies have been compiled, overrides with real bodies should replace
+    /// the inherited base-class entries so virtual dispatch resolves correctly.
+    /// Example: System.Enum.GetHashCode overrides Object.GetHashCode — without this fixup,
+    /// the enum vtable keeps `object_get_hash_code` (pointer-based), breaking dictionary lookups.
+    /// </summary>
+    private void FixupCoreRuntimeVTables()
+    {
+        foreach (var irType in _module.Types)
+        {
+            if (!CoreRuntimeTypes.Contains(irType.ILFullName)) continue;
+            if (RuntimeTypeRegistry.IsBlanketGated(irType.ILFullName)) continue;
+
+            foreach (var method in irType.Methods)
+            {
+                if (!method.IsVirtual || method.IsAbstract) continue;
+                if (method.BasicBlocks.Count == 0) continue; // Still no body — skip
+                if (method.IrStubReason != null) continue; // CLR-internal stub — not compiled from IL
+                // Don't promote methods blocked from emission (e.g. RuntimeType.MakeGenericType
+                // calls AOT-incompatible TypeBuilderInstantiation — runtime provides extern "C" fallback)
+                if (RuntimeTypeRegistry.ShouldBlockInstanceMethod(irType.ILFullName, method)) continue;
+                if (method.VTableSlot < 0 || method.VTableSlot >= irType.VTable.Count) continue;
+
+                var entry = irType.VTable[method.VTableSlot];
+                // Only fixup if the entry still points to a different (base) method
+                if (entry.Method != method)
+                {
+                    entry.Method = method;
+                    entry.DeclaringType = irType;
+                }
+            }
+
+            // Propagate fixups to derived types that inherit this vtable
+            PropagateVTableFixups(irType);
+        }
+    }
+
+    /// <summary>
+    /// After fixing up a CoreRuntimeType's vtable, propagate the changes to all derived types
+    /// that inherited the old (base class) entries.
+    /// </summary>
+    private void PropagateVTableFixups(IRType baseType)
+    {
+        foreach (var irType in _module.Types)
+        {
+            if (irType.BaseType != baseType) continue;
+            // For each slot in the base type, if the derived type's entry still references
+            // the old base class method (not its own override), update it
+            for (int i = 0; i < baseType.VTable.Count && i < irType.VTable.Count; i++)
+            {
+                var baseEntry = baseType.VTable[i];
+                var derivedEntry = irType.VTable[i];
+                // Only update if derived entry points to a different type's method
+                // AND the base entry was updated (has a real body now)
+                if (derivedEntry.Method == null || derivedEntry.DeclaringType == irType) continue;
+                if (baseEntry.Method != null && baseEntry.Method.BasicBlocks.Count > 0
+                    && derivedEntry.Method.CppName != baseEntry.Method.CppName)
+                {
+                    derivedEntry.Method = baseEntry.Method;
+                    derivedEntry.DeclaringType = baseEntry.DeclaringType;
+                }
             }
         }
     }
@@ -3308,6 +3606,24 @@ public partial class IRBuilder
         return $"loc_{index}";
     }
 
+    /// <summary>
+    /// Push a local variable onto the stack, propagating compile-time constant info
+    /// from _compileTimeConstantLocals for dead branch elimination.
+    /// </summary>
+    private void PushLocalWithConstant(Stack<StackEntry> stack, IRMethod method, int index)
+    {
+        int? constant = _compileTimeConstantLocals.TryGetValue(index, out var c) ? c : null;
+        stack.Push(new StackEntry(GetLocalName(method, index), GetLocalType(method, index), constant));
+    }
+
+    /// <summary>
+    /// Try to parse a simple integer literal expression ("0", "1", "-1", etc.)
+    /// for use in compile-time constant propagation through ceq/cgt/clt.
+    /// Only returns a value for simple literal strings, not complex expressions.
+    /// </summary>
+    private static int? TryParseSimpleLiteral(string expr)
+        => int.TryParse(expr, out var v) ? v : null;
+
     // Exception event helpers
     private enum ExceptionEventKind { TryBegin, CatchBegin, FinallyBegin, FilterBegin, FilterHandlerBegin, HandlerEnd }
 
@@ -3331,6 +3647,24 @@ public partial class IRBuilder
             SourceCppType = entry.CppType
         });
         stack.Push(new StackEntry(tmp, targetType));
+    }
+
+    /// <summary>
+    /// Match a method against a seeded Object vtable placeholder (Method == null).
+    /// Seeded slots represent Object's virtual methods with known parameter counts.
+    /// Without this check, overloads like Enum.ToString(string, IFormatProvider) can
+    /// incorrectly claim slot 0 (meant for parameterless ToString).
+    /// </summary>
+    private static bool SeedSlotParamsMatch(string seedMethodName, IRMethod method)
+    {
+        var expectedParamCount = seedMethodName switch
+        {
+            "ToString" => 0,
+            "Equals" => 1,
+            "GetHashCode" => 0,
+            _ => method.Parameters.Count, // Unknown seed — allow match
+        };
+        return method.Parameters.Count == expectedParamCount;
     }
 
     /// <summary>

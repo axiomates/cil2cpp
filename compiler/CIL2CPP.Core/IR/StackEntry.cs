@@ -1,12 +1,14 @@
 namespace CIL2CPP.Core.IR;
 
 /// <summary>
-/// IL evaluation stack entry with optional C++ type tracking.
+/// IL evaluation stack entry with optional C++ type tracking and compile-time constant info.
 /// The implicit conversion from string allows gradual migration:
 /// existing Push("expr") calls work unchanged, while new code can
 /// Push(new StackEntry("expr", "Type*")) to carry type info.
+/// CompileTimeConstant enables dead branch elimination: when IsSupported=0 is known at
+/// compile time, brfalse/brtrue can skip dead SIMD branches entirely.
 /// </summary>
-public readonly record struct StackEntry(string Expr, string? CppType = null)
+public readonly record struct StackEntry(string Expr, string? CppType = null, int? CompileTimeConstant = null)
 {
     /// <summary>Allow implicit conversion from string for backward compatibility.</summary>
     public static implicit operator StackEntry(string expr) => new(expr);

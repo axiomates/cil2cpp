@@ -9,6 +9,11 @@ public partial class IRBuilder
     // Active generic type parameter map (set during ConvertMethodBodyWithGenerics)
     private Dictionary<string, string>? _activeTypeParamMap;
 
+    // Compile-time constant locals: tracks local variables known to hold compile-time constant values.
+    // Used for dead branch elimination: IsSupported=0 → stloc → ldloc → brfalse eliminates dead SIMD paths.
+    // Cleared at method entry and at control flow merge points (branch target labels).
+    private readonly Dictionary<int, int> _compileTimeConstantLocals = new();
+
     /// <summary>
     /// Collect ALL generic parameters for a type, including parameters from declaring (parent) types.
     /// Cecil's TypeDefinition.GenericParameters only includes the type's OWN params, but
@@ -309,8 +314,11 @@ public partial class IRBuilder
     {
         if (typeDef == null) return false;
         var name = typeDef.Name;
-        // C# compiler-generated: <>c__DisplayClass, <>c, <..>d__ (async state machines)
-        return name.StartsWith("<>") || name.Contains("__DisplayClass");
+        // C# compiler-generated:
+        //   <>c__DisplayClass, <>c — closure/display classes (delegate invocation)
+        //   <MethodName>d__N — async/iterator state machines (constrained call from builder)
+        // These types have methods invoked indirectly, not through tracked callvirt/call.
+        return name.StartsWith("<>") || name.Contains("__DisplayClass") || name.Contains(">d__");
     }
 
     /// Detects recursive generic instantiations where the open type appears
@@ -965,7 +973,14 @@ public partial class IRBuilder
 
             // Find the IRType for the resolved constrained type
             var irType = _typeCache.GetValueOrDefault(resolvedTypeName);
-            if (irType == null) continue;
+            if (irType == null)
+            {
+                // The constrained type is not in the module — e.g., marker structs like
+                // DontNegate/Negate used only as generic type arguments for constrained
+                // static abstract interface dispatch. Create the type on demand.
+                irType = CreateDemandDrivenConstrainedType(constrainedTypeRef, resolvedTypeName);
+                if (irType == null) continue;
+            }
 
             // Skip non-value types (constrained calls on reference types use virtual dispatch).
             if (!irType.IsValueType) continue;
@@ -973,7 +988,9 @@ public partial class IRBuilder
             // Their method bodies construct the IL struct type, but the return type maps to the
             // primitive alias, causing C++ type mismatches. Standard primitives (Int32 → int32_t)
             // are fine because their methods use the primitive type consistently.
-            if (!irType.IsPrimitiveType)
+            // Generic instance types (containing '<') are never aliased — they always use
+            // MangleGenericInstanceTypeName which may differ from MangleTypeName only by trailing '_'.
+            if (!irType.IsPrimitiveType && !resolvedTypeName.Contains('<'))
             {
                 var mappedCppName = CppNameMapper.GetCppTypeName(resolvedTypeName);
                 var mangledName = CppNameMapper.MangleTypeName(resolvedTypeName);
@@ -984,6 +1001,8 @@ public partial class IRBuilder
             var targetMethodName = methodRef.Name;
             var targetParamCount = methodRef.Parameters.Count;
 
+            // First, try to find an existing IRMethod shell (added by CreateGenericSpecializations)
+            IRMethod? targetIrMethod = null;
             foreach (var irMethod in irType.Methods)
             {
                 if (irMethod.BasicBlocks.Count > 0) continue; // Already has body
@@ -991,87 +1010,375 @@ public partial class IRBuilder
                 if (irMethod.IsInternalCall || irMethod.HasICallMapping) continue;
 
                 // Match by name — exact match or explicit interface impl suffix
-                bool nameMatch = irMethod.Name == targetMethodName;
-                if (!nameMatch)
+                if (MatchesConstrainedMethodName(irMethod.Name, targetMethodName))
                 {
-                    var lastDot = irMethod.Name.LastIndexOf('.');
-                    if (lastDot >= 0 && irMethod.Name.AsSpan(lastDot + 1).SequenceEqual(targetMethodName))
-                        nameMatch = true;
+                    targetIrMethod = irMethod;
+                    break;
                 }
-                if (!nameMatch) continue;
+            }
 
-                // Found a method that matches but has no body — compile it from Cecil.
-                // Only compile if the reachability analyzer missed it (otherwise Pass 6 will handle it).
-                var cecilTypeDef = constrainedTypeRef.Resolve();
-                if (cecilTypeDef == null)
+            // Resolve Cecil type definition for body compilation.
+            var cecilTypeDef = ResolveCecilTypeDefinition(constrainedTypeRef, resolvedTypeName);
+            if (cecilTypeDef == null) continue;
+
+            // Find the matching Cecil method
+            MethodDefinition? cecilTargetMethod = null;
+            foreach (var m in cecilTypeDef.Methods)
+            {
+                if (m.Parameters.Count != targetParamCount) continue;
+                if (!MatchesConstrainedMethodName(m.Name, targetMethodName)) continue;
+                // Skip generic method definitions — they require full specialization through
+                // the generic method pipeline, not direct body compilation. TryConvertToChecked<TOther>
+                // etc. have unresolvable method-level generic params in this context.
+                if (m.HasGenericParameters) continue;
+                // Skip SIMD overloads — e.g., NegateIfNeeded(Vector128<ushort>) has the same
+                // param count as NegateIfNeeded(bool). Without this filter, the SIMD overload
+                // may be found first, then rejected later by ReferencesSimdTypes, causing the
+                // correct non-SIMD overload to never be compiled.
+                if (ReferencesSimdTypes(m)) continue;
+                if (m.HasBody)
                 {
-                    // Try to find via assembly set (for types resolved through typeParamMap)
-                    foreach (var asm in _assemblySet.LoadedAssemblies.Values)
+                    cecilTargetMethod = m;
+                    break;
+                }
+            }
+            // If not found on the type, search interface hierarchy for Default Interface
+            // Methods (DIM). E.g., Char doesn't override INumber<Char>.Max — the default
+            // implementation from INumber<T> should be used.
+            if (cecilTargetMethod == null)
+            {
+                cecilTargetMethod = FindDefaultInterfaceMethod(
+                    cecilTypeDef, methodRef, targetMethodName, targetParamCount);
+            }
+            if (cecilTargetMethod == null)
+                continue;
+
+            // Build a type parameter map that includes interface generic params.
+            // When a value type like Char implements INumber<Char>, the Cecil method body
+            // for Char.Max(TSelf, TSelf) uses `TSelf` from the interface. We need to map
+            // TSelf → System.Char so parameter types resolve correctly.
+            var effectiveParamMap = BuildConstrainedTypeParamMap(
+                cecilTypeDef, cecilTargetMethod, typeParamMap);
+
+            // If no IRMethod shell exists, create one. This handles static abstract interface
+            // implementations that CreateGenericSpecializations skipped because they're static
+            // (not virtual/constructor) and not in _calledSpecializedMethods.
+            if (targetIrMethod == null)
+            {
+                // Use irType.CppName (from MangleGenericInstanceTypeName) rather than
+                // MangleTypeName(resolvedTypeName) to ensure consistent method names
+                // with shells created at emit time.
+                var returnTypeName = ResolveGenericTypeName(cecilTargetMethod.ReturnType, effectiveParamMap);
+                var newCppName = CppNameMapper.MangleMethodName(irType.CppName, cecilTargetMethod.Name);
+                targetIrMethod = new IRMethod
+                {
+                    Name = cecilTargetMethod.Name,
+                    CppName = newCppName,
+                    DeclaringType = irType,
+                    ReturnTypeCpp = ResolveTypeForDecl(returnTypeName),
+                    IsStatic = cecilTargetMethod.IsStatic,
+                };
+                foreach (var paramDef in cecilTargetMethod.Parameters)
+                {
+                    var paramTypeName = ResolveGenericTypeName(paramDef.ParameterType, effectiveParamMap);
+                    targetIrMethod.Parameters.Add(new IRParameter
                     {
-                        cecilTypeDef = asm.MainModule.GetType(resolvedTypeName);
-                        if (cecilTypeDef != null) break;
+                        Name = paramDef.Name.Length > 0 ? paramDef.Name : $"p{paramDef.Index}",
+                        CppName = CppNameMapper.MangleIdentifier(
+                            paramDef.Name.Length > 0 ? paramDef.Name : $"p{paramDef.Index}"),
+                        CppTypeName = ResolveTypeForDecl(paramTypeName),
+                        ILTypeName = paramTypeName,
+                        Index = paramDef.Index,
+                    });
+                }
+                // Disambiguate overloaded method names
+                var existingWithSameName = irType.Methods.Count(m => m.CppName == targetIrMethod.CppName);
+                if (existingWithSameName > 0)
+                {
+                    var paramSuffix = string.Join("_", targetIrMethod.Parameters.Select(p =>
+                        CppNameMapper.MangleTypeName(p.ILTypeName ?? p.CppTypeName)));
+                    targetIrMethod.CppName = $"{targetIrMethod.CppName}__{paramSuffix}";
+                }
+                irType.Methods.Add(targetIrMethod);
+            }
+
+            // Skip if already compiled or shouldn't be compiled
+            if (targetIrMethod.BasicBlocks.Count > 0) continue;
+            // Only skip reachable methods if their body was compiled under THIS shell's name.
+            // When an explicit interface impl (e.g., System.Numerics.INumber<Char>.Max) is
+            // reachable and compiled under the full interface name, the constrained call's
+            // short-name shell (System_Char_Max) still needs its body compiled.
+            if (_reachability.IsReachable(cecilTargetMethod))
+            {
+                // Check if the existing compiled method has the SAME CppName as this shell.
+                // If not, the reachable version was compiled under a different name and this
+                // shell needs its own body.
+                var existingCompiled = irType.Methods.FirstOrDefault(m =>
+                    m.BasicBlocks.Count > 0 &&
+                    MatchesConstrainedMethodName(m.Name, cecilTargetMethod.Name) &&
+                    m.Parameters.Count == targetIrMethod.Parameters.Count);
+                if (existingCompiled != null && existingCompiled.CppName == targetIrMethod.CppName)
+                    continue;
+                // Fall through to compile the body for this shell
+            }
+            if (HasClrInternalDependencies(cecilTargetMethod)) continue;
+            if (ReferencesSimdTypes(cecilTargetMethod)) continue;
+
+            // Build locals from Cecil method body
+            targetIrMethod.Locals.Clear();
+            foreach (var localDef in cecilTargetMethod.Body.Variables)
+            {
+                var localTypeName = ResolveGenericTypeName(localDef.VariableType, effectiveParamMap);
+                targetIrMethod.Locals.Add(new IRLocal
+                {
+                    Index = localDef.Index,
+                    CppName = $"loc_{localDef.Index}",
+                    CppTypeName = ResolveTypeForDecl(localTypeName),
+                });
+            }
+
+            // Compile the body (use generic variant if effectiveParamMap is non-empty
+            // to resolve type parameters like TSelf → Char in the IL)
+            var methodInfo = new IL.MethodInfo(cecilTargetMethod);
+            if (effectiveParamMap.Count > 0)
+                ConvertMethodBodyWithGenerics(methodInfo, targetIrMethod, effectiveParamMap);
+            else
+                ConvertMethodBody(methodInfo, targetIrMethod);
+
+            // Discover secondary generic dependencies in the compiled body
+            EnsureBodyReferencedTypesExist(cecilTargetMethod, effectiveParamMap);
+
+            // Compile transitive unreachable callees
+            CompileTransitiveUnreachableCallees(cecilTargetMethod);
+        }
+    }
+
+    /// <summary>
+    /// Build a type parameter map for a constrained method that includes interface generic params.
+    /// When a type like Char implements INumber&lt;Char&gt;, the Cecil method Char.Max(TSelf, TSelf)
+    /// uses TSelf from the interface. This method maps interface generic params (TSelf → System.Char)
+    /// by scanning the constrained type's interface implementations.
+    /// </summary>
+    private Dictionary<string, string> BuildConstrainedTypeParamMap(
+        TypeDefinition cecilTypeDef,
+        MethodDefinition cecilTargetMethod,
+        Dictionary<string, string> callerTypeParamMap)
+    {
+        var result = new Dictionary<string, string>(callerTypeParamMap);
+
+        // Scan the method's Overrides to find which interface method this implements
+        foreach (var ov in cecilTargetMethod.Overrides)
+        {
+            var ifaceRef = ov.DeclaringType;
+            if (ifaceRef is GenericInstanceType ifaceGit)
+            {
+                // Map each generic parameter of the open interface to its concrete arg
+                var openIface = ifaceGit.ElementType.Resolve();
+                if (openIface?.HasGenericParameters == true)
+                {
+                    for (int i = 0; i < openIface.GenericParameters.Count && i < ifaceGit.GenericArguments.Count; i++)
+                    {
+                        var gpName = openIface.GenericParameters[i].Name; // e.g., "TSelf"
+                        var concreteArg = ifaceGit.GenericArguments[i]; // e.g., System.Char
+                        var resolvedName = ResolveGenericTypeName(concreteArg, callerTypeParamMap);
+                        if (!result.ContainsKey(gpName))
+                            result[gpName] = resolvedName;
+                        // Also map by position: !0, !1, etc.
+                        var posKey = $"!{i}";
+                        if (!result.ContainsKey(posKey))
+                            result[posKey] = resolvedName;
                     }
                 }
-                if (cecilTypeDef == null) break;
-
-                // Find the matching Cecil method
-                MethodDefinition? cecilTargetMethod = null;
-                foreach (var m in cecilTypeDef.Methods)
-                {
-                    if (m.Parameters.Count != targetParamCount) continue;
-                    bool mNameMatch = m.Name == targetMethodName;
-                    if (!mNameMatch)
-                    {
-                        var lastDot = m.Name.LastIndexOf('.');
-                        if (lastDot >= 0 && m.Name.AsSpan(lastDot + 1).SequenceEqual(targetMethodName))
-                            mNameMatch = true;
-                    }
-                    if (mNameMatch && m.HasBody)
-                    {
-                        cecilTargetMethod = m;
-                        break;
-                    }
-                }
-
-                if (cecilTargetMethod != null)
-                {
-                    // Skip methods already marked reachable — their bodies will be compiled in Pass 6.
-                    if (_reachability.IsReachable(cecilTargetMethod)) break;
-
-                    // Skip methods with CLR-internal dependencies (SIMD intrinsics, etc.)
-                    if (HasClrInternalDependencies(cecilTargetMethod)) break;
-
-                    // Skip methods that reference SIMD vector types — their bodies use
-                    // Vector128/256/512 which get dead-code-replaced with type mismatches.
-                    if (ReferencesSimdTypes(cecilTargetMethod)) break;
-
-                    // Build locals from Cecil method body
-                    irMethod.Locals.Clear();
-                    foreach (var localDef in cecilTargetMethod.Body.Variables)
-                    {
-                        var localTypeName = ResolveGenericTypeName(localDef.VariableType, typeParamMap);
-                        irMethod.Locals.Add(new IRLocal
-                        {
-                            Index = localDef.Index,
-                            CppName = $"loc_{localDef.Index}",
-                            CppTypeName = ResolveTypeForDecl(localTypeName),
-                        });
-                    }
-
-                    // Compile the body
-                    var methodInfo = new IL.MethodInfo(cecilTargetMethod);
-                    ConvertMethodBody(methodInfo, irMethod);
-
-                    // Discover secondary generic dependencies in the compiled body
-                    // (e.g. Byte.Max calls Math.Max<byte> which needs specialization)
-                    EnsureBodyReferencedTypesExist(cecilTargetMethod, typeParamMap);
-
-                    // Compile transitive unreachable callees (e.g. Byte.Max → Math.Max(byte,byte))
-                    CompileTransitiveUnreachableCallees(cecilTargetMethod);
-                }
-                break; // Only compile one match per constrained call
             }
         }
+
+        // If no overrides found, scan interface implementations of the declaring type
+        // and try to match by method parameter types
+        if (result.Count == callerTypeParamMap.Count)
+        {
+            foreach (var ifaceImpl in cecilTypeDef.Interfaces)
+            {
+                if (ifaceImpl.InterfaceType is GenericInstanceType ifaceGit2)
+                {
+                    var openIface = ifaceGit2.ElementType.Resolve();
+                    if (openIface?.HasGenericParameters == true)
+                    {
+                        for (int i = 0; i < openIface.GenericParameters.Count && i < ifaceGit2.GenericArguments.Count; i++)
+                        {
+                            var gpName = openIface.GenericParameters[i].Name;
+                            var concreteArg = ifaceGit2.GenericArguments[i];
+                            var resolvedName = ResolveGenericTypeName(concreteArg, callerTypeParamMap);
+                            if (!result.ContainsKey(gpName))
+                                result[gpName] = resolvedName;
+                        }
+                    }
+                }
+            }
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Search the constrained type's interface hierarchy for a Default Interface Method (DIM).
+    /// When a value type like Char doesn't override INumber&lt;Char&gt;.Max(), the default
+    /// implementation from INumber&lt;T&gt; provides the method body.
+    /// </summary>
+    private MethodDefinition? FindDefaultInterfaceMethod(
+        TypeDefinition constrainedTypeDef,
+        MethodReference methodRef,
+        string targetMethodName,
+        int targetParamCount)
+    {
+        // Get the declaring interface of the method reference
+        var declType = methodRef.DeclaringType;
+        TypeDefinition? ifaceTypeDef = null;
+        if (declType is GenericInstanceType git)
+            ifaceTypeDef = git.ElementType.Resolve();
+        else
+            ifaceTypeDef = declType.Resolve();
+
+        if (ifaceTypeDef == null) return null;
+
+        // Search the interface for a matching method with a body (DIM)
+        foreach (var m in ifaceTypeDef.Methods)
+        {
+            if (m.Parameters.Count != targetParamCount) continue;
+            if (m.Name != targetMethodName) continue;
+            if (m.HasGenericParameters) continue;
+            if (m.IsAbstract) continue; // Abstract methods have no DIM body
+            if (m.HasBody)
+                return m;
+        }
+
+        // Also search parent interfaces
+        foreach (var ifaceImpl in ifaceTypeDef.Interfaces)
+        {
+            var parentIface = ifaceImpl.InterfaceType.Resolve();
+            if (parentIface == null) continue;
+            foreach (var m in parentIface.Methods)
+            {
+                if (m.Parameters.Count != targetParamCount) continue;
+                if (m.Name != targetMethodName) continue;
+                if (m.HasGenericParameters) continue;
+                if (m.IsAbstract) continue;
+                if (m.HasBody)
+                    return m;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Match method names for constrained call resolution. Handles exact match
+    /// and explicit interface implementation names (suffix after last '.').
+    /// </summary>
+    private static bool MatchesConstrainedMethodName(string methodName, string targetName)
+    {
+        if (methodName == targetName) return true;
+        var lastDot = methodName.LastIndexOf('.');
+        return lastDot >= 0 && methodName.AsSpan(lastDot + 1).SequenceEqual(targetName);
+    }
+
+    /// <summary>
+    /// Create a minimal IRType for a value type that is only used as a constrained call target.
+    /// Marker structs like DontNegate/Negate are used as generic type arguments for constrained
+    /// static abstract interface dispatch but are never directly referenced in reachable method
+    /// bodies, so the reachability analyzer misses them. This creates the type on demand with
+    /// method shells for the static methods needed by constrained call resolution.
+    /// </summary>
+    private IRType? CreateDemandDrivenConstrainedType(TypeReference constrainedTypeRef, string resolvedTypeName)
+    {
+        // SIMD container types are opaque stubs — never create demand-driven constrained types for them.
+        // Their constrained static abstract methods (ISimdVector, IAdditionOperators, etc.) are dead code.
+        var openName = resolvedTypeName.Contains('<')
+            ? resolvedTypeName[..resolvedTypeName.IndexOf('<')]
+            : resolvedTypeName;
+        if (IsSimdContainerType(openName)) return null;
+
+        var cecilTypeDef = ResolveCecilTypeDefinition(constrainedTypeRef, resolvedTypeName);
+        if (cecilTypeDef == null || !cecilTypeDef.IsValueType) return null;
+
+        var mangledName = CppNameMapper.MangleTypeName(resolvedTypeName);
+        var irType = new IRType
+        {
+            ILFullName = resolvedTypeName,
+            CppName = mangledName,
+            Name = cecilTypeDef.Name,
+            Namespace = cecilTypeDef.Namespace,
+            IsValueType = true,
+            IsSealed = cecilTypeDef.IsSealed,
+            MetadataToken = cecilTypeDef.MetadataToken.ToUInt32(),
+            SourceKind = _assemblySet.ClassifyAssembly(cecilTypeDef.Module.Assembly.Name.Name),
+        };
+
+        // Add instance fields (for correct struct layout)
+        foreach (var fieldDef in cecilTypeDef.Fields)
+        {
+            if (fieldDef.IsStatic) continue;
+            irType.Fields.Add(new IRField
+            {
+                Name = fieldDef.Name,
+                CppName = CppNameMapper.MangleFieldName(fieldDef.Name),
+                FieldTypeName = fieldDef.FieldType.FullName,
+                IsPublic = fieldDef.IsPublic,
+                DeclaringType = irType,
+            });
+        }
+
+        // Create method shells for static methods (constrained static abstract calls)
+        foreach (var methodDef in cecilTypeDef.Methods)
+        {
+            if (!methodDef.IsStatic || !methodDef.HasBody) continue;
+            // Skip generic method definitions (unresolvable !!0 params)
+            if (methodDef.HasGenericParameters) continue;
+            // Skip SIMD overloads (e.g., NegateIfNeeded(Vector128<byte>))
+            if (ReferencesSimdTypes(methodDef)) continue;
+
+            var returnTypeName = methodDef.ReturnType.FullName;
+            var irMethod = new IRMethod
+            {
+                Name = methodDef.Name,
+                CppName = CppNameMapper.MangleMethodName(mangledName, methodDef.Name),
+                DeclaringType = irType,
+                ReturnTypeCpp = ResolveTypeForDecl(returnTypeName),
+                IsStatic = true,
+            };
+
+            foreach (var paramDef in methodDef.Parameters)
+            {
+                irMethod.Parameters.Add(new IRParameter
+                {
+                    Name = paramDef.Name.Length > 0 ? paramDef.Name : $"p{paramDef.Index}",
+                    CppName = CppNameMapper.MangleIdentifier(
+                        paramDef.Name.Length > 0 ? paramDef.Name : $"p{paramDef.Index}"),
+                    CppTypeName = ResolveTypeForDecl(paramDef.ParameterType.FullName),
+                    ILTypeName = paramDef.ParameterType.FullName,
+                    Index = paramDef.Index,
+                });
+            }
+
+            irType.Methods.Add(irMethod);
+        }
+
+        // Disambiguate overloaded method names (e.g., multiple NegateIfNeeded overloads)
+        var methodGroups = irType.Methods.GroupBy(m => m.CppName).Where(g => g.Count() > 1);
+        foreach (var group in methodGroups)
+        {
+            foreach (var m in group)
+            {
+                var paramSuffix = string.Join("_", m.Parameters.Select(p =>
+                    CppNameMapper.MangleTypeName(p.ILTypeName ?? p.CppTypeName)));
+                m.CppName = $"{m.CppName}__{paramSuffix}";
+            }
+        }
+
+        CalculateInstanceSize(irType);
+        _module.Types.Add(irType);
+        _typeCache[resolvedTypeName] = irType;
+
+        return irType;
     }
 
     /// <summary>
@@ -1181,6 +1488,9 @@ public partial class IRBuilder
 
             // Skip types we can't resolve (no Cecil definition available)
             if (info.CecilOpenType == null) continue;
+
+            // Safety net: skip SIMD container types even if they leaked into _genericInstantiations
+            if (IsSimdContainerType(info.OpenTypeName)) continue;
 
             var openType = info.CecilOpenType;
 
@@ -1943,8 +2253,8 @@ public partial class IRBuilder
                 return;
         }
 
-        // SIMD container types only accept numeric primitive type arguments.
-        if (IsInvalidSimdSpecialization(openTypeName, args))
+        // All SIMD code is dead (IsHardwareAccelerated=false) — skip ALL SIMD container types.
+        if (IsSimdContainerType(openTypeName))
             return;
 
         // Resolve the Cecil open type definition

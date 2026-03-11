@@ -173,6 +173,10 @@ public static class RuntimeTypeRegistry
         Register("System.RuntimeTypeHandle", null,
             RuntimeTypeFlags.CoreRuntime | RuntimeTypeFlags.SkipAllMethods);
 
+        // ===== MethodTable (Unsafe-intrinsic field reads — not compilable from IL) =====
+        Register("System.Runtime.CompilerServices.MethodTable", null,
+            RuntimeTypeFlags.CoreRuntime | RuntimeTypeFlags.SkipAllMethods);
+
         // ===== DefaultBinder (array type mismatches in generic IL patterns) =====
         Register("System.DefaultBinder", null,
             RuntimeTypeFlags.CoreRuntime | RuntimeTypeFlags.BlanketGated);
@@ -318,9 +322,25 @@ public static class RuntimeTypeRegistry
         if (desc.Has(RuntimeTypeFlags.BlanketGated))
             return true;
 
+        // SkipAllMethods: types where all methods are blocked (e.g. RuntimeTypeHandle — QCall wrappers)
+        if (desc.Has(RuntimeTypeFlags.SkipAllMethods))
+            return true;
+
         // System.Type: specific virtual methods implemented in core_methods.cpp
-        if (ilTypeName == "System.Type" && method.Name is "get_IsByRefLike" or "GetArrayRank"
+        // get_IsEnum and IsValueTypeImpl use IsSubclassOf(typeof(Enum/ValueType)) which breaks
+        // because RuntimeType's GetBaseType reads MethodTable layout (offset mismatch with TypeInfo).
+        if (ilTypeName == "System.Type" && method.Name is "get_IsEnum" or "IsValueTypeImpl"
+            or "get_IsByRefLike" or "GetArrayRank"
             or "GetGenericTypeDefinition" or "GetGenericArguments" or "MakeGenericType")
+            return true;
+
+        // System.RuntimeType: methods that read MethodTable.f_ParentMethodTable directly are broken
+        // because our TypeInfo struct layout differs from CoreCLR's MethodTable. These methods compare
+        // ParentMethodTable against known types (Enum, MulticastDelegate) but read TypeInfo.full_name
+        // (offset 16) instead of TypeInfo.base_type (offset 24). core_methods.cpp provides correct
+        // implementations using TypeInfo.base_type.
+        if (ilTypeName == "System.RuntimeType" && method.Name is "get_IsEnum" or "get_IsActualEnum"
+            or "IsDelegate" or "MakeGenericType")
             return true;
 
         // Other CoreRuntimeTypes: allow methods with real compiled bodies.

@@ -53,8 +53,15 @@ public class IRType
     /// <summary>Interface implementation vtables (for concrete types)</summary>
     public List<IRInterfaceImpl> InterfaceImpls { get; } = new();
 
-    /// <summary>Calculated object size in bytes</summary>
+    /// <summary>Calculated object size in bytes (includes trailing alignment padding)</summary>
     public int InstanceSize { get; set; }
+
+    /// <summary>
+    /// Managed field size in bytes (no trailing alignment padding).
+    /// Used by initobj/cpobj to match ECMA-335 semantics where initobj zeros
+    /// exactly the managed size, not the C++ sizeof (which includes padding).
+    /// </summary>
+    public int ManagedFieldSize { get; set; }
 
     // Type classification
     public bool IsValueType { get; set; }

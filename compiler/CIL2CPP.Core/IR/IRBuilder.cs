@@ -150,16 +150,19 @@ public partial class IRBuilder
     }
 
     /// <summary>
-    /// Check if a method body references SIMD vector types (Vector128/256/512) in locals,
-    /// parameters, or return type. Such methods produce SIMD dead-code replacements that
-    /// cause type mismatches when compiled.
+    /// Check if a type name refers to a SIMD vector type (Vector64/128/256/512).
+    /// Used across multiple compilation stages to identify SIMD dead-code paths.
+    /// </summary>
+    internal static bool IsSimdTypeName(string? name) =>
+        name != null && (name.Contains("Vector128") || name.Contains("Vector256")
+            || name.Contains("Vector512") || name.Contains("Vector64"));
+
+    /// <summary>
+    /// Check if a method references SIMD vector types in its signature (return type + parameters).
+    /// Such methods produce SIMD dead-code replacements that cause type mismatches when compiled.
     /// </summary>
     internal static bool ReferencesSimdTypes(Mono.Cecil.MethodDefinition cecilMethod)
     {
-        static bool IsSimdType(string? name) =>
-            name != null && (name.Contains("Vector128") || name.Contains("Vector256")
-                || name.Contains("Vector512") || name.Contains("Vector64"));
-
         // Only check the method's external interface (return type + parameter types).
         // Body-level SIMD references (locals, instructions) are handled by:
         //   1. FeatureSwitchResolver: eliminates dead branches (IsHardwareAccelerated → brfalse)
@@ -167,9 +170,66 @@ public partial class IRBuilder
         //   3. CallsUndeclaredFunction: stubs methods with surviving undeclared SIMD calls
         // This avoids false positives on methods like MemoryExtensions.IndexOfAnyInRange<T>
         // that reference Vector128.IsHardwareAccelerated in dead-code branches.
-        if (IsSimdType(cecilMethod.ReturnType?.FullName)) return true;
+        if (IsSimdTypeName(cecilMethod.ReturnType?.FullName)) return true;
         foreach (var p in cecilMethod.Parameters)
-            if (IsSimdType(p.ParameterType?.FullName)) return true;
+            if (IsSimdTypeName(p.ParameterType?.FullName)) return true;
+        return false;
+    }
+
+    /// <summary>
+    /// Resolve a Cecil TypeDefinition from a TypeReference, handling generic parameters
+    /// and generic instance names. Searches all loaded assemblies.
+    /// </summary>
+    internal TypeDefinition? ResolveCecilTypeDefinition(TypeReference typeRef, string resolvedTypeName)
+    {
+        // Direct resolution works for non-generic-parameter types
+        var cecilTypeDef = typeRef is not Mono.Cecil.GenericParameter
+            ? typeRef.Resolve() : null;
+        if (cecilTypeDef != null) return cecilTypeDef;
+
+        // Try with the full resolved name (works for non-generic types)
+        foreach (var asm in _assemblySet.LoadedAssemblies.Values)
+        {
+            cecilTypeDef = asm.MainModule.GetType(resolvedTypeName);
+            if (cecilTypeDef != null) return cecilTypeDef;
+        }
+
+        // resolvedTypeName may be a generic instance like "SpanHelpers/DontNegate`1<Int16>".
+        // Cecil's GetType() only accepts open type names — strip generic args.
+        var angleBracket = resolvedTypeName.IndexOf('<');
+        if (angleBracket > 0)
+        {
+            var openTypeName = resolvedTypeName.Substring(0, angleBracket);
+            foreach (var asm in _assemblySet.LoadedAssemblies.Values)
+            {
+                cecilTypeDef = asm.MainModule.GetType(openTypeName);
+                if (cecilTypeDef != null) return cecilTypeDef;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Check if a Cecil TypeReference contains unresolved method-level generic parameters (!!0, !!1).
+    /// Uses the Cecil type system for structural checking instead of string pattern matching.
+    /// </summary>
+    internal static bool ContainsMethodGenericParameter(TypeReference typeRef)
+    {
+        if (typeRef is Mono.Cecil.GenericParameter gp)
+            return gp.Type == GenericParameterType.Method;
+        if (typeRef is GenericInstanceType git)
+        {
+            foreach (var arg in git.GenericArguments)
+                if (ContainsMethodGenericParameter(arg))
+                    return true;
+        }
+        if (typeRef is ArrayType at)
+            return ContainsMethodGenericParameter(at.ElementType);
+        if (typeRef is ByReferenceType brt)
+            return ContainsMethodGenericParameter(brt.ElementType);
+        if (typeRef is PointerType pt)
+            return ContainsMethodGenericParameter(pt.ElementType);
         return false;
     }
 
@@ -661,12 +721,14 @@ public partial class IRBuilder
         // disambiguation entries existed. Retroactively apply disambiguation lookups.
         FixupDisambiguatedCalls();
 
-        // Pass 3.8: Mark AOT companion types (ObjectEqualityComparer<T>, ObjectComparer<T>)
+        // Pass 3.8: Mark AOT companion types (Object/Generic EqualityComparer<T>, Object/Generic Comparer<T>)
         // as constructed so they get full TypeInfo with vtables and interface vtables.
         foreach (var (key, info) in _genericInstantiations)
         {
             if (info.OpenTypeName is "System.Collections.Generic.ObjectEqualityComparer`1"
-                                  or "System.Collections.Generic.ObjectComparer`1")
+                                  or "System.Collections.Generic.ObjectComparer`1"
+                                  or "System.Collections.Generic.GenericEqualityComparer`1"
+                                  or "System.Collections.Generic.GenericComparer`1")
             {
                 _module.ConstructedTypes.Add(key);
             }
@@ -778,6 +840,12 @@ public partial class IRBuilder
         // already have correct pointer levels (ref enum → EnumType*).
         var newEnums2 = ScanExternalEnumTypes();
         FixupExternalEnumTypes(newEnums2);
+
+        // Pass 6.7: Fix up vtable entries for CoreRuntimeTypes whose methods now have
+        // compiled bodies. During Pass 4, skipOverride prevented these overrides from being
+        // placed (BasicBlocks.Count was 0). Now that bodies are compiled, update vtable entries
+        // so virtual dispatch resolves to the IL-compiled override instead of the runtime fallback.
+        FixupCoreRuntimeVTables();
 
         // Pass 7: Synthesize record method bodies (replace compiler-generated bodies
         // that reference unsupported BCL types like StringBuilder, EqualityComparer<T>)

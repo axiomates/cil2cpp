@@ -307,15 +307,19 @@ public class ReachabilityAnalyzer
             }
         }
 
-        // EqualityComparer/Comparer infrastructure: BCL's CreateDefaultEqualityComparer/CreateDefaultComparer
-        // use typeof(IEquatable<>).MakeGenericType() which is AOT-incompatible. We provide custom implementations
-        // that return ObjectEqualityComparer<Object>/ObjectComparer<Object> as universal fallbacks.
-        // These types must be constructed so their virtual method overrides (Equals, GetHashCode, Compare)
-        // get compiled and populate vtable entries for correct virtual dispatch.
+        // EqualityComparer/Comparer infrastructure: BCL's CreateDefaultComparer uses
+        // typeof(IEquatable<>).MakeGenericType() which is AOT-incompatible. All possible comparer
+        // types must be pre-constructed so their virtual method overrides (Equals, GetHashCode, Compare)
+        // get compiled and populate vtable entries for correct virtual dispatch at runtime.
         var comparerTypes = new[]
         {
             "System.Collections.Generic.ObjectEqualityComparer`1",
             "System.Collections.Generic.ObjectComparer`1",
+            // GenericEqualityComparer<T>/GenericComparer<T> are selected by CreateDefaultComparer
+            // when T : IEquatable<T>/IComparable<T>. The selection logic uses MakeGenericType
+            // (AOT-incompatible), but the types themselves compile fine from IL.
+            "System.Collections.Generic.GenericEqualityComparer`1",
+            "System.Collections.Generic.GenericComparer`1",
         };
         foreach (var typeName in comparerTypes)
         {
@@ -1263,6 +1267,35 @@ public class ReachabilityAnalyzer
 
             // false value → brfalse branches (taken), brtrue does not branch
             AddCeqDeadRange(nextInstr, false, ref deadRanges);
+        }
+
+        // Pattern 4: ldc.i4.0 → brfalse (always branches) / ldc.i4.1 → brtrue (always branches)
+        // These are unconditional jump patterns — the fall-through is dead code.
+        // Common in BCL code after IsSupported checks: call → brtrue SIMD → ldc.i4.0 → brfalse SCALAR
+        foreach (var instr in instructions)
+        {
+            if (instr.OpCode.Code == Code.Ldc_I4_0 && instr.Next != null)
+            {
+                var br = instr.Next;
+                if (br.OpCode.Code is Code.Brfalse or Code.Brfalse_S
+                    && br.Operand is Mono.Cecil.Cil.Instruction brTarget
+                    && br.Next != null && brTarget.Offset > br.Next.Offset)
+                {
+                    deadRanges ??= new();
+                    deadRanges.Add((br.Next.Offset, brTarget.Offset));
+                }
+            }
+            else if (instr.OpCode.Code == Code.Ldc_I4_1 && instr.Next != null)
+            {
+                var br = instr.Next;
+                if (br.OpCode.Code is Code.Brtrue or Code.Brtrue_S
+                    && br.Operand is Mono.Cecil.Cil.Instruction brTarget
+                    && br.Next != null && brTarget.Offset > br.Next.Offset)
+                {
+                    deadRanges ??= new();
+                    deadRanges.Add((br.Next.Offset, brTarget.Offset));
+                }
+            }
         }
 
         return deadRanges;

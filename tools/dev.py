@@ -1120,8 +1120,136 @@ def cmd_integration(args):
     runner.step(f"CMake build ({config})", hg_cmake_build)
     runner.step("Run and compare C++ vs .NET output", hg_run_verify)
 
+    # ===== Phase 10: HttpTest (HttpClient construction) =====
+    header("Phase 10: HttpTest (HttpClient construction)")
+
+    ht_sample = TESTPROJECTS_DIR / "HttpTest" / "HttpTest.csproj"
+    ht_output = temp_dir / "httptest_output"
+    ht_build = ht_output / "build"
+    dotnet_ht_output = ""
+
+    def ht_dotnet_run():
+        nonlocal dotnet_ht_output
+        dotnet_ht_output = _get_dotnet_output(ht_sample)
+        print(f"    .NET output: {repr(dotnet_ht_output[:200])}")
+
+    def ht_codegen():
+        run(["dotnet", "run", "--project", str(CLI_PROJECT), "--",
+             "codegen", "-i", str(ht_sample), "-o", str(ht_output)],
+            capture=True)
+
+    def ht_files_exist():
+        for f in ["HttpTest.h", "HttpTest_data.cpp", "HttpTest_stubs.cpp",
+                   "main.cpp", "CMakeLists.txt"]:
+            if not (ht_output / f).exists():
+                raise RuntimeError(f"Missing: {f}")
+        if not list(ht_output.glob("HttpTest_methods_*.cpp")):
+            raise RuntimeError("No HttpTest_methods_*.cpp files found")
+
+    def ht_cmake_configure():
+        run(["cmake", "-B", str(ht_build), "-S", str(ht_output),
+             "-G", generator, *cmake_arch,
+             f"-DCMAKE_PREFIX_PATH={runtime_prefix}"],
+            capture=True)
+
+    def ht_cmake_build():
+        run(["cmake", "--build", str(ht_build), "--config", config],
+            capture=True)
+
+    def ht_run_verify():
+        exe = _exe_path(ht_build, config, "HttpTest")
+        if not exe.exists():
+            raise RuntimeError(f"Executable not found: {exe}")
+        r = subprocess.run([str(exe)], capture_output=True, text=True, check=False,
+                           encoding="utf-8", errors="replace", timeout=30)
+        if r.returncode != 0:
+            raise RuntimeError(f"HttpTest exited with code {r.returncode}\nstderr: {r.stderr}")
+        got = r.stdout.strip()
+        expected = dotnet_ht_output.strip()
+        if got != expected:
+            got_lines = got.split('\n')
+            exp_lines = expected.split('\n')
+            mismatches = []
+            for i in range(max(len(got_lines), len(exp_lines))):
+                g = got_lines[i].strip() if i < len(got_lines) else "<missing>"
+                e = exp_lines[i].strip() if i < len(exp_lines) else "<missing>"
+                if g != e:
+                    mismatches.append(f"  line {i+1}: got '{g}', expected '{e}'")
+            raise RuntimeError("Output mismatch:\n" + "\n".join(mismatches))
+
+    runner.step("Get .NET reference output", ht_dotnet_run)
+    runner.step("Codegen HttpTest", ht_codegen)
+    runner.step("Generated files exist", ht_files_exist)
+    runner.step("CMake configure", ht_cmake_configure)
+    runner.step(f"CMake build ({config})", ht_cmake_build)
+    runner.step("Run and compare C++ vs .NET output", ht_run_verify)
+
+    # ===== Phase 11: HttpsGetTest (HTTPS client, TLS/SChannel) =====
+    header("Phase 11: HttpsGetTest (HTTPS client, TLS/SChannel)")
+
+    hsg_sample = TESTPROJECTS_DIR / "HttpsGetTest" / "HttpsGetTest.csproj"
+    hsg_output = temp_dir / "httpsgettest_output"
+    hsg_build = hsg_output / "build"
+    dotnet_hsg_output = ""
+
+    def hsg_dotnet_run():
+        nonlocal dotnet_hsg_output
+        dotnet_hsg_output = _get_dotnet_output(hsg_sample)
+        print(f"    .NET output: {repr(dotnet_hsg_output[:200])}")
+
+    def hsg_codegen():
+        run(["dotnet", "run", "--project", str(CLI_PROJECT), "--",
+             "codegen", "-i", str(hsg_sample), "-o", str(hsg_output)],
+            capture=True)
+
+    def hsg_files_exist():
+        for f in ["HttpsGetTest.h", "HttpsGetTest_data.cpp", "HttpsGetTest_stubs.cpp",
+                   "main.cpp", "CMakeLists.txt"]:
+            if not (hsg_output / f).exists():
+                raise RuntimeError(f"Missing: {f}")
+        if not list(hsg_output.glob("HttpsGetTest_methods_*.cpp")):
+            raise RuntimeError("No HttpsGetTest_methods_*.cpp files found")
+
+    def hsg_cmake_configure():
+        run(["cmake", "-B", str(hsg_build), "-S", str(hsg_output),
+             "-G", generator, *cmake_arch,
+             f"-DCMAKE_PREFIX_PATH={runtime_prefix}"],
+            capture=True)
+
+    def hsg_cmake_build():
+        run(["cmake", "--build", str(hsg_build), "--config", config],
+            capture=True)
+
+    def hsg_run_verify():
+        exe = _exe_path(hsg_build, config, "HttpsGetTest")
+        if not exe.exists():
+            raise RuntimeError(f"Executable not found: {exe}")
+        r = subprocess.run([str(exe)], capture_output=True, text=True, check=False,
+                           encoding="utf-8", errors="replace", timeout=30)
+        if r.returncode != 0:
+            raise RuntimeError(f"HttpsGetTest exited with code {r.returncode}\nstderr: {r.stderr}")
+        got = r.stdout.strip()
+        expected = dotnet_hsg_output.strip()
+        if got != expected:
+            got_lines = got.split('\n')
+            exp_lines = expected.split('\n')
+            mismatches = []
+            for i in range(max(len(got_lines), len(exp_lines))):
+                g = got_lines[i].strip() if i < len(got_lines) else "<missing>"
+                e = exp_lines[i].strip() if i < len(exp_lines) else "<missing>"
+                if g != e:
+                    mismatches.append(f"  line {i+1}: got '{g}', expected '{e}'")
+            raise RuntimeError("Output mismatch:\n" + "\n".join(mismatches))
+
+    runner.step("Get .NET reference output", hsg_dotnet_run)
+    runner.step("Codegen HttpsGetTest", hsg_codegen)
+    runner.step("Generated files exist", hsg_files_exist)
+    runner.step("CMake configure", hsg_cmake_configure)
+    runner.step(f"CMake build ({config})", hsg_cmake_build)
+    runner.step("Run and compare C++ vs .NET output", hsg_run_verify)
+
     # NOTE: Other test projects (Library, Debug, StringLiterals,
-    # HttpTest, NuGetSimpleTest, JsonSGTest) are disabled.
+    # NuGetSimpleTest, JsonSGTest) are disabled.
     # Enable them phase-by-phase as issues are fixed.
 
     # ===== Cleanup =====

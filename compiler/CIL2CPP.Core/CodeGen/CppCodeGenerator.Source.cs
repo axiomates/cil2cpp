@@ -415,6 +415,11 @@ public partial class CppCodeGenerator
             if (HasGenericBodyTypeConflict(type, method)) continue;
             if (CallsUndeclaredFunction(method))
                 continue;
+            // Skip methods that are themselves SIMD dead code.
+            // Their callers have been replaced with default values at render time;
+            // emitting the method body would reference SIMD opaque struct fields.
+            if (IsSimdDeadCodeFunction(method.CppName))
+                continue;
             if (!_emittedMethodSignatures.Add(method.GetCppSignature())) continue;
             // Direct render — compile from IL
             GenerateMethodImpl(sb, method);

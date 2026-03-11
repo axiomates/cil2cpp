@@ -114,6 +114,7 @@ public partial class IRBuilder
             irField.ConstantValue = fieldDef.ConstantValue;
             irField.Attributes = (uint)fieldDef.GetCecilField().Attributes;
 
+
             targetList.Add(irField);
         }
 
@@ -165,26 +166,82 @@ public partial class IRBuilder
         if (irType.ExplicitSize > 0 && irType.ExplicitSize > size)
             size = irType.ExplicitSize;
 
-        // Align total size to pointer boundary
-        size = Align(size, PointerAlignment);
+        // Store managed field size BEFORE trailing alignment — used by initobj/cpobj
+        irType.ManagedFieldSize = size;
+
+        // Align total size to match C++ sizeof():
+        // - Reference types: always pointer-aligned (contain TypeInfo* pointer)
+        // - Value types: aligned to max field alignment (matches C++ struct rules)
+        if (irType.IsValueType)
+        {
+            int structAlign = 1;
+            foreach (var field in irType.Fields)
+            {
+                int fa = GetFieldAlignment(field.FieldTypeName);
+                if (fa > structAlign) structAlign = fa;
+            }
+            size = Align(size, structAlign);
+        }
+        else
+        {
+            size = Align(size, PointerAlignment);
+        }
         irType.InstanceSize = size;
     }
 
     // Field sizes per ECMA-335 §I.8.2.1 (Built-in Value Types)
     private int GetFieldSize(string typeName)
     {
-        return typeName switch
+        // Primitive types — known sizes
+        var primitiveSize = typeName switch
         {
             "System.Boolean" or "System.Byte" or "System.SByte" => 1,
             "System.Int16" or "System.UInt16" or "System.Char" => 2,
             "System.Int32" or "System.UInt32" or "System.Single" => 4,
             "System.Int64" or "System.UInt64" or "System.Double" => 8,
-            _ => 8 // Pointer size on 64-bit (reference types, IntPtr/UIntPtr). FIXME: 32-bit targets need 4.
+            _ => 0
         };
+        if (primitiveSize > 0) return primitiveSize;
+
+        // Non-primitive value types: look up actual InstanceSize from the type cache.
+        // This handles struct-in-struct fields (e.g., Asn1Tag inside Nullable<Asn1Tag>).
+        // InstanceSize includes C++ trailing alignment, matching sizeof() in the generated code.
+        if (_typeCache.TryGetValue(typeName, out var irType) && irType.IsValueType && irType.InstanceSize > 0)
+            return irType.InstanceSize;
+
+        // Enums: look up the underlying type size
+        if (_typeCache.TryGetValue(typeName, out var enumType) && enumType.IsEnum)
+            return GetFieldSize(enumType.EnumUnderlyingType ?? "System.Int32");
+
+        return 8; // Pointer size on 64-bit (reference types, IntPtr/UIntPtr)
     }
+
+    [ThreadStatic] private static HashSet<string>? _alignmentVisited;
 
     private int GetFieldAlignment(string typeName)
     {
+        // For value types in the cache, compute actual alignment (max alignment of their fields).
+        // This prevents over-alignment: e.g., Asn1Tag should align to 4 (int32), not 8 (pointer).
+        if (_typeCache.TryGetValue(typeName, out var irType) && irType.IsValueType && irType.Fields.Count > 0)
+        {
+            _alignmentVisited ??= new HashSet<string>();
+            if (!_alignmentVisited.Add(typeName))
+                return 8; // Cycle detected — fall back to pointer alignment
+            try
+            {
+                int maxAlign = 1;
+                foreach (var field in irType.Fields)
+                {
+                    int align = GetFieldAlignment(field.FieldTypeName);
+                    if (align > maxAlign) maxAlign = align;
+                }
+                return maxAlign;
+            }
+            finally
+            {
+                _alignmentVisited.Remove(typeName);
+            }
+        }
         return Math.Min(GetFieldSize(typeName), 8);
     }
 

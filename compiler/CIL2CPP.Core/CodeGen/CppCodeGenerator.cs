@@ -68,6 +68,11 @@ public partial class CppCodeGenerator
         if (typeName.Length < 2) return false;
         if (typeName[0] != 'T' || !char.IsUpper(typeName[1])) return false;
         if (typeName.Contains('_')) return false;
+        // Generic params follow PascalCase: T + one uppercase + immediately lowercase.
+        // E.g., TResult, TKey, TValue, TChar, TTo, TNegator.
+        // Reject acronym-prefixed segments like TOKENRef (T + multiple uppercase = acronym).
+        if (typeName.Length >= 3 && char.IsUpper(typeName[2]))
+            return false;
         // All chars must be letters or digits, and must contain at least one lowercase letter.
         // Real generic params are PascalCase (TResult, TKey, TValue) — all-caps words like
         // TIME, ZONE, INFORMATION (from Interop struct names) are not generic params.
@@ -537,7 +542,8 @@ public partial class CppCodeGenerator
         // Check all parameter types and return type
         foreach (var param in method.Parameters)
         {
-            if (IsInvalidCppType(param.CppTypeName)) return true;
+            if (IsInvalidCppType(param.CppTypeName))
+                return true;
         }
         if (!string.IsNullOrEmpty(method.ReturnTypeCpp) && IsInvalidCppType(method.ReturnTypeCpp))
             return true;
@@ -564,7 +570,8 @@ public partial class CppCodeGenerator
         {
             if (!string.IsNullOrEmpty(local.CppTypeName))
             {
-                if (IsInvalidCppType(local.CppTypeName)) return true;
+                if (IsInvalidCppType(local.CppTypeName))
+                    return true;
                 var localBase = local.CppTypeName.TrimEnd('*').Trim();
                 if (MangledNameContainsUnresolvedGenericParam(localBase))
                     return true;
@@ -688,6 +695,7 @@ public partial class CppCodeGenerator
             foreach (var instr in block.Instructions)
             {
                 if (instr is IR.IRCall call && !string.IsNullOrEmpty(call.FunctionName)
+                    && !call.IsVirtual // Virtual calls use VTable dispatch; FunctionName not in rendered C++
                     && _undeclaredFunctionNames.Contains(call.FunctionName)
                     && !IsSimdDeadCodeFunction(call.FunctionName)
                     && !IsEventSourceDiagnosticFunction(call.FunctionName))
@@ -702,6 +710,7 @@ public partial class CppCodeGenerator
                     && _undeclaredFunctionNames.Contains(newObj.CtorName))
                     return true;
                 if (instr is IR.IRLoadFunctionPointer ldftn && !string.IsNullOrEmpty(ldftn.MethodCppName)
+                    && !ldftn.IsVirtual // Virtual ldftn uses VTable lookup
                     && _undeclaredFunctionNames.Contains(ldftn.MethodCppName))
                     return true;
             }
@@ -735,7 +744,8 @@ public partial class CppCodeGenerator
 
     /// <summary>
     /// All SIMD-related functions: hardware intrinsics (X86/Arm/Wasm), generic container methods
-    /// (Vector128&lt;T&gt;, Vector256&lt;T&gt;, etc.), and non-generic helper methods (Vector128.Create, etc.).
+    /// (Vector128&lt;T&gt;, Vector256&lt;T&gt;, etc.), non-generic helper methods (Vector128.Create, etc.),
+    /// and BCL helper classes that only serve SIMD code paths (PackedSpanHelpers, IndexOfAnyAsciiSearcher).
     /// These are always in dead-code branches (IsSupported=false on AOT). Undeclared calls to
     /// these functions are replaced with default values at render time.
     /// </summary>
@@ -751,7 +761,18 @@ public partial class CppCodeGenerator
             || functionName.StartsWith("System_Runtime_Intrinsics_Vector128_")
             || functionName.StartsWith("System_Runtime_Intrinsics_Vector256_")
             || functionName.StartsWith("System_Runtime_Intrinsics_Vector512_")
-            || functionName.StartsWith("System_Runtime_Intrinsics_Scalar_1_");
+            || functionName.StartsWith("System_Runtime_Intrinsics_Scalar_1_")
+            // BCL helper classes that only serve SIMD-accelerated code paths.
+            // Called behind Sse2.IsSupported / AdvSimd.IsSupported / Vector128.IsHardwareAccelerated
+            // guards — always dead in AOT without SIMD support.
+            || functionName.StartsWith("System_PackedSpanHelpers_")
+            || functionName.StartsWith("System_SpanHelpers_ComputeFirstIndex_")
+            || functionName.StartsWith("System_SpanHelpers_ComputeLastIndex_")
+            || functionName.StartsWith("System_Buffers_IndexOfAnyAsciiSearcher_")
+            || functionName.StartsWith("System_Text_Ascii_AllCharsInVectorAreAscii_")
+            || functionName.StartsWith("System_Text_Ascii_ChangeWidthAndWriteTo_")
+            || functionName.StartsWith("System_Text_Ascii_SignedLessThan_")
+            || functionName.StartsWith("System_Text_Ascii_VectorContainsNonAsciiChar_");
     }
 
     /// <summary>
@@ -774,6 +795,10 @@ public partial class CppCodeGenerator
         // Valid mangled .NET names always contain underscores (System_Int32, etc.)
         if (baseType.Length >= 2 && baseType[0] == 'T' && char.IsUpper(baseType[1])
             && !baseType.Contains('_') && !baseType.StartsWith("cil2cpp::"))
+            return true;
+
+        // Unresolved method-level generic params: !!0, !!1, etc.
+        if (baseType.StartsWith("!!"))
             return true;
 
         return false;

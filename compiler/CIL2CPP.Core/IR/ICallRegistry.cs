@@ -503,6 +503,12 @@ public static class ICallRegistry
             "cil2cpp::icall::SpanHelpers_DontNegate_NegateIfNeeded");
         RegisterICallWildcard("System.SpanHelpers/Negate`1", "NegateIfNeeded",
             "cil2cpp::icall::SpanHelpers_Negate_NegateIfNeeded");
+        // IndexOfAnyAsciiSearcher has its own DontNegate/Negate (non-generic, different namespace).
+        // Same semantics: DontNegate = identity, Negate = logical negation.
+        RegisterICallWildcard("System.Buffers.IndexOfAnyAsciiSearcher/DontNegate", "NegateIfNeeded",
+            "cil2cpp::icall::SpanHelpers_DontNegate_NegateIfNeeded");
+        RegisterICallWildcard("System.Buffers.IndexOfAnyAsciiSearcher/Negate", "NegateIfNeeded",
+            "cil2cpp::icall::SpanHelpers_Negate_NegateIfNeeded");
 
         // ===== System.Math (double) =====
         // .NET 8: Math methods are [InternalCall] with no IL body (JIT replaces with CPU instructions).

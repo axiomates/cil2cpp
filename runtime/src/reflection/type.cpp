@@ -128,6 +128,9 @@ Type* type_get_type_object(TypeInfo* info) {
     // System_RuntimeType_TypeInfo is defined in generated code with full vtable (136+ methods).
     auto* type_obj = static_cast<Type*>(gc::alloc(sizeof(Type), &::System_RuntimeType_TypeInfo));
     type_obj->type_info = info;
+    // Populate RuntimeType.m_handle — BCL code (GetNativeTypeHandle, IsValueTypeImpl, etc.)
+    // reads this to create a TypeHandle/MethodTable. In our runtime, TypeInfo* serves as MethodTable*.
+    type_obj->f_m_handle = reinterpret_cast<intptr_t>(info);
 
     g_type_cache[info] = type_obj;
     return type_obj;

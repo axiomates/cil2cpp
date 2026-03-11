@@ -410,14 +410,17 @@ public partial class CppCodeGenerator
             {
                 if (method.IsAbstract || method.IsInternalCall) continue;
                 if (method.BasicBlocks.Count == 0 && !method.IsPInvoke) continue;
-                // Core runtime types (Object, String, Array, etc.): only emit static methods.
-                // Non-core RuntimeProvided types (Task, Thread, CancellationToken) emit all methods.
-                if (type.IsRuntimeProvided && !method.IsStatic && isCoreRuntime) continue;
+                // CoreRuntimeTypes: selectively skip instance methods that are provided by runtime.
+                // Must match Source.cs EmitMethodsForType() logic exactly.
+                if (!method.IsStatic && isCoreRuntime
+                    && RuntimeTypeRegistry.ShouldBlockInstanceMethod(type.ILFullName, method))
+                    continue;
                 if (HasInvalidCppSignature(method)) continue;
                 // All methods with IR bodies get declarations
                 if (!emittedMethodDecls.Add(method.GetCppSignature())) continue;
-                // CoreRuntimeTypes methods use extern "C" linkage (defined in runtime core_methods.cpp)
-                if (isCoreRuntime)
+                // CoreRuntimeTypes: static methods and P/Invoke use extern "C" (defined in core_methods.cpp).
+                // Instance methods compiled from IL use normal C++ linkage.
+                if (isCoreRuntime && (method.IsStatic || method.IsPInvoke))
                     coreRuntimeMethodDecls.Add(method.GetCppSignature());
                 else
                     sb.AppendLine($"{method.GetCppSignature()};");

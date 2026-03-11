@@ -6,14 +6,87 @@ namespace CIL2CPP.Core.IR;
 
 public partial class IRBuilder
 {
+    /// <summary>
+    /// Build a map from interface generic parameter names to concrete type names
+    /// for a method that implements a generic interface. Returns null if no mapping needed.
+    /// E.g., Char.Max(TSelf, TSelf) implementing INumber&lt;Char&gt;.Max → {TSelf → System.Char}
+    /// </summary>
+    private Dictionary<string, string>? BuildInterfaceGenericParamMap(MethodDefinition cecilMethod)
+    {
+        if (!cecilMethod.HasOverrides) return null;
+
+        Dictionary<string, string>? map = null;
+        foreach (var ov in cecilMethod.Overrides)
+        {
+            var ifaceRef = ov.DeclaringType;
+            if (ifaceRef is not GenericInstanceType ifaceGit) continue;
+            var openIface = ifaceGit.ElementType.Resolve();
+            if (openIface?.HasGenericParameters != true) continue;
+
+            map ??= new Dictionary<string, string>();
+            for (int i = 0; i < openIface.GenericParameters.Count && i < ifaceGit.GenericArguments.Count; i++)
+            {
+                var gpName = openIface.GenericParameters[i].Name; // e.g., "TSelf"
+                var concreteArg = ifaceGit.GenericArguments[i].FullName; // e.g., "System.Char"
+                map.TryAdd(gpName, concreteArg);
+            }
+        }
+
+        // Also scan the declaring type's interfaces for additional mappings
+        // (for cases where Overrides references the method via a base interface)
+        if (map != null)
+        {
+            var declType = cecilMethod.DeclaringType;
+            if (declType != null)
+            {
+                foreach (var ifaceImpl in declType.Interfaces)
+                {
+                    if (ifaceImpl.InterfaceType is not GenericInstanceType ifaceGit2) continue;
+                    var openIface = ifaceGit2.ElementType.Resolve();
+                    if (openIface?.HasGenericParameters != true) continue;
+
+                    for (int i = 0; i < openIface.GenericParameters.Count && i < ifaceGit2.GenericArguments.Count; i++)
+                    {
+                        var gpName = openIface.GenericParameters[i].Name;
+                        var concreteArg = ifaceGit2.GenericArguments[i].FullName;
+                        map.TryAdd(gpName, concreteArg);
+                    }
+                }
+            }
+        }
+
+        return map;
+    }
+
     private IRMethod ConvertMethod(IL.MethodInfo methodDef, IRType declaringType)
     {
+        var cecilMethod = methodDef.GetCecilMethod();
+
+        // Build interface generic param map for explicit interface implementations.
+        // When Char implements INumber<Char>.Max(TSelf, TSelf), the Cecil method uses
+        // TSelf from the interface. We need to map TSelf → System.Char so parameter
+        // types resolve correctly to char16_t instead of the unresolved TSelf*.
+        var ifaceParamMap = BuildInterfaceGenericParamMap(cecilMethod);
+
+        string ResolveParamType(string typeName)
+        {
+            if (ifaceParamMap != null && ifaceParamMap.TryGetValue(typeName, out var resolved))
+                return ResolveTypeForDecl(resolved);
+            return ResolveTypeForDecl(typeName);
+        }
+        string ResolveParamTypeIL(string typeName)
+        {
+            if (ifaceParamMap != null && ifaceParamMap.TryGetValue(typeName, out var resolved))
+                return resolved;
+            return typeName;
+        }
+
         var cppName = CppNameMapper.MangleMethodName(declaringType.CppName, methodDef.Name);
         // op_Explicit/op_Implicit: C# allows return-type overloading, C++ doesn't.
         // Append return type to disambiguate.
         if (methodDef.Name is "op_Explicit" or "op_Implicit" or "op_CheckedExplicit" or "op_CheckedImplicit")
         {
-            var retMangled = CppNameMapper.MangleTypeName(methodDef.ReturnTypeName);
+            var retMangled = CppNameMapper.MangleTypeName(ResolveParamTypeIL(methodDef.ReturnTypeName));
             cppName = $"{cppName}_{retMangled}";
         }
 
@@ -22,7 +95,7 @@ public partial class IRBuilder
             Name = methodDef.Name,
             CppName = cppName,
             DeclaringType = declaringType,
-            ReturnTypeCpp = ResolveTypeForDecl(methodDef.ReturnTypeName),
+            ReturnTypeCpp = ResolveParamType(methodDef.ReturnTypeName),
             IsStatic = methodDef.IsStatic,
             IsVirtual = methodDef.IsVirtual,
             IsAbstract = methodDef.IsAbstract,
@@ -31,7 +104,7 @@ public partial class IRBuilder
         };
 
         // Store raw ECMA-335 MethodAttributes
-        var cecilMethod = methodDef.GetCecilMethod();
+        irMethod.Attributes = (uint)cecilMethod.Attributes;
         irMethod.Attributes = (uint)cecilMethod.Attributes;
 
         // Detect newslot (C# 'new virtual')
@@ -98,7 +171,8 @@ public partial class IRBuilder
         }
 
         // Resolve return type
-        if (_typeCache.TryGetValue(methodDef.ReturnTypeName, out var retType))
+        var resolvedRetTypeName = ResolveParamTypeIL(methodDef.ReturnTypeName);
+        if (_typeCache.TryGetValue(resolvedRetTypeName, out var retType))
         {
             irMethod.ReturnType = retType;
         }
@@ -106,16 +180,17 @@ public partial class IRBuilder
         // Parameters
         foreach (var paramDef in methodDef.Parameters)
         {
+            var resolvedParamTypeName = ResolveParamTypeIL(paramDef.TypeName);
             var irParam = new IRParameter
             {
                 Name = paramDef.Name,
                 CppName = paramDef.Name.Length > 0 ? CppNameMapper.MangleIdentifier(paramDef.Name) : $"p{paramDef.Index}",
-                CppTypeName = ResolveTypeForDecl(paramDef.TypeName),
-                ILTypeName = paramDef.TypeName,
+                CppTypeName = ResolveParamType(paramDef.TypeName),
+                ILTypeName = resolvedParamTypeName,
                 Index = paramDef.Index,
             };
 
-            if (_typeCache.TryGetValue(paramDef.TypeName, out var paramType))
+            if (_typeCache.TryGetValue(resolvedParamTypeName, out var paramType))
             {
                 irParam.ParameterType = paramType;
             }
@@ -168,9 +243,6 @@ public partial class IRBuilder
         // Local variables
         foreach (var localDef in methodDef.GetLocalVariables())
         {
-            // TEMP DIAG: dump locals for AllocateNativeOverlapped
-            if (irMethod.Name.Contains("AllocateNativeOverlapped"))
-                Console.Error.WriteLine($"[DIAG] {irMethod.Name} loc_{localDef.Index}: IL={localDef.TypeName} -> C++={ResolveTypeForDecl(localDef.TypeName)} pinned={localDef.IsPinned}");
             irMethod.Locals.Add(new IRLocal
             {
                 Index = localDef.Index,
@@ -341,6 +413,7 @@ public partial class IRBuilder
         _trysWithFilter.Clear();
         _currentFilterSkipLabel = null;
         _afterFilterCatchOpen = false;
+        _compileTimeConstantLocals.Clear();
         var block = new IRBasicBlock { Id = 0 };
         irMethod.BasicBlocks.Add(block);
 
@@ -556,7 +629,9 @@ public partial class IRBuilder
         // Stack simulation
         var stack = new Stack<StackEntry>();
         int tempCounter = 0;
-        bool skipDeadCode = false; // Skip IL instructions after unconditional branch until next label
+        // Dead code skip tracking: null = not skipping, int.MaxValue = skip until any branch target
+        // (post-br/ret/throw), specific offset = skip until that offset (compile-time constant elimination).
+        int? skipUntilOffset = null;
         int? lastCondBranchStackDepth = null; // Stack depth after most recent conditional branch (for ternary merge detection)
 
         foreach (var instr in instructions)
@@ -605,7 +680,7 @@ public partial class IRBuilder
                             }
                             // Exception handler entry is reachable even after throw/ret —
                             // resume code generation (fixes missing catch body instructions)
-                            skipDeadCode = false;
+                            skipUntilOffset = null;
                             stack.Clear();
                             // Use GetCppTypeName (not MangleTypeName) so that runtime exception types
                             // resolve to cil2cpp::Exception etc. — the CIL2CPP_CATCH macro appends
@@ -653,7 +728,7 @@ public partial class IRBuilder
                                     });
                                 }
                             }
-                            skipDeadCode = false;
+                            skipUntilOffset = null;
                             stack.Clear();
                             block.Instructions.Add(new IRFilterBegin { IsFirst = isFirst });
                             // Reset for this filter evaluation (declaration is at method scope in codegen)
@@ -666,13 +741,13 @@ public partial class IRBuilder
                             break;
                         }
                         case ExceptionEventKind.FilterHandlerBegin:
-                            skipDeadCode = false;
+                            skipUntilOffset = null;
                             stack.Clear();
                             // Handler body after endfilter — push exception for handler body
                             stack.Push(new StackEntry("(cil2cpp::Exception*)__exc_ctx.current_exception", "cil2cpp::Exception*"));
                             break;
                         case ExceptionEventKind.FinallyBegin:
-                            skipDeadCode = false;
+                            skipUntilOffset = null;
                             stack.Clear();
                             // Emit leave exit label before finally — leave instructions that
                             // cross this try-finally jump here to skip remaining try body code
@@ -743,8 +818,27 @@ public partial class IRBuilder
             // Insert label if this is a branch target
             if (branchTargets.Contains(instr.Offset))
             {
-                var wasDeadCode = skipDeadCode;
-                skipDeadCode = false; // Resume processing at branch targets
+                // Determine if we should resume processing at this branch target.
+                // For post-unconditional-branch dead code (int.MaxValue): resume at any branch target.
+                // For compile-time constant elimination (specific offset): only resume at that offset.
+                bool shouldResume = !skipUntilOffset.HasValue
+                    || skipUntilOffset.Value == int.MaxValue
+                    || instr.Offset >= skipUntilOffset.Value;
+                var wasDeadCode = skipUntilOffset.HasValue;
+
+                if (shouldResume)
+                {
+                    skipUntilOffset = null;
+                    _compileTimeConstantLocals.Clear(); // Reset constants at control flow merge points
+                }
+                else
+                {
+                    // Still inside dead region — emit the label but skip all processing.
+                    // Internal labels (e.g., loop back-edges) must exist in the IR in case
+                    // the label is referenced, but the code that follows remains dead.
+                    block.Instructions.Add(new IRLabel { LabelName = $"IL_{instr.Offset:X4}" });
+                    continue;
+                }
 
                 // Restore stack from saved snapshot when arriving from dead code.
                 // After an unconditional branch (br/ret/throw), the linear stack simulation
@@ -827,14 +921,14 @@ public partial class IRBuilder
 
             // Skip dead code after unconditional branches (br, ret, throw, rethrow)
             // These instructions have corrupted stack state and produce invalid C++ (e.g., "16 = 0")
-            if (skipDeadCode)
+            if (skipUntilOffset.HasValue)
                 continue;
 
             int beforeCount = block.Instructions.Count;
 
             try
             {
-                ConvertInstruction(instr, block, stack, irMethod, ref tempCounter, branchMergeVars, branchTargetStacks, branchTargets, ref lastCondBranchStackDepth, brTernaryMerges, featureSwitchDeadRanges);
+                ConvertInstruction(instr, block, stack, irMethod, ref tempCounter, branchMergeVars, branchTargetStacks, branchTargets, ref lastCondBranchStackDepth, brTernaryMerges, featureSwitchDeadRanges, ref skipUntilOffset);
             }
             catch
             {
@@ -845,7 +939,8 @@ public partial class IRBuilder
             // After unconditional terminators, skip remaining dead code until next label
             if (instr.OpCode is Code.Br or Code.Br_S or Code.Ret or Code.Throw or Code.Rethrow
                 or Code.Leave or Code.Leave_S or Code.Endfinally)
-                skipDeadCode = true;
+                skipUntilOffset = int.MaxValue;
+
 
             // Attach debug info to newly added instructions
             if (_config.IsDebug)
@@ -983,7 +1078,8 @@ public partial class IRBuilder
         Dictionary<int, StackEntry[]> branchTargetStacks, HashSet<int> branchTargets,
         ref int? lastCondBranchStackDepth,
         Dictionary<int, StackEntry[]> brTernaryMerges,
-        List<(int Start, int End)>? featureSwitchDeadRanges = null)
+        List<(int Start, int End)>? featureSwitchDeadRanges,
+        ref int? skipUntilOffset)
     {
         switch (instr.OpCode)
         {
@@ -1161,16 +1257,16 @@ public partial class IRBuilder
                 break;
 
             // ===== Load Locals =====
-            case Code.Ldloc_0: stack.Push(new StackEntry(GetLocalName(method, 0), GetLocalType(method, 0))); break;
-            case Code.Ldloc_1: stack.Push(new StackEntry(GetLocalName(method, 1), GetLocalType(method, 1))); break;
-            case Code.Ldloc_2: stack.Push(new StackEntry(GetLocalName(method, 2), GetLocalType(method, 2))); break;
-            case Code.Ldloc_3: stack.Push(new StackEntry(GetLocalName(method, 3), GetLocalType(method, 3))); break;
+            case Code.Ldloc_0: PushLocalWithConstant(stack, method, 0); break;
+            case Code.Ldloc_1: PushLocalWithConstant(stack, method, 1); break;
+            case Code.Ldloc_2: PushLocalWithConstant(stack, method, 2); break;
+            case Code.Ldloc_3: PushLocalWithConstant(stack, method, 3); break;
             case Code.Ldloc_S:
             case Code.Ldloc:
             {
                 var locDef = instr.Operand as VariableDefinition;
                 int locIdx = locDef?.Index ?? 0;
-                stack.Push(new StackEntry(GetLocalName(method, locIdx), GetLocalType(method, locIdx)));
+                PushLocalWithConstant(stack, method, locIdx);
                 break;
             }
 
@@ -1369,8 +1465,24 @@ public partial class IRBuilder
             case Code.Brtrue:
             case Code.Brtrue_S:
             {
-                var cond = stack.PopExpr();
+                var condEntry = stack.PopEntry();
+                var cond = condEntry.Expr;
                 var target = (Instruction)instr.Operand!;
+                // Compile-time constant branch elimination: when condition is known at compile time
+                // (e.g., IsSupported=0), eliminate the dead branch entirely at the IR level.
+                // Also detect literal "0"/"1" from ldc.i4 → brtrue patterns (see brfalse handler).
+                int? compileTimeValue = condEntry.CompileTimeConstant ?? TryParseSimpleLiteral(cond);
+                if (compileTimeValue.HasValue)
+                {
+                    if (compileTimeValue.Value != 0)
+                    {
+                        // brtrue with non-zero → branch ALWAYS taken, fall-through is dead until target
+                        block.Instructions.Add(new IRBranch { TargetLabel = $"IL_{target.Offset:X4}" });
+                        skipUntilOffset = target.Offset;
+                    }
+                    // brtrue with 0 → branch NEVER taken → fall through (skip the branch)
+                    break;
+                }
                 // Skip branches to dead code ranges (SIMD dead branches)
                 if (ReachabilityAnalyzer.IsOffsetInDeadRange(featureSwitchDeadRanges, target.Offset))
                     break;
@@ -1399,8 +1511,25 @@ public partial class IRBuilder
             case Code.Brfalse:
             case Code.Brfalse_S:
             {
-                var cond = stack.PopExpr();
+                var condEntry = stack.PopEntry();
+                var cond = condEntry.Expr;
                 var target = (Instruction)instr.Operand!;
+                // Compile-time constant branch elimination (see brtrue handler for explanation)
+                // Also detect literal "0"/"1" from ldc.i4.0/ldc.i4.1 → brfalse patterns.
+                // This is safe: if the literal went through stloc/ldloc, the expression
+                // would be "loc_N" (not "0"), so only direct ldc→brfalse is caught.
+                int? compileTimeValue = condEntry.CompileTimeConstant ?? TryParseSimpleLiteral(cond);
+                if (compileTimeValue.HasValue)
+                {
+                    if (compileTimeValue.Value == 0)
+                    {
+                        // brfalse with 0 → branch ALWAYS taken, fall-through is dead until target
+                        block.Instructions.Add(new IRBranch { TargetLabel = $"IL_{target.Offset:X4}" });
+                        skipUntilOffset = target.Offset;
+                    }
+                    // brfalse with non-zero → branch NEVER taken → fall through
+                    break;
+                }
                 // Skip branches to dead code ranges (SIMD dead branches)
                 if (ReachabilityAnalyzer.IsOffsetInDeadRange(featureSwitchDeadRanges, target.Offset))
                     break;
@@ -1693,7 +1822,7 @@ public partial class IRBuilder
                         ResultVar = fsTmp,
                         ResultTypeCpp = "bool",
                     });
-                    stack.Push(new StackEntry(fsTmp, "bool"));
+                    stack.Push(new StackEntry(fsTmp, "bool", CompileTimeConstant: switchValue ? 1 : 0));
                     break;
                 }
 
@@ -2526,7 +2655,7 @@ public partial class IRBuilder
                 {
                     AddressExpr = addr,
                     TypeCppName = typeCpp,
-                    IsReferenceType = !isValueType
+                    IsReferenceType = !isValueType,
                 });
                 break;
             }
@@ -2936,9 +3065,10 @@ public partial class IRBuilder
                     if (isValueType)
                     {
                         if (typeCpp.EndsWith("*")) typeCpp = typeCpp.TrimEnd('*');
+                        var sizeExpr = $"sizeof({typeCpp})";
                         block.Instructions.Add(new IRRawCpp
                         {
-                            Code = $"std::memcpy(reinterpret_cast<void*>({dest}), reinterpret_cast<const void*>({src}), sizeof({typeCpp}));",
+                            Code = $"std::memcpy(reinterpret_cast<void*>({dest}), reinterpret_cast<const void*>({src}), {sizeExpr});",
                         });
                     }
                     else
