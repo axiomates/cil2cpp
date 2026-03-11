@@ -1181,6 +1181,9 @@ public partial class IRBuilder
                     else
                     {
                         typeInfoName = GetMangledTypeNameForRef(typeRef);
+                        // Record CppName → ILName mapping for correct full_name in auto TypeInfos
+                        var resolvedILName = ResolveCacheKey(typeRef);
+                        _module.TypeInfoCppToILMap.TryAdd(typeInfoName, resolvedILName);
                         // Ensure TypeInfo exists for primitive types used in typeof()
                         if (CppNameMapper.IsPrimitive(typeRef.FullName))
                         {

@@ -393,10 +393,15 @@ public static class CppNameMapper
         var safeName = methodName
             .Replace("::", "_")
             .Replace(".", "_")
+            .Replace("/", "_")
             .Replace("<", "_")
             .Replace(">", "_")
             .Replace(",", "_")
             .Replace("`", "_")
+            .Replace("[", "_")
+            .Replace("]", "_")
+            .Replace("&", "_")
+            .Replace("*", "_")
             .Replace(" ", "")
             .Replace("|", "_");
 

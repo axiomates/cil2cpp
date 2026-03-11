@@ -186,6 +186,44 @@ extern "C" void* System_Exception_SetRemoteStackTrace(void* __this, void* stackT
 }
 extern "C" void* System_Exception_ToString(void* /*__this*/) { cil2cpp::stub_called(__func__); return nullptr; }
 
+// Exception virtual property getters/setters (needed for vtable dispatch)
+extern "C" void* System_Exception_get_Message(void* __this) {
+    return __this ? static_cast<cil2cpp::Exception*>(__this)->f__message : nullptr;
+}
+extern "C" void* System_Exception_get_Data(void* __this) {
+    return __this ? static_cast<cil2cpp::Exception*>(__this)->f__data : nullptr;
+}
+extern "C" void* System_Exception_get_InnerException(void* __this) {
+    return __this ? static_cast<cil2cpp::Exception*>(__this)->f__innerException : nullptr;
+}
+extern "C" void* System_Exception_get_HelpLink(void* __this) {
+    return __this ? static_cast<cil2cpp::Exception*>(__this)->f__helpURL : nullptr;
+}
+extern "C" void System_Exception_set_HelpLink(void* __this, void* value) {
+    if (__this) static_cast<cil2cpp::Exception*>(__this)->f__helpURL = static_cast<cil2cpp::String*>(value);
+}
+extern "C" void* System_Exception_get_Source(void* __this) {
+    return __this ? static_cast<cil2cpp::Exception*>(__this)->f__source : nullptr;
+}
+extern "C" void System_Exception_set_Source(void* __this, void* value) {
+    if (__this) static_cast<cil2cpp::Exception*>(__this)->f__source = static_cast<cil2cpp::String*>(value);
+}
+extern "C" void* System_Exception_get_StackTrace(void* __this) {
+    return __this ? static_cast<cil2cpp::Exception*>(__this)->f__stackTraceString : nullptr;
+}
+extern "C" void* System_Exception_GetBaseException(void* __this) {
+    if (!__this) return nullptr;
+    auto* ex = static_cast<cil2cpp::Exception*>(__this);
+    while (ex->f__innerException != nullptr)
+        ex = ex->f__innerException;
+    return ex;
+}
+// Forward declare the generated struct type (opaque empty struct)
+struct System_Runtime_Serialization_StreamingContext {};
+extern "C" void System_Exception_GetObjectData(void* /*__this*/, void* /*info*/, System_Runtime_Serialization_StreamingContext /*context*/) {
+    // Serialization not supported in AOT
+}
+
 // ===== System.Object =====
 extern "C" void System_Object__ctor(void* /*__this*/) { }
 extern "C" void System_Object_Finalize(void* /*__this*/) { }
@@ -545,6 +583,17 @@ static std::string extract_generic_definition(const char* full_name) {
     return s;
 }
 
+// Helper: find a registered type whose full_name matches a pattern.
+// Used as fallback when the primary type_get_by_name lookup fails due to
+// mangled vs IL name format mismatch in open generic TypeInfos.
+static cil2cpp::TypeInfo* type_find_by_suffix(const std::string& targetSuffix) {
+    // targetSuffix is like "<Interop/SECURITY_STATUS>" — scan all registered types
+    // for a matching closed generic name ending with this suffix that also starts
+    // with a compatible prefix (the IL-format version of the mangled definition).
+    // This is O(N) but only called as a rare fallback.
+    return nullptr; // Placeholder for future use
+}
+
 extern "C" void* System_RuntimeTypeHandle_CreateInstanceForAnotherGenericParameter__System_RuntimeType_System_RuntimeType(
     void* type, void* genericParameter)
 {
@@ -657,7 +706,21 @@ extern "C" intptr_t System_RuntimeTypeHandle_get_Value(void* /*__this*/) { cil2c
 extern "C" int32_t System_RuntimeTypeHandle___IsVisible_g____PInvoke_67_0(System_Runtime_CompilerServices_QCallTypeHandle __typeHandle_native) { cil2cpp::stub_called(__func__); return {}; }
 extern "C" intptr_t System_RuntimeTypeHandle__GetMetadataImport(void* /*type*/) { cil2cpp::stub_called(__func__); return {}; }
 extern "C" void* System_RuntimeTypeHandle__GetUtf8Name(void* /*type*/) { cil2cpp::stub_called(__func__); return nullptr; }
-extern "C" bool System_RuntimeTypeHandle_CanCastTo(void* /*type*/, void* /*target*/) { cil2cpp::stub_called(__func__); return false; }
+extern "C" bool System_RuntimeTypeHandle_CanCastTo(void* type, void* target) {
+    // CanCastTo(source, target): can source be cast to target?
+    auto* src = reinterpret_cast<cil2cpp::Type*>(type);
+    auto* tgt = reinterpret_cast<cil2cpp::Type*>(target);
+    if (!src || !tgt) {
+        fprintf(stderr, "[CanCastTo] null arg: src=%p tgt=%p\n", type, target);
+        return false;
+    }
+    if (!src->type_info || !tgt->type_info) {
+        fprintf(stderr, "[CanCastTo] null type_info: src->ti=%p tgt->ti=%p\n",
+                (void*)src->type_info, (void*)tgt->type_info);
+        return false;
+    }
+    return cil2cpp::type_is_assignable_from(tgt->type_info, src->type_info);
+}
 extern "C" void System_RuntimeTypeHandle_ConstructName__System_Runtime_CompilerServices_QCallTypeHandle_System_TypeNameFormatFlags_System_Runtime_CompilerServices_StringHandleOnStack(System_Runtime_CompilerServices_QCallTypeHandle handle, System_TypeNameFormatFlags formatFlags, System_Runtime_CompilerServices_StringHandleOnStack retString) { cil2cpp::stub_called(__func__); }
 extern "C" bool System_RuntimeTypeHandle_ContainsGenericVariables__System_RuntimeType(void* /*handle*/) { cil2cpp::stub_called(__func__); return false; }
 extern "C" void System_RuntimeTypeHandle_CreateInstanceForAnotherGenericParameter__System_Runtime_CompilerServices_QCallTypeHandle_System_IntPtrPtr_System_Int32_System_Runtime_CompilerServices_ObjectHandleOnStack(System_Runtime_CompilerServices_QCallTypeHandle baseType, void* /*pTypeHandles*/, int32_t cTypeHandles, System_Runtime_CompilerServices_ObjectHandleOnStack instantiatedObject) { cil2cpp::stub_called(__func__); }

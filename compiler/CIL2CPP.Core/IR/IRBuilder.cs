@@ -728,7 +728,8 @@ public partial class IRBuilder
             if (info.OpenTypeName is "System.Collections.Generic.ObjectEqualityComparer`1"
                                   or "System.Collections.Generic.ObjectComparer`1"
                                   or "System.Collections.Generic.GenericEqualityComparer`1"
-                                  or "System.Collections.Generic.GenericComparer`1")
+                                  or "System.Collections.Generic.GenericComparer`1"
+                                  or "System.Collections.Generic.EnumEqualityComparer`1")
             {
                 _module.ConstructedTypes.Add(key);
             }
@@ -830,6 +831,11 @@ public partial class IRBuilder
             ConvertDeferredGenericBodies();
         }
 
+        // Pass 6.4: Compile methods discovered during deferred generic body compilation.
+        // Generic specialization bodies (e.g., SafeHandleMarshaller<T>) may call non-generic
+        // methods through resolved type parameters that the reachability analyzer couldn't trace.
+        CompileMissingCallees();
+
         // Pass 6.5: Discover types referenced by compiled method bodies but not yet in the module
         // This can happen when BCL methods reference types only as parameters/locals/fields
         DiscoverMissingReferencedTypes();
@@ -846,6 +852,11 @@ public partial class IRBuilder
         // placed (BasicBlocks.Count was 0). Now that bodies are compiled, update vtable entries
         // so virtual dispatch resolves to the IL-compiled override instead of the runtime fallback.
         FixupCoreRuntimeVTables();
+
+        // Pass 6.8: Fix abstract vtable slots caused by Cecil resolving incorrect base types
+        // for generic specializations (e.g., SafeCrypt32Handle<T>.BaseType → SafeHandle instead
+        // of SafeHandleZeroOrMinusOneIsInvalid). Fills abstract slots from sibling types.
+        FixupAbstractVTableSlots();
 
         // Pass 7: Synthesize record method bodies (replace compiler-generated bodies
         // that reference unsupported BCL types like StringBuilder, EqualityComparer<T>)

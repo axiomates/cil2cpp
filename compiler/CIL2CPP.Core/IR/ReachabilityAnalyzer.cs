@@ -320,6 +320,7 @@ public class ReachabilityAnalyzer
             // (AOT-incompatible), but the types themselves compile fine from IL.
             "System.Collections.Generic.GenericEqualityComparer`1",
             "System.Collections.Generic.GenericComparer`1",
+            "System.Collections.Generic.EnumEqualityComparer`1",
         };
         foreach (var typeName in comparerTypes)
         {

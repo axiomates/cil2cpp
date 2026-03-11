@@ -27,7 +27,7 @@ class Program
             var client = new HttpClient(handler);
             client.Timeout = TimeSpan.FromSeconds(10);
 
-            string result = client.GetStringAsync("https://httpbin.org/get").Result;
+            string result = client.GetStringAsync("https://www.example.com/").Result;
             Console.WriteLine(result.Length > 0 ? "HTTPS GET: OK (length=" + result.Length + ")" : "HTTPS GET: FAIL (empty)");
         }
         catch (Exception ex)

@@ -253,14 +253,23 @@ public partial class CppCodeGenerator
         }
         // Auto-discovered TypeInfo definitions — types referenced as _TypeInfo in method bodies
         // but not present in userTypes or other TypeInfo sources.
+        // Build CppName → ILFullName lookup for correct full_name in TypeInfo
+        var cppToIL = new Dictionary<string, string>();
+        foreach (var type in _module.Types)
+            cppToIL.TryAdd(type.CppName, type.ILFullName);
+        // Also include ldtoken-recorded mappings (open generic types not in module Types)
+        foreach (var (cppName, ilName) in _module.TypeInfoCppToILMap)
+            cppToIL.TryAdd(cppName, ilName);
         foreach (var typeName in _autoTypeInfoDecls)
         {
             if (emittedTypeInfo.Contains(typeName)) continue;
+            // Use ILFullName if available, otherwise fall back to CppName
+            var ilFullName = cppToIL.GetValueOrDefault(typeName, typeName);
             // Extract name part (last segment) and namespace (everything before)
             var lastSep = typeName.LastIndexOf('_');
             var name = lastSep >= 0 ? typeName[(lastSep + 1)..] : typeName;
             sb.AppendLine($"cil2cpp::TypeInfo {typeName}_TypeInfo = {{ .name = \"{name}\", " +
-                $".full_name = \"{typeName}\" }};");
+                $".full_name = \"{ilFullName}\" }};");
             emittedTypeInfo.Add(typeName);
         }
         sb.AppendLine();
@@ -1932,7 +1941,17 @@ public partial class CppCodeGenerator
                     if (declType != null && (isDeclCoreRuntime || !generatedMethodTypes.Contains(declType.CppName)))
                     {
                         if (_declaredFunctionNames.Contains(e.Method.CppName))
+                        {
+                            // Blanket-gated CoreRuntimeType methods have no compiled body
+                            // (BasicBlocks.Count == 0) but some are provided as extern "C" in
+                            // the runtime (core_methods.cpp). Use BuildMethodPointerCast for those
+                            // (doesn't check for a compiled body). Currently only Exception's
+                            // virtual methods are implemented — expand as needed.
+                            if (isDeclCoreRuntime && e.Method.BasicBlocks.Count == 0
+                                && declType.ILFullName == "System.Exception")
+                                return BuildMethodPointerCast(e.Method);
                             return GetTypedMethodPointerCast(e.Method);
+                        }
                         if (parentVTableEntries.TryGetValue(idx, out var parentFallback))
                             return parentFallback;
                         return ObjectMethodFallbacks.GetValueOrDefault(e.MethodName, "nullptr");
@@ -3122,6 +3141,43 @@ public partial class CppCodeGenerator
         {
             sb.AppendLine("    // Initialize String.Empty (runtime-intrinsic)");
             sb.AppendLine("    System_String_statics.f_Empty = cil2cpp::string_literal(\"\");");
+        }
+
+        // Patch primitive TypeInfos with vtable/interface data.
+        // PrimitiveTypeInfos are emitted as minimal stubs (no vtable/interfaces).
+        // If the primitive type also exists as a full IRType, patch the TypeInfo
+        // with the VTable, base_type, and interface data so that reflection
+        // operations (IsAssignableFrom, CanCastTo, etc.) work correctly.
+        foreach (var entry in _module.PrimitiveTypeInfos.Values)
+        {
+            var runtimeAlias = RuntimeTypeRegistry.GetRuntimeTypeInfoName(entry.ILFullName);
+            if (runtimeAlias != null) continue; // runtime-provided types are handled separately
+
+            var irType = _userTypes.FirstOrDefault(t => t.ILFullName == entry.ILFullName);
+            if (irType == null) continue;
+
+            bool hasVTable = !irType.IsInterface && !irType.IsDelegate && irType.VTable.Count > 0;
+            bool hasInterfaces = irType.Interfaces.Count > 0;
+            bool hasInterfaceVtables = irType.InterfaceImpls.Count > 0;
+            var hasBaseType = irType.BaseType != null;
+
+            if (!hasVTable && !hasInterfaces && !hasBaseType) continue;
+
+            sb.AppendLine($"    // Patch {entry.ILFullName} primitive TypeInfo");
+            if (hasBaseType)
+                sb.AppendLine($"    {entry.CppMangledName}_TypeInfo.base_type = &{irType.BaseType!.CppName}_TypeInfo;");
+            if (hasVTable)
+                sb.AppendLine($"    {entry.CppMangledName}_TypeInfo.vtable = &{irType.CppName}_VTable;");
+            if (hasInterfaces)
+            {
+                sb.AppendLine($"    {entry.CppMangledName}_TypeInfo.interfaces = {irType.CppName}_interfaces;");
+                sb.AppendLine($"    {entry.CppMangledName}_TypeInfo.interface_count = {irType.Interfaces.Count};");
+            }
+            if (hasInterfaceVtables)
+            {
+                sb.AppendLine($"    {entry.CppMangledName}_TypeInfo.interface_vtables = {irType.CppName}_interface_vtables;");
+                sb.AppendLine($"    {entry.CppMangledName}_TypeInfo.interface_vtable_count = {irType.InterfaceImpls.Count};");
+            }
         }
 
         // Register all TypeInfos with the runtime type registry.

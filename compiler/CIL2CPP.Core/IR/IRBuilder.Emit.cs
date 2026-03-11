@@ -144,19 +144,32 @@ public partial class IRBuilder
                 ResultTypeCpp = leftPtrType,
             });
         }
-        else // rightPtrType != null && op == "+"
+        else if (rightPtrType != null && op == "+")
         {
-            // integer + ptr: byte-level offset. Cast through uint8_t*.
+            // integer + ptr: commutative, put pointer first for valid C++ arithmetic.
             block.Instructions.Add(new IRRawCpp
             {
-                Code = $"{tmp} = ({rightPtrType})((uint8_t*){right} {op} {left});",
+                Code = $"{tmp} = ({rightPtrType})((uint8_t*){right} + {left});",
                 ResultVar = tmp,
                 ResultTypeCpp = rightPtrType,
             });
         }
+        else // rightPtrType != null && op == "-"
+        {
+            // integer - ptr: NOT commutative. Cast both to uint8_t* to preserve
+            // correct operand order (left - right) with byte-level granularity.
+            block.Instructions.Add(new IRRawCpp
+            {
+                Code = $"{tmp} = (intptr_t)((uint8_t*){left} - (uint8_t*){right});",
+                ResultVar = tmp,
+                ResultTypeCpp = "intptr_t",
+            });
+        }
 
         // Push with pointer type so downstream consumers (comparisons, further arithmetic) know it's a pointer
-        var resultType = leftPtrType ?? rightPtrType;
+        var resultType = (op == "-" && rightPtrType != null && leftPtrType == null)
+            ? null  // int - ptr yields intptr_t, not a pointer
+            : leftPtrType ?? rightPtrType;
         stack.Push(resultType != null ? new StackEntry(tmp, resultType) : new StackEntry(tmp));
         return true;
     }
@@ -3128,6 +3141,237 @@ public partial class IRBuilder
         }
     }
 
+    /// <summary>
+    /// Fix bodyless vtable slots caused by Cecil resolving incorrect base types
+    /// for generic specializations. E.g., SafeCrypt32Handle&lt;T&gt;.BaseType is reported
+    /// as SafeHandle instead of SafeHandleZeroOrMinusOneIsInvalid, so the intermediate
+    /// type's override of get_IsInvalid is never inherited — the generic specialization
+    /// gets a bodyless method shell that renders as nullptr.
+    /// This pass finds compiled implementations for bodyless/abstract slots by looking at
+    /// sibling types that share the same base type, then propagates fixes downward.
+    /// </summary>
+    private void FixupAbstractVTableSlots()
+    {
+        FixupAbstractVTableSlotsImpl();
+    }
+
+    /// <summary>
+    /// Pass 6.9: Compile methods discovered during deferred generic body compilation.
+    /// Generic specialization bodies (e.g., SafeHandleMarshaller&lt;T&gt;) may call non-generic
+    /// methods through resolved type parameters (newobj !0::.ctor()) that the reachability
+    /// analyzer couldn't trace. This pass finds bodyless methods that are actually called
+    /// by compiled code and compiles them from Cecil IL.
+    /// </summary>
+    private void CompileMissingCallees()
+    {
+        // Build Cecil lookup: CppName → (MethodInfo, IRMethod) for bodyless methods
+        var bodylessByName = new Dictionary<string, (IL.MethodInfo methodDef, IRMethod irMethod)>();
+        foreach (var typeDef in _allTypes)
+        {
+            if (typeDef.HasGenericParameters) continue;
+            if (!_typeCache.TryGetValue(typeDef.FullName, out var irType)) continue;
+
+            foreach (var methodDef in typeDef.Methods)
+            {
+                if (!methodDef.HasBody) continue;
+                if (methodDef.IsAbstract) continue;
+
+                var cecilMethod = methodDef.GetCecilMethod();
+
+                // Find matching IRMethod with no body
+                foreach (var irMethod in irType.Methods)
+                {
+                    if (irMethod.BasicBlocks.Count > 0) continue;
+                    if (irMethod.Name != methodDef.Name) continue;
+                    if (irMethod.IsInternalCall || irMethod.HasICallMapping) continue;
+                    if (irMethod.Parameters.Count != cecilMethod.Parameters.Count) continue;
+
+                    bool paramsMatch = true;
+                    for (int i = 0; i < cecilMethod.Parameters.Count; i++)
+                    {
+                        if (irMethod.Parameters[i].ILTypeName != cecilMethod.Parameters[i].ParameterType.FullName)
+                        {
+                            paramsMatch = false;
+                            break;
+                        }
+                    }
+                    if (!paramsMatch) continue;
+
+                    bodylessByName.TryAdd(irMethod.CppName, (methodDef, irMethod));
+                    break;
+                }
+            }
+        }
+
+        if (bodylessByName.Count == 0) return;
+
+        bool anyCompiled = true;
+        while (anyCompiled)
+        {
+            anyCompiled = false;
+
+            // Collect all called function names from compiled method bodies
+            var calledFunctions = new HashSet<string>();
+            foreach (var type in _module.Types)
+            foreach (var method in type.Methods)
+            {
+                if (method.BasicBlocks.Count == 0) continue;
+                foreach (var block in method.BasicBlocks)
+                foreach (var instr in block.Instructions)
+                {
+                    if (instr is IRCall call && !string.IsNullOrEmpty(call.FunctionName))
+                        calledFunctions.Add(call.FunctionName);
+                    else if (instr is IRNewObj newObj && !string.IsNullOrEmpty(newObj.CtorName))
+                        calledFunctions.Add(newObj.CtorName);
+                }
+            }
+
+            // Compile bodyless methods that are actually called
+            foreach (var (cppName, (methodDef, irMethod)) in bodylessByName)
+            {
+                if (irMethod.BasicBlocks.Count > 0) continue; // Already compiled
+                if (!calledFunctions.Contains(cppName)) continue;
+
+                var cecilMethod = methodDef.GetCecilMethod();
+                if (HasClrInternalDependencies(cecilMethod, out _)) continue;
+                if (ReferencesSimdTypes(cecilMethod)) continue;
+                if (CallsClrInternalMethods(cecilMethod)) continue;
+
+                // Populate locals
+                irMethod.Locals.Clear();
+                foreach (var localDef in cecilMethod.Body.Variables)
+                {
+                    irMethod.Locals.Add(new IRLocal
+                    {
+                        Index = localDef.Index,
+                        CppName = $"loc_{localDef.Index}",
+                        CppTypeName = ResolveTypeForDecl(
+                            ResolveGenericTypeName(localDef.VariableType, new Dictionary<string, string>())),
+                    });
+                }
+
+                ConvertMethodBody(methodDef, irMethod);
+                anyCompiled = true;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Check if a method body calls any methods with CLR-internal parameter or return types.
+    /// Used by CompileMissingCallees to avoid compiling methods that would produce invalid C++.
+    /// </summary>
+    private static bool CallsClrInternalMethods(MethodDefinition cecilMethod)
+    {
+        if (!cecilMethod.HasBody) return false;
+        foreach (var instr in cecilMethod.Body.Instructions)
+        {
+            if (instr.Operand is not MethodReference calledMr) continue;
+            if (ClrInternalTypeNames.Contains(calledMr.ReturnType.FullName))
+                return true;
+            if (ClrInternalTypeNames.Contains(calledMr.DeclaringType.FullName))
+                return true;
+            foreach (var p in calledMr.Parameters)
+            {
+                if (ClrInternalTypeNames.Contains(p.ParameterType.FullName))
+                    return true;
+            }
+        }
+        return false;
+    }
+
+    private void FixupAbstractVTableSlotsImpl()
+    {
+        // Phase 1: Index — collect compiled implementations for bodyless/abstract slots
+        // Key: (baseTypeName, slotIndex) → compiled IRMethod (has BasicBlocks)
+        var slotFixups = new Dictionary<(string baseTypeName, int slot), IRMethod>();
+
+        foreach (var type in _module.Types)
+        {
+            if (type.BaseType == null) continue;
+            for (int i = 0; i < type.VTable.Count && i < type.BaseType.VTable.Count; i++)
+            {
+                var baseEntry = type.BaseType.VTable[i];
+                var myEntry = type.VTable[i];
+                // Base has a bodyless slot (abstract or no compiled body),
+                // but this type has a compiled implementation
+                if (baseEntry.Method != null
+                    && (baseEntry.Method.IsAbstract || baseEntry.Method.BasicBlocks.Count == 0)
+                    && myEntry.Method != null && !myEntry.Method.IsAbstract
+                    && myEntry.Method.BasicBlocks.Count > 0)
+                {
+                    var key = (type.BaseType.ILFullName, i);
+                    slotFixups.TryAdd(key, myEntry.Method);
+                }
+            }
+        }
+
+        if (slotFixups.Count == 0) return;
+
+        // Phase 2: Fix up types that have bodyless/abstract slots in their vtable
+        var fixedTypes = new HashSet<IRType>();
+        foreach (var type in _module.Types)
+        {
+            for (int i = 0; i < type.VTable.Count; i++)
+            {
+                var entry = type.VTable[i];
+                if (entry.Method == null) continue;
+                // Skip entries that already have a compiled body
+                if (!entry.Method.IsAbstract && entry.Method.BasicBlocks.Count > 0) continue;
+
+                // Walk up the base type chain looking for a fixup
+                var bt = type.BaseType;
+                while (bt != null)
+                {
+                    var key = (bt.ILFullName, i);
+                    if (slotFixups.TryGetValue(key, out var fixup))
+                    {
+                        entry.Method = fixup;
+                        entry.DeclaringType = fixup.DeclaringType;
+                        fixedTypes.Add(type);
+                        break;
+                    }
+                    bt = bt.BaseType;
+                }
+            }
+        }
+
+        // Phase 3: Propagate fixes to derived types
+        foreach (var fixedType in fixedTypes)
+        {
+            PropagateBodylessVTableFixups(fixedType);
+        }
+    }
+
+    /// <summary>
+    /// Recursively propagate bodyless vtable fixups to derived types.
+    /// </summary>
+    private void PropagateBodylessVTableFixups(IRType baseType)
+    {
+        foreach (var irType in _module.Types)
+        {
+            if (irType.BaseType != baseType) continue;
+            bool changed = false;
+            for (int i = 0; i < baseType.VTable.Count && i < irType.VTable.Count; i++)
+            {
+                var baseEntry = baseType.VTable[i];
+                var derivedEntry = irType.VTable[i];
+                if (derivedEntry.Method != null
+                    && (derivedEntry.Method.IsAbstract || derivedEntry.Method.BasicBlocks.Count == 0)
+                    && baseEntry.Method != null && !baseEntry.Method.IsAbstract
+                    && baseEntry.Method.BasicBlocks.Count > 0)
+                {
+                    derivedEntry.Method = baseEntry.Method;
+                    derivedEntry.DeclaringType = baseEntry.DeclaringType;
+                    changed = true;
+                }
+            }
+            if (changed)
+            {
+                PropagateBodylessVTableFixups(irType);
+            }
+        }
+    }
+
     private void BuildInterfaceImpls(IRType irType)
     {
         // Build InterfaceImpls for directly declared interfaces
@@ -3749,6 +3993,33 @@ public partial class IRBuilder
             // Try resolving directly through active type parameter map
             if (_activeTypeParamMap != null && _activeTypeParamMap.TryGetValue(gp.Name, out var directMapped))
                 return directMapped;
+            return typeRef.FullName;
+        }
+
+        // ArrayType wrapping a generic parameter (e.g., T[] → System.Double[])
+        if (typeRef is ArrayType arrayType)
+        {
+            var resolvedElement = ResolveTypeRefForMatching(arrayType.ElementType, methodRef);
+            if (resolvedElement != arrayType.ElementType.FullName)
+                return resolvedElement + "[]";
+            return typeRef.FullName;
+        }
+
+        // ByReferenceType wrapping a generic parameter (e.g., T& → System.Double&)
+        if (typeRef is ByReferenceType byRefType)
+        {
+            var resolvedElement = ResolveTypeRefForMatching(byRefType.ElementType, methodRef);
+            if (resolvedElement != byRefType.ElementType.FullName)
+                return resolvedElement + "&";
+            return typeRef.FullName;
+        }
+
+        // PointerType wrapping a generic parameter (e.g., T* → System.Double*)
+        if (typeRef is PointerType ptrType)
+        {
+            var resolvedElement = ResolveTypeRefForMatching(ptrType.ElementType, methodRef);
+            if (resolvedElement != ptrType.ElementType.FullName)
+                return resolvedElement + "*";
             return typeRef.FullName;
         }
 

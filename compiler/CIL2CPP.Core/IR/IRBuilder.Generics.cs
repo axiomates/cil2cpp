@@ -496,6 +496,16 @@ public partial class IRBuilder
 
         foreach (var companionOpenName in companionOpenNames)
             EnsureGenericCompanionInstantiation(companionOpenName, typeArgs);
+
+        // For enum type arguments, also generate EnumEqualityComparer<T>.
+        // The BCL's CreateDefaultEqualityComparer selects EnumEqualityComparer<T>
+        // via reflection (CreateInstanceForAnotherGenericParameter) for enum types.
+        if (openTypeName == "System.Collections.Generic.EqualityComparer`1"
+            && typeArgs.Count == 1 && IsEnumTypeArg(typeArgs[0]))
+        {
+            EnsureGenericCompanionInstantiation(
+                "System.Collections.Generic.EnumEqualityComparer`1", typeArgs);
+        }
     }
 
     private void EnsureGenericCompanionInstantiation(string companionOpenName, List<string> typeArgs)
@@ -515,6 +525,29 @@ public partial class IRBuilder
         var companionMangled = CppNameMapper.MangleGenericInstanceTypeName(companionOpenName, typeArgs);
         _genericInstantiations[companionKey] = new GenericInstantiationInfo(
             companionOpenName, typeArgs, companionMangled, companionCecil);
+    }
+
+    /// <summary>
+    /// Check if a type argument IL name refers to an enum type.
+    /// Resolves through Cecil to check the base type chain.
+    /// </summary>
+    private bool IsEnumTypeArg(string ilTypeName)
+    {
+        // Check if the type is already in our IR types
+        if (_typeCache.TryGetValue(ilTypeName, out var irType))
+            return irType.IsEnum;
+
+        // Try to resolve via Cecil across all loaded assemblies
+        // Handle nested types: "Interop/SECURITY_STATUS" → "Interop+SECURITY_STATUS" (Cecil uses +)
+        var cecilName = ilTypeName.Replace('/', '+');
+        foreach (var (_, asm) in _assemblySet.LoadedAssemblies)
+        {
+            var td = asm.MainModule.GetType(cecilName);
+            if (td != null)
+                return td.IsEnum;
+        }
+
+        return false;
     }
 
     private void CollectGenericMethod(GenericInstanceMethod gim)
@@ -1619,14 +1652,15 @@ public partial class IRBuilder
                     if (methodDef.HasGenericParameters)
                         continue;
                     var returnTypeName = ResolveGenericTypeName(methodDef.ReturnType, typeParamMap);
-                    var cppName = CppNameMapper.MangleMethodName(info.MangledName, methodDef.Name);
+                    var resolvedMethodName = ResolveMethodNameGenericParams(methodDef.Name, typeParamMap);
+                    var cppName = CppNameMapper.MangleMethodName(info.MangledName, resolvedMethodName);
                     // op_Explicit/op_Implicit: disambiguate by return type (C++ can't overload by return type)
                     if (methodDef.Name is "op_Explicit" or "op_Implicit" or "op_CheckedExplicit" or "op_CheckedImplicit")
                         cppName = $"{cppName}_{CppNameMapper.MangleTypeName(returnTypeName)}";
 
                     var irMethod = new IRMethod
                     {
-                        Name = methodDef.Name,
+                        Name = resolvedMethodName,
                         CppName = cppName,
                         DeclaringType = irType,
                         ReturnTypeCpp = ResolveTypeForDecl(returnTypeName),
@@ -2013,14 +2047,15 @@ public partial class IRBuilder
                     && !_reachability.IsReachable(methodDef))
                     continue;
                 var returnTypeName = ResolveGenericTypeName(methodDef.ReturnType, typeParamMap);
-                var cppName = CppNameMapper.MangleMethodName(info.MangledName, methodDef.Name);
+                var resolvedMethodName = ResolveMethodNameGenericParams(methodDef.Name, typeParamMap);
+                var cppName = CppNameMapper.MangleMethodName(info.MangledName, resolvedMethodName);
                 // op_Explicit/op_Implicit: disambiguate by return type (C++ can't overload by return type)
                 if (methodDef.Name is "op_Explicit" or "op_Implicit" or "op_CheckedExplicit" or "op_CheckedImplicit")
                     cppName = $"{cppName}_{CppNameMapper.MangleTypeName(returnTypeName)}";
 
                 var irMethod = new IRMethod
                 {
-                    Name = methodDef.Name,
+                    Name = resolvedMethodName,
                     CppName = cppName,
                     DeclaringType = irType,
                     ReturnTypeCpp = ResolveTypeForDecl(returnTypeName),
@@ -2030,6 +2065,19 @@ public partial class IRBuilder
                     IsConstructor = methodDef.IsConstructor,
                     IsStaticConstructor = methodDef.IsConstructor && methodDef.IsStatic,
                 };
+
+                // Propagate explicit interface overrides (.override directive)
+                // Needed for BuildInterfaceImpls (Pass 5) to match interface methods.
+                // Without this, explicit interface implementations (e.g., IValueTaskSource<TResult>.GetResult)
+                // on nested types would never be found by FindExplicitOverride.
+                if (methodDef.HasOverrides)
+                {
+                    foreach (var ovr in methodDef.Overrides)
+                    {
+                        var resolvedTypeName = ResolveGenericTypeName(ovr.DeclaringType, typeParamMap);
+                        irMethod.ExplicitOverrides.Add((resolvedTypeName, ovr.Name));
+                    }
+                }
 
                 // Propagate HasICallMapping for methods with icall mappings
                 if (ICallRegistry.Lookup(openType.FullName, methodDef.Name, methodDef.Parameters.Count) != null)
@@ -2512,6 +2560,55 @@ public partial class IRBuilder
     }
 
     /// <summary>
+    /// Resolve generic parameters in explicit interface method names.
+    /// Cecil method names for explicit interface implementations include the interface's
+    /// generic parameters: "IValueTaskSource&lt;TResult&gt;.GetResult". These must be resolved
+    /// to concrete types before mangling into CppNames, otherwise the CppName contains
+    /// unresolved params (e.g., "IValueTaskSource_TResult__GetResult") which gets filtered
+    /// by HasInvalidCppSignature.
+    /// </summary>
+    private static string ResolveMethodNameGenericParams(string methodName, Dictionary<string, string> typeParamMap)
+    {
+        var ltIdx = methodName.IndexOf('<');
+        if (ltIdx < 0) return methodName;
+        var gtIdx = methodName.IndexOf('>', ltIdx);
+        if (gtIdx < 0) return methodName;
+
+        var prefix = methodName[..ltIdx];
+        var suffix = methodName[(gtIdx + 1)..];
+        var argsStr = methodName[(ltIdx + 1)..gtIdx];
+
+        // Split args (handling nested generics)
+        var args = new List<string>();
+        int depth = 0, start = 0;
+        for (int i = 0; i < argsStr.Length; i++)
+        {
+            if (argsStr[i] == '<') depth++;
+            else if (argsStr[i] == '>') depth--;
+            else if (argsStr[i] == ',' && depth == 0)
+            {
+                args.Add(argsStr[start..i]);
+                start = i + 1;
+            }
+        }
+        args.Add(argsStr[start..]);
+
+        // Resolve each arg using typeParamMap
+        bool changed = false;
+        for (int i = 0; i < args.Count; i++)
+        {
+            if (typeParamMap.TryGetValue(args[i], out var resolved))
+            {
+                args[i] = resolved;
+                changed = true;
+            }
+        }
+
+        if (!changed) return methodName;
+        return $"{prefix}<{string.Join(",", args)}>{suffix}";
+    }
+
+    /// <summary>
     /// Resolve a type operand from IL instructions using the active type parameter map.
     /// Used during method body conversion for generic types.
     /// Returns the resolved IL type name (e.g., "System.Int32" instead of "T").
@@ -2631,7 +2728,18 @@ public partial class IRBuilder
 
                 // Demand-driven: discover types referenced in this body BEFORE compiling.
                 // Without Pass 0.5, transitive generic types are only found here.
+                var prevTypeCount = _module.Types.Count;
                 EnsureBodyReferencedTypesExist(cecilMethod, typeParamMap);
+
+                // If new types were discovered, build their VTables before compiling the body.
+                // Without this, callvirt on abstract methods of newly-discovered types
+                // (e.g., Comparer<double>.Compare) can't resolve vtable slots and falls back
+                // to direct calls, producing incorrect code.
+                if (_module.Types.Count > prevTypeCount)
+                {
+                    foreach (var irType in _module.Types)
+                        BuildVTableRecursive(irType, _vtableBuilt);
+                }
 
                 var methodInfo = new IL.MethodInfo(cecilMethod);
                 ConvertMethodBodyWithGenerics(methodInfo, irMethod, typeParamMap);
@@ -2665,6 +2773,13 @@ public partial class IRBuilder
                     CreateNestedGenericSpecializations();
                 } while (_genericInstantiations.Count > prevNested);
             }
+
+            // If new generic METHOD instantiations were discovered during body compilation
+            // (e.g., AwaitUnsafeOnCompleted<Awaiter, TStateMachine> where TStateMachine is
+            // a state machine type discovered in this fixpoint), create their specialized
+            // IRMethods now. Without this, late-discovered async state machine types miss
+            // their AwaitUnsafeOnCompleted specializations, causing undeclared function errors.
+            CreateGenericMethodSpecializations();
 
             // If new types were discovered during body compilation, build VTables
             // and disambiguate before the next batch (needed for callvirt resolution)

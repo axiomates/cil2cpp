@@ -86,6 +86,13 @@ public class IRModule
     public HashSet<string> ConstructedTypes { get; set; } = new();
 
     /// <summary>
+    /// Mapping from C++ mangled TypeInfo names to IL full names.
+    /// Used by auto-discovered TypeInfo emission to emit correct full_name.
+    /// Populated during ldtoken processing when open generic types are referenced.
+    /// </summary>
+    public Dictionary<string, string> TypeInfoCppToILMap { get; } = new();
+
+    /// <summary>
     /// Register a primitive type that needs a TypeInfo (used as array element type).
     /// </summary>
     public void RegisterPrimitiveTypeInfo(string ilFullName)
