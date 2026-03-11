@@ -95,6 +95,10 @@ String* string_literal(const char* utf8) {
     return str;
 }
 
+String* string_literal_utf16(const Char* chars, Int32 length) {
+    return string_create_utf16(chars, length);
+}
+
 String* string_concat(String* a, String* b) {
     if (!a) return b;
     if (!b) return a;

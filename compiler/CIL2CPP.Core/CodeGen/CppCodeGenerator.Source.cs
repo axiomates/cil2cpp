@@ -50,8 +50,18 @@ public partial class CppCodeGenerator
             sb.AppendLine("void __init_string_literals() {");
             foreach (var (value, literal) in _module.StringLiterals)
             {
-                var escaped = EscapeString(value);
-                sb.AppendLine($"    {literal.Id} = cil2cpp::string_literal(\"{escaped}\");");
+                if (value.Contains('\0'))
+                {
+                    // Strings with embedded NUL bytes can't use NUL-terminated C string APIs.
+                    // Emit as raw UTF-16 data array with explicit length.
+                    var utf16Hex = string.Join(", ", value.Select(c => $"0x{(int)c:X4}"));
+                    sb.AppendLine($"    {{ static const uint16_t d[] = {{ {utf16Hex} }}; {literal.Id} = cil2cpp::string_literal_utf16((cil2cpp::Char*)d, {value.Length}); }}");
+                }
+                else
+                {
+                    var escaped = EscapeString(value);
+                    sb.AppendLine($"    {literal.Id} = cil2cpp::string_literal(\"{escaped}\");");
+                }
             }
             sb.AppendLine("}");
             sb.AppendLine();

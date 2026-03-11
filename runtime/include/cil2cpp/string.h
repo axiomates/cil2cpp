@@ -50,6 +50,13 @@ String* string_create_utf16(const Char* utf16, Int32 length);
 String* string_literal(const char* utf8);
 
 /**
+ * Create a string literal from raw UTF-16 data with explicit length.
+ * Used for strings containing embedded NUL characters that can't be
+ * passed through NUL-terminated C string APIs.
+ */
+String* string_literal_utf16(const Char* chars, Int32 length);
+
+/**
  * Concatenate two strings.
  */
 String* string_concat(String* a, String* b);
