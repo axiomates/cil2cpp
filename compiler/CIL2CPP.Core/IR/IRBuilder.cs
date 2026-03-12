@@ -312,20 +312,6 @@ public partial class IRBuilder
     }
 
     /// <summary>
-    /// Check if a type is a non-generic SIMD helper type (Vector128, Vector256, etc.).
-    /// These static classes have methods that access fields on SIMD generic structs (f_lower, f_upper)
-    /// which are opaque since we skip all SIMD generic type instantiation (IsHardwareAccelerated=false).
-    /// </summary>
-    private static bool IsNonGenericSimdHelperType(string typeFullName)
-    {
-        // Non-generic static helper types in System.Runtime.Intrinsics namespace
-        // e.g., "System.Runtime.Intrinsics.Vector256" (NOT "Vector256`1" which is the generic struct)
-        if (!typeFullName.StartsWith("System.Runtime.Intrinsics.Vector")) return false;
-        // Must NOT contain '`' (that indicates the generic struct version like Vector128`1)
-        return !typeFullName.Contains('`');
-    }
-
-    /// <summary>
     /// Generate a no-op method body (just returns default).
     /// Unlike GenerateStubBody, this does NOT call stub_called — the method is intentionally
     /// a no-op (e.g., EventSource diagnostics) rather than a missing implementation.
@@ -798,16 +784,6 @@ public partial class IRBuilder
             // EventData, WriteEventCore, ActivityTracker etc. which are in the excluded
             // System.Diagnostics.Tracing namespace, causing UBR/UF stubs.
             if (IsEventSourceDerived(methodDef.GetCecilMethod().DeclaringType))
-            {
-                GenerateNoOpBody(irMethod);
-                continue;
-            }
-
-            // Non-generic SIMD helper types (Vector128, Vector256, Vector512, Vector64):
-            // Their static methods access fields on SIMD generic structs (f_lower, f_upper)
-            // which are opaque since we skip all SIMD generic type instantiation.
-            // Generate no-op bodies to avoid MSVC field access errors on empty structs.
-            if (IsNonGenericSimdHelperType(methodDef.GetCecilMethod().DeclaringType.FullName))
             {
                 GenerateNoOpBody(irMethod);
                 continue;

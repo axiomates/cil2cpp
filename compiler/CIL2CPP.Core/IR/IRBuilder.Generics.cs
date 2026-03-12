@@ -467,17 +467,17 @@ public partial class IRBuilder
     }
 
     /// <summary>
-    /// When EqualityComparer&lt;T&gt; or Comparer&lt;T&gt; is discovered, also ensure
-    /// ObjectEqualityComparer&lt;T&gt; or ObjectComparer&lt;T&gt; is instantiated.
-    /// These are needed by AOT replacement cctors to allocate the correct type
-    /// that implements IEqualityComparer&lt;T&gt; / IComparer&lt;T&gt;.
+    /// When certain BCL generic types are discovered, also ensure their companion
+    /// types are instantiated. The BCL uses CreateInstanceForAnotherGenericParameter
+    /// at runtime to select the correct implementation type (e.g., ObjectComparer&lt;T&gt;
+    /// vs GenericComparer&lt;T&gt;). Since this is AOT-incompatible, we pre-generate all
+    /// possible companion types.
     /// </summary>
     private void EnsureComparerCompanionType(string openTypeName, List<string> typeArgs)
     {
         // Determine which companion types are needed for AOT.
-        // CreateDefaultComparer/CreateDefaultEqualityComparer use MakeGenericType +
-        // CreateInstanceForAnotherGenericParameter at runtime, so we must pre-generate
-        // all possible result types for the given T.
+        // BCL factory methods use MakeGenericType + CreateInstanceForAnotherGenericParameter
+        // at runtime, so we must pre-generate all possible result types.
         string[]? companionOpenNames = openTypeName switch
         {
             "System.Collections.Generic.Comparer`1" => new[] {
@@ -489,6 +489,16 @@ public partial class IRBuilder
                 "System.Collections.Generic.ObjectEqualityComparer`1",
                 "System.Collections.Generic.GenericEqualityComparer`1",
                 "System.IEquatable`1",  // needed by MakeGenericType check
+            },
+            // ArraySortHelper<T>.CreateArraySortHelper uses CreateInstanceForAnotherGenericParameter
+            // to create GenericArraySortHelper<T> at runtime. Pre-generate for AOT.
+            "System.Collections.Generic.ArraySortHelper`1" => new[] {
+                "System.Collections.Generic.GenericArraySortHelper`1",
+            },
+            // ArraySortHelper<TKey,TValue>.CreateArraySortHelper uses CreateInstanceForAnotherGenericParameter
+            // to create GenericArraySortHelper<TKey,TValue> at runtime. Pre-generate for AOT.
+            "System.Collections.Generic.ArraySortHelper`2" => new[] {
+                "System.Collections.Generic.GenericArraySortHelper`2",
             },
             _ => null
         };

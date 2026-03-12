@@ -900,8 +900,10 @@ public class ReachabilityAnalyzer
     /// </summary>
     private static bool IsAotExcludedNamespace(string typeFullName)
     {
-        // TODO: Investigate whether tree-shaking can handle Tracing types without blanket exclusion.
-        // EventSource/EventPipe/ETW — CLR event tracing infrastructure, requires CLR runtime
+        // EventSource/EventPipe/ETW — CLR event tracing infrastructure.
+        // Requires CLR EventPipe implementation which CIL2CPP doesn't provide.
+        // NativeAOT supports this via its own EventPipe; to enable here, implement
+        // EventPipe runtime support and remove this exclusion.
         if (typeFullName.StartsWith("System.Diagnostics.Tracing."))
             return true;
 
@@ -913,14 +915,15 @@ public class ReachabilityAnalyzer
         if (typeFullName.StartsWith("System.Runtime.Loader."))
             return true;
 
-        // TODO: Investigate whether tree-shaking can handle PortableThreadPool without blanket exclusion.
-        // PortableThreadPool — CLR managed thread pool internals; CIL2CPP has its own thread pool
+        // PortableThreadPool — BCL managed thread pool implementation.
+        // CIL2CPP provides its own C++ thread pool; including PortableThreadPool would
+        // create a duplicate competing implementation. ThreadPool ICalls redirect to runtime.
         if (typeFullName.StartsWith("System.Threading.PortableThreadPool"))
             return true;
 
-        // TODO: Investigate whether tree-shaking can handle StackFrame without blanket exclusion.
-        // StackFrame/StackFrameHelper — CLR-internal stack walking; CIL2CPP runtime
-        // provides its own stack trace via DbgHelp (Windows) / backtrace (Linux)
+        // StackFrame/StackFrameHelper — CLR-internal stack walking infrastructure.
+        // CIL2CPP runtime provides its own stack trace via DbgHelp (Windows) / backtrace (Linux).
+        // BCL StackFrame types reference CLR debugging internals that don't exist in AOT.
         if (typeFullName.StartsWith("System.Diagnostics.StackFrame"))
             return true;
 
