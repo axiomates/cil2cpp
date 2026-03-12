@@ -503,8 +503,16 @@ def _exe_path(build_dir, config, name):
     return multi  # default to multi-config path for error messages
 
 
+_COMPILER_WARNING_RE = re.compile(
+    r'.*\(\d+,\d+\): warning CS\d+:.*\[.*\.csproj\]$')
+
+
 def _get_dotnet_output(csproj_path):
-    """Run a C# project with 'dotnet run' and return its stdout (stripped)."""
+    """Run a C# project with 'dotnet run' and return its stdout (stripped).
+
+    Filters out compiler warning lines that 'dotnet run' emits to stdout
+    during the implicit build step (e.g. 'warning CS8632: ...[path.csproj]').
+    """
     r = subprocess.run(
         ["dotnet", "run", "--project", str(csproj_path)],
         capture_output=True, text=True, check=False,
@@ -514,7 +522,9 @@ def _get_dotnet_output(csproj_path):
     if r.returncode != 0:
         raise RuntimeError(
             f"dotnet run failed (exit {r.returncode})\nstdout: {r.stdout}\nstderr: {r.stderr}")
-    return r.stdout.strip()
+    lines = r.stdout.split('\n')
+    filtered = [l for l in lines if not _COMPILER_WARNING_RE.match(l)]
+    return '\n'.join(filtered).strip()
 
 
 def _compare_output_with_skip(got, expected, skip_lines=None):

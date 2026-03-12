@@ -3281,8 +3281,13 @@ public partial class IRBuilder
 
     private void FixupAbstractVTableSlotsImpl()
     {
-        // Phase 1: Index — collect compiled implementations for bodyless/abstract slots
+        // Phase 1: Index — collect compiled implementations for truly abstract slots
         // Key: (baseTypeName, slotIndex) → compiled IRMethod (has BasicBlocks)
+        // IMPORTANT: Only collect for abstract base slots, NOT for bodyless non-abstract methods.
+        // Non-abstract methods with BasicBlocks.Count == 0 may be runtime-provided (core_methods.cpp
+        // extern "C") — replacing them with a sibling type's override would be incorrect.
+        // Example: MemberInfo.get_DeclaringType (runtime-provided) must not be replaced by
+        //          Type.get_DeclaringType (which returns null for non-nested types).
         var slotFixups = new Dictionary<(string baseTypeName, int slot), IRMethod>();
 
         foreach (var type in _module.Types)
@@ -3292,13 +3297,19 @@ public partial class IRBuilder
             {
                 var baseEntry = type.BaseType.VTable[i];
                 var myEntry = type.VTable[i];
-                // Base has a bodyless slot (abstract or no compiled body),
-                // but this type has a compiled implementation
+                // Base has a bodyless/abstract slot, but this type has a compiled implementation.
+                // Skip slots where the abstract method is declared on a CoreRuntime type —
+                // those have extern "C" implementations in core_methods.cpp and must not be
+                // replaced by sibling overrides (e.g., Type.get_DeclaringType would leak
+                // into MethodBase, breaking MemberInfo.DeclaringType dispatch).
                 if (baseEntry.Method != null
                     && (baseEntry.Method.IsAbstract || baseEntry.Method.BasicBlocks.Count == 0)
                     && myEntry.Method != null && !myEntry.Method.IsAbstract
                     && myEntry.Method.BasicBlocks.Count > 0)
                 {
+                    var declType = baseEntry.Method.DeclaringType;
+                    if (declType != null && CoreRuntimeTypes.Contains(declType.ILFullName))
+                        continue; // Skip — runtime provides implementation
                     var key = (type.BaseType.ILFullName, i);
                     slotFixups.TryAdd(key, myEntry.Method);
                 }
@@ -3317,6 +3328,13 @@ public partial class IRBuilder
                 if (entry.Method == null) continue;
                 // Skip entries that already have a compiled body
                 if (!entry.Method.IsAbstract && entry.Method.BasicBlocks.Count > 0) continue;
+                // Skip methods declared on CoreRuntime types — they have extern "C" implementations
+                // in core_methods.cpp. Allowing sibling fixups here would replace them with wrong
+                // overrides (e.g., MemberInfo.get_DeclaringType → Type.get_DeclaringType which
+                // returns null, breaking MethodInfo.DeclaringType on a different branch).
+                var entryDeclType = entry.Method.DeclaringType;
+                if (entryDeclType != null && CoreRuntimeTypes.Contains(entryDeclType.ILFullName))
+                    continue;
 
                 // Walk up the base type chain looking for a fixup
                 var bt = type.BaseType;
