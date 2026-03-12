@@ -159,55 +159,9 @@ public static class ICallRegistry
         RegisterICall("System.Globalization.CharUnicodeInfo", "GetUnicodeCategoryNoBoundsChecks", 1,
             "cil2cpp::unicode::char_get_unicode_category");
 
-        // ===== System.Globalization.CompareInfo (ICU4C collation) =====
-        // CompareInfo methods P/Invoke to System.Globalization.Native (excluded from codegen).
-        // Intercept at managed API level → ICU4C ucol_strcoll / usearch.
-        // Use RegisterICallTyped for overloads that have both String and ReadOnlySpan<char>
-        // variants with the same param count. Without type disambiguation, the ReadOnlySpan
-        // overload incorrectly matches the String-expecting ICall (cascade: 1540 stubs).
-        RegisterICallTyped("System.Globalization.CompareInfo", "Compare", 3,
-            "System.String", "cil2cpp::globalization::compareinfo_compare_string_string");
-        RegisterICall("System.Globalization.CompareInfo", "Compare", 2,
-            "cil2cpp::globalization::compareinfo_compare_string_string_2");
-        RegisterICall("System.Globalization.CompareInfo", "Compare", 7,
-            "cil2cpp::globalization::compareinfo_compare_substring");
-        RegisterICallTyped("System.Globalization.CompareInfo", "IndexOf", 5,
-            "System.String", "cil2cpp::globalization::compareinfo_index_of");
-        RegisterICallTyped("System.Globalization.CompareInfo", "IsPrefix", 3,
-            "System.String", "cil2cpp::globalization::compareinfo_is_prefix");
-        RegisterICallTyped("System.Globalization.CompareInfo", "IsSuffix", 3,
-            "System.String", "cil2cpp::globalization::compareinfo_is_suffix");
-        RegisterICall("System.Globalization.CompareInfo", "CanUseAsciiOrdinalForOptions", 1,
-            "cil2cpp::globalization::compareinfo_can_use_ascii_ordinal");
-        RegisterICall("System.Globalization.CompareInfo", "CheckCompareOptionsForCompare", 1,
-            "cil2cpp::globalization::compareinfo_check_options");
-        RegisterICall("System.Globalization.CompareInfo", "GetNativeCompareFlags", 1,
-            "cil2cpp::globalization::compareinfo_get_native_flags");
-        RegisterICall("System.Globalization.CompareInfo", "ThrowCompareOptionsCheckFailed", 1,
-            "cil2cpp::globalization::compareinfo_throw_options_failed");
-        // SortHandleCache is a nested type, but Cecil resolves the declaring type
-        RegisterICall("System.Globalization.CompareInfo", "GetCachedSortHandle", 1,
-            "cil2cpp::globalization::compareinfo_get_sort_handle");
-
-        // ===== System.String comparison ICalls (bypass ReadOnlySpan<char> chains) =====
-        // String.Compare → CultureInfo → CompareInfo → P/Invoke chain is too deep for AOT.
-        // Intercept at String.Compare level to bypass the entire chain.
-        RegisterICall("System.String", "Compare", 3,
-            "cil2cpp::globalization::string_compare_3");
-        RegisterICall("System.String", "Compare", 6,
-            "cil2cpp::globalization::string_compare_6");
-        RegisterICall("System.String", "GetCaseCompareOfComparisonCulture", 1,
-            "cil2cpp::globalization::string_get_case_compare");
-        RegisterICall("System.String", "CheckStringComparison", 1,
-            "cil2cpp::globalization::string_check_comparison");
-        // NOTE: String.Equals/2 NOT registered — conflicts with static Equals(String, String)
-        // which also has paramCount=2. The instance Equals(String, StringComparison) and
-        // static Equals(String, String) can't be disambiguated by our ICall system.
-        // EndsWith/StartsWith are safe — no static overloads with same paramCount.
-        RegisterICall("System.String", "EndsWith", 2,
-            "cil2cpp::globalization::string_ends_with");
-        RegisterICall("System.String", "StartsWith", 2,
-            "cil2cpp::globalization::string_starts_with");
+        // CompareInfo and String comparison methods compile from BCL IL.
+        // Full chain: String.Compare → CompareInfo.Compare → Interop.Globalization (ICU4C).
+        // Interop.Globalization P/Invoke implementations in globalization_interop.cpp.
 
         // ===== System.Globalization.Ordinal (ICU4C backed) =====
         // Ordinal methods use SIMD intrinsics (Vector128) — impractical for AOT.
@@ -328,8 +282,7 @@ public static class ICallRegistry
         RegisterICall("System.GC", "_WaitForPendingFinalizers", 0, "cil2cpp::gc_noop"); // no-op with BoehmGC
         RegisterICall("System.GC", "_ReRegisterForFinalize", 1, "cil2cpp::gc_noop"); // no-op
         RegisterICall("System.GC", "GetTotalMemory", 1, "cil2cpp::gc_get_total_memory");
-        // FIXME: GetGCMemoryInfo returns GCMemoryInfo struct, not void — don't map to gc_noop
-        // Let it be stubbed until proper implementation exists
+        RegisterICall("System.GC", "GetMemoryInfo", 2, "cil2cpp::gc_get_memory_info"); // fills GCMemoryInfoData with BoehmGC stats
         RegisterICall("System.GC", "AllocateUninitializedArray", 2, "cil2cpp::gc_allocate_uninitialized_array");
         RegisterICall("System.GC", "GetAllocatedBytesForCurrentThread", 0, "cil2cpp::gc_get_total_memory_simple");
 
@@ -383,33 +336,11 @@ public static class ICallRegistry
         RegisterICall("System.Threading.WaitHandle", "WaitOneCore", 2, "cil2cpp::icall::WaitHandle_WaitOneCore");
 
         // ===== System.IO =====
-        // File operations — native C++ implementations using std::ifstream/ofstream.
-        // The BCL IL chain (StreamReader→FileStream→FileStreamStrategy→P/Invoke) is not
-        // fully functional yet, so high-level File methods redirect to native icalls.
-        RegisterICall("System.IO.File", "Exists", 1, "cil2cpp::icall::File_Exists");
-        RegisterICall("System.IO.File", "Delete", 1, "cil2cpp::icall::File_Delete");
-        RegisterICall("System.IO.File", "ReadAllText", 1, "cil2cpp::icall::File_ReadAllText");
-        RegisterICall("System.IO.File", "ReadAllText", 2, "cil2cpp::icall::File_ReadAllText2");
-        RegisterICall("System.IO.File", "WriteAllText", 2, "cil2cpp::icall::File_WriteAllText");
-        RegisterICall("System.IO.File", "WriteAllText", 3, "cil2cpp::icall::File_WriteAllText2");
-        RegisterICall("System.IO.File", "ReadAllBytes", 1, "cil2cpp::icall::File_ReadAllBytes");
-        RegisterICall("System.IO.File", "WriteAllBytes", 2, "cil2cpp::icall::File_WriteAllBytes");
-        RegisterICall("System.IO.File", "ReadAllLines", 1, "cil2cpp::icall::File_ReadAllLines");
-        RegisterICall("System.IO.File", "AppendAllText", 2, "cil2cpp::icall::File_AppendAllText");
-        RegisterICall("System.IO.File", "Copy", 3, "cil2cpp::icall::File_Copy");
-        RegisterICall("System.IO.File", "Move", 3, "cil2cpp::icall::File_Move");
-        // Path operations
-        RegisterICall("System.IO.Path", "GetFullPath", 1, "cil2cpp::icall::Path_GetFullPath");
-        RegisterICall("System.IO.Path", "GetDirectoryName", 1, "cil2cpp::icall::Path_GetDirectoryName");
-        RegisterICall("System.IO.Path", "GetFileName", 1, "cil2cpp::icall::Path_GetFileName");
-        RegisterICall("System.IO.Path", "GetFileNameWithoutExtension", 1, "cil2cpp::icall::Path_GetFileNameWithoutExtension");
-        RegisterICall("System.IO.Path", "GetExtension", 1, "cil2cpp::icall::Path_GetExtension");
-        RegisterICall("System.IO.Path", "GetTempPath", 0, "cil2cpp::icall::Path_GetTempPath");
-        RegisterICall("System.IO.Path", "Combine", 2, "cil2cpp::icall::Path_Combine2");
-        RegisterICall("System.IO.Path", "Combine", 3, "cil2cpp::icall::Path_Combine3");
-        // Directory operations
-        RegisterICall("System.IO.Directory", "Exists", 1, "cil2cpp::icall::Directory_Exists");
-        RegisterICall("System.IO.Directory", "CreateDirectory", 1, "cil2cpp::icall::Directory_CreateDirectory");
+        // File, Path, and Directory methods compile from BCL IL.
+        // Full chain: File.ReadAllText → StreamReader → FileStream → SafeFileHandle → P/Invoke kernel32.
+        // Path methods are pure string operations (GetFileName, Combine, etc.) or
+        // thin P/Invoke wrappers (GetFullPath → GetFullPathNameW, GetTempPath → GetTempPathW).
+        // Directory methods use Interop.Kernel32 (GetFileAttributesExW, CreateDirectoryW).
 
         // ===== System.Type =====
         RegisterICall("System.Type", "GetTypeFromHandle", 1, "cil2cpp::icall::Type_GetTypeFromHandle");
@@ -496,7 +427,6 @@ public static class ICallRegistry
 
         // ===== SpanHelpers.DontNegate/Negate =====
         // Generic structs with trivial methods used by SpanHelpers.IndexOfAny etc.
-        // Stubbed due to "undeclared TypeInfo" gate; ICalls bypass that check.
         // DontNegate.NegateIfNeeded(bool) = identity, Negate.NegateIfNeeded(bool) = !value
         // Using open generic type names with wildcard — covers all T specializations.
         RegisterICallWildcard("System.SpanHelpers/DontNegate`1", "NegateIfNeeded",
@@ -774,47 +704,49 @@ public static class ICallRegistry
         RegisterICall("System.ArgIterator", "GetNextArg", 0, "cil2cpp::argiterator_get_next_arg");
         RegisterICall("System.ArgIterator", "End", 0, "cil2cpp::argiterator_end");
 
-        // ===== Interop.Globalization P/Invoke stubs =====
+        // ===== Interop.Globalization P/Invoke — real ICU4C implementations =====
         // Low-level ICU P/Invoke wrappers called from CultureData, CultureInfo, CalendarData.
         // Higher-level operations (CompareInfo, TextInfo) are handled by dedicated ICalls above.
-        // TODO: Replace stubs with full ICU implementations for locale data correctness.
-        RegisterICallWildcard("Interop/Globalization", "IndexOf", "cil2cpp::interop_globalization_return_neg");
-        RegisterICallWildcard("Interop/Globalization", "StartsWith", "cil2cpp::interop_globalization_return_zero");
-        RegisterICallWildcard("Interop/Globalization", "EndsWith", "cil2cpp::interop_globalization_return_zero");
-        RegisterICallWildcard("Interop/Globalization", "GetSortHandle", "cil2cpp::interop_globalization_return_zero");
-        RegisterICallWildcard("Interop/Globalization", "IanaIdToWindowsId", "cil2cpp::interop_globalization_return_zero");
-        RegisterICallWildcard("Interop/Globalization", "CompareString", "cil2cpp::interop_globalization_return_zero");
-        RegisterICallWildcard("Interop/Globalization", "GetLocaleName", "cil2cpp::interop_globalization_get_locale_name");
-        RegisterICallWildcard("Interop/Globalization", "GetLocaleInfoString", "cil2cpp::interop_globalization_get_locale_info_string");
-        RegisterICallWildcard("Interop/Globalization", "GetLocaleInfoInt", "cil2cpp::interop_globalization_return_zero");
-        RegisterICallWildcard("Interop/Globalization", "GetLocaleInfoGroupingSizes", "cil2cpp::interop_globalization_return_zero");
-        RegisterICallWildcard("Interop/Globalization", "GetLocaleTimeFormat", "cil2cpp::interop_globalization_return_zero");
-        RegisterICallWildcard("Interop/Globalization", "IsPredefinedLocale", "cil2cpp::interop_globalization_return_one");
-        RegisterICallWildcard("Interop/Globalization", "GetCalendars", "cil2cpp::interop_globalization_return_zero");
-        RegisterICallWildcard("Interop/Globalization", "GetLatestJapaneseEra", "cil2cpp::interop_globalization_return_zero");
-        RegisterICallWildcard("Interop/Globalization", "GetJapaneseEraStartDate", "cil2cpp::interop_globalization_return_zero");
-        RegisterICallWildcard("Interop/Globalization", "GetCalendarInfo", "cil2cpp::interop_globalization_return_zero");
-        RegisterICallWildcard("Interop/Globalization", "LoadICU", "cil2cpp::interop_globalization_return_one");
-        RegisterICallWildcard("Interop/Globalization", "InitICUFunctions", "cil2cpp::interop_globalization_return_one");
+        // Implementations in runtime/src/interop/globalization_interop.cpp.
+        RegisterICall("Interop/Globalization", "CompareString", 6, "cil2cpp::interop_globalization_compare_string");
+        RegisterICall("Interop/Globalization", "IndexOf", 7, "cil2cpp::interop_globalization_index_of");
+        RegisterICall("Interop/Globalization", "LastIndexOf", 7, "cil2cpp::interop_globalization_last_index_of");
+        RegisterICall("Interop/Globalization", "StartsWith", 7, "cil2cpp::interop_globalization_starts_with");
+        RegisterICall("Interop/Globalization", "EndsWith", 7, "cil2cpp::interop_globalization_ends_with");
+        RegisterICall("Interop/Globalization", "GetSortHandle", 2, "cil2cpp::interop_globalization_get_sort_handle");
+        RegisterICall("Interop/Globalization", "CloseSortHandle", 1, "cil2cpp::interop_globalization_close_sort_handle");
+        RegisterICall("Interop/Globalization", "GetLocaleName", 3, "cil2cpp::interop_globalization_get_locale_name");
+        RegisterICall("Interop/Globalization", "GetLocaleInfoString", 5, "cil2cpp::interop_globalization_get_locale_info_string");
+        RegisterICall("Interop/Globalization", "GetLocaleInfoInt", 3, "cil2cpp::interop_globalization_get_locale_info_int");
+        RegisterICall("Interop/Globalization", "GetLocaleInfoGroupingSizes", 4, "cil2cpp::interop_globalization_get_locale_info_grouping_sizes");
+        RegisterICall("Interop/Globalization", "GetLocaleTimeFormat", 4, "cil2cpp::interop_globalization_get_locale_time_format");
+        RegisterICall("Interop/Globalization", "IsPredefinedLocale", 1, "cil2cpp::interop_globalization_is_predefined_locale");
+        RegisterICall("Interop/Globalization", "GetCalendars", 3, "cil2cpp::interop_globalization_get_calendars");
+        RegisterICall("Interop/Globalization", "GetCalendarInfo", 5, "cil2cpp::interop_globalization_get_calendar_info");
+        RegisterICall("Interop/Globalization", "GetLatestJapaneseEra", 0, "cil2cpp::interop_globalization_get_latest_japanese_era");
+        RegisterICall("Interop/Globalization", "GetJapaneseEraStartDate", 4, "cil2cpp::interop_globalization_get_japanese_era_start_date");
+        RegisterICall("Interop/Globalization", "IanaIdToWindowsId", 3, "cil2cpp::interop_globalization_iana_id_to_windows_id");
+        RegisterICallWildcard("Interop/Globalization", "LoadICU", "cil2cpp::interop_globalization_load_icu");
+        RegisterICallWildcard("Interop/Globalization", "InitICUFunctions", "cil2cpp::interop_globalization_init_icu_functions");
 
         // ===== Internal.Win32.RegistryKey stubs =====
         // Windows registry access — not meaningful in AOT binaries. Return failure codes.
         RegisterICallWildcard("Internal.Win32.RegistryKey", "OpenSubKey", "cil2cpp::win32_registry_stub");
         RegisterICallWildcard("Internal.Win32.RegistryKey", "GetValue", "cil2cpp::win32_registry_stub");
 
-        // ===== Interop.NtDll stubs =====
-        RegisterICallWildcard("Interop/NtDll", "RtlGetVersionEx", "cil2cpp::interop_ntdll_stub");
-        RegisterICallWildcard("Interop/NtDll", "NtQuerySystemInformation", "cil2cpp::interop_ntdll_stub");
+        // ===== Interop.NtDll =====
+        RegisterICallWildcard("Interop/NtDll", "RtlGetVersionEx", "cil2cpp::interop_ntdll_rtl_get_version");
+        RegisterICallWildcard("Interop/NtDll", "NtQuerySystemInformation", "cil2cpp::interop_ntdll_query_system_info");
 
-        // ===== Interop.User32 stubs =====
-        RegisterICallWildcard("Interop/User32", "LoadString", "cil2cpp::interop_user32_stub");
+        // ===== Interop.User32 =====
+        RegisterICallWildcard("Interop/User32", "LoadString", "cil2cpp::interop_user32_load_string");
 
         // ===== Interop.Ucrtbase stubs =====
         RegisterICallWildcard("Interop/Ucrtbase", "malloc", "cil2cpp::interop_ucrtbase_malloc");
         RegisterICallWildcard("Interop/Ucrtbase", "free", "cil2cpp::interop_ucrtbase_free");
 
-        // ===== Interop.BCrypt stubs =====
-        RegisterICallWildcard("Interop/BCrypt", "BCryptGenRandom", "cil2cpp::interop_bcrypt_stub");
+        // ===== Interop.BCrypt =====
+        RegisterICallWildcard("Interop/BCrypt", "BCryptGenRandom", "cil2cpp::interop_bcrypt_gen_random");
 
         // ===== System.Array (additional) =====
         RegisterICallWildcard("System.Array", "InternalCreate", "cil2cpp::array_internal_create");
@@ -824,15 +756,15 @@ public static class ICallRegistry
 
         // ===== System.RuntimeTypeHandle (additional) =====
         RegisterICall("System.RuntimeTypeHandle", "GetArrayRank", 1,
-            "cil2cpp::interop_globalization_return_one"); // default rank 1
+            "cil2cpp::icall_return_one"); // default rank 1
 
         // ===== System.Reflection.MethodBase / System.Type (additional) =====
         RegisterICall("System.Reflection.MethodBase", "get_IsAbstract", 0,
-            "cil2cpp::interop_globalization_return_zero");
+            "cil2cpp::icall_return_zero");
         RegisterICall("System.Type", "get_IsNestedAssembly", 0,
-            "cil2cpp::interop_globalization_return_zero");
+            "cil2cpp::icall_return_zero");
         RegisterICall("System.Type", "get_IsNotPublic", 0,
-            "cil2cpp::interop_globalization_return_zero");
+            "cil2cpp::icall_return_zero");
 
         // ===== System.Diagnostics (additional stack trace stubs) =====
         RegisterICallWildcard("System.Diagnostics.StackFrameHelper", "GetMethodBase",
@@ -842,10 +774,6 @@ public static class ICallRegistry
         RegisterICall("System.Diagnostics.StackFrame", "GetFileName", 0,
             "cil2cpp::stackframehelper_get_method_base"); // returns nullptr (void*)
 
-        // ===== Additional Interop.Globalization stubs =====
-        RegisterICallWildcard("Interop/Globalization", "LastIndexOf", "cil2cpp::interop_globalization_return_neg");
-        RegisterICallWildcard("Interop/Globalization", "CloseSortHandle", "cil2cpp::interop_globalization_return_zero");
-
         // ===== Internal.Win32.RegistryKey additional stubs =====
         RegisterICallWildcard("Internal.Win32.RegistryKey", "GetSubKeyNames", "cil2cpp::win32_registry_stub");
         RegisterICallWildcard("Internal.Win32.RegistryKey", "GetValueNames", "cil2cpp::win32_registry_stub");
@@ -854,15 +782,15 @@ public static class ICallRegistry
         RegisterICall("System.RuntimeMethodHandle", "GetResolver", 1,
             "cil2cpp::stackframehelper_get_method_base"); // returns nullptr
         RegisterICall("System.RuntimeTypeHandle", "IsEquivalentTo", 2,
-            "cil2cpp::interop_globalization_return_zero"); // returns false
+            "cil2cpp::icall_return_zero"); // returns false
 
         // ===== System.RuntimeType (additional) =====
         RegisterICall("System.RuntimeType", "CanValueSpecialCast", 0,
-            "cil2cpp::interop_globalization_return_zero"); // returns false
+            "cil2cpp::icall_return_zero"); // returns false
 
         // ===== System.Diagnostics.Tracing.EventSource (additional) =====
         RegisterICallWildcard("System.Diagnostics.Tracing.EventSource", "SetCurrentThreadActivityId",
-            "cil2cpp::interop_globalization_return_zero");
+            "cil2cpp::icall_return_zero");
 
         // ===== System.Threading.Tasks — runtime async implementations =====
         // Task.Delay(int) uses the runtime's task_delay instead of the BCL's timer infrastructure.
@@ -873,9 +801,9 @@ public static class ICallRegistry
 
         // ===== System.Threading.Tasks interface stubs =====
         RegisterICallWildcard("System.Threading.Tasks.TaskContinuation", "Run",
-            "cil2cpp::interop_globalization_return_zero");
+            "cil2cpp::icall_return_zero");
         RegisterICallWildcard("System.Threading.Tasks.ITaskCompletionAction", "get_InvokeMayRunArbitraryCode",
-            "cil2cpp::interop_globalization_return_one");
+            "cil2cpp::icall_return_one");
 
         // ===== System.Reflection.Binder =====
         RegisterICallWildcard("System.Reflection.Binder", "ChangeType",
@@ -883,7 +811,7 @@ public static class ICallRegistry
 
         // ===== System.Reflection.Emit stubs (dynamic code gen — no-op in AOT) =====
         RegisterICallWildcard("System.Reflection.Emit.ILGenerator", "Emit",
-            "cil2cpp::interop_globalization_return_zero");
+            "cil2cpp::icall_return_zero");
         RegisterICallWildcard("System.Runtime.Loader.AssemblyLoadContext", "OnTypeResolve",
             "cil2cpp::stackframehelper_get_method_base"); // returns nullptr
     }

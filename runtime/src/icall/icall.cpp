@@ -35,6 +35,8 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#include <bcrypt.h>
+#pragma comment(lib, "bcrypt.lib")
 #elif defined(__linux__)
 #include <sys/syscall.h>
 #include <unistd.h>
@@ -211,11 +213,18 @@ void Marshal_StructureToPtr(void* structure, intptr_t ptr, Boolean /*fDeleteOld*
 
 uint64_t HashCode_GenerateGlobalSeed() {
     uint64_t seed = 0;
-#ifdef _WIN32
-    // BCrypt.GenRandom — minimal approach with system time + address entropy
-    auto tp = std::chrono::high_resolution_clock::now().time_since_epoch().count();
-    seed = static_cast<uint64_t>(tp) ^ reinterpret_cast<uintptr_t>(&seed);
+#ifdef CIL2CPP_WINDOWS
+    BCryptGenRandom(nullptr, reinterpret_cast<PUCHAR>(&seed), sizeof(seed),
+                    BCRYPT_USE_SYSTEM_PREFERRED_RNG);
+#elif defined(__linux__)
+    // /dev/urandom is always available on Linux
+    FILE* f = fopen("/dev/urandom", "rb");
+    if (f) {
+        fread(&seed, sizeof(seed), 1, f);
+        fclose(f);
+    }
 #else
+    // Fallback: time + address entropy for other platforms
     auto tp = std::chrono::high_resolution_clock::now().time_since_epoch().count();
     seed = static_cast<uint64_t>(tp) ^ reinterpret_cast<uintptr_t>(&seed);
 #endif

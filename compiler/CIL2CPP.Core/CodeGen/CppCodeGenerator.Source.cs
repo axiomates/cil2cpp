@@ -862,6 +862,9 @@ public partial class CppCodeGenerator
         if (type.IsPublic) flagParts.Add("cil2cpp::TypeFlags::Public");
         if (type.IsNestedPublic) flagParts.Add("cil2cpp::TypeFlags::NestedPublic");
         if (type.IsByRefLike) flagParts.Add("cil2cpp::TypeFlags::IsByRefLike");
+        // Nullable<T> detection: open generic "System.Nullable`1" or closed "System.Nullable`1<...>"
+        if (type.ILFullName.StartsWith("System.Nullable`1"))
+            flagParts.Add("cil2cpp::TypeFlags::Nullable");
         var flagsStr = flagParts.Count > 0 ? string.Join(" | ", flagParts) : "cil2cpp::TypeFlags::None";
 
         // Array flag: detect array types from ILFullName suffix "[]"
@@ -871,6 +874,12 @@ public partial class CppCodeGenerator
             // Derive element type CppName from array type ILFullName
             var elementIL = type.ILFullName[..^2]; // strip "[]"
             type.ArrayElementTypeCppName = CppNameMapper.MangleTypeName(elementIL);
+        }
+        // Multi-dimensional array detection: names end with "[,]", "[,,]", etc.
+        else if (type.ILFullName.EndsWith("]") && type.ILFullName.Contains("[,"))
+        {
+            flagParts.Add("cil2cpp::TypeFlags::Array");
+            flagParts.Add("cil2cpp::TypeFlags::MultiDimensionalArray");
         }
 
         // CorElementType (needed by both full and minimal)

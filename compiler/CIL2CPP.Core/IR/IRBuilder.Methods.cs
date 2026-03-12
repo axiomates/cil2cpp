@@ -1460,6 +1460,21 @@ public partial class IRBuilder
                             stack.Push(mergeEntry);
                         }
                     }
+                    // Second (or later) br targeting the same merge point: assign current
+                    // stack value to the existing merge variable. This handles the pattern:
+                    //   brtrue T; call ToString; br M; T: ldarg.0; br M; M: stloc
+                    // where both the false path (ToString) and the true path (ldarg.0) must
+                    // assign their values to the same merge variable before reaching M.
+                    else if (mergeCount == 1 && brTernaryMerges.TryGetValue(target.Offset, out var existingMerge)
+                        && existingMerge.Length == 1 && stack.Count > 0)
+                    {
+                        var currentTop = stack.Pop();
+                        if (currentTop.Expr != existingMerge[0].Expr && IsValidMergeVariable(existingMerge[0].Expr))
+                        {
+                            block.Instructions.Add(new IRAssign { Target = existingMerge[0].Expr, Value = currentTop.Expr });
+                        }
+                        stack.Push(existingMerge[0]);
+                    }
                 }
                 block.Instructions.Add(new IRBranch { TargetLabel = $"IL_{target.Offset:X4}" });
                 break;

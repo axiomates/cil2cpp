@@ -77,6 +77,8 @@ enum class TypeFlags : UInt32 {
     Public = 1 << 8,
     NestedPublic = 1 << 9,
     IsByRefLike = 1 << 10,
+    Nullable = 1 << 11,
+    MultiDimensionalArray = 1 << 12,
 };
 
 inline TypeFlags operator|(TypeFlags a, TypeFlags b) {

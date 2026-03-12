@@ -142,6 +142,27 @@ inline Int64 gc_get_total_memory_simple() {
     return static_cast<Int64>(gc::get_stats().current_heap_size);
 }
 
+/// GC.GetMemoryInfo — fills GCMemoryInfoData with BoehmGC-available stats.
+/// BoehmGC doesn't track most .NET GC metrics, so most fields stay zero.
+/// Fields after Object header: 9×int64, 2×int32, 1×uint8.
+inline void gc_get_memory_info(void* data, Int32 /*kind*/) {
+    if (!data) return;
+    auto stats = gc::get_stats();
+    // GCMemoryInfoData fields start after the managed object header
+    // (TypeInfo* + UInt32 sync_block + padding to align int64_t).
+    constexpr size_t header_size = (sizeof(TypeInfo*) + sizeof(UInt32) + 7) & ~size_t(7);
+    auto* fields = reinterpret_cast<int64_t*>(
+        static_cast<char*>(data) + header_size);
+    // fields[0] = highMemoryLoadThresholdBytes  (leave 0)
+    // fields[1] = totalAvailableMemoryBytes     (leave 0)
+    // fields[2] = memoryLoadBytes               (leave 0)
+    // fields[3] = heapSizeBytes
+    fields[3] = static_cast<int64_t>(stats.current_heap_size);
+    // fields[4] = fragmentedBytes               (leave 0)
+    // fields[5] = totalCommittedBytes
+    fields[5] = static_cast<int64_t>(stats.current_heap_size);
+}
+
 /// GC.AllocateUninitializedArray<T>(int length, bool pinned)
 /// FIXME: without generic type info at runtime, can't create properly typed array
 inline void* gc_allocate_uninitialized_array(Int32 length, Int32 pinned) {

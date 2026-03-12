@@ -125,6 +125,8 @@ set(RUNTIME_SOURCES
     src/unicode/icu_bridge.cpp
     src/globalization/globalization.cpp
     src/interop/marshal.cpp
+    src/interop/interop_platform.cpp
+    src/interop/globalization_interop.cpp
     src/io/file.cpp
     src/io/path.cpp
     src/io/directory.cpp

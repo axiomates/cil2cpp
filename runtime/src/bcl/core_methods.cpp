@@ -609,14 +609,13 @@ extern "C" void* System_RuntimeTypeHandle_CreateInstanceForAnotherGenericParamet
 
     auto* targetInfo = cil2cpp::type_get_by_name(targetName.c_str());
     if (!targetInfo) {
-        // AOT limitation: the specific generic specialization was not materialized.
-        // Fall back to the template type to avoid NullReferenceException. The object
-        // will have the template's vtable (wrong type params) but prevents crashes
-        // in non-critical paths like sort helpers.
-        fprintf(stderr, "[AOT] CreateInstanceForAnotherGenericParameter: type '%s' not found, using template '%s'\n",
+        // AOT error: the compiler failed to materialize this generic specialization.
+        // Fix by adding the type to EnsureComparerCompanionType in IRBuilder.Generics.cs.
+        fprintf(stderr, "[AOT] FATAL: CreateInstanceForAnotherGenericParameter: type '%s' not found. "
+            "Template was '%s'. The compiler must pre-generate this specialization.\n",
             targetName.c_str(), templateType->type_info->full_name);
         fflush(stderr);
-        targetInfo = templateType->type_info;
+        std::abort();
     }
 
     return cil2cpp::object_alloc(targetInfo);
@@ -632,15 +631,15 @@ extern "C" void* System_RuntimeTypeHandle_CreateInstanceForAnotherGenericParamet
         return nullptr;
 
     auto def = extract_generic_definition(templateType->type_info->full_name);
-    std::string targetName = def + "<" + param1->type_info->full_name + ", " + param2->type_info->full_name + ">";
+    std::string targetName = def + "<" + param1->type_info->full_name + "," + param2->type_info->full_name + ">";
 
     auto* targetInfo = cil2cpp::type_get_by_name(targetName.c_str());
     if (!targetInfo) {
-        // AOT limitation: fall back to template type (see 1-param overload comment)
-        fprintf(stderr, "[AOT] CreateInstanceForAnotherGenericParameter: type '%s' not found, using template '%s'\n",
+        fprintf(stderr, "[AOT] FATAL: CreateInstanceForAnotherGenericParameter: type '%s' not found. "
+            "Template was '%s'. The compiler must pre-generate this specialization.\n",
             targetName.c_str(), templateType->type_info->full_name);
         fflush(stderr);
-        targetInfo = templateType->type_info;
+        std::abort();
     }
 
     return cil2cpp::object_alloc(targetInfo);
@@ -795,9 +794,9 @@ extern "C" bool System_Runtime_CompilerServices_MethodTable_get_IsValueType(void
     auto* ti = reinterpret_cast<cil2cpp::TypeInfo*>(__this);
     return ti && (ti->flags & cil2cpp::TypeFlags::ValueType);
 }
-extern "C" bool System_Runtime_CompilerServices_MethodTable_get_IsNullable(void* /*__this*/) {
-    // TODO: check if type is Nullable<T> — for now false
-    return false;
+extern "C" bool System_Runtime_CompilerServices_MethodTable_get_IsNullable(void* __this) {
+    auto* ti = reinterpret_cast<cil2cpp::TypeInfo*>(__this);
+    return ti && (ti->flags & cil2cpp::TypeFlags::Nullable);
 }
 extern "C" bool System_Runtime_CompilerServices_MethodTable_get_HasComponentSize(void* __this) {
     auto* ti = reinterpret_cast<cil2cpp::TypeInfo*>(__this);
@@ -812,8 +811,9 @@ extern "C" bool System_Runtime_CompilerServices_MethodTable_get_ContainsGCPointe
 extern "C" bool System_Runtime_CompilerServices_MethodTable_get_HasTypeEquivalence(void* /*__this*/) {
     return false; // No type equivalence in AOT
 }
-extern "C" bool System_Runtime_CompilerServices_MethodTable_get_IsMultiDimensionalArray(void* /*__this*/) {
-    return false; // TODO: check MdArray flag if needed
+extern "C" bool System_Runtime_CompilerServices_MethodTable_get_IsMultiDimensionalArray(void* __this) {
+    auto* ti = reinterpret_cast<cil2cpp::TypeInfo*>(__this);
+    return ti && (ti->flags & cil2cpp::TypeFlags::MultiDimensionalArray);
 }
 extern "C" int32_t System_Runtime_CompilerServices_MethodTable_get_MultiDimensionalArrayRank(void* /*__this*/) {
     return 0;
