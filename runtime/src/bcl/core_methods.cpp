@@ -609,10 +609,14 @@ extern "C" void* System_RuntimeTypeHandle_CreateInstanceForAnotherGenericParamet
 
     auto* targetInfo = cil2cpp::type_get_by_name(targetName.c_str());
     if (!targetInfo) {
-        fprintf(stderr, "[AOT] CreateInstanceForAnotherGenericParameter: type '%s' not found (template='%s', param='%s')\n",
-            targetName.c_str(), templateType->type_info->full_name, paramType->type_info->full_name);
+        // AOT limitation: the specific generic specialization was not materialized.
+        // Fall back to the template type to avoid NullReferenceException. The object
+        // will have the template's vtable (wrong type params) but prevents crashes
+        // in non-critical paths like sort helpers.
+        fprintf(stderr, "[AOT] CreateInstanceForAnotherGenericParameter: type '%s' not found, using template '%s'\n",
+            targetName.c_str(), templateType->type_info->full_name);
         fflush(stderr);
-        return nullptr;
+        targetInfo = templateType->type_info;
     }
 
     return cil2cpp::object_alloc(targetInfo);
@@ -632,10 +636,11 @@ extern "C" void* System_RuntimeTypeHandle_CreateInstanceForAnotherGenericParamet
 
     auto* targetInfo = cil2cpp::type_get_by_name(targetName.c_str());
     if (!targetInfo) {
-        fprintf(stderr, "[AOT] CreateInstanceForAnotherGenericParameter: type '%s' not found (template='%s')\n",
+        // AOT limitation: fall back to template type (see 1-param overload comment)
+        fprintf(stderr, "[AOT] CreateInstanceForAnotherGenericParameter: type '%s' not found, using template '%s'\n",
             targetName.c_str(), templateType->type_info->full_name);
         fflush(stderr);
-        return nullptr;
+        targetInfo = templateType->type_info;
     }
 
     return cil2cpp::object_alloc(targetInfo);

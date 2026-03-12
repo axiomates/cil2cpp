@@ -2625,6 +2625,25 @@ public partial class IRBuilder
                 var resolvedName = ResolveTypeRefOperand(typeRef);
                 var typeCpp = CppNameMapper.GetCppTypeName(resolvedName);
 
+                // PointerType operand (e.g., initobj SomeStruct* in P/Invoke marshalling wrappers):
+                // The target is a pointer variable — zero the pointer (8 bytes), not the struct.
+                // Cecil's Resolve() on PointerType returns the element type (a value type),
+                // which would incorrectly trigger memset with sizeof(SomeStruct).
+                if (typeRef is PointerType)
+                {
+                    var baseCpp = typeCpp.TrimEnd('*');
+                    if (baseCpp != "void")
+                    {
+                        block.Instructions.Add(new IRInitObj
+                        {
+                            AddressExpr = addr,
+                            TypeCppName = baseCpp,
+                            IsReferenceType = true, // pointer → set to null
+                        });
+                    }
+                    break;
+                }
+
                 // ECMA-335 III.4.12: initobj behavior depends on type:
                 // - Value types: zero the memory at addr (sizeof the struct)
                 // - Reference types: set the location to null (it's a pointer)

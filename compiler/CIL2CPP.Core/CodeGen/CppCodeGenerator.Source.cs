@@ -999,7 +999,7 @@ public partial class CppCodeGenerator
             {
                 enumCount = enumFields.Count;
                 var namesArr = string.Join(", ", enumFields.Select(f => $"\"{f.Name}\""));
-                var valuesArr = string.Join(", ", enumFields.Select(f => $"{EnumConstantToInt64(f.ConstantValue!)}LL"));
+                var valuesArr = string.Join(", ", enumFields.Select(f => FormatEnumInt64(EnumConstantToInt64(f.ConstantValue!))));
                 sb.AppendLine($"static const char* {type.CppName}_enum_names[] = {{ {namesArr} }};");
                 sb.AppendLine($"static int64_t {type.CppName}_enum_values[] = {{ {valuesArr} }};");
                 enumNamesExpr = $"{type.CppName}_enum_names";
@@ -2602,6 +2602,20 @@ public partial class CppCodeGenerator
     /// </summary>
     private static long EnumConstantToInt64(object value) =>
         value is ulong u ? unchecked((long)u) : Convert.ToInt64(value);
+
+    /// <summary>
+    /// Format an int64 enum value as a C++ literal.
+    /// Int64.MinValue (-2^63) can't be written as -9223372036854775808LL because the
+    /// unsigned magnitude exceeds int64 max, triggering MSVC C4838 narrowing warning.
+    /// Use hex format for negative values to avoid this.
+    /// </summary>
+    private static string FormatEnumInt64(long value)
+    {
+        if (value >= 0)
+            return $"{value}LL";
+        // Negative values: emit as (int64_t)0xHEXULL to avoid narrowing
+        return $"(int64_t)0x{unchecked((ulong)value):X}ULL";
+    }
 
     /// <summary>
     /// Emit extern "C" declarations and managed wrapper functions for P/Invoke methods.
