@@ -449,8 +449,10 @@ public partial class IRBuilder
         var typesToAdd = new List<TypeDefinition>();
         var seen = new HashSet<string>(_typeCache.Keys);
 
-        // Scan compiled method bodies for ldfld/stfld/ldflda/stsfld references
-        // Only discover types whose fields are ACCESSED (needed for struct definition)
+        // Scan compiled method bodies for:
+        // 1. ldfld/stfld/ldflda/stsfld references — types whose fields are accessed
+        // 2. Local variable types — value types used as locals need correct sizeof
+        //    (critical for P/Invoke interop structs like WSAData passed to native functions)
         foreach (var typeDef in _allTypes)
         {
             if (typeDef.HasGenericParameters) continue;
@@ -461,6 +463,14 @@ public partial class IRBuilder
                 if (!_reachability.IsReachable(method.GetCecilMethod()))
                     continue;
                 var cecil = method.GetCecilMethod();
+
+                // Scan local variable types — value types must have correct layout
+                foreach (var local in cecil.Body.Variables)
+                {
+                    var localType = local.VariableType;
+                    TryDiscoverValueTypeLocal(localType, seen, typesToAdd);
+                }
+
                 foreach (var instr in cecil.Body.Instructions)
                 {
                     if (instr.Operand is FieldReference fieldRef)
@@ -494,6 +504,45 @@ public partial class IRBuilder
             // Populate fields/base types
             PopulateTypeDetails(typeDefInfo, irType);
         }
+    }
+
+    /// <summary>
+    /// Discover value types used as local variables that are missing from the IR module.
+    /// Value types need correct sizeof for stack allocation — especially critical for
+    /// P/Invoke interop structs (e.g., WSADATA) where native functions write to them.
+    /// </summary>
+    private void TryDiscoverValueTypeLocal(TypeReference? typeRef, HashSet<string> seen, List<TypeDefinition> toAdd)
+    {
+        if (typeRef == null) return;
+        // Unwrap wrapper types
+        if (typeRef is ByReferenceType byRef)
+            typeRef = byRef.ElementType;
+        if (typeRef is PointerType ptr)
+            typeRef = ptr.ElementType;
+        // Skip generic instances (handled by generic specialization pipeline)
+        if (typeRef is GenericInstanceType) return;
+        if (typeRef is ArrayType) return;
+        if (typeRef is GenericParameter) return;
+
+        try
+        {
+            var resolved = typeRef.Resolve();
+            if (resolved == null) return;
+            if (resolved.HasGenericParameters) return;
+            // Only value types (structs) need correct layout for stack allocation
+            // Reference types are accessed through pointers — their size doesn't matter for locals
+            if (!resolved.IsValueType) return;
+            if (resolved.IsEnum) return;
+            if (seen.Contains(resolved.FullName)) return;
+            seen.Add(resolved.FullName);
+
+            // Skip primitives
+            if (CppNameMapper.IsPrimitive(resolved.FullName)) return;
+            if (resolved.FullName == "<Module>") return;
+
+            toAdd.Add(resolved);
+        }
+        catch { }
     }
 
     private void TryDiscoverCecilType(TypeReference? typeRef, HashSet<string> seen, List<TypeDefinition> toAdd)
