@@ -1,6 +1,6 @@
 # CIL2CPP Capabilities
 
-> Last updated: 2026-03-05
+> Last updated: 2026-03-12
 >
 > This document describes what CIL2CPP **can currently do**. For development plans and progress, see [roadmap.md](roadmap.md).
 >
@@ -8,7 +8,7 @@
 
 ## Overview
 
-CIL2CPP is a C# → C++ AOT compiler (similar to Unity IL2CPP). Currently supports complete C# syntax (100% IL opcode coverage), BCL compiled from IL (Unity IL2CPP architecture), ~484 ICall entries. 1,273+ C# + 591 C++ + 35 integration tests all passing.
+CIL2CPP is a C# → C++ AOT compiler (similar to Unity IL2CPP). Currently supports complete C# syntax (100% IL opcode coverage), BCL compiled from IL (Unity IL2CPP architecture), ~484 ICall entries. 1,291 C# + 600 C++ + 69 integration tests all passing.
 
 ## Key Metrics
 
@@ -16,9 +16,9 @@ CIL2CPP is a C# → C++ AOT compiler (similar to Unity IL2CPP). Currently suppor
 |--------|-------|
 | IL opcode coverage | **100%** (all ~230 ECMA-335 opcodes) |
 | ICallRegistry entries | **~484** (covering 30+ categories) |
-| C# compiler tests | **~1,273+** (xUnit) |
-| C++ runtime tests | **591** (Google Test, 18 test files) |
-| End-to-end integration tests | **35** |
+| C# compiler tests | **1,291** (xUnit) |
+| C++ runtime tests | **600** (Google Test, 18 test files) |
+| End-to-end integration tests | **69** (13 test projects) |
 | Runtime headers | **32** |
 
 ---
@@ -109,7 +109,7 @@ CIL2CPP is a C# → C++ AOT compiler (similar to Unity IL2CPP). Currently suppor
 | yield return / IEnumerable | ✅ | Iterator state machines |
 | IAsyncEnumerable\<T\> | ✅ | await foreach |
 | System.IO (File/Path/Directory) | ✅ | 22 ICalls, C++17 filesystem |
-| System.Net (Socket/DNS) | ⚠️ | Socket TCP loopback ✅, DNS resolution ✅, HttpClient construction ✅ (Windows, via Winsock P/Invoke). Full HTTP GET pending |
+| System.Net (Socket/DNS/HTTP) | ✅ | Socket TCP loopback ✅, DNS resolution ✅, HttpClient HTTP GET ✅, HTTPS GET ✅ (Windows, via Winsock/SChannel P/Invoke). TLS via OS-provided SChannel. |
 
 ### Delegates & Events
 
@@ -225,7 +225,7 @@ FileStream / StreamReader / StreamWriter compile from BCL IL and work end-to-end
 |-----------|-------------|
 | CLR internal type dependencies | BCL IL references QCallTypeHandle / MetadataImport etc. → method bodies auto-stubbed |
 | BCL deep dependency chains | Middle layers stubbed → upper-level methods unavailable |
-| System.Net (full HTTP) | HttpClient can be constructed, full HTTP GET request/response chain pending |
+| System.Net (HTTPS edge cases) | HttpClient HTTP/HTTPS GET working; complex scenarios (redirects, chunked encoding, auth) not yet validated |
 | Regex internals | Depends on CLR internal RegexCache etc. |
 | SIMD | Requires platform-specific intrinsics, currently uses scalar fallback structs |
 | 32-bit targets | Pointer size hardcoded to 8 bytes (64-bit only). ARM/x86 deferred to Phase F |
@@ -247,7 +247,8 @@ FileStream / StreamReader / StreamWriter compile from BCL IL and work end-to-end
 | File I/O (File.ReadAllText) | Functional | N/A | N/A | HACK: bypasses BCL IL, UTF-8 only. Will be removed (Phase H.3) |
 | Socket (TCP) | Full | N/A | N/A | Windows: ws2_32 P/Invoke |
 | DNS resolution | Full | N/A | N/A | Windows: GetAddrInfoW P/Invoke |
-| HttpClient construction | Full | N/A | N/A | SocketsHttpHandler chain from BCL IL |
+| HttpClient HTTP GET | Full | N/A | N/A | SocketsHttpHandler → Socket → ws2_32 P/Invoke |
+| HttpClient HTTPS GET | Full | N/A | N/A | SslStream → SChannel (secur32/sspicli) P/Invoke |
 | Reflection (GetType/typeof) | Full | Full | Full | TypeInfo-based |
 | Reflection (GetMethods/GetFields) | Functional | Functional | Functional | Returns correct names, simplified attributes |
 | Reflection (BindingFlags) | Stub | Stub | Stub | Returns hardcoded Public\|Instance (0x14) |
@@ -294,7 +295,7 @@ FileStream / StreamReader / StreamWriter compile from BCL IL and work end-to-end
 
 ## Test Coverage
 
-### C++ Runtime Tests (591, 18 files)
+### C++ Runtime Tests (600, 18 files)
 
 | Module | Test Count |
 |--------|-----------|
@@ -316,8 +317,8 @@ FileStream / StreamReader / StreamWriter compile from BCL IL and work end-to-end
 | Threading | 17 |
 | GC | 16 |
 | TypedReference | 11 |
-| **Total** | **591** |
+| **Total** | **600** |
 
-### End-to-End Integration Tests (35)
+### End-to-End Integration Tests (69)
 
-Full compilation pipeline: C# `.csproj` → codegen → CMake configure → C++ build → run → verify output. Covers HelloWorld, library projects, Debug configuration, multi-assembly, varargs, FeatureTest, SystemIO, FileStream, Socket, and HttpClient test projects.
+Full compilation pipeline: C# `.csproj` → codegen → CMake configure → C++ build → run → verify output. Covers 13 test projects: HelloWorld, ArrayTest, FeatureTest, SystemIO, FileStream, Socket, HttpGet, HttpsGet, HttpClient construction, multi-assembly (with MathLib subdirectory), Debug configuration, library projects, NuGet (JsonSG), and varargs.

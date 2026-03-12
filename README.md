@@ -2,7 +2,7 @@
 
 An AOT compiler that compiles .NET/C# programs into native C++ code, similar to Unity IL2CPP.
 
-**Positioning**: General-purpose AOT compiler targeting .NET NativeAOT-level coverage. Uses Unity IL2CPP architecture — all BCL IL method bodies are compiled directly to C++, with only the lowest-level `[InternalCall]` C++ implementations (~400 icalls) retained.
+**Positioning**: General-purpose AOT compiler targeting .NET NativeAOT-level coverage. Uses Unity IL2CPP architecture — all BCL IL method bodies are compiled directly to C++, with only the lowest-level `[InternalCall]` C++ implementations (~484 icalls) retained.
 
 ```
 .csproj → dotnet build → .NET DLL (IL) → Mono.Cecil → IR (8 passes) → C++ source + CMakeLists.txt → native executable
@@ -111,10 +111,10 @@ void Program_Main() {
 | Metric | Count |
 |--------|-------|
 | IL opcode coverage | 100% (all ~230 ECMA-335 opcodes) |
-| ICallRegistry entries | ~400 |
-| C# compiler tests | ~1240 (xUnit) |
-| C++ runtime tests | 592 (Google Test) |
-| End-to-end integration tests | 47 |
+| ICallRegistry entries | ~484 |
+| C# compiler tests | 1,291 (xUnit) |
+| C++ runtime tests | 600 (Google Test) |
+| End-to-end integration tests | 69 |
 
 ## Documentation
 
@@ -122,8 +122,8 @@ void Program_Main() {
 |----------|----------|
 | [Project Goals](docs/goals.md) | Project definition, comparison with Unity IL2CPP / NativeAOT, design principles, AOT limitations |
 | [Technical Architecture](docs/architecture.md) | Compilation pipeline, IR 8-pass build, BCL strategy, C++ code generation, GC architecture, CMake package |
-| [Capabilities & Limitations](docs/capabilities.md) | Phase completion table, C# feature support, ICall details, System.IO/P/Invoke status, stub analysis |
-| [Development Roadmap](docs/roadmap.md) | Phase H (Native Libs integration), mid/long-term plans, blocker analysis, risks |
+| [Capabilities & Limitations](docs/capabilities.md) | Phase completion table, C# feature support, ICall details, System.IO/P/Invoke status, platform compatibility |
+| [Development Roadmap](docs/roadmap.md) | Phase roadmap, RuntimeProvided analysis, mid/long-term plans, blocker analysis, risks |
 | [Development Tools](docs/tools.md) | Prerequisites, build commands, dev.py usage, test system, Debug/Release configuration |
 | [Lessons Learned](docs/lessons.md) | Architecture reflections (GC/BCL/multi-file), C++/Cecil/IR/exception/async pitfalls |
 
@@ -134,11 +134,11 @@ cil2cpp/
 ├── compiler/                   # C# compiler (.NET 8)
 │   ├── CIL2CPP.CLI/            #   CLI entry point
 │   ├── CIL2CPP.Core/           #   Core: IL parsing → IR → C++ code generation
-│   └── CIL2CPP.Tests/          #   Compiler tests (xUnit, ~1240 tests)
+│   └── CIL2CPP.Tests/          #   Compiler tests (xUnit, 1,291 tests)
 ├── runtime/                    # C++ runtime (C++20, CMake)
 │   ├── include/cil2cpp/        #   Headers (32 files)
 │   ├── src/                    #   GC / type system / exception / BCL icall
-│   └── tests/                  #   Runtime tests (GTest, 592 tests)
+│   └── tests/                  #   Runtime tests (GTest, 600 tests)
 ├── tests/                      # Test C# projects
 ├── tools/dev.py                # Developer CLI
 └── docs/                       # Project documentation

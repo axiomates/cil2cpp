@@ -1,6 +1,6 @@
 # 开发路线图
 
-> 最后更新：2026-03-05
+> 最后更新：2026-03-12
 >
 > [English Version](roadmap.md)
 
@@ -29,11 +29,11 @@ CIL2CPP 能声称"可编译 .NET NativeAOT 项目"之前必须完成：
 
 | 目标 | 阶段 | 说明 |
 |------|------|------|
-| 完整 HTTP GET | C.6 | `HttpClient.GetStringAsync("http://...")` 异步请求/响应链 |
+| 完整 HTTP GET | C.6 ✅ | `HttpClient.GetStringAsync("http://...")` 异步请求/响应链 — **已完成** |
 | NativeAOT 元数据 | D | `[DynamicallyAccessedMembers]`、ILLink feature switch、NuGet 包验证 |
 | JSON 序列化 (SG) | D.5 | System.Text.Json source generator 路径编译并运行 |
 | MarshalAs P/Invoke | C.7 | `[MarshalAs]`、`[Out]`/`[In]`、数组编组 — NuGet 生态需要 |
-| SChannel TLS (Windows) | E.win | 通过 `secur32.dll`/`schannel.dll` P/Invoke 实现 HTTPS（OS 自带，无需 FetchContent） |
+| SChannel TLS (Windows) | E.win ✅ | 通过 `secur32.dll`/`schannel.dll` P/Invoke 实现 HTTPS — **已完成**（HttpsGetTest 通过） |
 | 压缩 | E.2 | 通过 System.IO.Compression.Native 的 zlib |
 | RenderedBodyError → 0 | H.2 | 修复所有 codegen bug（当前 17 个 RE stubs，从 116 降低） |
 | SIMD 标量完善 | F.1 | 消除剩余 SIMD stubs（完整标量回退路径） |
@@ -156,7 +156,7 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 **不可修复或暂缓**：SIMD 死代码分支由 FeatureSwitchResolver 处理（IsSupported=false 死分支消除）。CLR 内部类型（~96）永久保留。
 
 **IL 转译率**：~95%+。历程：Phase A: 2,777 → 1,478; Phase B: 1,478 → 1,537; Phase C: → 1,666; Phase X + 需求驱动泛型: → 1,280（方法总数也从 ~31k 降至 ~26k，得益于特化方法可达性分析）。
-**测试**：1,273+ C# + 591 C++ + 35 集成 — 全部通过。
+**测试**：1,291 C# + 600 C++ + 69 集成 — 全部通过。
 
 ### 已实现的架构能力
 
@@ -169,24 +169,25 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 
 | 项目类型 | 预估完成度 | 关键阻塞项 |
 |---------|-----------|-----------|
-| 简单控制台应用 | ~92% | 反射 stub 可能导致运行时意外 |
+| 简单控制台应用 | ~95% | 反射 stub 可能导致运行时意外 |
 | 类库项目 | ~78% | `[DynamicallyAccessedMembers]` 未解析 — tree-shaking 会误删 NuGet 包需要的类型 |
 | 文件 I/O 应用 | ~80% | File.ReadAllBytes 挂起 (B.6)；File ICall 编码缺口 |
-| 网络应用 | ~30% | HTTP GET 待做 (C.6)；HTTPS 需 TLS (Phase E.win) |
-| REST 客户端 (HTTP+JSON) | ~15% | 需 C.6 + Phase D（元数据）+ JSON SG 验证 |
-| 生产级应用 | ~3% | 需 TLS + JSON + DI — 全都需要 Phase D 先行 |
-| 任意 NativeAOT .csproj | **~25%** | NuGet 包未充分测试、`[MarshalAs]` 部分完成、17 个 RE codegen bug |
+| 网络应用 (HTTP) | ~85% | HTTP GET ✅、HTTPS GET ✅（Windows）。复杂场景（重定向、认证）尚未验证 |
+| 网络应用 (HTTPS) | ~75% | SChannel TLS 基本 HTTPS GET 已通过；边界情况待验证 |
+| REST 客户端 (HTTP+JSON) | ~25% | HTTP 已通过；需 Phase D（元数据）+ JSON SG 运行时验证 |
+| 生产级应用 | ~5% | 需 JSON + DI — 需要 Phase D 先行 |
+| 任意 NativeAOT .csproj | **~30%** | NuGet 包未充分测试、`[MarshalAs]` 部分完成、17 个 RE codegen bug |
 
 > **Linux/macOS**：待定。以上百分比仅限 Windows。Linux 需要 System.Native 集成 (Phase B.5, 待定) + OpenSSL (Phase E.linux, 待定)。当前 Linux 支持：~5%（仅控制台，无文件 I/O 或网络）。
 
 **什么能提升百分比**（累积，Windows）：
-- **25%→40%**：Phase D.1+D.3（DynamicallyAccessedMembers + ILLink 开关）+ NuGet 包验证 — **最大单次跳跃**
-- **40%→55%**：Phase C.6（HTTP GET）+ RenderedBodyError 消减 + MarshalAs P/Invoke
-- **55%→75%**：Phase E.win（SChannel TLS）+ JSON via SG + SIMD 标量完善
+- **30%→45%**：Phase D.1+D.3（DynamicallyAccessedMembers + ILLink 开关）+ NuGet 包验证 — **最大单次跳跃**
+- **45%→60%**：RenderedBodyError 消减 + MarshalAs P/Invoke + JSON SG 运行时验证
+- **60%→75%**：SIMD 标量完善 + 压缩 (zlib) + 复杂 HTTP 场景
 - **75%→90%**：10 个 NuGet 包验证 + 综合测试
 - **90%→95%**：边界用例修复 + 打磨
 
-**实现缺口**（2026-03-05 审计）：
+**实现缺口**（2026-03-12 审计）：
 - `[DynamicallyAccessedMembers]` — **已完成并验证**：13 种 DamFlag，字段/方法/参数扫描，CLI `--rdxml` 已接入，7 个 DAM 可达性测试 + 14 个 rd.xml 解析器测试
 - ILLink feature switches — **已上线**：FeatureSwitchResolver 编译期替换 10+ AOT 默认开关。SIMD IsSupported=false 死分支消除通过 brfalse 模式检测。
 - `[MarshalAs]` 属性 — **已实现**（C.7.1）：Cecil 解析 + 21 种类型映射。缺失：`[Out]`/`[In]` 回写（C.7.2）、LPArray 运行时编组（C.7.3）
@@ -222,7 +223,7 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 | 3.2d | IsValidMergeVariable 修正 | -45 | ✅ | 禁止 &expr 作为分支合并赋值目标 |
 | 3.2e | DetermineTempVarTypes 改进 | -17 | ✅ | IRBinaryOp 类型推断 + IRRawCpp 模式推断 |
 | 3.2f | Stub 分类完善 | 诊断 | ✅ | GetBrokenPatternDetail 覆盖所有 HasKnownBrokenPatterns 模式 |
-| 3.2g | 集成测试修复 | 35/35 | ✅ | 修复 7 个 C++ 编译错误模式（void ICall/TypeInfo/ctor/Span/指针类型） |
+| 3.2g | 集成测试修复 | 69/69 | ✅ | 修复 7 个 C++ 编译错误模式（void ICall/TypeInfo/ctor/Span/指针类型） |
 | 3.2h | StackEntry 类型化栈 + IRRawCpp 类型标注 | -98 | ✅ | Stack\<StackEntry\> 类型跟踪 + IRRawCpp ResultVar/ResultTypeCpp 补全 |
 | 3.3 | UnknownBodyReferences 修复 | 506→285 | ✅ | gate 重排序 + knownTypeNames 同步 + opaque stubs + SIMD/数组类型检测 |
 | 3.4 | UndeclaredFunction 修复 | 222→151 | ✅ | 拓宽 calledFunctions 扫描 + 多趟发现 + 诊断 filter 修复（剩余 151 为泛型特化缺失） |
@@ -337,7 +338,7 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 **前置**：Phase A ✅
 **产出**：FileStream 端到端从 BCL IL 编译 — **Windows 已通过** ✅，Linux 待 System.Native
 
-### Phase C: BCL 链扩展 — 网络（进行中）
+### Phase C: BCL 链扩展 — 网络 ✅
 
 **目标**：`HttpClient.GetStringAsync("http://...")` 从 BCL IL 编译
 
@@ -351,11 +352,11 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 | C.2 | TCP socket 生命周期 | 高 | ✅ | TCP 完整环回：bind/listen/connect/accept/send/recv（Winsock P/Invoke）。gate pattern 修复（指针 local、Array ref/out、delegate 跨作用域） |
 | C.3 | HttpClient 构造 | 高 | ✅ | HttpClient → SocketsHttpHandler → HttpConnectionSettings → TimeSpan/Int128。5 个编译器/运行时修复：有符号比较（`clt`/`cgt` → `signed_lt/gt`）、Exception.GetType ICall、SR 资源字符串 ICall、RunClassConstructor stub、泛型嵌套类型名 mangling（边界感知正则） |
 | C.4 | DNS 解析 | 低 | ✅ | `Dns.GetHostAddresses` 通过 Winsock GetAddrInfoW P/Invoke。`dup` 操作码解耦修复（`a[i++]` 模式） |
-| C.5 | 集成测试 | 低 | ✅ | SocketTest（TCP 环回 + DNS）+ HttpTest（HttpClient 构造）— 47/47 集成测试通过 |
-| C.6 | 完整 HTTP GET（明文） | 高 | 待定 | `client.GetStringAsync("http://...").Result` — 异步 HTTP 请求/响应链 |
+| C.5 | 集成测试 | 低 | ✅ | SocketTest（TCP 环回 + DNS）+ HttpTest（HttpClient 构造）— 69/69 集成测试通过 |
+| C.6 | 完整 HTTP GET（明文） | 高 | ✅ | HttpGetTest：完整 `HttpClient.GetStringAsync("http://...")` 异步请求/响应链已通过。HttpsGetTest：HTTPS 通过 SChannel (secur32/sspicli) 也已通过。两者均作为集成测试通过（69/69）。 |
 
 **前置**：Phase B ✅
-**产出**：Socket + DNS + HttpClient 构造已通过（Windows）。完整 HTTP GET 待做。
+**产出**：Socket + DNS + HttpClient HTTP GET + HTTPS GET 全部已通过（Windows）。69/69 集成测试通过。
 
 ### ThreadPool 架构评估（2026-03-02）
 
@@ -367,7 +368,7 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 - 所有 async/await、Task 组合器、continuations 均以真正并发工作
 - BCL ThreadPool ICalls（9 个条目）均为有意的 no-op — CIL2CPP 通过自己的 C++ 线程池路由工作
 
-**已验证工作**（599 运行时测试 + 47 集成测试）：
+**已验证工作**（600 运行时测试 + 69 集成测试）：
 - `queue_work()` 在工作线程上执行（100 个并发项 ✅）
 - Task.Run / task_delay / task_when_all / task_when_any ✅
 - Continuations: 线程安全链表，400 个并发注册 ✅
@@ -445,7 +446,7 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 
 | # | 任务 | 预估 | 说明 |
 |---|------|------|------|
-| E.win | SChannel TLS（Windows） | 中 | SslStream → P/Invoke to `secur32.dll`/`schannel.dll`。Windows 自带 — 无需 FetchContent，与 ws2_32 同模式。 |
+| E.win | SChannel TLS（Windows） | 中 | ✅ SslStream → P/Invoke to `secur32.dll`/`schannel.dll`。HttpsGetTest 作为集成测试通过。 |
 | E.linux | OpenSSL TLS（Linux） | 高 | **待定。**从 dotnet/runtime 提取 `System.Security.Cryptography.Native.OpenSsl`，FetchContent + 链接 OpenSSL |
 | E.2 | System.IO.Compression.Native 集成 | 低 | 从 dotnet/runtime 提取，内嵌 zlib |
 | E.3 | 移出 InternalPInvokeModules 对应项 | 低 | 让 BCL P/Invoke 声明正常生成 |
@@ -489,14 +490,14 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 ```
 Phase 1-4 ✅  →  Phase A ✅  →  Phase B ✅ (Windows)
        ↓
-   ┌── Phase C.6 (完整 HTTP GET) ──────────────┐
-   │      ↓                                     │ ← 并行
+   ┌── Phase C.6 ✅ (完整 HTTP GET) ────────────┐
+   │   Phase E.win ✅ (SChannel TLS)             │ ← 并行
+   │      ↓                                     │
    │   Phase C.7 (MarshalAs P/Invoke)          Phase D (NativeAOT 元数据 + NuGet 生态)
    │      ↓                                     │    D.0 NuGet 验证
-   │   Phase E.win (SChannel TLS)               │    D.1 [DynamicallyAccessedMembers]
+   │   Phase E.2 (zlib 压缩)                    │    D.1 [DynamicallyAccessedMembers]
    │      ↓                                     │    D.3 ILLink feature switch
-   │   Phase E.2 (zlib 压缩)                    │    D.5 Source generator 验证
-   │      ↓                                     │
+   │                                            │    D.5 Source generator 验证
    └──────┴─────── 汇合 ───────────────────────┘
                         ↓
               Phase H.2 (RenderedBodyError → 0) — 持续进行
@@ -525,8 +526,8 @@ macOS 支持 (Objective-C 桥接)
 |--------|---------|---------|------|
 | **M1: 编译器成熟** | stubs < 2,000，翻译率 > 92% | A | ✅（1,280 stubs, ~95%+） |
 | **M2: 文件 I/O** | FileStream/StreamReader 从 BCL IL 编译并运行 | B | ✅ Windows（~90%） |
-| **M3: 联网应用** | HttpClient HTTP GET 从 BCL IL 编译并运行 | C.6 | ~60%：Socket+DNS+构造 ✅，完整 GET 待做 |
-| **M3.5: REST 客户端** | HTTP GET + `JsonSerializer.Deserialize<T>()`（via SG）端到端 | C.6+D | 阻塞 — 需 C.6 + D.1 + D.3 + D.5 |
+| **M3: 联网应用** | HttpClient HTTP GET 从 BCL IL 编译并运行 | C.6 | ✅ HTTP GET + HTTPS GET 已通过（69/69 集成测试） |
+| **M3.5: REST 客户端** | HTTP GET + `JsonSerializer.Deserialize<T>()`（via SG）端到端 | C.6+D | 部分阻塞 — C.6 ✅，需 D.5 运行时验证 |
 | **M4: 库生态** | 3+ NuGet PackageReference 项目编译并运行 | D | 未开始 |
 | **M5: 生产级** | HTTPS + Compression | E | 未开始 |
 | **M6: 发布** | CI/CD + 10 真实 NuGet 包验证 | G | 未开始 |

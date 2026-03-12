@@ -1,6 +1,6 @@
 # Development Roadmap
 
-> Last updated: 2026-03-05
+> Last updated: 2026-03-12
 >
 > [中文版 (Chinese)](roadmap.zh-CN.md)
 
@@ -29,11 +29,11 @@ These are required before CIL2CPP can claim "compiles .NET NativeAOT projects":
 
 | Goal | Phase | Description |
 |------|-------|-------------|
-| Full HTTP GET | C.6 | `HttpClient.GetStringAsync("http://...")` async request/response chain |
+| Full HTTP GET | C.6 ✅ | `HttpClient.GetStringAsync("http://...")` async request/response chain — **working** |
 | NativeAOT metadata | D | `[DynamicallyAccessedMembers]`, ILLink feature switches, NuGet package validation |
 | JSON serialization (SG) | D.5 | System.Text.Json source generator path compiles and runs |
 | MarshalAs P/Invoke | C.7 | `[MarshalAs]`, `[Out]`/`[In]`, array marshaling — needed by NuGet ecosystem |
-| SChannel TLS (Windows) | E.win | HTTPS via `secur32.dll`/`schannel.dll` P/Invoke (OS-provided, no FetchContent) |
+| SChannel TLS (Windows) | E.win ✅ | HTTPS via `secur32.dll`/`schannel.dll` P/Invoke — **working** (HttpsGetTest passes) |
 | Compression | E.2 | zlib via System.IO.Compression.Native |
 | RenderedBodyError → 0 | H.2 | Fix all codegen bugs (currently 17 RE stubs, down from 116) |
 | SIMD scalar completion | F.1 | Eliminate remaining SIMD stubs via complete scalar fallback paths |
@@ -156,7 +156,7 @@ See "RuntimeProvided Type Classification" section above.
 **Unfixable or deferred**: SIMD dead-code branches are handled by FeatureSwitchResolver (IsSupported=false dead-branch elimination). CLR internal types (~96) are permanently retained.
 
 **IL translation rate**: ~95%+. History: Phase A: 2,777 → 1,478; Phase B: 1,478 → 1,537; Phase C: → 1,666; Phase X + demand-driven generics: → 1,280 (method count also reduced ~26k from ~31k via specialized method reachability).
-**Tests**: 1,273+ C# + 591 C++ + 35 integration — all passing.
+**Tests**: 1,291 C# + 600 C++ + 69 integration — all passing.
 
 ### Implemented Architecture Capabilities
 
@@ -169,24 +169,25 @@ See "RuntimeProvided Type Classification" section above.
 
 | Project Type | Est. Completion | Key Blockers |
 |-------------|----------------|-------------|
-| Simple console apps | ~92% | Reflection stubs may cause runtime surprises |
+| Simple console apps | ~95% | Reflection stubs may cause runtime surprises |
 | Library projects | ~78% | `[DynamicallyAccessedMembers]` not parsed — tree-shaking breaks NuGet packages |
 | File I/O apps | ~80% | File.ReadAllBytes hangs (B.6); encoding gaps in File ICalls |
-| Network apps | ~45% | HTTP GET compiles (C.6 builds); HTTPS needs TLS (Phase E.win) |
-| REST client (HTTP+JSON) | ~15% | Needs C.6 + Phase D (metadata) + JSON SG validation |
-| Production-grade apps | ~3% | Needs TLS + JSON + DI — all require Phase D first |
-| Arbitrary NativeAOT .csproj | **~25%** | NuGet packages untested, `[MarshalAs]` partial, 17 RE codegen bugs |
+| Network apps (HTTP) | ~85% | HTTP GET ✅, HTTPS GET ✅ (Windows). Complex scenarios (redirects, auth) not yet validated |
+| Network apps (HTTPS) | ~75% | SChannel TLS working for basic HTTPS GET; edge cases pending |
+| REST client (HTTP+JSON) | ~25% | HTTP working; needs Phase D (metadata) + JSON SG runtime validation |
+| Production-grade apps | ~5% | Needs JSON + DI — require Phase D first |
+| Arbitrary NativeAOT .csproj | **~30%** | NuGet packages untested, `[MarshalAs]` partial, 17 RE codegen bugs |
 
 > **Linux/macOS**: Deferred. All percentages above are Windows-only. Linux requires System.Native integration (Phase B.5, deferred) + OpenSSL (Phase E.linux, deferred). Current Linux support: ~5% (console-only, no file I/O or networking).
 
 **What moves the needle** (cumulative, Windows):
-- **25%→40%**: Phase D.1+D.3 (DynamicallyAccessedMembers + ILLink switches) + NuGet package validation — **single biggest jump**
-- **40%→55%**: Phase C.6 (HTTP GET) + RenderedBodyError reduction + MarshalAs P/Invoke
-- **55%→75%**: Phase E.win (SChannel TLS) + JSON via SG + SIMD scalar completion
+- **30%→45%**: Phase D.1+D.3 (DynamicallyAccessedMembers + ILLink switches) + NuGet package validation — **single biggest jump**
+- **45%→60%**: RenderedBodyError reduction + MarshalAs P/Invoke + JSON SG runtime validation
+- **60%→75%**: SIMD scalar completion + compression (zlib) + complex HTTP scenarios
 - **75%→90%**: 10 NuGet package validation + comprehensive testing
 - **90%→95%**: Edge case fixes + polish
 
-**Implementation gaps** (2026-03-05 audit):
+**Implementation gaps** (2026-03-12 audit):
 - `[DynamicallyAccessedMembers]` — **complete (validated)**: 13 DamFlags, field/method/parameter scanning, CLI `--rdxml` wired, 7 DAM reachability tests + 14 rd.xml parser tests
 - ILLink feature switches — **active**: FeatureSwitchResolver substitutes 10+ AOT defaults at compile time. SIMD IsSupported=false dead-branch elimination via brfalse pattern detection.
 - `[MarshalAs]` attribute — **implemented** (C.7.1): Cecil parsing + 21 type mappings. Missing: `[Out]`/`[In]` copy-back (C.7.2), LPArray runtime marshaling (C.7.3)
@@ -222,7 +223,7 @@ See "RuntimeProvided Type Classification" section above.
 | 3.2d | IsValidMergeVariable correction | -45 | ✅ | Forbid &expr as branch merge assignment target |
 | 3.2e | DetermineTempVarTypes improvement | -17 | ✅ | IRBinaryOp type inference + IRRawCpp pattern inference |
 | 3.2f | Stub classification improvement | Diagnostics | ✅ | GetBrokenPatternDetail covers all HasKnownBrokenPatterns patterns |
-| 3.2g | Integration test fixes | 35/35 | ✅ | Fixed 7 C++ compilation error patterns (void ICall/TypeInfo/ctor/Span/pointer types) |
+| 3.2g | Integration test fixes | 69/69 | ✅ | Fixed 7 C++ compilation error patterns (void ICall/TypeInfo/ctor/Span/pointer types) |
 | 3.2h | StackEntry typed stack + IRRawCpp type annotation | -98 | ✅ | Stack\<StackEntry\> type tracking + IRRawCpp ResultVar/ResultTypeCpp completion |
 | 3.3 | UnknownBodyReferences fix | 506→285 | ✅ | Gate reordering + knownTypeNames sync + opaque stubs + SIMD/array type detection |
 | 3.4 | UndeclaredFunction fix | 222→151 | ✅ | Broadened calledFunctions scan + multi-pass discovery + diagnostic filter fix (remaining 151 are generic specialization gaps) |
@@ -336,7 +337,7 @@ See "RuntimeProvided Type Classification" section above.
 **Prerequisites**: Phase A ✅
 **Output**: FileStream end-to-end compiled from BCL IL — **Windows working** ✅, Linux needs System.Native
 
-### Phase C: BCL Chain Extension — Networking (in progress)
+### Phase C: BCL Chain Extension — Networking ✅
 
 **Goal**: `HttpClient.GetStringAsync("http://...")` compiles from BCL IL
 
@@ -350,11 +351,11 @@ See "RuntimeProvided Type Classification" section above.
 | C.2 | TCP socket lifecycle | High | ✅ | Full TCP loopback: bind/listen/connect/accept/send/recv via Winsock P/Invoke. Gate patterns for pointer locals, Array ref/out, delegate cross-scope |
 | C.3 | HttpClient construction | High | ✅ | HttpClient → SocketsHttpHandler → HttpConnectionSettings → TimeSpan/Int128. 5 compiler/runtime fixes: signed comparison (`clt`/`cgt` → `signed_lt/gt`), Exception.GetType ICall, SR resource string ICall, RunClassConstructor stub, generic nested type name mangling (boundary-aware regex) |
 | C.4 | DNS resolution | Low | ✅ | `Dns.GetHostAddresses` via Winsock GetAddrInfoW P/Invoke. `dup` opcode decoupling fix for `a[i++]` patterns |
-| C.5 | Integration tests | Low | ✅ | SocketTest (TCP loopback + DNS) + HttpTest (HttpClient construction) — 47/47 integration tests pass |
-| C.6 | Full HTTP GET (plaintext) | High | ✅ Builds (runtime pending) | HttpGetTest compiles with 0 MSVC errors (from ~190). ~20 RenderedBodyError gates for: CIL2CPP_FILTER_BEGIN+CATCH, pointer↔intptr_t mismatch, opaque SafeHandle/ValueTuple stubs, QUIC/SIMD/void* arithmetic. sspicli→Secur32 lib mapping, /bigobj flag. Runtime SocketException pending — depends on BCL stub reduction. Integration test: codegen+build phase. |
+| C.5 | Integration tests | Low | ✅ | SocketTest (TCP loopback + DNS) + HttpTest (HttpClient construction) — 69/69 integration tests pass |
+| C.6 | Full HTTP GET (plaintext) | High | ✅ | HttpGetTest: full `HttpClient.GetStringAsync("http://...")` async request/response chain working. HttpsGetTest: HTTPS via SChannel (secur32/sspicli) also working. Both pass as integration tests (69/69). |
 
 **Prerequisites**: Phase B ✅
-**Output**: Socket + DNS + HttpClient construction working (Windows). Full HTTP GET: **compiles and links**. Runtime execution pending BCL stub reduction.
+**Output**: Socket + DNS + HttpClient HTTP GET + HTTPS GET all working (Windows). 69/69 integration tests pass.
 
 ### ThreadPool Architecture Assessment (2026-03-02)
 
@@ -366,7 +367,7 @@ See "RuntimeProvided Type Classification" section above.
 - All async/await, Task combinators, continuations work with true concurrency
 - BCL ThreadPool ICalls (9 entries) are intentional no-ops — CIL2CPP routes work through its own C++ pool
 
-**What works** (verified by 599 runtime tests + 47 integration tests):
+**What works** (verified by 600 runtime tests + 69 integration tests):
 - `queue_work()` executes on worker threads (100 concurrent items ✅)
 - Task.Run / task_delay / task_when_all / task_when_any ✅
 - Continuations: thread-safe linked list, 400 concurrent registrations ✅
@@ -446,7 +447,7 @@ See "RuntimeProvided Type Classification" section above.
 
 | # | Task | Estimate | Description |
 |---|------|----------|-------------|
-| E.win | SChannel TLS (Windows) | Medium | SslStream → P/Invoke to `secur32.dll`/`schannel.dll`. Already part of Windows — no FetchContent needed, same pattern as ws2_32. |
+| E.win | SChannel TLS (Windows) | Medium | ✅ SslStream → P/Invoke to `secur32.dll`/`schannel.dll`. HttpsGetTest passes as integration test. |
 | E.linux | OpenSSL TLS (Linux) | High | **Deferred.** Extract `System.Security.Cryptography.Native.OpenSsl` from dotnet/runtime, FetchContent + link OpenSSL |
 | E.2 | System.IO.Compression.Native integration | Low | Extract from dotnet/runtime, embed zlib |
 | E.3 | Remove corresponding InternalPInvokeModules | Low | Let BCL P/Invoke declarations generate normally |
@@ -490,14 +491,14 @@ See "RuntimeProvided Type Classification" section above.
 ```
 Phase 1-4 ✅  →  Phase A ✅  →  Phase B ✅ (Windows)
        ↓
-   ┌── Phase C.6 (Full HTTP GET) ──────────────┐
-   │      ↓                                     │ ← parallel
+   ┌── Phase C.6 ✅ (Full HTTP GET) ────────────┐
+   │   Phase E.win ✅ (SChannel TLS)             │ ← parallel
+   │      ↓                                     │
    │   Phase C.7 (MarshalAs P/Invoke)          Phase D (NativeAOT metadata + NuGet ecosystem)
    │      ↓                                     │    D.0 NuGet validation
-   │   Phase E.win (SChannel TLS)               │    D.1 [DynamicallyAccessedMembers]
+   │   Phase E.2 (zlib compression)             │    D.1 [DynamicallyAccessedMembers]
    │      ↓                                     │    D.3 ILLink feature switches
-   │   Phase E.2 (zlib compression)             │    D.5 Source generator validation
-   │      ↓                                     │
+   │                                            │    D.5 Source generator validation
    └──────┴─────── convergence ─────────────────┘
                         ↓
               Phase H.2 (RenderedBodyError → 0) — continuous
@@ -526,8 +527,8 @@ macOS support (Objective-C bridge)
 |-----------|---------|-------|--------|
 | **M1: Compiler Maturity** | stubs < 2,000, translation rate > 92% | A | ✅ (1,280 stubs, ~95%+) |
 | **M2: File I/O** | FileStream/StreamReader compile from BCL IL and run | B | ✅ Windows (~90%) |
-| **M3: Networked Apps** | HttpClient HTTP GET compiles from BCL IL and runs | C.6 | ~60%: Socket+DNS+constructor ✅, full GET pending |
-| **M3.5: REST Client** | HTTP GET + `JsonSerializer.Deserialize<T>()` (via SG) end-to-end | C.6+D | Blocked — needs C.6 + D.1 + D.3 + D.5 |
+| **M3: Networked Apps** | HttpClient HTTP GET compiles from BCL IL and runs | C.6 | ✅ HTTP GET + HTTPS GET working (69/69 integration tests) |
+| **M3.5: REST Client** | HTTP GET + `JsonSerializer.Deserialize<T>()` (via SG) end-to-end | C.6+D | Partially blocked — C.6 ✅, needs D.5 runtime validation |
 | **M4: Library Ecosystem** | Project with 3+ NuGet PackageReferences compiles and runs | D | Not started |
 | **M5: Production-Grade** | HTTPS + Compression | E | Not started |
 | **M6: Release** | CI/CD + 10 real NuGet package validation | G | Not started |
