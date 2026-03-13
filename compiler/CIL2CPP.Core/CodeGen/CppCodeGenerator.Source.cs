@@ -290,8 +290,11 @@ public partial class CppCodeGenerator
                 var cctorMethod = type.Methods.FirstOrDefault(m => m.IsStaticConstructor);
                 if (cctorMethod != null)
                 {
-                    // If the cctor body was never compiled (e.g., not reachable, or
-                    // demand-driven discovery didn't reach it), emit a no-op ensure_cctor.
+                    // Types discovered late (Pass 6.1b+) may have HasCctor=true but cctor body
+                    // not compiled (CLR-internal dependencies or unreachable). Method bodies already
+                    // reference ensure_cctor, so emit a no-op to satisfy the linker. This is
+                    // architecturally correct: the cctor would initialize CLR-internal state
+                    // irrelevant in AOT.
                     if (cctorMethod.BasicBlocks.Count == 0)
                     {
                         sb.AppendLine($"void {type.CppName}_ensure_cctor() {{ }}");
@@ -430,15 +433,29 @@ public partial class CppCodeGenerator
             if (method.IsAbstract) continue;
             if (method.BasicBlocks.Count == 0) continue;
             if (method.HasICallMapping) continue;
-            if (HasInvalidCppSignature(method)) continue;
-            if (HasGenericBodyTypeConflict(type, method)) continue;
-            if (CallsUndeclaredFunction(method))
+            if (HasInvalidCppSignature(method))
+            {
+                _skippedByInvalidSignature.Add((type.ILFullName, method.CppName));
                 continue;
+            }
+            if (HasGenericBodyTypeConflict(type, method))
+            {
+                _skippedByGenericBodyConflict.Add((type.ILFullName, method.CppName));
+                continue;
+            }
             // Skip methods that are themselves SIMD dead code.
             // Their callers have been replaced with default values at render time;
             // emitting the method body would reference SIMD opaque struct fields.
+            // Checked before CallsUndeclaredFunction to avoid miscounting SIMD methods
+            // as undeclared-function skips.
             if (IsSimdDeadCodeFunction(method.CppName))
                 continue;
+            var undeclaredCall = FindFirstUndeclaredCall(method);
+            if (undeclaredCall != null)
+            {
+                _skippedByUndeclaredFunction.Add((type.ILFullName, method.CppName, undeclaredCall));
+                continue;
+            }
             if (!_emittedMethodSignatures.Add(method.GetCppSignature())) continue;
             // Direct render — compile from IL
             GenerateMethodImpl(sb, method);
@@ -464,6 +481,23 @@ public partial class CppCodeGenerator
         // Both partitions get stub bodies — CoreRuntimeTypes methods can't compile from IL
         // (struct layout mismatch) but callers in other BCL code still reference them.
         var (glue, stubs) = PartitionMissingMethods(_emittedMethodSignatures);
+
+        // Diagnostic: report stub counts to stderr for auditing
+        if (glue.Count > 0 || stubs.Count > 0)
+        {
+            Console.Error.WriteLine($"[CIL2CPP] Linker stub summary for {_module.Name}:");
+            if (glue.Count > 0)
+                Console.Error.WriteLine($"  Runtime glue (CoreRuntime/ClrInternal): {glue.Count} methods");
+            if (stubs.Count > 0)
+            {
+                Console.Error.WriteLine($"  Unreachable stubs (tree-shaking gaps): {stubs.Count} methods");
+                var byType = stubs.GroupBy(m => m.DeclaringType?.ILFullName ?? "<unknown>")
+                    .OrderByDescending(g => g.Count()).Take(20);
+                foreach (var g in byType)
+                    Console.Error.WriteLine($"    [{g.Count()}x] {g.Key}");
+            }
+        }
+
         if (glue.Count > 0)
             GenerateMissingMethodImpls(sb, glue, "Runtime Type Method Stubs (CoreRuntimeTypes — struct layout prevents IL compilation)");
         if (stubs.Count > 0)
@@ -861,16 +895,20 @@ public partial class CppCodeGenerator
         if (type.IsEnum) flagParts.Add("cil2cpp::TypeFlags::Enum");
         if (type.IsPublic) flagParts.Add("cil2cpp::TypeFlags::Public");
         if (type.IsNestedPublic) flagParts.Add("cil2cpp::TypeFlags::NestedPublic");
+        if (type.IsNotPublic) flagParts.Add("cil2cpp::TypeFlags::NotPublic");
+        if (type.IsNestedAssembly) flagParts.Add("cil2cpp::TypeFlags::NestedAssembly");
         if (type.IsByRefLike) flagParts.Add("cil2cpp::TypeFlags::IsByRefLike");
         // Nullable<T> detection: open generic "System.Nullable`1" or closed "System.Nullable`1<...>"
         if (type.ILFullName.StartsWith("System.Nullable`1"))
             flagParts.Add("cil2cpp::TypeFlags::Nullable");
         var flagsStr = flagParts.Count > 0 ? string.Join(" | ", flagParts) : "cil2cpp::TypeFlags::None";
 
-        // Array flag: detect array types from ILFullName suffix "[]"
+        // Array flag and rank: detect array types from ILFullName suffix
+        int arrayRank = 0;
         if (type.ILFullName.EndsWith("[]"))
         {
             flagParts.Add("cil2cpp::TypeFlags::Array");
+            arrayRank = 1;
             // Derive element type CppName from array type ILFullName
             var elementIL = type.ILFullName[..^2]; // strip "[]"
             type.ArrayElementTypeCppName = CppNameMapper.MangleTypeName(elementIL);
@@ -880,6 +918,9 @@ public partial class CppCodeGenerator
         {
             flagParts.Add("cil2cpp::TypeFlags::Array");
             flagParts.Add("cil2cpp::TypeFlags::MultiDimensionalArray");
+            // Rank = number of commas + 1 in the bracket suffix
+            var bracketStart = type.ILFullName.LastIndexOf('[');
+            arrayRank = type.ILFullName[bracketStart..].Count(c => c == ',') + 1;
         }
 
         // CorElementType (needed by both full and minimal)
@@ -935,6 +976,8 @@ public partial class CppCodeGenerator
                 sb.AppendLine($"    .interface_vtable_count = {type.InterfaceImpls.Count},");
             }
             sb.AppendLine($"    .cor_element_type = 0x{corElementType:X2},");
+            if (arrayRank > 0)
+                sb.AppendLine($"    .array_rank = {arrayRank},");
             if (type.IsEnum && type.EnumUnderlyingType != null)
             {
                 var underlyingCpp = CppNameMapper.MangleTypeName(type.EnumUnderlyingType);
@@ -1065,6 +1108,8 @@ public partial class CppCodeGenerator
             sb.AppendLine($"    .custom_attribute_count = {typeAttrCount},");
         }
         sb.AppendLine($"    .cor_element_type = 0x{corElementType:X2},");
+        if (arrayRank > 0)
+            sb.AppendLine($"    .array_rank = {arrayRank},");
         if (underlyingTypeExpr != "nullptr")
             sb.AppendLine($"    .underlying_type = {underlyingTypeExpr},");
         if (enumCount > 0)
@@ -1293,6 +1338,23 @@ public partial class CppCodeGenerator
                     else
                     {
                         code = "(void)0; // EventSource dead-code";
+                    }
+                }
+
+                // AOT-incompatible dead code (Reflection.Emit, AssemblyLoadContext, StackFrame)
+                if (instr is IRCall aotCall && IsAotIncompatibleDeadCode(aotCall.FunctionName)
+                    && _undeclaredFunctionNames.Contains(aotCall.FunctionName))
+                {
+                    if (aotCall.ResultVar != null)
+                    {
+                        var type = aotCall.ResultTypeCpp ?? "int";
+                        var defaultVal = type.EndsWith("*") ? "nullptr" : "{}";
+                        code = $"{type} {aotCall.ResultVar} = {defaultVal}; // AOT-incompatible dead-code";
+                        declaredTemps.Add(aotCall.ResultVar);
+                    }
+                    else
+                    {
+                        code = "(void)0; // AOT-incompatible dead-code";
                     }
                 }
 
@@ -2029,12 +2091,17 @@ public partial class CppCodeGenerator
 
         // Interface vtable method arrays and InterfaceVTable arrays
 
-        // Pre-pass: generate no-op stubs for interface methods that would otherwise be nullptr.
-        // This handles both undeclared method impls (non-null m, but not in _declaredFunctionNames)
-        // and unresolved method impls (null m, method not found during Pass 5).
-        // Stubs prevent null function pointer crashes on interface dispatch.
+        // Pre-pass: generate default-return stubs for interface methods without compiled bodies.
+        // Two categories:
+        //   1. "Undeclared": method resolved by Pass 5 (non-null m) but body not compiled.
+        //      Root cause: ReachabilityAnalyzer doesn't mark interface impl methods as reachable
+        //      when the interface is dispatched on. Fix requires RA changes (tracked in plan).
+        //   2. "Unresolved": null slot from Pass 5 (method not found in type hierarchy).
+        //      Root cause: CoreRuntime reflection types (IReflect, ICustomAttributeProvider) —
+        //      architecturally correct since these have runtime-provided implementations.
         var ifaceStubLookup = new Dictionary<string, string>(); // "Type|Iface|slot" → stubFuncName
         var emittedIfaceStubs = new HashSet<string>();
+        var undeclaredIfaceMethodCount = 0;
         // Known C++ type names — used to detect open generic params in interface stubs
         var knownCppTypes = new HashSet<string>(_module.Types.Select(t => t.CppName));
         foreach (var prim in new[] { "int8_t", "uint8_t", "int16_t", "uint16_t", "int32_t", "uint32_t",
@@ -2052,7 +2119,7 @@ public partial class CppCodeGenerator
 
                     if (m != null)
                     {
-                        // Non-null: check if the method would end up as nullptr in the vtable
+                        // Non-null: method resolved by Pass 5 but body may not be compiled.
                         var declType = m.DeclaringType;
                         var isDeclCoreRt = declType != null && declType.IsRuntimeProvided
                             && IRBuilder.CoreRuntimeTypes.Contains(declType.ILFullName);
@@ -2061,10 +2128,14 @@ public partial class CppCodeGenerator
                         if (_declaredFunctionNames.Contains(m.CppName)) continue; // Already declared
                         if (!emittedIfaceStubs.Add(m.CppName)) continue;
 
+                        // Method body not compiled — tree-shaking gap: the implementing method
+                        // was not marked as reachable even though the interface is dispatched on.
+                        // Generate a default-return stub until ReachabilityAnalyzer is fixed to
+                        // mark interface impl methods as reachable when the interface is dispatched.
+                        undeclaredIfaceMethodCount++;
                         var sig = m.GetCppSignature();
                         var retDefault = string.IsNullOrEmpty(m.ReturnTypeCpp) || m.ReturnTypeCpp == "void"
                             ? "" : " return {};";
-                        sb.AppendLine($"// STUB: undeclared interface method implementation");
                         sb.AppendLine($"{sig} {{{retDefault} }}");
                         _declaredFunctionNames.Add(m.CppName);
                         _emittedMethodSignatures.Add(sig); // prevent duplicate in stubs file
@@ -2103,7 +2174,11 @@ public partial class CppCodeGenerator
                 }
             }
         }
-        if (emittedIfaceStubs.Count > 0) sb.AppendLine();
+        if (emittedIfaceStubs.Count > 0 || undeclaredIfaceMethodCount > 0)
+        {
+            if (emittedIfaceStubs.Count > 0) sb.AppendLine();
+            Console.Error.WriteLine($"[CIL2CPP] Interface vtable gaps for {_module.Name}: {undeclaredIfaceMethodCount} undeclared (stubs), {ifaceStubLookup.Count} unresolved (stubs)");
+        }
 
         // Pre-pass: generate unboxing thunks for value type interface methods.
         // When interface methods are called on boxed value types, the 'this' pointer

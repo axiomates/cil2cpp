@@ -53,6 +53,8 @@ Boolean Type_get_IsPublic(void* __this);
 Boolean Type_get_IsAbstract(void* __this);
 Boolean Type_get_IsValueType(void* __this);
 Boolean Type_get_IsNestedPublic(void* __this);
+Boolean Type_get_IsNotPublic(void* __this);
+Boolean Type_get_IsNestedAssembly(void* __this);
 Boolean Type_IsArrayImpl(void* __this);
 Boolean Type_IsEnumDefined(void* __this, void* value);
 Boolean Type_IsEquivalentTo(void* __this, void* other);
@@ -71,6 +73,7 @@ Boolean RuntimeTypeHandle_IsByRefLike(void* handle);
 Int32 RuntimeTypeHandle_GetToken(void* handle);
 Boolean RuntimeTypeHandle_IsInstanceOfType(void* handle, void* obj);
 void* RuntimeTypeHandle_GetDeclaringMethod(void* handle);
+Int32 RuntimeTypeHandle_GetArrayRank(void* handle);
 
 // System.RuntimeMethodHandle
 inline Boolean RuntimeMethodHandle_IsDynamicMethod(void*) { return false; }
@@ -85,6 +88,7 @@ inline void* TypeInfo_AsType(void* __this) { return __this; }
 Boolean MethodBase_get_IsVirtual(void* __this);
 Boolean MethodBase_get_IsPublic(void* __this);
 Boolean MethodBase_get_IsStatic(void* __this);
+Boolean MethodBase_get_IsAbstract(void* __this);
 String* MemberInfo_get_Name(void* __this);
 Int32 RuntimeMethodInfo_get_BindingFlags(void* __this);
 void* RuntimeMethodInfo_GetGenericArgumentsInternal(void* __this);
@@ -241,6 +245,7 @@ double Math_BitDecrement(double value);
 double Math_BitIncrement(double value);
 
 // System.MathF (float)
+float MathF_Abs(float value);
 float MathF_Sqrt(float value);
 float MathF_Sin(float value);
 float MathF_Cos(float value);
@@ -291,24 +296,6 @@ cil2cpp::Object* ThrowHelper_GetInvalidOperationException(Int32 resource);
 cil2cpp::String* SR_GetResourceString(cil2cpp::String* key);
 cil2cpp::String* ThrowHelper_GetResourceString(Int32 resource);
 cil2cpp::String* ThrowHelper_GetArgumentName(Int32 argument);
-
-// System.Text.Ascii — scalar replacements for SIMD-dependent BCL methods
-bool Ascii_AllBytesInUInt32AreAscii(uint32_t value);
-bool Ascii_AllBytesInUInt64AreAscii(uint64_t value);
-bool Ascii_AllCharsInUInt32AreAscii(uint32_t value);
-bool Ascii_AllCharsInUInt64AreAscii(uint64_t value);
-bool Ascii_FirstCharInUInt32IsAscii(uint32_t value);
-bool Ascii_IsValid_byte(uint8_t value);
-bool Ascii_IsValid_char(char16_t value);
-uintptr_t Ascii_WidenAsciiToUtf16(uint8_t* pAsciiBuffer, char16_t* pUtf16Buffer, uintptr_t elementCount);
-void Ascii_WidenFourAsciiBytesToUtf16AndWriteToBuffer(char16_t* outputBuffer, uint32_t value);
-uintptr_t Ascii_NarrowUtf16ToAscii(char16_t* pUtf16Buffer, uint8_t* pAsciiBuffer, uintptr_t elementCount);
-void Ascii_NarrowFourUtf16CharsToAsciiAndWriteToBuffer(uint8_t* outputBuffer, uint64_t value);
-void Ascii_NarrowTwoUtf16CharsToAsciiAndWriteToBuffer(uint8_t* outputBuffer, uint32_t value);
-uint32_t Ascii_CountNumberOfLeadingAsciiBytesFromUInt32WithSomeNonAsciiData(uint32_t value);
-uintptr_t Ascii_GetIndexOfFirstNonAsciiByte(uint8_t* pBuffer, uintptr_t bufferLength);
-uintptr_t Ascii_GetIndexOfFirstNonAsciiChar(char16_t* pBuffer, uintptr_t bufferLength);
-bool Ascii_ContainsNonAsciiByte_Sse2(uint32_t sseMask);
 
 // SpanHelpers.DontNegate<T> / Negate<T> — generic helper structs for IndexOfAny
 // DontNegate: identity function, Negate: logical negation

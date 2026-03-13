@@ -562,6 +562,28 @@ public partial class IRBuilder
             return;
         }
 
+        // Unsafe.BitCast<TFrom,TTo>(TFrom) — value-level type punning intrinsic (C++20 std::bit_cast)
+        if (methodRef.DeclaringType.FullName == "System.Runtime.CompilerServices.Unsafe"
+            && methodRef.Name == "BitCast" && methodRef is GenericInstanceMethod gimBc
+            && gimBc.GenericArguments.Count == 2)
+        {
+            var val = stack.PopExprOr("0");
+            var toTypeArg = gimBc.GenericArguments[1];
+            var resolvedTo = ResolveTypeRefOperand(toTypeArg);
+            var cppTo = CppNameMapper.GetCppTypeName(resolvedTo);
+            if (!CppNameMapper.IsValueType(resolvedTo) && !cppTo.EndsWith("*"))
+                cppTo += "*";
+            var tmp = $"__t{tempCounter++}";
+            block.Instructions.Add(new IRRawCpp
+            {
+                Code = $"{cppTo} {tmp}; std::memcpy(&{tmp}, &{val}, sizeof({cppTo}));",
+                ResultVar = tmp,
+                ResultTypeCpp = cppTo,
+            });
+            stack.Push(new StackEntry(tmp, cppTo));
+            return;
+        }
+
         // Unsafe.Add<T>(ref T, int) — pointer arithmetic intrinsic
         if (methodRef.DeclaringType.FullName == "System.Runtime.CompilerServices.Unsafe"
             && methodRef.Name == "Add" && methodRef.Parameters.Count == 2)
@@ -3428,6 +3450,10 @@ public partial class IRBuilder
         {
             // Skip constructors — only map actual interface methods
             if (ifaceMethod.IsConstructor || ifaceMethod.IsStaticConstructor) continue;
+
+            // Skip static abstract/virtual interface methods — they are resolved at compile time
+            // via constrained. + call IL patterns, not through runtime interface dispatch tables.
+            if (ifaceMethod.IsStatic) continue;
 
             // First: check explicit interface overrides (.override directive)
             var implMethod = FindExplicitOverride(irType, iface, ifaceMethod);

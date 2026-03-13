@@ -144,6 +144,11 @@ public partial class CppCodeGenerator
     /// </summary>
     private HashSet<string> _undeclaredFunctionNames = new();
 
+    // ── Diagnostic counters: track methods skipped by each render-time filter ──
+    private readonly List<(string TypeIL, string MethodCpp, string UndeclaredCall)> _skippedByUndeclaredFunction = new();
+    private readonly List<(string TypeIL, string MethodCpp)> _skippedByInvalidSignature = new();
+    private readonly List<(string TypeIL, string MethodCpp)> _skippedByGenericBodyConflict = new();
+
     /// <summary>
     /// Map of function name → set of declared parameter counts (populated during header generation).
     /// Used to detect overload mismatches (calling a function with wrong number of arguments).
@@ -290,6 +295,35 @@ public partial class CppCodeGenerator
 
         // Generate CMakeLists.txt
         output.CMakeFile = GenerateCMakeLists(output);
+
+        // ── Diagnostic summary: render-time filter skips ──
+        if (_skippedByUndeclaredFunction.Count > 0 || _skippedByInvalidSignature.Count > 0 || _skippedByGenericBodyConflict.Count > 0)
+        {
+            Console.Error.WriteLine($"[CIL2CPP] Render-time filter summary for {_module.Name}:");
+            if (_skippedByUndeclaredFunction.Count > 0)
+            {
+                Console.Error.WriteLine($"  CallsUndeclaredFunction: {_skippedByUndeclaredFunction.Count} methods skipped");
+                // Group by undeclared callee to show root causes
+                var byCallee = _skippedByUndeclaredFunction
+                    .GroupBy(x => x.UndeclaredCall)
+                    .OrderByDescending(g => g.Count())
+                    .Take(20);
+                foreach (var g in byCallee)
+                    Console.Error.WriteLine($"    [{g.Count()}x] calls {g.Key} — e.g. {g.First().TypeIL}::{g.First().MethodCpp}");
+            }
+            if (_skippedByInvalidSignature.Count > 0)
+            {
+                Console.Error.WriteLine($"  HasInvalidCppSignature: {_skippedByInvalidSignature.Count} methods skipped");
+                foreach (var (typeIL, methodCpp) in _skippedByInvalidSignature.Take(20))
+                    Console.Error.WriteLine($"    {typeIL}::{methodCpp}");
+            }
+            if (_skippedByGenericBodyConflict.Count > 0)
+            {
+                Console.Error.WriteLine($"  HasGenericBodyTypeConflict: {_skippedByGenericBodyConflict.Count} methods skipped");
+                foreach (var (typeIL, methodCpp) in _skippedByGenericBodyConflict.Take(20))
+                    Console.Error.WriteLine($"    {typeIL}::{methodCpp}");
+            }
+        }
 
         return output;
     }
@@ -687,8 +721,16 @@ public partial class CppCodeGenerator
     /// </summary>
     private bool CallsUndeclaredFunction(IR.IRMethod method)
     {
-        if (_undeclaredFunctionNames.Count == 0) return false;
-        if (method.BasicBlocks.Count == 0) return false;
+        return FindFirstUndeclaredCall(method) != null;
+    }
+
+    /// <summary>
+    /// Returns the name of the first undeclared function called by the method, or null if none.
+    /// </summary>
+    private string? FindFirstUndeclaredCall(IR.IRMethod method)
+    {
+        if (_undeclaredFunctionNames.Count == 0) return null;
+        if (method.BasicBlocks.Count == 0) return null;
 
         foreach (var block in method.BasicBlocks)
         {
@@ -698,9 +740,10 @@ public partial class CppCodeGenerator
                     && !call.IsVirtual // Virtual calls use VTable dispatch; FunctionName not in rendered C++
                     && _undeclaredFunctionNames.Contains(call.FunctionName)
                     && !IsSimdDeadCodeFunction(call.FunctionName)
-                    && !IsEventSourceDiagnosticFunction(call.FunctionName))
+                    && !IsEventSourceDiagnosticFunction(call.FunctionName)
+                    && !IsAotIncompatibleDeadCode(call.FunctionName))
                 {
-                    return true;
+                    return call.FunctionName;
                 }
                 // Note: All SIMD-related calls (intrinsics, static helpers, AND generic type
                 // instance methods like Vector128<T>.op_*, get_Zero) are exempted because they
@@ -708,14 +751,14 @@ public partial class CppCodeGenerator
                 // They're replaced with default values at render time in GenerateMethodImpl.
                 if (instr is IR.IRNewObj newObj && !string.IsNullOrEmpty(newObj.CtorName)
                     && _undeclaredFunctionNames.Contains(newObj.CtorName))
-                    return true;
+                    return newObj.CtorName;
                 if (instr is IR.IRLoadFunctionPointer ldftn && !string.IsNullOrEmpty(ldftn.MethodCppName)
                     && !ldftn.IsVirtual // Virtual ldftn uses VTable lookup
                     && _undeclaredFunctionNames.Contains(ldftn.MethodCppName))
-                    return true;
+                    return ldftn.MethodCppName;
             }
         }
-        return false;
+        return null;
     }
 
     /// <summary>
@@ -734,6 +777,8 @@ public partial class CppCodeGenerator
     /// EventSource diagnostic methods (NativeRuntimeEventSource, NetEventSource, etc.) are always
     /// behind EventSource.IsEnabled() guards which always return false in AOT. These are dead code
     /// like SIMD intrinsics — don't block method emission for referencing undeclared EventSource methods.
+    /// Note: only covers CALLEE names (functions being called), not caller methods. Callers that
+    /// reference undeclared EventSource TYPES in their bodies are still skipped by CallsUndeclaredFunction.
     /// </summary>
     private static bool IsEventSourceDiagnosticFunction(string functionName)
     {
@@ -772,7 +817,23 @@ public partial class CppCodeGenerator
             || functionName.StartsWith("System_Text_Ascii_AllCharsInVectorAreAscii_")
             || functionName.StartsWith("System_Text_Ascii_ChangeWidthAndWriteTo_")
             || functionName.StartsWith("System_Text_Ascii_SignedLessThan_")
-            || functionName.StartsWith("System_Text_Ascii_VectorContainsNonAsciiChar_");
+            || functionName.StartsWith("System_Text_Ascii_VectorContainsNonAsciiChar_")
+            // SIMD guard: ThrowForUnsupportedNumericsVectorBaseType is behind Vector.IsHardwareAccelerated
+            || functionName.StartsWith("System_ThrowHelper_ThrowForUnsupportedNumericsVectorBaseType_");
+    }
+
+    /// <summary>
+    /// AOT-incompatible callee functions. Methods referencing these are dead code in AOT
+    /// (Reflection.Emit, AssemblyLoadContext, StackFrameHelper). However, callers that also
+    /// reference undeclared TYPES from these namespaces can't compile even if calls are replaced.
+    /// Currently only used in FindFirstUndeclaredCall for IRCall/IRNewObj exemption where
+    /// the caller's body doesn't reference undeclared types.
+    /// </summary>
+    private static bool IsAotIncompatibleDeadCode(string functionName)
+    {
+        // AssemblyLoadContext: no runtime assembly loading in AOT.
+        // Callers (TypeNameParser) only call these functions, don't use ALC types as locals.
+        return functionName.StartsWith("System_Runtime_Loader_AssemblyLoadContext_");
     }
 
     /// <summary>

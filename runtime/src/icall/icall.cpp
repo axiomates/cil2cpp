@@ -375,8 +375,8 @@ UInt64 Thread_GetCurrentOSThreadId() {
 }
 
 void Thread_Initialize(void* __this) {
-    // HACK: No-op — CIL2CPP manages threads through its own runtime.
-    // TODO: implement proper thread initialization when Thread becomes IL-compiled
+    // No-op: CIL2CPP manages threads through its own ManagedThread struct.
+    // CLR's Thread.Initialize() sets up ClrThread internals which don't exist in AOT.
     (void)__this;
 }
 
@@ -397,14 +397,51 @@ void Thread_SetBackgroundNative(void* __this, Boolean isBackground) {
 }
 
 Int32 Thread_GetPriorityNative(void* __this) {
+#ifdef _WIN32
+    auto* t = static_cast<ManagedThread*>(__this);
+    if (t && t->native_handle != nullptr) {
+        auto* stdThread = static_cast<std::thread*>(t->native_handle);
+        HANDLE hThread = static_cast<HANDLE>(stdThread->native_handle());
+        int win32Priority = GetThreadPriority(hThread);
+        // Map Win32 priority back to .NET ThreadPriority (0-4)
+        switch (win32Priority) {
+            case THREAD_PRIORITY_LOWEST: return 0;
+            case THREAD_PRIORITY_BELOW_NORMAL: return 1;
+            case THREAD_PRIORITY_NORMAL: return 2;
+            case THREAD_PRIORITY_ABOVE_NORMAL: return 3;
+            case THREAD_PRIORITY_HIGHEST: return 4;
+            default: return 2;
+        }
+    }
+#else
     (void)__this;
-    return 2; // Normal priority (ThreadPriority.Normal = 2)
+#endif
+    return 2; // Default: Normal priority
 }
 
 void Thread_SetPriorityNative(void* __this, Int32 priority) {
     (void)__this;
+#ifdef _WIN32
+    // Map .NET ThreadPriority (0-4) to Win32 thread priority constants
+    int win32Priority;
+    switch (priority) {
+        case 0: win32Priority = THREAD_PRIORITY_LOWEST; break;        // Lowest
+        case 1: win32Priority = THREAD_PRIORITY_BELOW_NORMAL; break;  // BelowNormal
+        case 2: win32Priority = THREAD_PRIORITY_NORMAL; break;        // Normal
+        case 3: win32Priority = THREAD_PRIORITY_ABOVE_NORMAL; break;  // AboveNormal
+        case 4: win32Priority = THREAD_PRIORITY_HIGHEST; break;       // Highest
+        default: win32Priority = THREAD_PRIORITY_NORMAL; break;
+    }
+    auto* t = static_cast<ManagedThread*>(__this);
+    if (t && t->native_handle != nullptr) {
+        auto* stdThread = static_cast<std::thread*>(t->native_handle);
+        HANDLE hThread = static_cast<HANDLE>(stdThread->native_handle());
+        SetThreadPriority(hThread, win32Priority);
+    }
+#else
     (void)priority;
-    // HACK: no-op — thread priority not implemented
+    // TODO: implement with pthread_setschedparam on Linux/macOS
+#endif
 }
 
 Int32 Thread_get_ManagedThreadId(void* __this) {
@@ -663,11 +700,10 @@ static Type* get_type_from_this(void* __this) {
 Object* Type_GetEnumUnderlyingType(void* __this) {
     auto* t = get_type_from_this(__this);
     if (!t || !t->type_info) return nullptr;
+    // Compiler always emits .underlying_type for enum TypeInfos.
+    // nullptr means this is not an enum type — BCL caller throws ArgumentException.
     auto* underlying = t->type_info->underlying_type;
-    if (!underlying) {
-        // Fallback for types without underlying_type set (e.g., minimal external enum stubs)
-        return reinterpret_cast<Object*>(type_get_type_object(t->type_info));
-    }
+    if (!underlying) return nullptr;
     return reinterpret_cast<Object*>(type_get_type_object(underlying));
 }
 
@@ -831,6 +867,12 @@ void* RuntimeTypeHandle_GetDeclaringMethod(void* /*handle*/) {
     return nullptr;
 }
 
+Int32 RuntimeTypeHandle_GetArrayRank(void* handle) {
+    auto* ti = reinterpret_cast<TypeInfo*>(handle);
+    if (!ti) return 0;
+    return ti->array_rank;
+}
+
 // ===== System.RuntimeType =====
 
 void* RuntimeType_CreateEnum(void* __this, Int64 value) {
@@ -862,6 +904,23 @@ Boolean MethodBase_get_IsPublic(void* __this) {
 Boolean MethodBase_get_IsStatic(void* __this) {
     auto* ni = get_native_method_info(__this);
     return ni && (ni->flags & 0x0010); // MethodAttributes.Static
+}
+
+Boolean MethodBase_get_IsAbstract(void* __this) {
+    auto* ni = get_native_method_info(__this);
+    return ni && (ni->flags & 0x0400); // MethodAttributes.Abstract
+}
+
+Boolean Type_get_IsNotPublic(void* __this) {
+    auto* t = get_type_from_this(__this);
+    if (!t || !t->type_info) return false;
+    return t->type_info->flags & TypeFlags::NotPublic;
+}
+
+Boolean Type_get_IsNestedAssembly(void* __this) {
+    auto* t = get_type_from_this(__this);
+    if (!t || !t->type_info) return false;
+    return t->type_info->flags & TypeFlags::NestedAssembly;
 }
 
 String* MemberInfo_get_Name(void* __this) {

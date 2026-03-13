@@ -14,6 +14,7 @@
 
 #include "types.h"
 #include "string.h"
+#include "exception.h"
 #include "globalization_interop.h"
 #include <cstdlib>
 #include <cstdio>
@@ -29,6 +30,12 @@ inline int32_t icall_return_zero(Args...) { return 0; }
 
 template<typename... Args>
 inline int32_t icall_return_one(Args...) { return 1; }
+
+// AOT-incompatible operations (Reflection.Emit, dynamic code gen) throw at runtime.
+template<typename... Args>
+[[noreturn]] inline void icall_throw_platform_not_supported(Args...) {
+    throw_platform_not_supported();
+}
 
 // ===== Internal.Win32.RegistryKey =====
 // Registry access is used by BCL for timezone, locale, and system settings.

@@ -283,7 +283,7 @@ public static class ICallRegistry
         RegisterICall("System.GC", "_ReRegisterForFinalize", 1, "cil2cpp::gc_noop"); // no-op
         RegisterICall("System.GC", "GetTotalMemory", 1, "cil2cpp::gc_get_total_memory");
         RegisterICall("System.GC", "GetMemoryInfo", 2, "cil2cpp::gc_get_memory_info"); // fills GCMemoryInfoData with BoehmGC stats
-        RegisterICall("System.GC", "AllocateUninitializedArray", 2, "cil2cpp::gc_allocate_uninitialized_array");
+        // AllocateUninitializedArray<T> is a compiler intrinsic (IRBuilder.Emit.cs) — no ICall needed
         RegisterICall("System.GC", "GetAllocatedBytesForCurrentThread", 0, "cil2cpp::gc_get_total_memory_simple");
 
         // ===== System.Buffer =====
@@ -320,10 +320,8 @@ public static class ICallRegistry
         RegisterICall("System.Runtime.InteropServices.SafeHandle", ".ctor", 2, "cil2cpp::icall::SafeHandle__ctor");
 
         // ===== SafeFileHandle =====
-        // Default ctor: initializes _fileType = -1 (field initializer) + base SafeHandle fields.
-        // BCL ctor body can't compile from IL because Activator.CreateInstance<T>() in the generic
-        // SafeHandleMarshaller prevents reachability from discovering the concrete ctor.
-        RegisterICall("Microsoft.Win32.SafeHandles.SafeFileHandle", ".ctor", 0, "cil2cpp::icall::SafeFileHandle__ctor");
+        // Default ctor compiles from BCL IL. Reachability seeded via MarkPInvokeReturnTypeConstructed
+        // which detects SafeHandle subtypes returned from P/Invoke and seeds their parameterless ctor.
         RegisterICall("System.Runtime.InteropServices.SafeHandle", "DangerousGetHandle", 0, "cil2cpp::icall::SafeHandle_DangerousGetHandle");
         RegisterICall("System.Runtime.InteropServices.SafeHandle", "SetHandle", 1, "cil2cpp::icall::SafeHandle_SetHandle");
         RegisterICall("System.Runtime.InteropServices.SafeHandle", "DangerousAddRef", 1, "cil2cpp::icall::SafeHandle_DangerousAddRef");
@@ -375,55 +373,12 @@ public static class ICallRegistry
             "cil2cpp::utf8_utility_get_pointer_to_first_invalid_byte");
 
         // ===== System.Text.Ascii =====
-        // BCL uses SIMD (Vector128/SSE2/AVX2) for all ASCII processing.
-        // Scalar C++ implementations in runtime/src/icall/ascii.cpp.
-        RegisterICall("System.Text.Ascii", "AllBytesInUInt32AreAscii", 1,
-            "cil2cpp::icall::Ascii_AllBytesInUInt32AreAscii");
-        RegisterICall("System.Text.Ascii", "AllBytesInUInt64AreAscii", 1,
-            "cil2cpp::icall::Ascii_AllBytesInUInt64AreAscii");
-        RegisterICall("System.Text.Ascii", "AllCharsInUInt32AreAscii", 1,
-            "cil2cpp::icall::Ascii_AllCharsInUInt32AreAscii");
-        RegisterICall("System.Text.Ascii", "AllCharsInUInt64AreAscii", 1,
-            "cil2cpp::icall::Ascii_AllCharsInUInt64AreAscii");
-        RegisterICall("System.Text.Ascii", "FirstCharInUInt32IsAscii", 1,
-            "cil2cpp::icall::Ascii_FirstCharInUInt32IsAscii");
-        RegisterICallTyped("System.Text.Ascii", "IsValid", 1, "System.Byte",
-            "cil2cpp::icall::Ascii_IsValid_byte");
-        RegisterICallTyped("System.Text.Ascii", "IsValid", 1, "System.Char",
-            "cil2cpp::icall::Ascii_IsValid_char");
-        RegisterICall("System.Text.Ascii", "WidenAsciiToUtf16", 3,
-            "cil2cpp::icall::Ascii_WidenAsciiToUtf16");
-        RegisterICall("System.Text.Ascii", "WidenFourAsciiBytesToUtf16AndWriteToBuffer", 2,
-            "cil2cpp::icall::Ascii_WidenFourAsciiBytesToUtf16AndWriteToBuffer");
-        RegisterICall("System.Text.Ascii", "NarrowUtf16ToAscii", 3,
-            "cil2cpp::icall::Ascii_NarrowUtf16ToAscii");
-        RegisterICall("System.Text.Ascii", "NarrowFourUtf16CharsToAsciiAndWriteToBuffer", 2,
-            "cil2cpp::icall::Ascii_NarrowFourUtf16CharsToAsciiAndWriteToBuffer");
-        RegisterICall("System.Text.Ascii", "NarrowTwoUtf16CharsToAsciiAndWriteToBuffer", 2,
-            "cil2cpp::icall::Ascii_NarrowTwoUtf16CharsToAsciiAndWriteToBuffer");
-        RegisterICall("System.Text.Ascii", "CountNumberOfLeadingAsciiBytesFromUInt32WithSomeNonAsciiData", 1,
-            "cil2cpp::icall::Ascii_CountNumberOfLeadingAsciiBytesFromUInt32WithSomeNonAsciiData");
-        RegisterICall("System.Text.Ascii", "GetIndexOfFirstNonAsciiByte", 2,
-            "cil2cpp::icall::Ascii_GetIndexOfFirstNonAsciiByte");
-        RegisterICall("System.Text.Ascii", "GetIndexOfFirstNonAsciiByte_Intrinsified", 2,
-            "cil2cpp::icall::Ascii_GetIndexOfFirstNonAsciiByte");
-        RegisterICall("System.Text.Ascii", "GetIndexOfFirstNonAsciiByte_Vector", 2,
-            "cil2cpp::icall::Ascii_GetIndexOfFirstNonAsciiByte");
-        RegisterICall("System.Text.Ascii", "GetIndexOfFirstNonAsciiChar", 2,
-            "cil2cpp::icall::Ascii_GetIndexOfFirstNonAsciiChar");
-        RegisterICall("System.Text.Ascii", "GetIndexOfFirstNonAsciiChar_Intrinsified", 2,
-            "cil2cpp::icall::Ascii_GetIndexOfFirstNonAsciiChar");
-        RegisterICall("System.Text.Ascii", "GetIndexOfFirstNonAsciiChar_Vector", 2,
-            "cil2cpp::icall::Ascii_GetIndexOfFirstNonAsciiChar");
-        RegisterICall("System.Text.Ascii", "ContainsNonAsciiByte_Sse2", 1,
-            "cil2cpp::icall::Ascii_ContainsNonAsciiByte_Sse2");
-        // Narrowing _Intrinsified variants all map to the same scalar impl
-        RegisterICall("System.Text.Ascii", "NarrowUtf16ToAscii_Intrinsified", 3,
-            "cil2cpp::icall::Ascii_NarrowUtf16ToAscii");
-        RegisterICall("System.Text.Ascii", "NarrowUtf16ToAscii_Intrinsified_256", 3,
-            "cil2cpp::icall::Ascii_NarrowUtf16ToAscii");
-        RegisterICall("System.Text.Ascii", "NarrowUtf16ToAscii_Intrinsified_512", 3,
-            "cil2cpp::icall::Ascii_NarrowUtf16ToAscii");
+        // All Ascii methods compile from BCL IL. Scalar methods (AllBytesInUInt32AreAscii,
+        // IsValid, etc.) have no SIMD refs. SIMD-guarded methods (GetIndexOfFirstNonAsciiByte,
+        // WidenAsciiToUtf16, NarrowUtf16ToAscii, etc.) have IsSupported checks — compile-time
+        // SIMD dead-branch elimination removes the Vector128/SSE2 paths, leaving scalar fallbacks.
+        // SIMD-only variants (_Intrinsified, _Vector, _256, _512) are only called from dead
+        // branches and are never reached at runtime.
 
         // ===== SpanHelpers.DontNegate/Negate =====
         // Generic structs with trivial methods used by SpanHelpers.IndexOfAny etc.
@@ -476,6 +431,7 @@ public static class ICallRegistry
         RegisterICall("System.Math", "BitIncrement", 1, "cil2cpp::icall::Math_BitIncrement");
 
         // ===== System.MathF (float) =====
+        RegisterICall("System.MathF", "Abs", 1, "cil2cpp::icall::MathF_Abs");
         RegisterICall("System.MathF", "Sqrt", 1, "cil2cpp::icall::MathF_Sqrt");
         RegisterICall("System.MathF", "Sin", 1, "cil2cpp::icall::MathF_Sin");
         RegisterICall("System.MathF", "Cos", 1, "cil2cpp::icall::MathF_Cos");
@@ -756,15 +712,15 @@ public static class ICallRegistry
 
         // ===== System.RuntimeTypeHandle (additional) =====
         RegisterICall("System.RuntimeTypeHandle", "GetArrayRank", 1,
-            "cil2cpp::icall_return_one"); // default rank 1
+            "cil2cpp::icall::RuntimeTypeHandle_GetArrayRank");
 
         // ===== System.Reflection.MethodBase / System.Type (additional) =====
         RegisterICall("System.Reflection.MethodBase", "get_IsAbstract", 0,
-            "cil2cpp::icall_return_zero");
+            "cil2cpp::icall::MethodBase_get_IsAbstract");
         RegisterICall("System.Type", "get_IsNestedAssembly", 0,
-            "cil2cpp::icall_return_zero");
+            "cil2cpp::icall::Type_get_IsNestedAssembly");
         RegisterICall("System.Type", "get_IsNotPublic", 0,
-            "cil2cpp::icall_return_zero");
+            "cil2cpp::icall::Type_get_IsNotPublic");
 
         // ===== System.Diagnostics (additional stack trace stubs) =====
         RegisterICallWildcard("System.Diagnostics.StackFrameHelper", "GetMethodBase",
@@ -778,19 +734,16 @@ public static class ICallRegistry
         RegisterICallWildcard("Internal.Win32.RegistryKey", "GetSubKeyNames", "cil2cpp::win32_registry_stub");
         RegisterICallWildcard("Internal.Win32.RegistryKey", "GetValueNames", "cil2cpp::win32_registry_stub");
 
+        // ===== System.RuntimeTypeHandle (additional overload) =====
+        // 2-param IsEquivalentTo: AOT type equivalence is identity (same TypeInfo* = same type).
+        // Returns false — BCL handles pointer-equality separately; this covers COM type equivalence
+        // which is not meaningful in AOT.
+        RegisterICall("System.RuntimeTypeHandle", "IsEquivalentTo", 2,
+            "cil2cpp::icall_return_zero");
+
         // ===== System.RuntimeMethodHandle (additional) =====
         RegisterICall("System.RuntimeMethodHandle", "GetResolver", 1,
-            "cil2cpp::stackframehelper_get_method_base"); // returns nullptr
-        RegisterICall("System.RuntimeTypeHandle", "IsEquivalentTo", 2,
-            "cil2cpp::icall_return_zero"); // returns false
-
-        // ===== System.RuntimeType (additional) =====
-        RegisterICall("System.RuntimeType", "CanValueSpecialCast", 0,
-            "cil2cpp::icall_return_zero"); // returns false
-
-        // ===== System.Diagnostics.Tracing.EventSource (additional) =====
-        RegisterICallWildcard("System.Diagnostics.Tracing.EventSource", "SetCurrentThreadActivityId",
-            "cil2cpp::icall_return_zero");
+            "cil2cpp::stackframehelper_get_method_base"); // returns nullptr — JIT resolver, not meaningful in AOT
 
         // ===== System.Threading.Tasks — runtime async implementations =====
         // Task.Delay(int) uses the runtime's task_delay instead of the BCL's timer infrastructure.
@@ -805,15 +758,9 @@ public static class ICallRegistry
         RegisterICallWildcard("System.Threading.Tasks.ITaskCompletionAction", "get_InvokeMayRunArbitraryCode",
             "cil2cpp::icall_return_one");
 
-        // ===== System.Reflection.Binder =====
-        RegisterICallWildcard("System.Reflection.Binder", "ChangeType",
-            "cil2cpp::stackframehelper_get_method_base"); // returns nullptr
-
-        // ===== System.Reflection.Emit stubs (dynamic code gen — no-op in AOT) =====
+        // ===== System.Reflection.Emit (dynamic code gen — AOT-incompatible) =====
         RegisterICallWildcard("System.Reflection.Emit.ILGenerator", "Emit",
-            "cil2cpp::icall_return_zero");
-        RegisterICallWildcard("System.Runtime.Loader.AssemblyLoadContext", "OnTypeResolve",
-            "cil2cpp::stackframehelper_get_method_base"); // returns nullptr
+            "cil2cpp::icall_throw_platform_not_supported");
     }
 
     // ===== Registration methods =====

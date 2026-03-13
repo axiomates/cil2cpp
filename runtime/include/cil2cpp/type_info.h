@@ -79,6 +79,8 @@ enum class TypeFlags : UInt32 {
     IsByRefLike = 1 << 10,
     Nullable = 1 << 11,
     MultiDimensionalArray = 1 << 12,
+    NotPublic = 1 << 13,
+    NestedAssembly = 1 << 14,
 };
 
 inline TypeFlags operator|(TypeFlags a, TypeFlags b) {
@@ -268,6 +270,9 @@ struct TypeInfo {
 
     // ECMA-335 CorElementType code — packed after UInt32 to minimize padding
     uint8_t cor_element_type;
+
+    // Array rank (0 for non-array, 1 for T[], 2 for T[,], etc.)
+    uint8_t array_rank;
 
     // Enum underlying type (e.g., Int32 for most enums)
     TypeInfo* underlying_type;           // nullptr for non-enum types

@@ -23,6 +23,8 @@ public partial class IRBuilder
             IsEnum = typeDef.IsEnum,
             IsPublic = typeDef.GetCecilType().IsPublic,
             IsNestedPublic = typeDef.GetCecilType().IsNestedPublic,
+            IsNotPublic = !typeDef.GetCecilType().IsPublic && !typeDef.GetCecilType().IsNested,
+            IsNestedAssembly = typeDef.GetCecilType().IsNestedAssembly,
             MetadataToken = typeDef.GetCecilType().MetadataToken.ToUInt32(),
         };
 

@@ -222,7 +222,34 @@ public class ReachabilityAnalyzer
 
         var returnTypeDef = TryResolve(returnType);
         if (returnTypeDef != null && !returnTypeDef.IsValueType && !returnTypeDef.IsInterface)
+        {
             MarkTypeConstructed(returnTypeDef);
+
+            // SafeHandle subtypes returned from P/Invoke: the marshaller creates instances
+            // via Activator.CreateInstance<T>() where T is an unbound generic parameter.
+            // The analyzer can't resolve T → concrete type, so seed the parameterless ctor
+            // explicitly. Without this, field initializers (e.g., _fileType = -1) are lost.
+            if (IsSafeHandleSubtype(returnTypeDef))
+            {
+                var defaultCtor = returnTypeDef.Methods
+                    .FirstOrDefault(m => m.IsConstructor && !m.IsStatic && m.Parameters.Count == 0);
+                if (defaultCtor != null)
+                    SeedMethod(defaultCtor);
+            }
+        }
+    }
+
+    private static bool IsSafeHandleSubtype(TypeDefinition typeDef)
+    {
+        var current = typeDef.BaseType;
+        while (current != null)
+        {
+            if (current.FullName == "System.Runtime.InteropServices.SafeHandle")
+                return true;
+            try { current = current.Resolve()?.BaseType; }
+            catch { break; }
+        }
+        return false;
     }
 
     private void SeedAllTypes(AssemblyDefinition assembly)

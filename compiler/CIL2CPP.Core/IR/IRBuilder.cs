@@ -639,6 +639,7 @@ public partial class IRBuilder
         // CreateGenericSpecializations sets HasCctor=true when the cctor is in _deferredGenericBodies,
         // but body compilation may have been skipped (not reachable, broken patterns, etc.).
         // Only check generic instances — non-generic types' cctor bodies are compiled in Pass 6.
+        // Must run BEFORE Pass 6 so method bodies don't emit ensure_cctor calls for non-existent cctors.
         foreach (var irType in _module.Types)
         {
             if (irType.HasCctor && irType.IsGenericInstance)

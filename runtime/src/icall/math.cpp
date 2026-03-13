@@ -54,6 +54,7 @@ double Math_BitIncrement(double value) { return std::nextafter(value, std::numer
 
 // ===== System.MathF (float) =====
 
+float MathF_Abs(float value) { return std::fabsf(value); }
 float MathF_Sqrt(float value) { return std::sqrtf(value); }
 float MathF_Sin(float value) { return std::sinf(value); }
 float MathF_Cos(float value) { return std::cosf(value); }

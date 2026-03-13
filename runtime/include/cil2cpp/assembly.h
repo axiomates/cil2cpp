@@ -20,8 +20,8 @@ extern TypeInfo System_Reflection_Assembly_TypeInfo;
 extern TypeInfo System_Reflection_PropertyInfo_TypeInfo;
 
 /**
- * Managed System.Reflection.Assembly — minimal stub.
- * TODO: Populate with real assembly metadata when full reflection is needed.
+ * Managed System.Reflection.Assembly.
+ * Currently stores assembly name only. Future: version, culture, public key token.
  */
 struct ManagedAssembly : Object {
     String* name;       // Assembly simple name

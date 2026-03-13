@@ -163,12 +163,8 @@ inline void gc_get_memory_info(void* data, Int32 /*kind*/) {
     fields[5] = static_cast<int64_t>(stats.current_heap_size);
 }
 
-/// GC.AllocateUninitializedArray<T>(int length, bool pinned)
-/// FIXME: without generic type info at runtime, can't create properly typed array
-inline void* gc_allocate_uninitialized_array(Int32 length, Int32 pinned) {
-    (void)length;
-    (void)pinned;
-    return nullptr;
-}
+// GC.AllocateUninitializedArray<T>() is handled as a compiler intrinsic —
+// the IR builder replaces it with array_create(&ElementType_TypeInfo, length).
+// No runtime ICall needed.
 
 } // namespace cil2cpp

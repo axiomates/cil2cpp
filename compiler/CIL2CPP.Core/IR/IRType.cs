@@ -81,6 +81,8 @@ public class IRType
     public bool IsPrimitiveType { get; set; }
     public bool IsPublic { get; set; }
     public bool IsNestedPublic { get; set; }
+    public bool IsNotPublic { get; set; }
+    public bool IsNestedAssembly { get; set; }
     public bool IsByRefLike { get; set; }
 
     /// <summary>For array types: the C++ mangled name of the element type (e.g., "System_Int32")</summary>

@@ -2579,9 +2579,24 @@ public partial class IRBuilder
     /// </summary>
     private static string ResolveMethodNameGenericParams(string methodName, Dictionary<string, string> typeParamMap)
     {
+        // Explicit interface implementations have names like:
+        // "System.Collections.Generic.ICollection<System.Collections.Generic.KeyValuePair<TKey,TValue>>.Remove"
+        // Must find matching '>' for the first '<' (tracking nesting depth).
         var ltIdx = methodName.IndexOf('<');
         if (ltIdx < 0) return methodName;
-        var gtIdx = methodName.IndexOf('>', ltIdx);
+
+        // Find matching '>' accounting for nested angle brackets
+        int gtIdx = -1;
+        int depth = 0;
+        for (int i = ltIdx; i < methodName.Length; i++)
+        {
+            if (methodName[i] == '<') depth++;
+            else if (methodName[i] == '>')
+            {
+                depth--;
+                if (depth == 0) { gtIdx = i; break; }
+            }
+        }
         if (gtIdx < 0) return methodName;
 
         var prefix = methodName[..ltIdx];
@@ -2590,7 +2605,8 @@ public partial class IRBuilder
 
         // Split args (handling nested generics)
         var args = new List<string>();
-        int depth = 0, start = 0;
+        depth = 0;
+        int start = 0;
         for (int i = 0; i < argsStr.Length; i++)
         {
             if (argsStr[i] == '<') depth++;
@@ -2603,14 +2619,26 @@ public partial class IRBuilder
         }
         args.Add(argsStr[start..]);
 
-        // Resolve each arg using typeParamMap
+        // Recursively resolve each arg — args may themselves contain generic params
+        // e.g., "System.Collections.Generic.KeyValuePair<TKey,TValue>"
         bool changed = false;
         for (int i = 0; i < args.Count; i++)
         {
+            // Direct match: bare generic param name (e.g., "TKey")
             if (typeParamMap.TryGetValue(args[i], out var resolved))
             {
                 args[i] = resolved;
                 changed = true;
+            }
+            // Nested generic: recurse to resolve params inside (e.g., "KeyValuePair<TKey,TValue>")
+            else if (args[i].Contains('<'))
+            {
+                var resolvedArg = ResolveMethodNameGenericParams(args[i], typeParamMap);
+                if (resolvedArg != args[i])
+                {
+                    args[i] = resolvedArg;
+                    changed = true;
+                }
             }
         }
 
