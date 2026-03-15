@@ -395,6 +395,9 @@ public partial class IRBuilder
         // Pass dispatched interfaces for generic interface specialization filtering
         _dispatchedInterfaces = reachability.DispatchedInterfaces;
 
+        // Pass dispatched slot keys for interface vtable gap analysis
+        _module.DispatchedSlotKeys = reachability.DispatchedSlotKeys;
+
         // Collect all reachable types as TypeDefinitionInfo, with classification
         var types = new List<TypeDefinitionInfo>();
         foreach (var cecilType in reachability.ReachableTypes)
@@ -725,6 +728,13 @@ public partial class IRBuilder
                 BuildInterfaceImpls(irType);
         }
 
+        // Pass 5.1: Compile interface vtable method bodies.
+        // Pass 5 sets MethodImpl entries that may point to methods with empty BasicBlocks
+        // (not compiled because shouldCompile was false in CreateGenericSpecializations).
+        // These methods are needed for interface dispatch on constructed types.
+        // Recovery uses _skippedSpecializedMethods which preserves Cecil info for recompilation.
+        CompileInterfaceVtableMethodBodies();
+
         // Pass 5.5: Collect custom attributes from Cecil metadata
         PopulateCustomAttributes();
 
@@ -820,5 +830,193 @@ public partial class IRBuilder
             ? git.ElementType.FullName
             : typeRef.FullName;
         return elementName == "System.Nullable`1";
+    }
+
+    /// <summary>
+    /// After Pass 5 builds interface vtable entries, compile method bodies that are needed
+    /// for interface dispatch but were skipped during CreateGenericSpecializations
+    /// (shouldCompile was false because the method wasn't in _calledSpecializedMethods).
+    ///
+    /// Two categories:
+    /// 1. Concrete-type methods: method on the implementing type, skipped by tree-shaking.
+    ///    Recovered from _skippedSpecializedMethods which preserves Cecil info.
+    /// 2. DIM methods: method on the interface type itself (Default Interface Method).
+    ///    Compiled from Cecil via the open generic interface definition.
+    /// </summary>
+    private void CompileInterfaceVtableMethodBodies()
+    {
+        // Build lookup from IRMethod → skipped entry for fast matching
+        var skippedByMethod = new Dictionary<IRMethod, (string SpecKey, MethodDefinition CecilMethod,
+            Dictionary<string, string> TypeParamMap)>();
+        foreach (var (specKey, cecilMethod, irMethod, typeParamMap) in _skippedSpecializedMethods)
+        {
+            skippedByMethod.TryAdd(irMethod, (specKey, cecilMethod, typeParamMap));
+        }
+
+        // Collect all uncompiled methods referenced by interface vtable entries on constructed types
+        var methodsToCompile = new HashSet<IRMethod>();
+        var dimMethodsToCompile = new HashSet<IRMethod>();
+
+        foreach (var type in _module.Types)
+        {
+            if (type.IsInterface) continue;
+            if (!_module.ConstructedTypes.Contains(type.ILFullName)) continue;
+
+            foreach (var impl in type.InterfaceImpls)
+            {
+                foreach (var m in impl.MethodImpls)
+                {
+                    if (m == null) continue;
+                    if (m.BasicBlocks.Count > 0) continue; // Already compiled
+                    if (m.IsAbstract || m.IsInternalCall || m.HasICallMapping) continue;
+
+                    if (m.DeclaringType != null && m.DeclaringType.IsInterface)
+                        dimMethodsToCompile.Add(m); // DIM — interface-declaring method
+                    else
+                        methodsToCompile.Add(m); // Concrete-type method
+                }
+            }
+        }
+
+        // Phase A: Recover concrete-type methods from _skippedSpecializedMethods (generic types)
+        int recoveredCount = 0;
+        foreach (var method in methodsToCompile)
+        {
+            if (skippedByMethod.TryGetValue(method, out var entry))
+            {
+                if (HasClrInternalDependencies(entry.CecilMethod))
+                {
+                    GenerateStubBody(method);
+                }
+                else
+                {
+                    _deferredGenericBodies.Add((entry.CecilMethod, method, entry.TypeParamMap));
+                    recoveredCount++;
+                }
+            }
+        }
+
+        // Phase B: Compile DIM methods from Cecil interface definitions
+        int dimCompiled = 0;
+        foreach (var dimMethod in dimMethodsToCompile)
+        {
+            if (CompileDimMethodFromCecil(dimMethod))
+                dimCompiled++;
+        }
+
+        Console.Error.WriteLine($"[CIL2CPP] Pass 5.1: {recoveredCount} generic recovered, {dimCompiled}/{dimMethodsToCompile.Count} DIM compiled ({methodsToCompile.Count} concrete uncompiled)");
+
+        // Process recovered methods through ConvertDeferredGenericBodies
+        if (recoveredCount > 0 || dimCompiled > 0)
+        {
+            // Rebuild vtables for newly-typed methods
+            foreach (var irType in _module.Types)
+                BuildVTableRecursive(irType, _vtableBuilt);
+            DisambiguateOverloadedMethods();
+            ConvertDeferredGenericBodies();
+        }
+    }
+
+    /// <summary>
+    /// Compile a DIM (Default Interface Method) body from its Cecil definition.
+    /// Resolves the open generic interface type via Cecil, finds the matching method,
+    /// and compiles the body with generic type parameter substitution.
+    /// </summary>
+    private bool CompileDimMethodFromCecil(IRMethod dimMethod)
+    {
+        var ifaceType = dimMethod.DeclaringType;
+        if (ifaceType == null) return false;
+
+        // Resolve the open generic interface type via Cecil
+        var openName = ifaceType.ILFullName;
+        if (openName.Contains('<'))
+            openName = openName.Substring(0, openName.IndexOf('<'));
+
+        TypeDefinition? cecilTypeDef = null;
+        foreach (var asm in _assemblySet.LoadedAssemblies.Values)
+        {
+            cecilTypeDef = asm.MainModule.GetType(openName);
+            if (cecilTypeDef != null) break;
+        }
+        if (cecilTypeDef == null) return false;
+
+        // Find matching Cecil method by name and parameter count.
+        // Handle explicit interface implementation names: IR may have
+        // "System.IUtf8SpanFormattable.TryFormat" while Cecil has the full name too.
+        MethodDefinition? cecilMethod = null;
+        int irParamCount = dimMethod.Parameters.Count - (dimMethod.IsStatic ? 0 : 1);
+        foreach (var m in cecilTypeDef.Methods)
+        {
+            if (!m.HasBody || m.IsAbstract) continue;
+            if (m.Name != dimMethod.Name) continue;
+            if (m.Parameters.Count != irParamCount) continue;
+            cecilMethod = m;
+            break;
+        }
+
+        // Fallback: try matching with adjusted param count (explicit interface methods
+        // may have different 'this' accounting in IR vs Cecil)
+        if (cecilMethod == null)
+        {
+            foreach (var m in cecilTypeDef.Methods)
+            {
+                if (!m.HasBody || m.IsAbstract) continue;
+                if (m.Name != dimMethod.Name) continue;
+                // Try exact IR param count match (some DIMs are static in IL)
+                if (m.Parameters.Count != dimMethod.Parameters.Count) continue;
+                cecilMethod = m;
+                break;
+            }
+        }
+
+        if (cecilMethod == null) return false;
+
+        // Build type parameter map from the generic interface specialization
+        var typeParamMap = new Dictionary<string, string>();
+        if (ifaceType.ILFullName.Contains('<'))
+        {
+            var args = ExtractGenericArgs(ifaceType.ILFullName);
+            if (cecilTypeDef.HasGenericParameters && args.Count == cecilTypeDef.GenericParameters.Count)
+            {
+                for (int i = 0; i < cecilTypeDef.GenericParameters.Count; i++)
+                    typeParamMap[cecilTypeDef.GenericParameters[i].Name] = args[i];
+            }
+        }
+
+        if (HasClrInternalDependencies(cecilMethod))
+        {
+            GenerateStubBody(dimMethod);
+            return false;
+        }
+
+        var methodInfo = new IL.MethodInfo(cecilMethod);
+        ConvertMethodBodyWithGenerics(methodInfo, dimMethod, typeParamMap);
+        return dimMethod.BasicBlocks.Count > 0;
+    }
+
+    /// <summary>
+    /// Extract generic type arguments from a fully qualified generic type name.
+    /// E.g., "System.IEquatable`1&lt;System.Int32&gt;" → ["System.Int32"]
+    /// </summary>
+    private static List<string> ExtractGenericArgs(string ilFullName)
+    {
+        var args = new List<string>();
+        var start = ilFullName.IndexOf('<');
+        if (start < 0) return args;
+        var inner = ilFullName.Substring(start + 1, ilFullName.Length - start - 2);
+        int depth = 0;
+        int argStart = 0;
+        for (int i = 0; i < inner.Length; i++)
+        {
+            if (inner[i] == '<') depth++;
+            else if (inner[i] == '>') depth--;
+            else if (inner[i] == ',' && depth == 0)
+            {
+                args.Add(inner.Substring(argStart, i - argStart).Trim());
+                argStart = i + 1;
+            }
+        }
+        args.Add(inner.Substring(argStart).Trim());
+        return args;
     }
 }

@@ -2128,17 +2128,17 @@ public partial class CppCodeGenerator
                         if (_declaredFunctionNames.Contains(m.CppName)) continue; // Already declared
                         if (!emittedIfaceStubs.Add(m.CppName)) continue;
 
-                        // Method body not compiled — tree-shaking gap: the implementing method
-                        // was not marked as reachable even though the interface is dispatched on.
-                        // Generate a default-return stub until ReachabilityAnalyzer is fixed to
-                        // mark interface impl methods as reachable when the interface is dispatched.
+                        // Method body not compiled — generate default-return stub.
+                        // Root cause: tree-shaking doesn't propagate interface dispatch to
+                        // implementing methods. These stubs ensure safe vtable entries until
+                        // CompileInterfaceVtableMethodBodies covers all cases.
                         undeclaredIfaceMethodCount++;
                         var sig = m.GetCppSignature();
                         var retDefault = string.IsNullOrEmpty(m.ReturnTypeCpp) || m.ReturnTypeCpp == "void"
                             ? "" : " return {};";
                         sb.AppendLine($"{sig} {{{retDefault} }}");
                         _declaredFunctionNames.Add(m.CppName);
-                        _emittedMethodSignatures.Add(sig); // prevent duplicate in stubs file
+                        _emittedMethodSignatures.Add(sig);
                     }
                     else
                     {

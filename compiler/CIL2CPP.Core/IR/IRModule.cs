@@ -86,6 +86,13 @@ public class IRModule
     public HashSet<string> ConstructedTypes { get; set; } = new();
 
     /// <summary>
+    /// All dispatched virtual/interface method slot keys in format "DeclaringType::Name/ParamCount/ParamSig".
+    /// Used by codegen to determine which interface vtable entries are actually dispatched.
+    /// Populated from ReachabilityResult.DispatchedSlotKeys.
+    /// </summary>
+    public HashSet<string> DispatchedSlotKeys { get; set; } = new();
+
+    /// <summary>
     /// Mapping from C++ mangled TypeInfo names to IL full names.
     /// Used by auto-discovered TypeInfo emission to emit correct full_name.
     /// Populated during ldtoken processing when open generic types are referenced.

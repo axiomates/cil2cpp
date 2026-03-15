@@ -405,6 +405,8 @@ public partial class IRBuilder
     /// </summary>
     private void ConvertMethodBody(IL.MethodInfo methodDef, IRMethod irMethod)
     {
+        if (irMethod.BasicBlocks.Count > 0)
+            return; // Already compiled (e.g., via CompileTransitiveUnreachableCallees from DIM body)
         _pendingVolatile = false; // Reset between methods
         _constrainedType = null;
         _inFilterRegion = false;

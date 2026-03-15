@@ -35,6 +35,12 @@ public class ReachabilityResult
     /// </summary>
     public HashSet<string> DispatchedInterfaces { get; } = new();
 
+    /// <summary>
+    /// All dispatched virtual/interface method slot keys in format "DeclaringType::Name/ParamCount/ParamSig".
+    /// Used to determine which interface vtable entries are actually dispatched at callsites.
+    /// </summary>
+    public HashSet<string> DispatchedSlotKeys { get; } = new();
+
     public bool IsReachable(TypeDefinition type) => ReachableTypes.Contains(type);
     public bool IsReachable(MethodDefinition method) => ReachableMethods.Contains(method);
     public bool IsConstructed(TypeDefinition type) => ConstructedTypes.Contains(type);
@@ -649,6 +655,7 @@ public class ReachabilityAnalyzer
         if (!_dispatchedSlotKeys.Add(key))
             return;
 
+        _result.DispatchedSlotKeys.Add(key);
         _dispatchedVirtualSlots.Add((method.Name, method.Parameters.Count, paramSig, method.DeclaringType));
 
         // RTA: check CONSTRUCTED subtypes for virtual dispatch.
@@ -744,6 +751,7 @@ public class ReachabilityAnalyzer
         // Phase 4: match by parameter type signature, not just name+count.
         // This avoids seeding unrelated overloads with the same name/count but different param types
         // (e.g. DecoderNLS.GetChars(byte[],int,int,char[],int) vs GetChars(byte*,int,char*,int,bool)).
+        bool foundDirectOverride = false;
         foreach (var overrideMethod in type.Methods.Where(m =>
             m.IsVirtual && MatchesMethodName(m.Name, methodName) && m.Parameters.Count == paramCount))
         {
@@ -751,7 +759,60 @@ public class ReachabilityAnalyzer
             if (ParamSignaturesMatch(paramSig, overrideSig))
             {
                 SeedMethod(overrideMethod);
+                foundDirectOverride = true;
             }
+        }
+
+        // DIM (Default Interface Method) resolution: if no direct override was found on the type,
+        // check if any implemented interface provides a DIM body for this method.
+        // This is needed because DIMs are inherited from interfaces, not defined on the type.
+        if (!foundDirectOverride)
+            MarkDimIfExists(type, methodName, paramCount, paramSig);
+    }
+
+    /// <summary>
+    /// When a concrete type doesn't override an interface method directly, check if any
+    /// implemented interface provides a Default Interface Method (DIM) body.
+    /// DIM methods have bodies on the interface itself (HasBody && !IsAbstract on an interface method).
+    /// </summary>
+    private void MarkDimIfExists(TypeDefinition type, string methodName, int paramCount, string paramSig)
+    {
+        MarkDimIfExistsImpl(type, methodName, paramCount, paramSig, new HashSet<string>());
+    }
+
+    private void MarkDimIfExistsImpl(TypeDefinition type, string methodName, int paramCount, string paramSig, HashSet<string> visited)
+    {
+        if (!visited.Add(type.FullName)) return; // prevent infinite recursion
+
+        foreach (var iface in type.Interfaces)
+        {
+            var ifaceDef = TryResolve(iface.InterfaceType);
+            if (ifaceDef == null) continue;
+
+            // Check if this interface has a DIM for the method
+            foreach (var m in ifaceDef.Methods)
+            {
+                if (!m.IsVirtual || !m.HasBody || m.IsAbstract) continue;
+                if (!MatchesMethodName(m.Name, methodName) || m.Parameters.Count != paramCount) continue;
+
+                var mSig = GetParamSignature(m);
+                if (ParamSignaturesMatch(paramSig, mSig))
+                {
+                    SeedMethod(m);
+                    return; // Found a DIM, no need to check further
+                }
+            }
+
+            // Recurse into parent interfaces (interfaces can extend interfaces with DIMs)
+            MarkDimIfExistsImpl(ifaceDef, methodName, paramCount, paramSig, visited);
+        }
+
+        // Also check base type's interfaces
+        if (type.BaseType != null)
+        {
+            var baseDef = TryResolve(type.BaseType);
+            if (baseDef != null)
+                MarkDimIfExistsImpl(baseDef, methodName, paramCount, paramSig, visited);
         }
     }
 
