@@ -1303,58 +1303,32 @@ public partial class CppCodeGenerator
                     }
                 }
 
-                // Replace calls to undeclared SIMD functions with default values.
-                // These calls are always in feature-switch-guarded dead branches
-                // (IsSupported = false on AOT), so replacing with {} is safe.
-                if (instr is IRCall simdCall && IsSimdDeadCodeFunction(simdCall.FunctionName)
-                    && _undeclaredFunctionNames.Contains(simdCall.FunctionName))
+                // Replace calls to undeclared known-dead-code functions with default values.
+                // These are always in guarded dead branches (SIMD: IsSupported=false,
+                // EventSource: IsEnabled()=false, ALC: no runtime assembly loading).
+                if (instr is IRCall deadCall && _undeclaredFunctionNames.Contains(deadCall.FunctionName))
                 {
-                    if (simdCall.ResultVar != null)
+                    var category = ClassifyDeadCode(deadCall.FunctionName);
+                    if (category != DeadCodeCategory.None)
                     {
-                        // Use explicit type to avoid auto-deduction issues.
-                        // Mark as declared to prevent AddAutoDeclarations from adding 'auto'.
-                        var type = simdCall.ResultTypeCpp ?? "int";
-                        var defaultVal = type.EndsWith("*") ? "nullptr" : "{}";
-                        code = $"{type} {simdCall.ResultVar} = {defaultVal}; // SIMD dead-code";
-                        declaredTemps.Add(simdCall.ResultVar);
-                    }
-                    else
-                    {
-                        code = "(void)0; // SIMD dead-code";
-                    }
-                }
-
-                // EventSource diagnostic methods (behind IsEnabled() guards, always false in AOT)
-                if (instr is IRCall evtCall && IsEventSourceDiagnosticFunction(evtCall.FunctionName)
-                    && _undeclaredFunctionNames.Contains(evtCall.FunctionName))
-                {
-                    if (evtCall.ResultVar != null)
-                    {
-                        var type = evtCall.ResultTypeCpp ?? "int";
-                        var defaultVal = type.EndsWith("*") ? "nullptr" : "{}";
-                        code = $"{type} {evtCall.ResultVar} = {defaultVal}; // EventSource dead-code";
-                        declaredTemps.Add(evtCall.ResultVar);
-                    }
-                    else
-                    {
-                        code = "(void)0; // EventSource dead-code";
-                    }
-                }
-
-                // AOT-incompatible dead code (Reflection.Emit, AssemblyLoadContext, StackFrame)
-                if (instr is IRCall aotCall && IsAotIncompatibleDeadCode(aotCall.FunctionName)
-                    && _undeclaredFunctionNames.Contains(aotCall.FunctionName))
-                {
-                    if (aotCall.ResultVar != null)
-                    {
-                        var type = aotCall.ResultTypeCpp ?? "int";
-                        var defaultVal = type.EndsWith("*") ? "nullptr" : "{}";
-                        code = $"{type} {aotCall.ResultVar} = {defaultVal}; // AOT-incompatible dead-code";
-                        declaredTemps.Add(aotCall.ResultVar);
-                    }
-                    else
-                    {
-                        code = "(void)0; // AOT-incompatible dead-code";
+                        var label = category switch
+                        {
+                            DeadCodeCategory.Simd => "SIMD",
+                            DeadCodeCategory.EventSource => "EventSource",
+                            DeadCodeCategory.AotIncompatible => "AOT-incompatible",
+                            _ => "dead"
+                        };
+                        if (deadCall.ResultVar != null)
+                        {
+                            var type = deadCall.ResultTypeCpp ?? "int";
+                            var defaultVal = type.EndsWith("*") ? "nullptr" : "{}";
+                            code = $"{type} {deadCall.ResultVar} = {defaultVal}; // {label} dead-code";
+                            declaredTemps.Add(deadCall.ResultVar);
+                        }
+                        else
+                        {
+                            code = $"(void)0; // {label} dead-code";
+                        }
                     }
                 }
 

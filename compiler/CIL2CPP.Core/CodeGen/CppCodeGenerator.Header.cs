@@ -1082,7 +1082,56 @@ public partial class CppCodeGenerator
             }
         }
 
-        // Final: build missing functions list from remaining calledFunctions
+        // Transitive pruning: methods that call undeclared functions will be skipped
+        // at emit time (CallsUndeclaredFunction). Remove their callees from the needed set.
+        // Single pass: collect functions only called from to-be-skipped methods and remove them.
+        {
+            var calledBySkippedOnly = new HashSet<string>(calledFunctions);
+            foreach (var type in userTypes)
+            {
+                if (type.IsDelegate) continue;
+                bool isSkippedType = IRBuilder.SkipAllMethodsTypes.Contains(type.ILFullName);
+                foreach (var method in type.Methods)
+                {
+                    if (method.IsAbstract || method.IsInternalCall) continue;
+                    if (method.BasicBlocks.Count == 0 && !method.IsPInvoke) continue;
+                    if (method.HasICallMapping) continue;
+                    if (isSkippedType) continue;
+                    if (!method.IsStatic && IRBuilder.CoreRuntimeTypes.Contains(type.ILFullName))
+                    {
+                        if (RuntimeTypeRegistry.ShouldBlockInstanceMethod(type.ILFullName, method))
+                            continue;
+                    }
+                    else if (method.IrStubReason != null) continue;
+                    if (HasInvalidCppSignature(method)) continue;
+                    if (HasGenericBodyTypeConflict(type, method)) continue;
+                    // If this method WON'T be skipped, its callees are needed
+                    if (!CallsUndeclaredFunction(method))
+                    {
+                        foreach (var block in method.BasicBlocks)
+                        {
+                            foreach (var instr in block.Instructions)
+                            {
+                                if (instr is IR.IRCall call && !string.IsNullOrEmpty(call.FunctionName)
+                                    && !call.FunctionName.StartsWith("cil2cpp::"))
+                                    calledBySkippedOnly.Remove(call.FunctionName);
+                                else if (instr is IR.IRNewObj newObj && !string.IsNullOrEmpty(newObj.CtorName)
+                                    && !newObj.CtorName.StartsWith("cil2cpp::"))
+                                    calledBySkippedOnly.Remove(newObj.CtorName);
+                                else if (instr is IR.IRLoadFunctionPointer ldftn && !string.IsNullOrEmpty(ldftn.MethodCppName)
+                                    && !ldftn.MethodCppName.StartsWith("cil2cpp::") && !ldftn.IsVirtual)
+                                    calledBySkippedOnly.Remove(ldftn.MethodCppName);
+                            }
+                        }
+                    }
+                }
+            }
+            // Functions only called from skipped methods don't need declarations
+            foreach (var funcName in calledBySkippedOnly)
+                calledFunctions.Remove(funcName);
+        }
+
+        // Final: build missing functions list from pruned calledFunctions
         var missingFunctions = new List<(string name, IR.IRMethod? method)>();
         foreach (var funcName in calledFunctions)
         {

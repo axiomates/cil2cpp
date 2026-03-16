@@ -9,6 +9,7 @@
 #include <cil2cpp/exception.h>
 
 #include <unordered_map>
+#include <mutex>
 #include <string>
 #include <cstring>
 #include <cstdio>
@@ -24,8 +25,9 @@
 
 namespace cil2cpp {
 
-// Type registry
+// Type registry — protected by mutex for thread safety
 static std::unordered_map<std::string, TypeInfo*> g_type_registry;
+static std::mutex g_type_registry_mutex;
 
 // Forward declaration for variance check
 static Boolean type_is_variant_assignable(TypeInfo* target, TypeInfo* source);
@@ -224,6 +226,7 @@ InterfaceVTable* obj_get_interface_vtable(Object* obj, TypeInfo* interface_type)
 }
 
 TypeInfo* type_get_by_name(const char* full_name) {
+    std::lock_guard<std::mutex> lock(g_type_registry_mutex);
     auto it = g_type_registry.find(full_name);
     if (it != g_type_registry.end()) {
         return it->second;
@@ -233,6 +236,7 @@ TypeInfo* type_get_by_name(const char* full_name) {
 
 void type_register(TypeInfo* type) {
     if (type && type->full_name) {
+        std::lock_guard<std::mutex> lock(g_type_registry_mutex);
         g_type_registry[type->full_name] = type;
     }
 }

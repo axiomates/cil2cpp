@@ -12,6 +12,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <mutex>
 #include <string>
 #include <thread>
 
@@ -26,6 +27,8 @@
 #include <cil2cpp/threading.h>
 #include <cil2cpp/delegate.h>
 #include <cil2cpp/gchandle.h>
+#include <cil2cpp/assembly.h>
+#include <cil2cpp/mdarray.h>
 
 // Platform headers — MUST come after cil2cpp headers to avoid VOID/BOOLEAN macro conflicts
 #ifdef _WIN32
@@ -38,6 +41,42 @@
 #include <unistd.h>
 #endif
 #endif
+
+// ===== Singleton helpers for Module and Assembly =====
+// AOT has a single module and assembly. These are lazily initialized, thread-safe.
+static cil2cpp::Object* s_singleton_module = nullptr;
+static std::once_flag s_module_once;
+
+static cil2cpp::Object* get_singleton_module() {
+    std::call_once(s_module_once, []() {
+        // Allocate a proper Object with TypeInfo, large enough for RuntimeModule fields (all zero)
+        s_singleton_module = static_cast<cil2cpp::Object*>(
+            cil2cpp::gc::alloc(sizeof(cil2cpp::Object) + 48,
+                               &cil2cpp::System_Reflection_Assembly_TypeInfo));
+    });
+    return s_singleton_module;
+}
+
+static cil2cpp::ManagedAssembly* s_singleton_assembly = nullptr;
+static std::once_flag s_assembly_once;
+
+static cil2cpp::ManagedAssembly* get_singleton_assembly() {
+    std::call_once(s_assembly_once, []() {
+        s_singleton_assembly = static_cast<cil2cpp::ManagedAssembly*>(
+            cil2cpp::gc::alloc(sizeof(cil2cpp::ManagedAssembly),
+                               &cil2cpp::System_Reflection_Assembly_TypeInfo));
+        s_singleton_assembly->name = cil2cpp::string_create_utf8("AOTAssembly");
+    });
+    return s_singleton_assembly;
+}
+
+// SafeHandle field layout — struct access instead of raw pointer arithmetic
+struct SafeHandleLayout : cil2cpp::Object {
+    intptr_t _handle;       // f__handle — first field after Object header
+    int32_t  _state;        // Combined state bits
+    bool     _ownsHandle;
+    bool     _fullyInitialized;
+};
 
 // Value types used by CoreRuntimeTypes method signatures.
 // These must be ABI-compatible with the generated struct definitions.
@@ -366,10 +405,10 @@ extern "C" void* System_Reflection_Assembly_GetCustomAttributes__System_Type_Sys
     return cil2cpp::gc::alloc_array(&cil2cpp::System_Object_TypeInfo, 0);
 }
 extern "C" void System_Reflection_Assembly_GetEntryAssemblyNative(System_Runtime_CompilerServices_ObjectHandleOnStack retAssembly) {
-    if (retAssembly.f__ptr) *reinterpret_cast<void**>(retAssembly.f__ptr) = nullptr;
+    if (retAssembly.f__ptr) *reinterpret_cast<void**>(retAssembly.f__ptr) = get_singleton_assembly();
 }
 extern "C" void System_Reflection_Assembly_GetExecutingAssemblyNative(System_Runtime_CompilerServices_StackCrawlMarkHandle /*stackMark*/, System_Runtime_CompilerServices_ObjectHandleOnStack retAssembly) {
-    if (retAssembly.f__ptr) *reinterpret_cast<void**>(retAssembly.f__ptr) = nullptr;
+    if (retAssembly.f__ptr) *reinterpret_cast<void**>(retAssembly.f__ptr) = get_singleton_assembly();
 }
 extern "C" void* System_Reflection_Assembly_GetManifestResourceNames(void* /*__this*/) {
     return cil2cpp::gc::alloc_array(&cil2cpp::System_String_TypeInfo, 0);
@@ -470,9 +509,7 @@ extern "C" int32_t System_Reflection_MemberInfo_get_MetadataToken(void* __this) 
     return 0;
 }
 extern "C" void* System_Reflection_MemberInfo_get_Module(void* /*__this*/) {
-    // Return the singleton dummy module — same as RuntimeTypeHandle.GetModule
-    alignas(16) static uint8_t s_dummy_module[64] = {};
-    return s_dummy_module;
+    return get_singleton_module();
 }
 extern "C" void* System_Reflection_MemberInfo_get_Name(void* __this) {
     return cil2cpp::memberinfo_get_name(reinterpret_cast<cil2cpp::Object*>(__this));
@@ -650,8 +687,14 @@ extern "C" int32_t System_Reflection_MethodInfo_get_GenericParameterCount(void* 
 extern "C" void* System_Reflection_MethodInfo_get_ReturnType(void* __this) {
     return cil2cpp::methodinfo_get_return_type(reinterpret_cast<cil2cpp::ManagedMethodInfo*>(__this));
 }
-extern "C" void* System_Reflection_MethodInfo_GetGenericMethodDefinition(void* /*__this*/) { cil2cpp::stub_called(__func__); return nullptr; }
-extern "C" void* System_Reflection_MethodInfo_MakeGenericMethod(void* /*__this*/, void* /*typeArguments*/) { cil2cpp::stub_called(__func__); return nullptr; }
+extern "C" void* System_Reflection_MethodInfo_GetGenericMethodDefinition(void* /*__this*/) {
+    // Open generic method definitions do not exist in AOT — all methods are closed specializations
+    cil2cpp::throw_not_supported();
+}
+extern "C" void* System_Reflection_MethodInfo_MakeGenericMethod(void* /*__this*/, void* /*typeArguments*/) {
+    // Runtime generic method instantiation is not supported in AOT compilation
+    cil2cpp::throw_not_supported();
+}
 extern "C" void* System_Reflection_MethodInfo_get_ReturnTypeCustomAttributes(void* /*__this*/) {
     return nullptr; // Return type custom attributes not tracked in AOT
 }
@@ -695,7 +738,10 @@ extern "C" void* System_Reflection_RuntimeAssembly__GetResource_g____PInvoke_37_
 extern "C" void System_Reflection_RuntimeAssembly__GetTypeCore_g____PInvoke_26_0(System_Runtime_CompilerServices_QCallAssembly /*__assembly_native*/, void* /*__typeName_native*/, void* /*__nestedTypeNames_native*/, int32_t /*__nestedTypeNamesLength_native*/, System_Runtime_CompilerServices_ObjectHandleOnStack /*__retType_native*/) { }
 extern "C" void System_Reflection_RuntimeAssembly__GetTypeCoreIgnoreCase_g____PInvoke_27_0(System_Runtime_CompilerServices_QCallAssembly /*__assembly_native*/, void* /*__typeName_native*/, void* /*__nestedTypeNames_native*/, int32_t /*__nestedTypeNamesLength_native*/, System_Runtime_CompilerServices_ObjectHandleOnStack /*__retType_native*/) { }
 extern "C" void System_Reflection_RuntimeAssembly__GetVersion_g____PInvoke_72_0(System_Runtime_CompilerServices_QCallAssembly /*__assembly_native*/, void* /*__majVer_native*/, void* /*__minVer_native*/, void* /*__buildNum_native*/, void* /*__revNum_native*/) { }
-extern "C" void System_Reflection_RuntimeAssembly__InternalLoad_g____PInvoke_49_0(void* /*__pAssemblyNameParts_native*/, System_Runtime_CompilerServices_ObjectHandleOnStack __requestingAssembly_native, System_Runtime_CompilerServices_StackCrawlMarkHandle __stackMark_native, int32_t __throwOnFileNotFound_native, System_Runtime_CompilerServices_ObjectHandleOnStack __assemblyLoadContext_native, System_Runtime_CompilerServices_ObjectHandleOnStack __retAssembly_native) { cil2cpp::stub_called(__func__); }
+extern "C" void System_Reflection_RuntimeAssembly__InternalLoad_g____PInvoke_49_0(void* /*__pAssemblyNameParts_native*/, System_Runtime_CompilerServices_ObjectHandleOnStack /*__requestingAssembly_native*/, System_Runtime_CompilerServices_StackCrawlMarkHandle /*__stackMark_native*/, int32_t /*__throwOnFileNotFound_native*/, System_Runtime_CompilerServices_ObjectHandleOnStack /*__assemblyLoadContext_native*/, System_Runtime_CompilerServices_ObjectHandleOnStack /*__retAssembly_native*/) {
+    // Runtime assembly loading is not supported in AOT compilation
+    cil2cpp::throw_not_supported();
+}
 
 // ===== System.Reflection.RuntimeAssembly.GetEntryPoint =====
 extern "C" void System_Reflection_RuntimeAssembly_GetEntryPoint(System_Runtime_CompilerServices_QCallAssembly /*assembly*/, System_Runtime_CompilerServices_ObjectHandleOnStack /*retMethod*/) { }
@@ -763,8 +809,7 @@ extern "C" System_Reflection_InvocationFlags System_Reflection_RuntimeConstructo
 
 // ===== System.Reflection.RuntimeConstructorInfo.GetRuntimeModule =====
 extern "C" void* System_Reflection_RuntimeConstructorInfo_GetRuntimeModule(void* /*__this*/) {
-    alignas(16) static uint8_t s_dummy_module[64] = {};
-    return s_dummy_module;
+    return get_singleton_module();
 }
 
 // ===== System.Reflection.RuntimeConstructorInfo.InvokeClassConstructor =====
@@ -823,8 +868,7 @@ extern "C" void System_Reflection_RuntimeFieldInfo__ctor(void* /*__this*/, void*
 
 // ===== System.Reflection.RuntimeFieldInfo.GetRuntimeModule =====
 extern "C" void* System_Reflection_RuntimeFieldInfo_GetRuntimeModule(void* /*__this*/) {
-    alignas(16) static uint8_t s_dummy_module[64] = {};
-    return s_dummy_module;
+    return get_singleton_module();
 }
 
 // ===== System.Reflection.RuntimeFieldInfo.get =====
@@ -880,8 +924,7 @@ extern "C" void* System_Reflection_RuntimeMethodInfo_GetParentDefinition(void* _
 
 // ===== System.Reflection.RuntimeMethodInfo.GetRuntimeModule =====
 extern "C" void* System_Reflection_RuntimeMethodInfo_GetRuntimeModule(void* /*__this*/) {
-    alignas(16) static uint8_t s_dummy_module[64] = {};
-    return s_dummy_module;
+    return get_singleton_module();
 }
 
 // ===== System.Reflection.RuntimeMethodInfo.InvokePropertySetter =====
@@ -946,8 +989,7 @@ extern "C" void* System_Reflection_RuntimePropertyInfo_GetIndexParametersNoCopy(
 
 // ===== System.Reflection.RuntimePropertyInfo.GetRuntimeModule =====
 extern "C" void* System_Reflection_RuntimePropertyInfo_GetRuntimeModule(void* /*__this*/) {
-    alignas(16) static uint8_t s_dummy_module[64] = {};
-    return s_dummy_module;
+    return get_singleton_module();
 }
 
 // ===== System.Reflection.RuntimePropertyInfo.GetSetMethod =====
@@ -1057,16 +1099,6 @@ static std::string extract_generic_definition(const char* full_name) {
     return s;
 }
 
-// Helper: find a registered type whose full_name matches a pattern.
-// Used as fallback when the primary type_get_by_name lookup fails due to
-// mangled vs IL name format mismatch in open generic TypeInfos.
-static cil2cpp::TypeInfo* type_find_by_suffix(const std::string& targetSuffix) {
-    // targetSuffix is like "<Interop/SECURITY_STATUS>" — scan all registered types
-    // for a matching closed generic name ending with this suffix that also starts
-    // with a compatible prefix (the IL-format version of the mangled definition).
-    // This is O(N) but only called as a rare fallback.
-    return nullptr; // Placeholder for future use
-}
 
 extern "C" void* System_RuntimeTypeHandle_CreateInstanceForAnotherGenericParameter__System_RuntimeType_System_RuntimeType(
     void* type, void* genericParameter)
@@ -1146,7 +1178,11 @@ extern "C" intptr_t System_RuntimeTypeHandle_FreeGCHandle__System_IntPtr(void* /
     cil2cpp::gchandle_free(objHandle);
     return {};
 }
-extern "C" void* System_RuntimeTypeHandle_GetConstraints(void* /*__this*/) { cil2cpp::stub_called(__func__); return nullptr; }
+extern "C" void* System_RuntimeTypeHandle_GetConstraints(void* /*__this*/) {
+    // AOT compiler verifies all generic constraints at compile time.
+    // Return empty Type[] — no runtime constraint checking needed.
+    return cil2cpp::gc::alloc_array(&cil2cpp::System_Type_TypeInfo, 0);
+}
 extern "C" intptr_t System_RuntimeTypeHandle_GetGCHandle__System_Runtime_InteropServices_GCHandleType(void* /*__this*/, System_Runtime_InteropServices_GCHandleType type) {
     // Allocate an empty GCHandle slot (initially null). The caller stores the handle
     // in RuntimeType.m_cache, then populates it via GCHandle.InternalCompareExchange
@@ -1195,8 +1231,14 @@ extern "C" bool System_RuntimeTypeHandle_HasElementType(void* type) {
     auto* t = reinterpret_cast<cil2cpp::Type*>(type);
     return t && t->type_info && t->type_info->element_type_info != nullptr;
 }
-extern "C" void* System_RuntimeTypeHandle_Instantiate__System_RuntimeType(void* /*__this*/, void* /*inst*/) { cil2cpp::stub_called(__func__); return nullptr; }
-extern "C" void* System_RuntimeTypeHandle_Instantiate__System_Type__(void* /*__this*/, void* /*inst*/) { cil2cpp::stub_called(__func__); return nullptr; }
+extern "C" void* System_RuntimeTypeHandle_Instantiate__System_RuntimeType(void* /*__this*/, void* /*inst*/) {
+    // Runtime generic type instantiation is not supported in AOT compilation
+    cil2cpp::throw_not_supported();
+}
+extern "C" void* System_RuntimeTypeHandle_Instantiate__System_Type__(void* /*__this*/, void* /*inst*/) {
+    // Runtime generic type instantiation is not supported in AOT compilation
+    cil2cpp::throw_not_supported();
+}
 extern "C" bool System_RuntimeTypeHandle_IsArray(void* type) {
     auto* t = reinterpret_cast<cil2cpp::Type*>(type);
     return t && t->type_info && (t->type_info->flags & cil2cpp::TypeFlags::Array);
@@ -1230,14 +1272,44 @@ extern "C" bool System_RuntimeTypeHandle_IsVisible(void* type) {
     return (t->type_info->flags & cil2cpp::TypeFlags::Public)
         || (t->type_info->flags & cil2cpp::TypeFlags::NestedPublic);
 }
-extern "C" void* System_RuntimeTypeHandle_MakeArray__System_Int32(void* /*__this*/, int32_t rank) { cil2cpp::stub_called(__func__); return nullptr; }
-extern "C" void* System_RuntimeTypeHandle_MakeByRef(void* /*__this*/) { cil2cpp::stub_called(__func__); return nullptr; }
-extern "C" void* System_RuntimeTypeHandle_MakePointer(void* /*__this*/) { cil2cpp::stub_called(__func__); return nullptr; }
-extern "C" void* System_RuntimeTypeHandle_MakeSZArray(void* /*__this*/) { cil2cpp::stub_called(__func__); return nullptr; }
+extern "C" void* System_RuntimeTypeHandle_MakeArray__System_Int32(void* __this, int32_t rank) {
+    // Look up pre-compiled array type by name (e.g., "System.Int32[,]")
+    auto* t = reinterpret_cast<cil2cpp::Type*>(__this);
+    if (!t || !t->type_info || !t->type_info->full_name) return nullptr;
+    std::string name = std::string(t->type_info->full_name) + "[";
+    for (int32_t i = 1; i < rank; i++) name += ",";
+    name += "]";
+    auto* ti = cil2cpp::type_get_by_name(name.c_str());
+    return ti ? cil2cpp::type_get_type_object(ti) : nullptr;
+}
+extern "C" void* System_RuntimeTypeHandle_MakeByRef(void* __this) {
+    // ByRef types are not tracked as separate TypeInfo in AOT
+    auto* t = reinterpret_cast<cil2cpp::Type*>(__this);
+    if (!t || !t->type_info || !t->type_info->full_name) return nullptr;
+    std::string name = std::string(t->type_info->full_name) + "&";
+    auto* ti = cil2cpp::type_get_by_name(name.c_str());
+    return ti ? cil2cpp::type_get_type_object(ti) : nullptr;
+}
+extern "C" void* System_RuntimeTypeHandle_MakePointer(void* __this) {
+    auto* t = reinterpret_cast<cil2cpp::Type*>(__this);
+    if (!t || !t->type_info || !t->type_info->full_name) return nullptr;
+    std::string name = std::string(t->type_info->full_name) + "*";
+    auto* ti = cil2cpp::type_get_by_name(name.c_str());
+    return ti ? cil2cpp::type_get_type_object(ti) : nullptr;
+}
+extern "C" void* System_RuntimeTypeHandle_MakeSZArray(void* __this) {
+    auto* t = reinterpret_cast<cil2cpp::Type*>(__this);
+    if (!t || !t->type_info || !t->type_info->full_name) return nullptr;
+    std::string name = std::string(t->type_info->full_name) + "[]";
+    auto* ti = cil2cpp::type_get_by_name(name.c_str());
+    return ti ? cil2cpp::type_get_type_object(ti) : nullptr;
+}
 extern "C" void System_RuntimeTypeHandle_RegisterCollectibleTypeDependency__System_RuntimeType_System_Reflection_RuntimeAssembly(void* /*type*/, void* /*assembly*/) {
     // No collectible assemblies in AOT
 }
-extern "C" bool System_RuntimeTypeHandle_SatisfiesConstraints__System_RuntimeType_System_RuntimeType___System_RuntimeType___System_RuntimeType(void* /*paramType*/, void* /*typeContext*/, void* /*methodContext*/, void* /*toType*/) { cil2cpp::stub_called(__func__); return false; }
+extern "C" bool System_RuntimeTypeHandle_SatisfiesConstraints__System_RuntimeType_System_RuntimeType___System_RuntimeType___System_RuntimeType(void* /*paramType*/, void* /*typeContext*/, void* /*methodContext*/, void* /*toType*/) {
+    return true; // AOT compiler verifies all generic constraints at compile time
+}
 extern "C" intptr_t System_RuntimeTypeHandle_ToIntPtr(System_RuntimeTypeHandle value) {
     // RuntimeTypeHandle wraps a RuntimeType* — return it as IntPtr
     return reinterpret_cast<intptr_t>(value.f_m_type);
@@ -1295,14 +1367,42 @@ extern "C" void System_RuntimeTypeHandle_ConstructName__System_Runtime_CompilerS
 extern "C" bool System_RuntimeTypeHandle_ContainsGenericVariables__System_RuntimeType(void* /*handle*/) {
     return false; // All types closed in AOT
 }
-extern "C" void System_RuntimeTypeHandle_CreateInstanceForAnotherGenericParameter__System_Runtime_CompilerServices_QCallTypeHandle_System_IntPtrPtr_System_Int32_System_Runtime_CompilerServices_ObjectHandleOnStack(System_Runtime_CompilerServices_QCallTypeHandle baseType, void* /*pTypeHandles*/, int32_t cTypeHandles, System_Runtime_CompilerServices_ObjectHandleOnStack instantiatedObject) { cil2cpp::stub_called(__func__); }
+extern "C" void System_RuntimeTypeHandle_CreateInstanceForAnotherGenericParameter__System_Runtime_CompilerServices_QCallTypeHandle_System_IntPtrPtr_System_Int32_System_Runtime_CompilerServices_ObjectHandleOnStack(System_Runtime_CompilerServices_QCallTypeHandle baseType, void* /*pTypeHandles*/, int32_t /*cTypeHandles*/, System_Runtime_CompilerServices_ObjectHandleOnStack instantiatedObject) {
+    if (!instantiatedObject.f__ptr) return;
+    auto** rtPtr = reinterpret_cast<cil2cpp::Type**>(baseType.f__ptr);
+    if (!rtPtr || !*rtPtr || !(*rtPtr)->type_info) return;
+    auto* ti = (*rtPtr)->type_info;
+    // Allocate default instance — caller handles initialization
+    auto* obj = cil2cpp::object_alloc(ti);
+    if (obj && ti->default_ctor) {
+        // Call default constructor: void .ctor(this)
+        reinterpret_cast<void(*)(void*)>(ti->default_ctor)(obj);
+    }
+    *reinterpret_cast<void**>(instantiatedObject.f__ptr) = obj;
+}
 extern "C" intptr_t System_RuntimeTypeHandle_FreeGCHandle__System_Runtime_CompilerServices_QCallTypeHandle_System_IntPtr(System_Runtime_CompilerServices_QCallTypeHandle /*typeHandle*/, intptr_t objHandle) {
     cil2cpp::gchandle_free(objHandle);
     return {};
 }
-extern "C" void System_RuntimeTypeHandle_GetActivationInfo__System_Runtime_CompilerServices_ObjectHandleOnStack_void_ptrPtr_System_VoidPtrPtr_void_ptrPtr_Interop_BOOLPtr(System_Runtime_CompilerServices_ObjectHandleOnStack pRuntimeType, void* /*ppfnAllocator*/, void* /*pvAllocatorFirstArg*/, void* /*ppfnCtor*/, void* /*pfCtorIsPublic*/) { cil2cpp::stub_called(__func__); }
-extern "C" void System_RuntimeTypeHandle_GetActivationInfo__System_RuntimeType_void_ptrRef_System_VoidRefPtr_void_ptrRef_System_BooleanRef(void* /*rt*/, void* /*pfnAllocator*/, void* /*vAllocatorFirstArg*/, void* /*pfnCtor*/, void* /*ctorIsPublic*/) { cil2cpp::stub_called(__func__); }
-extern "C" void* System_RuntimeTypeHandle_GetArgumentTypesFromFunctionPointer(void* /*type*/) { cil2cpp::stub_called(__func__); return nullptr; }
+extern "C" void System_RuntimeTypeHandle_GetActivationInfo__System_Runtime_CompilerServices_ObjectHandleOnStack_void_ptrPtr_System_VoidPtrPtr_void_ptrPtr_Interop_BOOLPtr(System_Runtime_CompilerServices_ObjectHandleOnStack pRuntimeType, void* ppfnAllocator, void* /*pvAllocatorFirstArg*/, void* ppfnCtor, void* pfCtorIsPublic) {
+    // Return default_ctor as the constructor pointer; allocator not needed (GC handles it)
+    if (!pRuntimeType.f__ptr) return;
+    auto* rt = *reinterpret_cast<cil2cpp::Type**>(pRuntimeType.f__ptr);
+    if (!rt || !rt->type_info) return;
+    auto* ti = rt->type_info;
+    if (ppfnCtor) *reinterpret_cast<void**>(ppfnCtor) = ti->default_ctor;
+    if (pfCtorIsPublic) *reinterpret_cast<int32_t*>(pfCtorIsPublic) = 1; // Assume public
+}
+extern "C" void System_RuntimeTypeHandle_GetActivationInfo__System_RuntimeType_void_ptrRef_System_VoidRefPtr_void_ptrRef_System_BooleanRef(void* rt, void* /*pfnAllocator*/, void* /*vAllocatorFirstArg*/, void* pfnCtor, void* ctorIsPublic) {
+    auto* type = reinterpret_cast<cil2cpp::Type*>(rt);
+    if (!type || !type->type_info) return;
+    if (pfnCtor) *reinterpret_cast<void**>(pfnCtor) = type->type_info->default_ctor;
+    if (ctorIsPublic) *reinterpret_cast<bool*>(ctorIsPublic) = true;
+}
+extern "C" void* System_RuntimeTypeHandle_GetArgumentTypesFromFunctionPointer(void* /*type*/) {
+    // Function pointer type metadata is not tracked in AOT TypeInfo
+    cil2cpp::throw_not_supported();
+}
 extern "C" System_Reflection_TypeAttributes System_RuntimeTypeHandle_GetAttributes(void* type) {
     // Map TypeInfo flags to ECMA-335 TypeAttributes
     auto* t = reinterpret_cast<cil2cpp::Type*>(type);
@@ -1325,7 +1425,12 @@ extern "C" void* System_RuntimeTypeHandle_GetBaseType(void* type) {
     if (!t || !t->type_info || !t->type_info->base_type) return nullptr;
     return reinterpret_cast<void*>(cil2cpp::type_get_type_object(t->type_info->base_type));
 }
-extern "C" void System_RuntimeTypeHandle_GetConstraints__System_Runtime_CompilerServices_QCallTypeHandle_System_Runtime_CompilerServices_ObjectHandleOnStack(System_Runtime_CompilerServices_QCallTypeHandle handle, System_Runtime_CompilerServices_ObjectHandleOnStack types) { cil2cpp::stub_called(__func__); }
+extern "C" void System_RuntimeTypeHandle_GetConstraints__System_Runtime_CompilerServices_QCallTypeHandle_System_Runtime_CompilerServices_ObjectHandleOnStack(System_Runtime_CompilerServices_QCallTypeHandle handle, System_Runtime_CompilerServices_ObjectHandleOnStack types) {
+    // AOT verifies constraints at compile time — return empty array
+    if (types.f__ptr) {
+        *reinterpret_cast<void**>(types.f__ptr) = cil2cpp::gc::alloc_array(&cil2cpp::System_Type_TypeInfo, 0);
+    }
+}
 extern "C" System_Reflection_CorElementType System_RuntimeTypeHandle_GetCorElementType(void* type) {
     auto* t = reinterpret_cast<cil2cpp::Type*>(type);
     if (!t || !t->type_info) return {};
@@ -1347,13 +1452,63 @@ extern "C" intptr_t System_RuntimeTypeHandle_GetGCHandle__System_Runtime_Compile
     auto h = cil2cpp::gchandle_alloc(nullptr, static_cast<cil2cpp::GCHandleType>(type));
     return h;
 }
-extern "C" void System_RuntimeTypeHandle_GetGenericTypeDefinition(System_Runtime_CompilerServices_QCallTypeHandle type, System_Runtime_CompilerServices_ObjectHandleOnStack retType) { cil2cpp::stub_called(__func__); }
+extern "C" void System_RuntimeTypeHandle_GetGenericTypeDefinition(System_Runtime_CompilerServices_QCallTypeHandle type, System_Runtime_CompilerServices_ObjectHandleOnStack retType) {
+    if (!retType.f__ptr) return;
+    auto** rtPtr = reinterpret_cast<cil2cpp::Type**>(type.f__ptr);
+    if (!rtPtr || !*rtPtr || !(*rtPtr)->type_info) return;
+    auto* ti = (*rtPtr)->type_info;
+    // If this type has a generic definition name, look it up
+    if (ti->generic_definition_name) {
+        auto* defTi = cil2cpp::type_get_by_name(ti->generic_definition_name);
+        if (defTi) {
+            *reinterpret_cast<void**>(retType.f__ptr) = cil2cpp::type_get_type_object(defTi);
+            return;
+        }
+    }
+    // Non-generic or definition itself — return self
+    *reinterpret_cast<void**>(retType.f__ptr) = *rtPtr;
+}
 extern "C" int32_t System_RuntimeTypeHandle_GetGenericVariableIndex__System_RuntimeType(void* /*type*/) {
     return -1; // No open generic parameters in AOT
 }
-extern "C" void System_RuntimeTypeHandle_GetInstantiation(System_Runtime_CompilerServices_QCallTypeHandle type, System_Runtime_CompilerServices_ObjectHandleOnStack types, Interop_BOOL fAsRuntimeTypeArray) { cil2cpp::stub_called(__func__); }
-extern "C" System_RuntimeMethodHandleInternal System_RuntimeTypeHandle_GetInterfaceMethodImplementation__System_Runtime_CompilerServices_QCallTypeHandle_System_Runtime_CompilerServices_QCallTypeHandle_System_RuntimeMethodHandleInternal(System_Runtime_CompilerServices_QCallTypeHandle handle, System_Runtime_CompilerServices_QCallTypeHandle interfaceHandle, System_RuntimeMethodHandleInternal interfaceMethodHandle) { cil2cpp::stub_called(__func__); return {}; }
-extern "C" System_RuntimeMethodHandleInternal System_RuntimeTypeHandle_GetInterfaceMethodImplementation__System_RuntimeTypeHandle_System_RuntimeMethodHandleInternal(void* /*__this*/, System_RuntimeTypeHandle interfaceHandle, System_RuntimeMethodHandleInternal interfaceMethodHandle) { cil2cpp::stub_called(__func__); return {}; }
+extern "C" void System_RuntimeTypeHandle_GetInstantiation(System_Runtime_CompilerServices_QCallTypeHandle type, System_Runtime_CompilerServices_ObjectHandleOnStack types, Interop_BOOL fAsRuntimeTypeArray) {
+    if (!types.f__ptr) return;
+    auto** rtPtr = reinterpret_cast<cil2cpp::Type**>(type.f__ptr);
+    if (!rtPtr || !*rtPtr) { *reinterpret_cast<void**>(types.f__ptr) = nullptr; return; }
+    // Delegate to existing GetInstantiationInternal which builds Type[] from generic_arguments
+    *reinterpret_cast<void**>(types.f__ptr) = System_RuntimeTypeHandle_GetInstantiationInternal(*rtPtr);
+}
+extern "C" System_RuntimeMethodHandleInternal System_RuntimeTypeHandle_GetInterfaceMethodImplementation__System_Runtime_CompilerServices_QCallTypeHandle_System_Runtime_CompilerServices_QCallTypeHandle_System_RuntimeMethodHandleInternal(System_Runtime_CompilerServices_QCallTypeHandle handle, System_Runtime_CompilerServices_QCallTypeHandle interfaceHandle, System_RuntimeMethodHandleInternal interfaceMethodHandle) {
+    // Look up the interface vtable and find the method by slot
+    auto** rtPtr = reinterpret_cast<cil2cpp::Type**>(handle.f__ptr);
+    auto** ifPtr = reinterpret_cast<cil2cpp::Type**>(interfaceHandle.f__ptr);
+    if (!rtPtr || !*rtPtr || !(*rtPtr)->type_info || !ifPtr || !*ifPtr || !(*ifPtr)->type_info)
+        return {};
+    auto* ivt = cil2cpp::type_get_interface_vtable((*rtPtr)->type_info, (*ifPtr)->type_info);
+    if (!ivt || !ivt->methods) return {};
+    // Find which slot the interface method occupies by matching method_pointer
+    auto* ifTi = (*ifPtr)->type_info;
+    for (uint32_t i = 0; i < ifTi->method_count && i < ivt->method_count; i++) {
+        if (ifTi->methods[i].method_pointer == interfaceMethodHandle.f_value) {
+            return { ivt->methods[i] };
+        }
+    }
+    return {};
+}
+extern "C" System_RuntimeMethodHandleInternal System_RuntimeTypeHandle_GetInterfaceMethodImplementation__System_RuntimeTypeHandle_System_RuntimeMethodHandleInternal(void* __this, System_RuntimeTypeHandle interfaceHandle, System_RuntimeMethodHandleInternal interfaceMethodHandle) {
+    auto* type = reinterpret_cast<cil2cpp::Type*>(__this);
+    auto* ifType = reinterpret_cast<cil2cpp::Type*>(interfaceHandle.f_m_type);
+    if (!type || !type->type_info || !ifType || !ifType->type_info) return {};
+    auto* ivt = cil2cpp::type_get_interface_vtable(type->type_info, ifType->type_info);
+    if (!ivt || !ivt->methods) return {};
+    auto* ifTi = ifType->type_info;
+    for (uint32_t i = 0; i < ifTi->method_count && i < ivt->method_count; i++) {
+        if (ifTi->methods[i].method_pointer == interfaceMethodHandle.f_value) {
+            return { ivt->methods[i] };
+        }
+    }
+    return {};
+}
 extern "C" void* System_RuntimeTypeHandle_GetInterfaces(void* type) {
     auto* t = reinterpret_cast<cil2cpp::Type*>(type);
     if (!t || !t->type_info) return nullptr;
@@ -1380,11 +1535,9 @@ extern "C" System_RuntimeMethodHandleInternal System_RuntimeTypeHandle_GetMethod
     return { t->type_info->vtable->methods[slot] };
 }
 extern "C" void* System_RuntimeTypeHandle_GetModule(void* /*type*/) {
-    // Return a singleton zero-initialized RuntimeModule. The caller (RuntimeTypeCache ctor)
-    // uses it to check m_isGlobal = (module.RuntimeType == this). Since f_m_runtimeType is
-    // null, get_RuntimeType returns null, op_Equality(null, type) → false, m_isGlobal = false.
-    alignas(16) static uint8_t s_dummy_module[64] = {};
-    return s_dummy_module;
+    // Caller (RuntimeTypeCache ctor) checks module.RuntimeType == this.
+    // Singleton module has null RuntimeType → m_isGlobal = false (correct).
+    return get_singleton_module();
 }
 extern "C" void System_RuntimeTypeHandle_GetNextIntroducedMethod(void* /*method*/) {
     // Method iteration uses TypeInfo.methods array, not CoreCLR enumerator
@@ -1394,7 +1547,10 @@ extern "C" int32_t System_RuntimeTypeHandle_GetNumVirtuals(void* type) {
     if (!t || !t->type_info || !t->type_info->vtable) return 0;
     return static_cast<int32_t>(t->type_info->vtable->method_count);
 }
-extern "C" void System_RuntimeTypeHandle_Instantiate__System_Runtime_CompilerServices_QCallTypeHandle_System_IntPtrPtr_System_Int32_System_Runtime_CompilerServices_ObjectHandleOnStack(System_Runtime_CompilerServices_QCallTypeHandle handle, void* /*pInst*/, int32_t numGenericArgs, System_Runtime_CompilerServices_ObjectHandleOnStack type) { cil2cpp::stub_called(__func__); }
+extern "C" void System_RuntimeTypeHandle_Instantiate__System_Runtime_CompilerServices_QCallTypeHandle_System_IntPtrPtr_System_Int32_System_Runtime_CompilerServices_ObjectHandleOnStack(System_Runtime_CompilerServices_QCallTypeHandle /*handle*/, void* /*pInst*/, int32_t /*numGenericArgs*/, System_Runtime_CompilerServices_ObjectHandleOnStack /*type*/) {
+    // Runtime generic type instantiation is not supported in AOT compilation
+    cil2cpp::throw_not_supported();
+}
 extern "C" Interop_BOOL System_RuntimeTypeHandle_IsCollectible(System_Runtime_CompilerServices_QCallTypeHandle /*handle*/) {
     return 0; // AOT types are never collectible
 }
@@ -1413,14 +1569,36 @@ extern "C" bool System_RuntimeTypeHandle_IsUnmanagedFunctionPointer(void* /*type
 extern "C" bool System_RuntimeTypeHandle_IsValueType(void* type) {
     return cil2cpp::type_get_is_value_type(reinterpret_cast<cil2cpp::Type*>(type));
 }
-extern "C" void System_RuntimeTypeHandle_MakeArray__System_Runtime_CompilerServices_QCallTypeHandle_System_Int32_System_Runtime_CompilerServices_ObjectHandleOnStack(System_Runtime_CompilerServices_QCallTypeHandle handle, int32_t rank, System_Runtime_CompilerServices_ObjectHandleOnStack type) { cil2cpp::stub_called(__func__); }
-extern "C" void System_RuntimeTypeHandle_MakeByRef__System_Runtime_CompilerServices_QCallTypeHandle_System_Runtime_CompilerServices_ObjectHandleOnStack(System_Runtime_CompilerServices_QCallTypeHandle handle, System_Runtime_CompilerServices_ObjectHandleOnStack type) { cil2cpp::stub_called(__func__); }
-extern "C" void System_RuntimeTypeHandle_MakePointer__System_Runtime_CompilerServices_QCallTypeHandle_System_Runtime_CompilerServices_ObjectHandleOnStack(System_Runtime_CompilerServices_QCallTypeHandle handle, System_Runtime_CompilerServices_ObjectHandleOnStack type) { cil2cpp::stub_called(__func__); }
-extern "C" void System_RuntimeTypeHandle_MakeSZArray__System_Runtime_CompilerServices_QCallTypeHandle_System_Runtime_CompilerServices_ObjectHandleOnStack(System_Runtime_CompilerServices_QCallTypeHandle handle, System_Runtime_CompilerServices_ObjectHandleOnStack type) { cil2cpp::stub_called(__func__); }
+extern "C" void System_RuntimeTypeHandle_MakeArray__System_Runtime_CompilerServices_QCallTypeHandle_System_Int32_System_Runtime_CompilerServices_ObjectHandleOnStack(System_Runtime_CompilerServices_QCallTypeHandle handle, int32_t rank, System_Runtime_CompilerServices_ObjectHandleOnStack type) {
+    if (!type.f__ptr) return;
+    auto** rtPtr = reinterpret_cast<cil2cpp::Type**>(handle.f__ptr);
+    if (!rtPtr || !*rtPtr) { *reinterpret_cast<void**>(type.f__ptr) = nullptr; return; }
+    *reinterpret_cast<void**>(type.f__ptr) = System_RuntimeTypeHandle_MakeArray__System_Int32(*rtPtr, rank);
+}
+extern "C" void System_RuntimeTypeHandle_MakeByRef__System_Runtime_CompilerServices_QCallTypeHandle_System_Runtime_CompilerServices_ObjectHandleOnStack(System_Runtime_CompilerServices_QCallTypeHandle handle, System_Runtime_CompilerServices_ObjectHandleOnStack type) {
+    if (!type.f__ptr) return;
+    auto** rtPtr = reinterpret_cast<cil2cpp::Type**>(handle.f__ptr);
+    if (!rtPtr || !*rtPtr) { *reinterpret_cast<void**>(type.f__ptr) = nullptr; return; }
+    *reinterpret_cast<void**>(type.f__ptr) = System_RuntimeTypeHandle_MakeByRef(*rtPtr);
+}
+extern "C" void System_RuntimeTypeHandle_MakePointer__System_Runtime_CompilerServices_QCallTypeHandle_System_Runtime_CompilerServices_ObjectHandleOnStack(System_Runtime_CompilerServices_QCallTypeHandle handle, System_Runtime_CompilerServices_ObjectHandleOnStack type) {
+    if (!type.f__ptr) return;
+    auto** rtPtr = reinterpret_cast<cil2cpp::Type**>(handle.f__ptr);
+    if (!rtPtr || !*rtPtr) { *reinterpret_cast<void**>(type.f__ptr) = nullptr; return; }
+    *reinterpret_cast<void**>(type.f__ptr) = System_RuntimeTypeHandle_MakePointer(*rtPtr);
+}
+extern "C" void System_RuntimeTypeHandle_MakeSZArray__System_Runtime_CompilerServices_QCallTypeHandle_System_Runtime_CompilerServices_ObjectHandleOnStack(System_Runtime_CompilerServices_QCallTypeHandle handle, System_Runtime_CompilerServices_ObjectHandleOnStack type) {
+    if (!type.f__ptr) return;
+    auto** rtPtr = reinterpret_cast<cil2cpp::Type**>(handle.f__ptr);
+    if (!rtPtr || !*rtPtr) { *reinterpret_cast<void**>(type.f__ptr) = nullptr; return; }
+    *reinterpret_cast<void**>(type.f__ptr) = System_RuntimeTypeHandle_MakeSZArray(*rtPtr);
+}
 extern "C" void System_RuntimeTypeHandle_RegisterCollectibleTypeDependency__System_Runtime_CompilerServices_QCallTypeHandle_System_Runtime_CompilerServices_QCallAssembly(System_Runtime_CompilerServices_QCallTypeHandle /*type*/, System_Runtime_CompilerServices_QCallAssembly /*assembly*/) {
     // No collectible assemblies in AOT
 }
-extern "C" bool System_RuntimeTypeHandle_SatisfiesConstraints__System_RuntimeType_System_IntPtrPtr_System_Int32_System_IntPtrPtr_System_Int32_System_RuntimeType(void* /*paramType*/, void* /*pTypeContext*/, int32_t typeContextLength, void* /*pMethodContext*/, int32_t methodContextLength, void* /*toType*/) { cil2cpp::stub_called(__func__); return false; }
+extern "C" bool System_RuntimeTypeHandle_SatisfiesConstraints__System_RuntimeType_System_IntPtrPtr_System_Int32_System_IntPtrPtr_System_Int32_System_RuntimeType(void* /*paramType*/, void* /*pTypeContext*/, int32_t /*typeContextLength*/, void* /*pMethodContext*/, int32_t /*methodContextLength*/, void* /*toType*/) {
+    return true; // AOT compiler verifies all generic constraints at compile time
+}
 extern "C" void System_RuntimeTypeHandle_VerifyInterfaceIsImplemented__System_Runtime_CompilerServices_QCallTypeHandle_System_Runtime_CompilerServices_QCallTypeHandle(System_Runtime_CompilerServices_QCallTypeHandle /*handle*/, System_Runtime_CompilerServices_QCallTypeHandle /*interfaceHandle*/) {
     // Interface implementation verified at compile time in AOT
 }
@@ -1444,8 +1622,7 @@ extern "C" intptr_t System_Runtime_InteropServices_Marshalling_SafeHandleMarshal
     auto** handlePtr = reinterpret_cast<void**>(__this);
     auto* safeHandle = reinterpret_cast<cil2cpp::Object*>(*handlePtr);
     if (!safeHandle) return {};
-    // SafeHandle layout: Object (16) + f__handle (intptr_t at offset 16)
-    return *reinterpret_cast<intptr_t*>(reinterpret_cast<uint8_t*>(safeHandle) + sizeof(cil2cpp::Object));
+    return static_cast<SafeHandleLayout*>(safeHandle)->_handle;
 }
 extern "C" void System_Runtime_InteropServices_Marshalling_SafeHandleMarshaller_1_ManagedToUnmanagedIn_Microsoft_Win32_SafeHandles_SafeThreadHandle_Free(void* /*__this*/) {
     // Release addref — no-op in GC environment
@@ -1706,9 +1883,7 @@ extern "C" Interop_BOOL System_Threading_Thread_YieldInternal() {
 
 // ===== System.Type =====
 extern "C" void* System_Type_get_Assembly(void* /*__this*/) {
-    // Return the singleton assembly — AOT has one assembly
-    // Assembly object is allocated lazily in RuntimeAssembly but we don't track it
-    return nullptr; // TODO: return singleton Assembly once assembly metadata is tracked
+    return get_singleton_assembly();
 }
 extern "C" void* System_Type_get_AssemblyQualifiedName(void* __this) {
     auto* t = reinterpret_cast<cil2cpp::Type*>(__this);
@@ -1732,9 +1907,7 @@ extern "C" bool System_Type_get_IsClass(void* __this) {
     return cil2cpp::type_get_is_class(reinterpret_cast<cil2cpp::Type*>(__this));
 }
 extern "C" void* System_Type_get_Module(void* /*__this*/) {
-    // Return singleton dummy module — same as RuntimeTypeHandle.GetModule
-    alignas(16) static uint8_t s_dummy_module[64] = {};
-    return s_dummy_module;
+    return get_singleton_module();
 }
 extern "C" void* System_Type_get_Namespace(void* __this) {
     return reinterpret_cast<void*>(cil2cpp::type_get_namespace(reinterpret_cast<cil2cpp::Type*>(__this)));
@@ -2071,13 +2244,32 @@ extern "C" cil2cpp::Object* System_Array_GetValue__System_Int32__(cil2cpp::Array
     if (len == 1) {
         return static_cast<cil2cpp::Object*>(cil2cpp::array_get_value(__this, idx[0]));
     }
-    // Multi-dim: compute flattened index (simplified — assumes row-major)
-    // TODO: proper MdArray bounds handling
+    // Multi-dimensional array: use mdarray helpers for proper bounds checking
+    if (cil2cpp::is_mdarray(reinterpret_cast<cil2cpp::Object*>(__this))) {
+        auto* md = reinterpret_cast<cil2cpp::MdArray*>(__this);
+        void* elem = cil2cpp::mdarray_get_element_ptr(md, idx);
+        if (!elem) return nullptr;
+        // Box the element: read value from element pointer and wrap as Object*
+        auto* elemTi = md->element_type;
+        if (!elemTi) return nullptr;
+        if (elemTi->flags & cil2cpp::TypeFlags::ValueType) {
+            // Box: allocate object, copy value
+            auto* boxed = static_cast<cil2cpp::Object*>(
+                cil2cpp::gc::alloc(sizeof(cil2cpp::Object) + elemTi->instance_size, elemTi));
+            std::memcpy(reinterpret_cast<uint8_t*>(boxed) + sizeof(cil2cpp::Object),
+                        elem, elemTi->instance_size);
+            return boxed;
+        }
+        // Reference type: element is an Object*
+        return *reinterpret_cast<cil2cpp::Object**>(elem);
+    }
+    // 1D array fallback: compute flattened index
     intptr_t flat = 0;
     intptr_t stride = 1;
+    auto totalLen = cil2cpp::array_length(__this);
     for (intptr_t i = static_cast<intptr_t>(len) - 1; i >= 0; --i) {
         flat += idx[i] * stride;
-        stride *= cil2cpp::array_length(__this); // Simplified: assumes square
+        stride *= totalLen;
     }
     return static_cast<cil2cpp::Object*>(cil2cpp::array_get_value(__this, static_cast<int32_t>(flat)));
 }

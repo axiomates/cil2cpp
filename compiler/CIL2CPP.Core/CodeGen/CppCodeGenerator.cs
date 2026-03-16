@@ -739,9 +739,7 @@ public partial class CppCodeGenerator
                 if (instr is IR.IRCall call && !string.IsNullOrEmpty(call.FunctionName)
                     && !call.IsVirtual // Virtual calls use VTable dispatch; FunctionName not in rendered C++
                     && _undeclaredFunctionNames.Contains(call.FunctionName)
-                    && !IsSimdDeadCodeFunction(call.FunctionName)
-                    && !IsEventSourceDiagnosticFunction(call.FunctionName)
-                    && !IsAotIncompatibleDeadCode(call.FunctionName))
+                    && !IsKnownDeadCode(call.FunctionName))
                 {
                     return call.FunctionName;
                 }
@@ -762,55 +760,50 @@ public partial class CppCodeGenerator
     }
 
     /// <summary>
-    /// SIMD intrinsic functions (X86/Arm/Wasm) are always in feature-switch-guarded dead-code
-    /// branches. Their IRCall instructions exist in the IR but are unreachable at runtime
-    /// (IsSupported always returns false on AOT). Don't block method emission for these.
+    /// Categories of known dead code in AOT compilation.
+    /// These functions exist in compiled IL but are unreachable at runtime.
     /// </summary>
-    private static bool IsSimdIntrinsicFunction(string functionName)
+    private enum DeadCodeCategory
     {
-        return functionName.StartsWith("System_Runtime_Intrinsics_X86_")
+        None,
+        /// <summary>SIMD intrinsics + vector methods + helpers — guarded by IsSupported/IsHardwareAccelerated = false</summary>
+        Simd,
+        /// <summary>EventSource diagnostics — guarded by IsEnabled() = false in AOT</summary>
+        EventSource,
+        /// <summary>AOT-incompatible operations (AssemblyLoadContext) — no runtime equivalent</summary>
+        AotIncompatible,
+    }
+
+    /// <summary>
+    /// Classify a function as known dead code, or None if it's not a recognized pattern.
+    /// All patterns in one place for maintainability.
+    /// </summary>
+    private static DeadCodeCategory ClassifyDeadCode(string functionName)
+    {
+        // ── SIMD: hardware intrinsics (X86/Arm/Wasm) ──
+        if (functionName.StartsWith("System_Runtime_Intrinsics_X86_")
             || functionName.StartsWith("System_Runtime_Intrinsics_Arm_")
-            || functionName.StartsWith("System_Runtime_Intrinsics_Wasm_");
-    }
+            || functionName.StartsWith("System_Runtime_Intrinsics_Wasm_"))
+            return DeadCodeCategory.Simd;
 
-    /// <summary>
-    /// EventSource diagnostic methods (NativeRuntimeEventSource, NetEventSource, etc.) are always
-    /// behind EventSource.IsEnabled() guards which always return false in AOT. These are dead code
-    /// like SIMD intrinsics — don't block method emission for referencing undeclared EventSource methods.
-    /// Note: only covers CALLEE names (functions being called), not caller methods. Callers that
-    /// reference undeclared EventSource TYPES in their bodies are still skipped by CallsUndeclaredFunction.
-    /// </summary>
-    private static bool IsEventSourceDiagnosticFunction(string functionName)
-    {
-        return functionName.StartsWith("System_Diagnostics_Tracing_NativeRuntimeEventSource_")
-            || functionName.StartsWith("System_Net_NetEventSource_")
-            || functionName.StartsWith("System_Net_Sockets_NetEventSource_");
-    }
-
-    /// <summary>
-    /// All SIMD-related functions: hardware intrinsics (X86/Arm/Wasm), generic container methods
-    /// (Vector128&lt;T&gt;, Vector256&lt;T&gt;, etc.), non-generic helper methods (Vector128.Create, etc.),
-    /// and BCL helper classes that only serve SIMD code paths (PackedSpanHelpers, IndexOfAnyAsciiSearcher).
-    /// These are always in dead-code branches (IsSupported=false on AOT). Undeclared calls to
-    /// these functions are replaced with default values at render time.
-    /// </summary>
-    private static bool IsSimdDeadCodeFunction(string functionName)
-    {
-        return IsSimdIntrinsicFunction(functionName)
-            || functionName.StartsWith("System_Runtime_Intrinsics_Vector64_1_")
+        // ── SIMD: generic container methods (Vector128<T>, Vector256<T>, etc.) ──
+        if (functionName.StartsWith("System_Runtime_Intrinsics_Vector64_1_")
             || functionName.StartsWith("System_Runtime_Intrinsics_Vector128_1_")
             || functionName.StartsWith("System_Runtime_Intrinsics_Vector256_1_")
             || functionName.StartsWith("System_Runtime_Intrinsics_Vector512_1_")
-            || functionName.StartsWith("System_Numerics_Vector_1_")
-            || functionName.StartsWith("System_Runtime_Intrinsics_Vector64_")
+            || functionName.StartsWith("System_Numerics_Vector_1_"))
+            return DeadCodeCategory.Simd;
+
+        // ── SIMD: non-generic statics (Vector128.Create, etc.) + Scalar<T> ──
+        if (functionName.StartsWith("System_Runtime_Intrinsics_Vector64_")
             || functionName.StartsWith("System_Runtime_Intrinsics_Vector128_")
             || functionName.StartsWith("System_Runtime_Intrinsics_Vector256_")
             || functionName.StartsWith("System_Runtime_Intrinsics_Vector512_")
-            || functionName.StartsWith("System_Runtime_Intrinsics_Scalar_1_")
-            // BCL helper classes that only serve SIMD-accelerated code paths.
-            // Called behind Sse2.IsSupported / AdvSimd.IsSupported / Vector128.IsHardwareAccelerated
-            // guards — always dead in AOT without SIMD support.
-            || functionName.StartsWith("System_PackedSpanHelpers_")
+            || functionName.StartsWith("System_Runtime_Intrinsics_Scalar_1_"))
+            return DeadCodeCategory.Simd;
+
+        // ── SIMD: BCL helper classes behind SIMD guards ──
+        if (functionName.StartsWith("System_PackedSpanHelpers_")
             || functionName.StartsWith("System_SpanHelpers_ComputeFirstIndex_")
             || functionName.StartsWith("System_SpanHelpers_ComputeLastIndex_")
             || functionName.StartsWith("System_Buffers_IndexOfAnyAsciiSearcher_")
@@ -818,23 +811,33 @@ public partial class CppCodeGenerator
             || functionName.StartsWith("System_Text_Ascii_ChangeWidthAndWriteTo_")
             || functionName.StartsWith("System_Text_Ascii_SignedLessThan_")
             || functionName.StartsWith("System_Text_Ascii_VectorContainsNonAsciiChar_")
-            // SIMD guard: ThrowForUnsupportedNumericsVectorBaseType is behind Vector.IsHardwareAccelerated
-            || functionName.StartsWith("System_ThrowHelper_ThrowForUnsupportedNumericsVectorBaseType_");
+            || functionName.StartsWith("System_ThrowHelper_ThrowForUnsupportedNumericsVectorBaseType_"))
+            return DeadCodeCategory.Simd;
+
+        // ── EventSource: diagnostic logging, always behind IsEnabled()=false ──
+        if (functionName.StartsWith("System_Diagnostics_Tracing_NativeRuntimeEventSource_")
+            || functionName.StartsWith("System_Net_NetEventSource_")
+            || functionName.StartsWith("System_Net_Sockets_NetEventSource_"))
+            return DeadCodeCategory.EventSource;
+
+        // ── AOT-incompatible: no runtime assembly loading ──
+        if (functionName.StartsWith("System_Runtime_Loader_AssemblyLoadContext_"))
+            return DeadCodeCategory.AotIncompatible;
+
+        return DeadCodeCategory.None;
     }
 
-    /// <summary>
-    /// AOT-incompatible callee functions. Methods referencing these are dead code in AOT
-    /// (Reflection.Emit, AssemblyLoadContext, StackFrameHelper). However, callers that also
-    /// reference undeclared TYPES from these namespaces can't compile even if calls are replaced.
-    /// Currently only used in FindFirstUndeclaredCall for IRCall/IRNewObj exemption where
-    /// the caller's body doesn't reference undeclared types.
-    /// </summary>
-    private static bool IsAotIncompatibleDeadCode(string functionName)
-    {
-        // AssemblyLoadContext: no runtime assembly loading in AOT.
-        // Callers (TypeNameParser) only call these functions, don't use ALC types as locals.
-        return functionName.StartsWith("System_Runtime_Loader_AssemblyLoadContext_");
-    }
+    /// <summary>Returns true if the function is known dead code (any category).</summary>
+    private static bool IsKnownDeadCode(string functionName)
+        => ClassifyDeadCode(functionName) != DeadCodeCategory.None;
+
+    /// <summary>Backward-compat: returns true for SIMD dead code specifically.</summary>
+    private static bool IsSimdDeadCodeFunction(string functionName)
+        => ClassifyDeadCode(functionName) == DeadCodeCategory.Simd;
+
+    /// <summary>Backward-compat: returns true for EventSource dead code specifically.</summary>
+    private static bool IsEventSourceDiagnosticFunction(string functionName)
+        => ClassifyDeadCode(functionName) == DeadCodeCategory.EventSource;
 
     /// <summary>
     /// Check if a C++ type name is invalid — either an unresolved generic param or a function pointer type.

@@ -11,14 +11,16 @@
 #include <cil2cpp/unicode.h>
 
 #include <unordered_map>
+#include <mutex>
 #include <string>
 #include <cstring>
 #include <cstdlib>
 
 namespace cil2cpp {
 
-// String interning pool
+// String interning pool — protected by mutex for thread safety
 static std::unordered_map<std::string, String*> g_string_pool;
+static std::mutex g_string_pool_mutex;
 
 namespace System {
 
@@ -82,6 +84,7 @@ String* string_literal(const char* utf8) {
         return nullptr;
     }
 
+    std::lock_guard<std::mutex> lock(g_string_pool_mutex);
     // Check intern pool
     auto it = g_string_pool.find(utf8);
     if (it != g_string_pool.end()) {
