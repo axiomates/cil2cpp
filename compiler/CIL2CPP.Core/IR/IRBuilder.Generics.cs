@@ -591,8 +591,19 @@ public partial class IRBuilder
         // Disambiguate mangled name if another overload already uses it
         if (_genericMethodInstantiations.Values.Any(v => v.MangledName == mangledName))
         {
-            // Build type parameter map to resolve generic params (!!0 etc.) before mangling
+            // Build type parameter map to resolve generic params before mangling.
+            // Must include BOTH declaring type's generic params (e.g., T from IndexOfAnyResultMapper<T>)
+            // AND method-level generic params (e.g., TRef from ScalarResult<TRef>).
             var typeParamMap = new Dictionary<string, string>();
+
+            // Add declaring type's generic params from Cecil's GenericInstanceType
+            if (elementMethod.DeclaringType is GenericInstanceType git && cecilMethod.DeclaringType.HasGenericParameters)
+            {
+                var typeGenericParams = cecilMethod.DeclaringType.GenericParameters;
+                for (int i = 0; i < typeGenericParams.Count && i < git.GenericArguments.Count; i++)
+                    typeParamMap[typeGenericParams[i].Name] = git.GenericArguments[i].FullName;
+            }
+            // Add method-level generic params
             for (int i = 0; i < cecilMethod.GenericParameters.Count && i < typeArgs.Count; i++)
                 typeParamMap[cecilMethod.GenericParameters[i].Name] = typeArgs[i];
 
@@ -1102,6 +1113,28 @@ public partial class IRBuilder
             // TSelf → System.Char so parameter types resolve correctly.
             var effectiveParamMap = BuildConstrainedTypeParamMap(
                 cecilTypeDef, cecilTargetMethod, typeParamMap);
+
+            // Add the constrained type's own generic parameters if it's a generic specialization.
+            // E.g., IndexOfAnyResultMapper<System.Byte>.ScalarResult(ref T, ref T) needs T → System.Byte.
+            // Without this, T remains unresolved in method parameters and locals.
+            if (cecilTypeDef.HasGenericParameters)
+            {
+                // Try IRType.GenericArguments first; fall back to parsing from constrainedTypeRef
+                var typeArgs = irType.GenericArguments;
+                if (typeArgs == null && constrainedTypeRef is GenericInstanceType cGit)
+                {
+                    typeArgs = cGit.GenericArguments.Select(a =>
+                        ResolveGenericTypeName(a, typeParamMap)).ToList();
+                }
+                if (typeArgs != null)
+                {
+                    for (int gi = 0; gi < cecilTypeDef.GenericParameters.Count && gi < typeArgs.Count; gi++)
+                    {
+                        var gpName = cecilTypeDef.GenericParameters[gi].Name;
+                        effectiveParamMap[gpName] = typeArgs[gi];
+                    }
+                }
+            }
 
             // If no IRMethod shell exists, create one. This handles static abstract interface
             // implementations that CreateGenericSpecializations skipped because they're static
@@ -2056,6 +2089,12 @@ public partial class IRBuilder
                 if (!methodDef.IsVirtual && !methodDef.IsConstructor
                     && !_reachability.IsReachable(methodDef))
                     continue;
+                // Skip methods with their own generic parameters (method-level generics).
+                // These can't be compiled in the type specialization because the method-level
+                // params (TRef, etc.) are unresolved. They'll be compiled via
+                // _genericMethodInstantiations with concrete type args at each call site.
+                if (methodDef.HasGenericParameters)
+                    continue;
                 var returnTypeName = ResolveGenericTypeName(methodDef.ReturnType, typeParamMap);
                 var resolvedMethodName = ResolveMethodNameGenericParams(methodDef.Name, typeParamMap);
                 var cppName = CppNameMapper.MangleMethodName(info.MangledName, resolvedMethodName);
@@ -2400,6 +2439,16 @@ public partial class IRBuilder
         if (_genericMethodInstantiations.Values.Any(v => v.MangledName == mangledName))
         {
             var typeParamMap = new Dictionary<string, string>();
+
+            // Add declaring type's generic params from Cecil's GenericInstanceType
+            if (elementMethod.DeclaringType is GenericInstanceType git2 && cecilMethod.DeclaringType.HasGenericParameters)
+            {
+                var typeGenericParams = cecilMethod.DeclaringType.GenericParameters;
+                for (int i = 0; i < typeGenericParams.Count && i < git2.GenericArguments.Count; i++)
+                    typeParamMap[typeGenericParams[i].Name] = git2.GenericArguments[i].FullName;
+            }
+
+            // Add method-level generic params
             for (int i = 0; i < cecilMethod.GenericParameters.Count && i < resolvedArgs.Count; i++)
                 typeParamMap[cecilMethod.GenericParameters[i].Name] = resolvedArgs[i];
 
