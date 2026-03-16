@@ -28,9 +28,12 @@ Object* Directory_CreateDirectory(String* path) {
     if (ec) {
         throw_io_exception(("Could not create directory: " + ec.message()).c_str());
     }
-    // TODO: return a proper DirectoryInfo object once the BCL type is compiled from IL.
-    // For now, return a minimal opaque object to satisfy non-null checks.
-    return static_cast<Object*>(gc::alloc(sizeof(Object), nullptr));
+    // Allocate a DirectoryInfo object with the correct TypeInfo if available.
+    // DirectoryInfo is compiled from BCL IL — look it up at runtime.
+    auto* ti = type_get_by_name("System.IO.DirectoryInfo");
+    auto* obj = static_cast<Object*>(gc::alloc(
+        ti ? ti->instance_size : sizeof(Object), ti));
+    return obj;
 }
 
 } // namespace icall
