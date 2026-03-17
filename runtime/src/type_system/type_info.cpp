@@ -142,6 +142,7 @@ Boolean type_implements_interface(TypeInfo* type, TypeInfo* interface_type) {
 }
 
 InterfaceVTable* type_get_interface_vtable(TypeInfo* type, TypeInfo* interface_type) {
+    // Pass 1: exact match (fast path — common case)
     TypeInfo* current = type;
     while (current) {
         for (UInt32 i = 0; i < current->interface_vtable_count; i++) {
@@ -150,6 +151,18 @@ InterfaceVTable* type_get_interface_vtable(TypeInfo* type, TypeInfo* interface_t
             }
         }
         current = current->base_type;
+    }
+    // Pass 2: variance-compatible match (ICovariant<string> satisfies ICovariant<object>, etc.)
+    if (interface_type->generic_argument_count > 0) {
+        current = type;
+        while (current) {
+            for (UInt32 i = 0; i < current->interface_vtable_count; i++) {
+                if (type_is_variant_assignable(interface_type, current->interface_vtables[i].interface_type)) {
+                    return &current->interface_vtables[i];
+                }
+            }
+            current = current->base_type;
+        }
     }
     // Array generic interface adapter: T[] implements ICollection<T>, IList<T>, etc.
     return array_get_generic_interface_vtable(type, interface_type);

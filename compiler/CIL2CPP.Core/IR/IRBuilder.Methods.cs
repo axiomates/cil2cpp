@@ -520,6 +520,22 @@ public partial class IRBuilder
             }
         }
 
+        // Pre-count filters per try block (for chained filter goto labels)
+        _filterCountPerTry.Clear();
+        _filterIndexPerTry.Clear();
+        if (methodDef.HasExceptionHandlers)
+        {
+            foreach (var handler in methodDef.GetExceptionHandlers())
+            {
+                if (handler.HandlerType == Mono.Cecil.Cil.ExceptionHandlerType.Filter
+                    && handler.FilterStart.HasValue)
+                {
+                    var key = (handler.TryStart, handler.TryEnd);
+                    _filterCountPerTry[key] = _filterCountPerTry.GetValueOrDefault(key) + 1;
+                }
+            }
+        }
+
         // Collect ALL protected regions for leave instruction handling.
         // Each region has: try body range, handler type, and handler body range.
         var tryProtectedRegions = new List<(int TryStart, int TryEnd,
@@ -732,7 +748,8 @@ public partial class IRBuilder
                             }
                             skipUntilOffset = null;
                             stack.Clear();
-                            block.Instructions.Add(new IRFilterBegin { IsFirst = isFirst });
+                            int curFilterIdx = _filterIndexPerTry.GetValueOrDefault(filterTryKey);
+                            block.Instructions.Add(new IRFilterBegin { IsFirst = isFirst, FilterIndex = curFilterIdx });
                             // Reset for this filter evaluation (declaration is at method scope in codegen)
                             block.Instructions.Add(new IRRawCpp { Code = "__filter_result = 0;" });
                             // IL pushes exception onto stack for filter evaluation
@@ -740,6 +757,9 @@ public partial class IRBuilder
                             // Track filter region for endfilter scoping fix
                             _inFilterRegion = true;
                             _endfilterOffset = FindEndfilterOffset(instructions, instr.Offset);
+                            _currentFilterTryKey = filterTryKey;
+                            // Advance filter index for this try block (for next filter's label)
+                            _filterIndexPerTry[filterTryKey] = curFilterIdx + 1;
                             break;
                         }
                         case ExceptionEventKind.FilterHandlerBegin:
@@ -2624,7 +2644,14 @@ public partial class IRBuilder
                 // ECMA-335 III.3.34: pops result (0 = reject, 1 = accept)
                 // The result was already saved to __filter_result before scope boundaries.
                 if (stack.Count > 0) stack.Pop();
-                block.Instructions.Add(new IREndFilter());
+                int totalFilters = _filterCountPerTry.GetValueOrDefault(_currentFilterTryKey);
+                int nextIdx = _filterIndexPerTry.GetValueOrDefault(_currentFilterTryKey);
+                bool isLast = nextIdx >= totalFilters;
+                block.Instructions.Add(new IREndFilter
+                {
+                    IsLastFilter = isLast,
+                    NextFilterIndex = nextIdx
+                });
                 // Mark that we need to close the filter handler scope at HandlerEnd
                 _currentFilterSkipLabel = "__filter_handler_open";
                 _inFilterRegion = false;

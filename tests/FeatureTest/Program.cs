@@ -715,6 +715,15 @@ public class Program
         TestAsyncEnumerable();
         TestReflectionAdvanced();
         TestNestedExceptionHandling();
+        TestStringFormatting();
+        TestRecordTypes();
+        TestSpanAndStackalloc();
+        TestYieldIterator();
+        TestMultiDimensionalArray();
+        TestGenericVariance();
+        TestDefaultInterfaceMethods();
+        TestExceptionFilters();
+        TestPatternMatching();
     }
 
     static void TestAsyncEnumerable()
@@ -2609,6 +2618,221 @@ public class Program
     {
         return System.IO.Path.GetDirectoryName("/some/dir/file.txt");
     }
+
+    // ===== Advanced Feature Tests =====
+
+    static void TestStringFormatting()
+    {
+        // Numeric format specifiers
+        Console.WriteLine($"{3.14159:F2}");                        // 3.14
+        Console.WriteLine($"{255:X}");                             // FF
+        Console.WriteLine($"{42:D5}");                             // 00042
+        // String.Format with multiple args
+        Console.WriteLine(string.Format("{0} + {1}", 1, 2));      // 1 + 2
+        Console.WriteLine(string.Format("{0}", 42));               // 42
+        // Alignment
+        Console.WriteLine($"{42,5}");                              // "   42"
+        // ToString with format
+        Console.WriteLine(123.456.ToString("F1"));                 // 123.5
+        Console.WriteLine((-42).ToString());                       // -42
+    }
+
+    static void TestRecordTypes()
+    {
+        // Record class — value equality + ToString + with expression
+        var p1 = new PersonRecord("Alice", 30);
+        var p2 = new PersonRecord("Alice", 30);
+        var p3 = p1 with { Age = 31 };
+        Console.WriteLine(p1 == p2);        // True
+        Console.WriteLine(p1 == p3);        // False
+        Console.WriteLine(p1.Name);         // Alice
+        Console.WriteLine(p3.Age);          // 31
+        Console.WriteLine(p1);              // PersonRecord { Name = Alice, Age = 30 }
+
+        // Record struct — value semantics (field access + equality)
+        var s1 = new PointRecord(3, 4);
+        var s2 = new PointRecord(3, 4);
+        Console.WriteLine(s1 == s2);        // True
+        Console.WriteLine(s1.X);            // 3
+        Console.WriteLine(s1);              // PointRecord { X = 3, Y = 4 }
+    }
+
+    static unsafe void TestSpanAndStackalloc()
+    {
+        // Span from array
+        int[] arr = new int[] { 10, 20, 30, 40, 50 };
+        Span<int> span = new Span<int>(arr);
+        Console.WriteLine(span.Length);     // 5
+        Console.WriteLine(span[2]);         // 30
+
+        // Span mutation reflects in original array
+        span[2] = 99;
+        Console.WriteLine(arr[2]);          // 99
+
+        // Span slice
+        Span<int> sliced = span.Slice(1, 3);
+        Console.WriteLine(sliced.Length);   // 3
+        Console.WriteLine(sliced[0]);       // 20
+
+        // ReadOnlySpan
+        ReadOnlySpan<int> ro = new ReadOnlySpan<int>(arr);
+        Console.WriteLine(ro.Length);       // 5
+
+        // stackalloc
+        int* buf = stackalloc int[3];
+        buf[0] = 100;
+        buf[1] = 200;
+        buf[2] = 300;
+        Span<int> stackSpan = new Span<int>(buf, 3);
+        Console.WriteLine(stackSpan[0]);    // 100
+        Console.WriteLine(stackSpan[2]);    // 300
+    }
+
+    static void TestYieldIterator()
+    {
+        // Basic yield return
+        string nums = "";
+        foreach (var n in IteratorHelper.GetNumbers())
+        {
+            if (nums.Length > 0) nums += ",";
+            nums += n.ToString();
+        }
+        Console.WriteLine(nums);            // 10,20,30
+
+        // yield return with loop + params
+        int sum = 0;
+        foreach (var n in IteratorHelper.CountUp(1, 5))
+            sum += n;
+        Console.WriteLine(sum);             // 15
+
+        // yield return with filtering
+        Console.WriteLine(IteratorTest.JoinFiltered()); // hello,greetings
+
+        // Manual IEnumerable<int>
+        Console.WriteLine(IteratorTest.SumRange(1, 5)); // 15
+
+        // Fibonacci via yield return
+        string fib = "";
+        foreach (var n in FibHelper.Fibonacci(7))
+        {
+            if (fib.Length > 0) fib += " ";
+            fib += n.ToString();
+        }
+        Console.WriteLine(fib);             // 0 1 1 2 3 5 8
+    }
+
+    static void TestMultiDimensionalArray()
+    {
+        var arr = MdArrayTest.Create2D();
+        Console.WriteLine(MdArrayTest.Get2D(arr, 0, 0));   // 1
+        Console.WriteLine(MdArrayTest.Get2D(arr, 1, 2));   // 42
+        Console.WriteLine(MdArrayTest.Get2D(arr, 2, 3));   // 99
+        Console.WriteLine(MdArrayTest.GetTotalLength(arr)); // 12
+        Console.WriteLine(MdArrayTest.GetDimLength(arr, 0)); // 3
+        Console.WriteLine(MdArrayTest.GetDimLength(arr, 1)); // 4
+        Console.WriteLine(MdArrayTest.GetRank(arr));         // 2
+
+        // String 2D array
+        var sarr = MdArrayTest.Create2DString();
+        Console.WriteLine(sarr[0, 0]);       // hello
+        Console.WriteLine(sarr[1, 1]);       // world
+    }
+
+    static void TestGenericVariance()
+    {
+        // Covariance: ICovariant<string> → ICovariant<object>
+        ICovariant<string> strCov = new CovariantString();
+        ICovariant<object> objCov = strCov;  // covariant cast
+        Console.WriteLine(objCov.Get());     // hello
+
+        // Contravariance: IContravariant<object> → IContravariant<string>
+        IContravariant<object> objCon = new ContravariantObject();
+        IContravariant<string> strCon = objCon;  // contravariant cast
+        strCon.Accept("test");
+        Console.WriteLine("variance ok");    // variance ok
+    }
+
+    static void TestDefaultInterfaceMethods()
+    {
+        Console.WriteLine(DIMTest.DefaultGreet());      // Hello, World!
+        Console.WriteLine(DIMTest.CustomGreet());       // Hey there, Custom!
+        Console.WriteLine(DIMTest.DefaultVersion());    // 1
+        Console.WriteLine(DIMTest.OverriddenVersion()); // 2
+        Console.WriteLine(DIMTest.DefaultLog());        // [LOG] test
+    }
+
+    static void TestExceptionFilters()
+    {
+        // Filter matches — catch with when clause
+        try
+        {
+            throw new InvalidOperationException("error42");
+        }
+        catch (InvalidOperationException ex) when (ex.Message.Contains("42"))
+        {
+            Console.WriteLine("filtered catch");  // filtered catch
+        }
+
+        // Filter does not match — falls to next catch (different type)
+        try
+        {
+            throw new InvalidOperationException("other");
+        }
+        catch (InvalidOperationException) when (false)
+        {
+            Console.WriteLine("should not reach");
+        }
+        catch (Exception)
+        {
+            Console.WriteLine("fallback catch");  // fallback catch
+        }
+
+        // Multiple same-type filters: first filter miss → second filter catch
+        try
+        {
+            throw new ArgumentException("bad arg");
+        }
+        catch (ArgumentException ex) when (ex.Message.Contains("good"))
+        {
+            Console.WriteLine("should not reach");
+        }
+        catch (ArgumentException ex) when (ex.Message.Contains("bad"))
+        {
+            Console.WriteLine("chained filter");  // chained filter
+        }
+    }
+
+    static void TestPatternMatching()
+    {
+        // Type pattern with is
+        object obj = 42;
+        if (obj is int n && n > 10)
+            Console.WriteLine("big int: " + n);     // big int: 42
+
+        // Switch expression
+        Console.WriteLine(Classify(-5));             // negative
+        Console.WriteLine(Classify(100));            // int:100
+        Console.WriteLine(Classify("hi"));           // str:hi
+        Console.WriteLine(Classify(3.14));           // other
+
+        // Property pattern
+        var person = new Person("Bob", 25);
+        string desc = person switch
+        {
+            { Age: < 18 } => "minor",
+            { Age: >= 18 } => "adult",
+            _ => "unknown"
+        };
+        Console.WriteLine(desc);                     // adult
+    }
+
+    static string Classify(object o) => o switch
+    {
+        int i when i < 0 => "negative",
+        int i => "int:" + i,
+        string s => "str:" + s,
+        _ => "other"
+    };
 }
 
 // Custom attribute for testing
@@ -3053,5 +3277,21 @@ public static class AsyncEnumerableHelper
             result = result + n.ToString();
         }
         return result; // "5,8,7"
+    }
+}
+
+// Fibonacci via yield return
+public static class FibHelper
+{
+    public static IEnumerable<int> Fibonacci(int count)
+    {
+        int a = 0, b = 1;
+        for (int i = 0; i < count; i++)
+        {
+            yield return a;
+            int temp = a;
+            a = b;
+            b = temp + b;
+        }
     }
 }

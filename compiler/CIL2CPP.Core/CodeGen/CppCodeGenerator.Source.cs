@@ -176,6 +176,9 @@ public partial class CppCodeGenerator
         }
         sb.AppendLine();
 
+        // Unboxing thunks for value type methods (must come before vtable/interface data)
+        EmitUnboxThunks(sb, _userTypes);
+
         // VTable data
         EmitVTableData(sb, _userTypes);
 
@@ -985,8 +988,10 @@ public partial class CppCodeGenerator
             }
             if (hasGenericArgs)
             {
-                // Tier 2 types are non-constructed — variance arrays not emitted for them.
-                // Only emit count and definition name (no pointer arrays).
+                // Tier 2 types still need full generic variance data for runtime
+                // assignability checks (e.g., ICovariant<string> vs ICovariant<object>).
+                sb.AppendLine($"    .generic_arguments = {type.CppName}_generic_args,");
+                sb.AppendLine($"    .generic_variances = {type.CppName}_generic_variances,");
                 sb.AppendLine($"    .generic_argument_count = {type.GenericArguments.Count},");
                 var minGenDefName = type.GenericDefinitionCppName != null
                     ? $"\"{type.GenericDefinitionCppName}\"" : "nullptr";
@@ -1868,6 +1873,79 @@ public partial class CppCodeGenerator
         }
     }
 
+    /// <summary>
+    /// Generate unboxing thunks for all value type instance methods that appear in vtable
+    /// or interface vtable. When boxed value types are dispatched via vtable, the 'this'
+    /// pointer points to the Object header. Thunks adjust 'this' past the header.
+    /// </summary>
+    private void EmitUnboxThunks(StringBuilder sb, List<IRType> userTypes)
+    {
+        var generatedMethodTypes = new HashSet<string>();
+        foreach (var t in userTypes)
+        {
+            if (!t.IsInterface && t.Methods.Count > 0)
+                generatedMethodTypes.Add(t.CppName);
+        }
+
+        var emitted = new HashSet<string>();
+
+        void EmitThunk(IRMethod m)
+        {
+            if (m.IsAbstract || m.IsStatic) return;
+            if (!_declaredFunctionNames.Contains(m.CppName)) return;
+            if (_unboxThunkNames.ContainsKey(m.CppName)) return;
+            var declType = m.DeclaringType;
+            if (declType != null)
+            {
+                var isDeclCoreRt = declType.IsRuntimeProvided
+                    && IRBuilder.CoreRuntimeTypes.Contains(declType.ILFullName);
+                if (isDeclCoreRt || !generatedMethodTypes.Contains(declType.CppName))
+                    return;
+            }
+            if (m.BasicBlocks.Count == 0) return;
+
+            var thunkName = $"{m.CppName}__unbox_thunk";
+            if (!emitted.Add(thunkName)) return;
+
+            var retType = SanitizeFuncPtrType(m.ReturnTypeCpp ?? "void");
+            var paramDecls = new List<string> { "void* __this_boxed" };
+            var argNames = new List<string>();
+            argNames.Add($"reinterpret_cast<{m.DeclaringType!.CppName}*>(reinterpret_cast<char*>(__this_boxed) + sizeof(cil2cpp::Object))");
+            foreach (var p in m.Parameters)
+            {
+                paramDecls.Add($"{p.CppTypeName} {p.Name}");
+                argNames.Add(p.Name);
+            }
+            var retPrefix = retType == "void" ? "" : "return ";
+            sb.AppendLine($"static {retType} {thunkName}({string.Join(", ", paramDecls)}) {{");
+            sb.AppendLine($"    {retPrefix}{m.CppName}({string.Join(", ", argNames)});");
+            sb.AppendLine("}");
+
+            _unboxThunkNames[m.CppName] = thunkName;
+        }
+
+        foreach (var type in userTypes)
+        {
+            if (!type.IsValueType) continue;
+
+            // VTable methods (ToString, Equals, GetHashCode, etc.)
+            foreach (var e in type.VTable)
+            {
+                if (e.Method != null) EmitThunk(e.Method);
+            }
+
+            // Interface methods
+            foreach (var impl in type.InterfaceImpls)
+            {
+                foreach (var m in impl.MethodImpls)
+                {
+                    if (m != null) EmitThunk(m);
+                }
+            }
+        }
+        if (emitted.Count > 0) sb.AppendLine();
+    }
+
     private void EmitVTableData(StringBuilder sb, List<IRType> userTypes)
     {
         // Build set of types whose methods are actually generated as C++ functions.
@@ -2009,6 +2087,9 @@ public partial class CppCodeGenerator
                             return parentMethod;
                         return ObjectMethodFallbacks.GetValueOrDefault(e.MethodName, "nullptr");
                     }
+                    // Value type vtable methods need unboxing thunks (boxed Object* → value ptr)
+                    if (type.IsValueType && _unboxThunkNames.TryGetValue(e.Method.CppName, out var vtThunk))
+                        return $"(void*)&{vtThunk}";
                     return GetTypedMethodPointerCast(e.Method);
                 }
 
@@ -2154,63 +2235,7 @@ public partial class CppCodeGenerator
             Console.Error.WriteLine($"[CIL2CPP] Interface vtable gaps for {_module.Name}: {undeclaredIfaceMethodCount} undeclared (stubs), {ifaceStubLookup.Count} unresolved (stubs)");
         }
 
-        // Pre-pass: generate unboxing thunks for value type interface methods.
-        // When interface methods are called on boxed value types, the 'this' pointer
-        // points to the boxed Object (with header). Value type methods expect a pointer
-        // to the raw value data (past the Object header). Thunks adjust 'this' accordingly.
-        var unboxThunkNames = new Dictionary<string, string>(); // "methodCppName" → thunk name
-        var emittedUnboxThunks = new HashSet<string>();
-        foreach (var type in userTypes)
-        {
-            if (!type.IsValueType) continue;
-            var isCoreRt = type.IsRuntimeProvided && IRBuilder.CoreRuntimeTypes.Contains(type.ILFullName);
-            if (type.IsInterface || (isCoreRt && type.VTable.Count == 0) || type.InterfaceImpls.Count == 0) continue;
-
-            foreach (var impl in type.InterfaceImpls)
-            {
-                foreach (var m in impl.MethodImpls)
-                {
-                    if (m == null) continue;
-                    if (m.IsAbstract || m.IsStatic) continue;
-                    if (!_declaredFunctionNames.Contains(m.CppName)) continue;
-                    // Skip methods from CoreRuntimeTypes — they use nullptr in vtable
-                    var declType = m.DeclaringType;
-                    if (declType != null)
-                    {
-                        var isDeclCoreRt = declType.IsRuntimeProvided
-                            && IRBuilder.CoreRuntimeTypes.Contains(declType.ILFullName);
-                        if (isDeclCoreRt || !generatedMethodTypes.Contains(declType.CppName))
-                            continue;
-                    }
-                    // Skip methods with no body (abstract, interface stubs, etc.)
-                    if (m.BasicBlocks.Count == 0 && !emittedIfaceStubs.Contains(m.CppName))
-                        continue;
-                    if (unboxThunkNames.ContainsKey(m.CppName)) continue;
-
-                    var thunkName = $"{m.CppName}__unbox_thunk";
-                    if (!emittedUnboxThunks.Add(thunkName)) continue;
-
-                    // Build thunk: adjust 'this' from boxed Object* to raw value pointer
-                    var retType = SanitizeFuncPtrType(m.ReturnTypeCpp ?? "void");
-                    var paramDecls = new List<string> { "void* __this_boxed" };
-                    var argNames = new List<string>();
-                    // First arg to real method: unboxed value pointer
-                    argNames.Add($"reinterpret_cast<{m.DeclaringType!.CppName}*>(reinterpret_cast<char*>(__this_boxed) + sizeof(cil2cpp::Object))");
-                    foreach (var p in m.Parameters)
-                    {
-                        paramDecls.Add($"{p.CppTypeName} {p.Name}");
-                        argNames.Add(p.Name);
-                    }
-                    var retPrefix = retType == "void" ? "" : "return ";
-                    sb.AppendLine($"static {retType} {thunkName}({string.Join(", ", paramDecls)}) {{");
-                    sb.AppendLine($"    {retPrefix}{m.CppName}({string.Join(", ", argNames)});");
-                    sb.AppendLine("}");
-
-                    unboxThunkNames[m.CppName] = thunkName;
-                }
-            }
-        }
-        if (emittedUnboxThunks.Count > 0) sb.AppendLine();
+        // Unboxing thunks are now generated by EmitUnboxThunks() and stored in _unboxThunkNames.
 
         var constructedTypesIface = _module.ConstructedTypes;
         foreach (var type in userTypes)
@@ -2252,7 +2277,7 @@ public partial class CppCodeGenerator
                     if (!_declaredFunctionNames.Contains(m.CppName))
                         return "nullptr";
                     // Value type interface methods need unboxing thunks
-                    if (typeRef.IsValueType && !m.IsStatic && unboxThunkNames.TryGetValue(m.CppName, out var thunkName))
+                    if (typeRef.IsValueType && !m.IsStatic && _unboxThunkNames.TryGetValue(m.CppName, out var thunkName))
                         return $"(void*)&{thunkName}";
                     // If this method was stubbed by the pre-pass (no basic blocks),
                     // GetTypedMethodPointerCast returns "nullptr". Build cast manually.
@@ -2297,9 +2322,9 @@ public partial class CppCodeGenerator
             // Skip types where all generic parameters are invariant — no variance checks needed
             if (type.GenericParameterVariances.All(v => v == 0)) continue;
 
-            // Skip non-constructed, non-referenced types — no runtime assignability checks needed
-            if (constructedTypes.Count > 0 && !constructedTypes.Contains(type.ILFullName)
-                && !_referencedTypeInfoNames.Contains(type.CppName)) continue;
+            // All generic types with non-trivial variance need their data emitted,
+            // even Tier 2 types — runtime variance checks (type_is_variant_assignable)
+            // access generic_arguments/generic_variances on interface vtable entries.
 
             // Verify all generic arguments have TypeInfo available
             bool allArgsResolvable = type.GenericArguments.All(arg =>

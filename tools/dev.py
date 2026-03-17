@@ -506,6 +506,68 @@ def _exe_path(build_dir, config, name):
 _COMPILER_WARNING_RE = re.compile(
     r'.*\(\d+,\d+\): warning CS\d+:.*\[.*\.csproj\]$')
 
+# C++ compiler/linker warning/error patterns in cmake --build output.
+# Matches MSVC compiler (C4267, C2065, etc.) and linker (LNK4098, LNK2019, etc.).
+# Excludes MSBuild infrastructure warnings (MSB8029 etc.) which are not code issues.
+_CPP_DIAG_RE = re.compile(
+    r'^.*:\s*(warning|error)\s+(?:C|LNK)\d+:', re.MULTILINE)
+
+
+def _extract_cpp_diagnostics(stdout, stderr):
+    """Extract C++ compiler warnings and errors from cmake build output."""
+    combined = (stdout or "") + "\n" + (stderr or "")
+    warnings = []
+    errors = []
+    for m in _CPP_DIAG_RE.finditer(combined):
+        line = m.group(0)
+        if m.group(1) == "warning":
+            warnings.append(line)
+        else:
+            errors.append(line)
+    return warnings, errors
+
+
+def _print_cpp_diagnostics(warnings, errors):
+    """Print C++ compiler diagnostics to the test report."""
+    if warnings or errors:
+        print()
+        if errors:
+            for line in errors:
+                error(f"    {line}")
+        if warnings:
+            for line in warnings:
+                warn(f"    {line}")
+
+
+def _format_diagnostic_summary(warnings, errors):
+    """Format a one-line summary like '2 warnings, 1 error'."""
+    parts = []
+    if warnings:
+        parts.append(f"{len(warnings)} warning{'s' if len(warnings) != 1 else ''}")
+    if errors:
+        parts.append(f"{len(errors)} error{'s' if len(errors) != 1 else ''}")
+    return ", ".join(parts) if parts else None
+
+
+def _cmake_build_with_diagnostics(build_dir, config):
+    """Run cmake --build and report C++ compiler warnings/errors.
+
+    Returns a summary string for the test report (e.g., "2 warnings, 0 errors").
+    Raises on build failure (non-zero exit code) with diagnostics printed first.
+    """
+    try:
+        r = run(["cmake", "--build", str(build_dir), "--config", config],
+                capture=True)
+    except subprocess.CalledProcessError as e:
+        # Build failed — extract and print diagnostics before re-raising
+        warnings, errors = _extract_cpp_diagnostics(e.stdout, e.stderr)
+        _print_cpp_diagnostics(warnings, errors)
+        raise
+    # Build succeeded — check for warnings
+    warnings, errors = _extract_cpp_diagnostics(r.stdout, r.stderr)
+    _print_cpp_diagnostics(warnings, errors)
+    return _format_diagnostic_summary(warnings, errors)
+
 
 def _get_dotnet_output(csproj_path):
     """Run a C# project with 'dotnet run' and return its stdout (stripped).
@@ -631,8 +693,7 @@ def cmd_integration(args):
             capture=True)
 
     def hw_cmake_build():
-        run(["cmake", "--build", str(hw_build), "--config", config],
-            capture=True)
+        return _cmake_build_with_diagnostics(hw_build, config)
 
     def hw_run_verify():
         exe = _exe_path(hw_build, config, "HelloWorld")
@@ -689,8 +750,7 @@ def cmd_integration(args):
             capture=True)
 
     def at_cmake_build():
-        run(["cmake", "--build", str(at_build), "--config", config],
-            capture=True)
+        return _cmake_build_with_diagnostics(at_build, config)
 
     def at_run_verify():
         exe = _exe_path(at_build, config, "ArrayTest")
@@ -746,8 +806,7 @@ def cmd_integration(args):
             capture=True)
 
     def ft_cmake_build():
-        run(["cmake", "--build", str(ft_build), "--config", config],
-            capture=True)
+        return _cmake_build_with_diagnostics(ft_build, config)
 
     def ft_run_verify():
         exe = _exe_path(ft_build, config, "FeatureTest")
@@ -801,8 +860,7 @@ def cmd_integration(args):
             capture=True)
 
     def arg_cmake_build():
-        run(["cmake", "--build", str(arg_build), "--config", config],
-            capture=True)
+        return _cmake_build_with_diagnostics(arg_build, config)
 
     def arg_run_verify():
         exe = _exe_path(arg_build, config, "ArglistTest")
@@ -857,8 +915,7 @@ def cmd_integration(args):
             capture=True)
 
     def multi_cmake_build():
-        run(["cmake", "--build", str(multi_build), "--config", config],
-            capture=True)
+        return _cmake_build_with_diagnostics(multi_build, config)
 
     def multi_run_verify():
         exe = _exe_path(multi_build, config, "MultiAssemblyTest")
@@ -913,8 +970,7 @@ def cmd_integration(args):
             capture=True)
 
     def sio_cmake_build():
-        run(["cmake", "--build", str(sio_build), "--config", config],
-            capture=True)
+        return _cmake_build_with_diagnostics(sio_build, config)
 
     def sio_run_verify():
         exe = _exe_path(sio_build, config, "SystemIOTest")
@@ -969,8 +1025,7 @@ def cmd_integration(args):
             capture=True)
 
     def fst_cmake_build():
-        run(["cmake", "--build", str(fst_build), "--config", config],
-            capture=True)
+        return _cmake_build_with_diagnostics(fst_build, config)
 
     def fst_run_verify():
         exe = _exe_path(fst_build, config, "FileStreamTest")
@@ -1026,8 +1081,7 @@ def cmd_integration(args):
             capture=True)
 
     def sk_cmake_build():
-        run(["cmake", "--build", str(sk_build), "--config", config],
-            capture=True)
+        return _cmake_build_with_diagnostics(sk_build, config)
 
     def sk_run_verify():
         exe = _exe_path(sk_build, config, "SocketTest")
@@ -1099,8 +1153,7 @@ def cmd_integration(args):
             capture=True)
 
     def hg_cmake_build():
-        run(["cmake", "--build", str(hg_build), "--config", config],
-            capture=True)
+        return _cmake_build_with_diagnostics(hg_build, config)
 
     def hg_run_verify():
         exe = _exe_path(hg_build, config, "HttpGetTest")
@@ -1163,8 +1216,7 @@ def cmd_integration(args):
             capture=True)
 
     def ht_cmake_build():
-        run(["cmake", "--build", str(ht_build), "--config", config],
-            capture=True)
+        return _cmake_build_with_diagnostics(ht_build, config)
 
     def ht_run_verify():
         exe = _exe_path(ht_build, config, "HttpTest")
@@ -1227,8 +1279,7 @@ def cmd_integration(args):
             capture=True)
 
     def hsg_cmake_build():
-        run(["cmake", "--build", str(hsg_build), "--config", config],
-            capture=True)
+        return _cmake_build_with_diagnostics(hsg_build, config)
 
     def hsg_run_verify():
         exe = _exe_path(hsg_build, config, "HttpsGetTest")

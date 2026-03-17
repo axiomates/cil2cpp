@@ -138,6 +138,12 @@ public partial class CppCodeGenerator
     private HashSet<string> _declaredFunctionNames = new();
 
     /// <summary>
+    /// Maps value type method CppName to its unboxing thunk name.
+    /// Populated by EmitUnboxThunks, used by EmitVTableData and EmitInterfaceData.
+    /// </summary>
+    private Dictionary<string, string> _unboxThunkNames = new();
+
+    /// <summary>
     /// Function names called from method bodies but not declared (NOT_IN_MODULE or INVALID_SIGNATURE).
     /// Populated during header generation by GenerateMissingMethodStubs.
     /// Used by source generation to skip methods that call undeclared functions.

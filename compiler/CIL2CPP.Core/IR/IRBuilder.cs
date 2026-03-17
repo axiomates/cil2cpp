@@ -309,6 +309,10 @@ public partial class IRBuilder
     // Exception filter tracking — set during filter evaluation region (FilterStart → endfilter)
     private bool _inFilterRegion;
     private int _endfilterOffset = -1;
+    private (int TryStart, int TryEnd) _currentFilterTryKey;
+    // Filter chain tracking: total filters per try block, and current index for goto labels
+    private Dictionary<(int, int), int> _filterCountPerTry = new();
+    private Dictionary<(int, int), int> _filterIndexPerTry = new();
 
     // Multi-filter tracking: try regions that already have a filter/catch handler emitted,
     // and regions that have at least one filter (for IRCatchBegin.AfterFilter).

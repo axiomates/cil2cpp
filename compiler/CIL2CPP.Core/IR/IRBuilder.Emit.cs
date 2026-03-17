@@ -927,6 +927,75 @@ public partial class IRBuilder
             return;
         }
 
+        // Multi-dimensional array methods: T[,].Get(), .Set(), .ctor(), .Address()
+        // These don't exist as IL method bodies — they're synthesized by the CLR.
+        // Emit as calls to runtime mdarray functions.
+        if (methodRef.DeclaringType is Mono.Cecil.ArrayType mdArrType && mdArrType.Rank >= 2)
+        {
+            var elemTypeRef = mdArrType.ElementType;
+            var resolvedElem = ResolveTypeRefOperand(elemTypeRef);
+            var elemCppType = CppNameMapper.MangleTypeNameClean(resolvedElem);
+            var elemDeclType = CppNameMapper.GetCppTypeForDecl(resolvedElem);
+            var rank = mdArrType.Rank;
+            if (CppNameMapper.IsPrimitive(resolvedElem))
+                _module.RegisterPrimitiveTypeInfo(resolvedElem);
+
+            if (methodRef.Name == "Get")
+            {
+                // T[,].Get(int, int, ...) → dereference element pointer
+                // elemDeclType is the C++ storage type (int32_t for value, String* for ref)
+                // We cast void* → (elemDeclType*) and dereference to get elemDeclType
+                var indices = new string[rank];
+                for (int d = rank - 1; d >= 0; d--)
+                    indices[d] = stack.PopExpr();
+                var arr = stack.PopExpr();
+                var tmp = $"__t{tempCounter++}";
+                block.Instructions.Add(new IRRawCpp
+                {
+                    Code = $"int32_t __md_idx_{tmp}[] = {{ {string.Join(", ", indices)} }}; " +
+                           $"auto {tmp} = *({elemDeclType}*)cil2cpp::mdarray_get_element_ptr({arr}, __md_idx_{tmp});",
+                    ResultVar = tmp,
+                    ResultTypeCpp = elemDeclType,
+                });
+                stack.Push(new StackEntry(tmp, elemDeclType));
+                return;
+            }
+            else if (methodRef.Name == "Set")
+            {
+                // T[,].Set(int, int, ..., T value) → store into element pointer
+                var value = stack.PopExpr();
+                var indices = new string[rank];
+                for (int d = rank - 1; d >= 0; d--)
+                    indices[d] = stack.PopExpr();
+                var arr = stack.PopExpr();
+                var tmp = $"__md_set_{tempCounter++}";
+                block.Instructions.Add(new IRRawCpp
+                {
+                    Code = $"int32_t __md_idx_{tmp}[] = {{ {string.Join(", ", indices)} }}; " +
+                           $"*({elemDeclType}*)cil2cpp::mdarray_get_element_ptr({arr}, __md_idx_{tmp}) = ({elemDeclType}){value};",
+                });
+                return;
+            }
+            else if (methodRef.Name == "Address")
+            {
+                // T[,].Address(int, int, ...) → element pointer (for ref access)
+                var indices = new string[rank];
+                for (int d = rank - 1; d >= 0; d--)
+                    indices[d] = stack.PopExpr();
+                var arr = stack.PopExpr();
+                var tmp = $"__t{tempCounter++}";
+                block.Instructions.Add(new IRRawCpp
+                {
+                    Code = $"int32_t __md_idx_{tmp}[] = {{ {string.Join(", ", indices)} }}; " +
+                           $"auto {tmp} = ({elemDeclType}*)cil2cpp::mdarray_get_element_ptr({arr}, __md_idx_{tmp});",
+                    ResultVar = tmp,
+                    ResultTypeCpp = $"{elemDeclType}*",
+                });
+                stack.Push(new StackEntry(tmp, $"{elemDeclType}*"));
+                return;
+            }
+        }
+
         // GC.AllocateUninitializedArray<T>(int length, bool pinned) — AOT compile-time specialization
         // The BCL implementation uses runtime-internal allocation. For AOT, emit array_create directly.
         // This avoids the void* return type mismatch that causes RenderedBodyError stubs.
@@ -1711,7 +1780,8 @@ public partial class IRBuilder
         string? rawThisArg = null; // Pre-cast this pointer for constrained call fixup
         if (methodRef.HasThis)
         {
-            var thisArg = stack.PopExprOr("__this");
+            var thisEntry = stack.PopEntry();
+            var thisArg = thisEntry.Expr == "0" ? "__this" : thisEntry.Expr;
             rawThisArg = thisArg; // Save before any cast
             if (mappedName != null && methodRef.DeclaringType.FullName == "System.Object")
             {
@@ -1778,6 +1848,14 @@ public partial class IRBuilder
                     // Skip only cil2cpp:: namespace types (Object, String, etc. are already aliased)
                     if (!declTypeCpp.StartsWith("cil2cpp::"))
                         thisArg = $"({declTypeCpp}*)(void*){thisArg}";
+                }
+                else
+                {
+                    // Value type instance method: 'this' must be a pointer.
+                    // If stack has a value (from ldloc, not ldloca), take its address.
+                    // Use CppType tracking to detect if already a pointer.
+                    if (!thisEntry.IsPointer && !thisEntry.IsAddressOf)
+                        thisArg = $"&({thisArg})";
                 }
             }
             irCall.Arguments.Add(thisArg);
@@ -2383,6 +2461,30 @@ public partial class IRBuilder
     private void EmitNewObj(IRBasicBlock block, Stack<StackEntry> stack, MethodReference ctorRef,
         ref int tempCounter)
     {
+        // Multi-dimensional array newobj: int[,]::.ctor(int, int) → mdarray_create
+        if (ctorRef.DeclaringType is Mono.Cecil.ArrayType mdArrCtor && mdArrCtor.Rank >= 2)
+        {
+            var elemTypeRef = mdArrCtor.ElementType;
+            var resolvedElem = ResolveTypeRefOperand(elemTypeRef);
+            var elemCppType = CppNameMapper.MangleTypeNameClean(resolvedElem);
+            var rank = mdArrCtor.Rank;
+            if (CppNameMapper.IsPrimitive(resolvedElem))
+                _module.RegisterPrimitiveTypeInfo(resolvedElem);
+            var mdDims = new string[rank];
+            for (int d = rank - 1; d >= 0; d--)
+                mdDims[d] = stack.PopExpr();
+            var mdTmp = $"__t{tempCounter++}";
+            block.Instructions.Add(new IRRawCpp
+            {
+                Code = $"int32_t __md_lens_{mdTmp}[] = {{ {string.Join(", ", mdDims)} }}; " +
+                       $"auto {mdTmp} = cil2cpp::mdarray_create(&{elemCppType}_TypeInfo, {rank}, __md_lens_{mdTmp});",
+                ResultVar = mdTmp,
+                ResultTypeCpp = "cil2cpp::MdArray*",
+            });
+            stack.Push(new StackEntry(mdTmp, "cil2cpp::MdArray*"));
+            return;
+        }
+
         // Special: BCL exception types (System.Exception, InvalidOperationException, etc.)
         if (TryEmitExceptionNewObj(block, stack, ctorRef, ref tempCounter))
             return;
@@ -3530,6 +3632,12 @@ public partial class IRBuilder
         if (typeRef is ArrayType arrType)
         {
             var elemResolved = ResolveGenericTypeRef(arrType.ElementType, declaringType);
+            if (arrType.Rank >= 2)
+            {
+                // Multi-dimensional: preserve rank info (e.g., "System.Int32[0...,0...]")
+                var commas = new string(',', arrType.Rank - 1);
+                return elemResolved + $"[{commas}]";
+            }
             return elemResolved + "[]";
         }
         if (typeRef is ByReferenceType byRefType)

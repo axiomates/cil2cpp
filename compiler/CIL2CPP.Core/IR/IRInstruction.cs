@@ -511,15 +511,23 @@ public class IRFilterBegin : IRInstruction
 {
     /// <summary>True if this is the first handler in the try block (needs } else { to enter handler chain).</summary>
     public bool IsFirst { get; set; } = true;
-    public override string ToCpp() => IsFirst ? "CIL2CPP_FILTER_BEGIN" : "// filter (chained)";
+    /// <summary>Per-try-block filter index (0-based). Used for goto labels in filter chains.</summary>
+    public int FilterIndex { get; set; }
+    public override string ToCpp() => IsFirst
+        ? "CIL2CPP_FILTER_BEGIN"
+        : $"__filter_next_{FilterIndex}:";
 }
 
 public class IREndFilter : IRInstruction
 {
-    /// <summary>Complete filter result check: accepts (sets __exc_caught) or rethrows.
-    /// CIL2CPP_RETHROW transfers control away, so handler body only runs on acceptance.</summary>
-    public override string ToCpp() =>
-        $"if (__filter_result) {{ __exc_caught = true; }} else {{ CIL2CPP_RETHROW; }}";
+    /// <summary>True if this is the last filter in the chain — rejection rethrows to outer scope.</summary>
+    public bool IsLastFilter { get; set; } = true;
+    /// <summary>Index of the NEXT filter (used for goto on rejection).</summary>
+    public int NextFilterIndex { get; set; }
+    /// <summary>Complete filter result check: accepts (sets __exc_caught) or jumps to next filter/rethrows.</summary>
+    public override string ToCpp() => IsLastFilter
+        ? $"if (__filter_result) {{ __exc_caught = true; }} else {{ CIL2CPP_RETHROW; }}"
+        : $"if (__filter_result) {{ __exc_caught = true; }} else {{ goto __filter_next_{NextFilterIndex}; }}";
 }
 
 /// <summary>Marks the end of a filter handler body (no-op — IREndFilter is self-contained).</summary>
