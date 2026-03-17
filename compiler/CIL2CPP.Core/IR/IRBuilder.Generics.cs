@@ -944,8 +944,13 @@ public partial class IRBuilder
                     foreach (var p in methodRef.Parameters)
                         TryCollectResolvedGenericType(p.ParameterType, typeParamMap);
                     if (methodRef is GenericInstanceMethod gim)
+                    {
                         foreach (var ga in gim.GenericArguments)
                             TryCollectResolvedGenericType(ga, typeParamMap);
+                        // Discover transitive generic method calls: when CreateObjectInfo<T>
+                        // calls CreateCore<T>, resolve T→Person to discover CreateCore<Person>.
+                        TryCollectResolvedGenericMethod(gim, typeParamMap);
+                    }
                     break;
                 case FieldReference fieldRef:
                     TryCollectResolvedGenericType(fieldRef.DeclaringType, typeParamMap);
@@ -1639,21 +1644,33 @@ public partial class IRBuilder
             }
 
             // Fields from Cecil definition
+            // Collect inherited field names to detect C# field hiding (derived `new` backing fields)
+            var inheritedFieldCppNames = CollectInheritedFieldCppNames(openType);
             foreach (var fieldDef in openType.Fields)
             {
                 // Skip value__ backing field for enums (same as IRBuilder.Types.cs)
                 if (irType.IsEnum && fieldDef.Name == "value__") continue;
 
                 var fieldTypeName = ResolveGenericTypeName(fieldDef.FieldType, typeParamMap);
+                var cppName = CppNameMapper.MangleFieldName(fieldDef.Name);
                 var irField = new IRField
                 {
                     Name = fieldDef.Name,
-                    CppName = CppNameMapper.MangleFieldName(fieldDef.Name),
+                    CppName = cppName,
                     FieldTypeName = fieldTypeName,
                     IsStatic = fieldDef.IsStatic,
                     IsPublic = fieldDef.IsPublic,
                     DeclaringType = irType,
                 };
+
+                // C# field hiding: derived class declares a field with the same name as a base field
+                // (e.g. auto-property backing field with `new` keyword). Both fields coexist at
+                // different offsets in the CLR layout. Disambiguate the derived field's CppName.
+                if (!fieldDef.IsStatic && inheritedFieldCppNames.Contains(cppName))
+                {
+                    irField.HidesBaseField = true;
+                    irField.CppName = cppName + "__own";
+                }
 
                 // For enum constant fields, extract the constant value
                 if (irType.IsEnum && fieldDef.IsStatic && fieldDef.HasConstant)
@@ -2047,21 +2064,30 @@ public partial class IRBuilder
             }
 
             // Fields
+            var inheritedFieldCppNames2 = CollectInheritedFieldCppNames(openType);
             foreach (var fieldDef in openType.Fields)
             {
                 // Skip value__ backing field for enums (same as IRBuilder.Types.cs)
                 if (irType.IsEnum && fieldDef.Name == "value__") continue;
 
                 var fieldTypeName = ResolveGenericTypeName(fieldDef.FieldType, typeParamMap);
+                var cppName = CppNameMapper.MangleFieldName(fieldDef.Name);
                 var irField = new IRField
                 {
                     Name = fieldDef.Name,
-                    CppName = CppNameMapper.MangleFieldName(fieldDef.Name),
+                    CppName = cppName,
                     FieldTypeName = fieldTypeName,
                     IsStatic = fieldDef.IsStatic,
                     IsPublic = fieldDef.IsPublic,
                     DeclaringType = irType,
                 };
+
+                // C# field hiding detection (same as main CreateGenericSpecializations)
+                if (!fieldDef.IsStatic && inheritedFieldCppNames2.Contains(cppName))
+                {
+                    irField.HidesBaseField = true;
+                    irField.CppName = cppName + "__own";
+                }
 
                 // For enum constant fields, extract the constant value
                 if (irType.IsEnum && fieldDef.IsStatic && fieldDef.HasConstant)
@@ -2413,7 +2439,17 @@ public partial class IRBuilder
         var declaringType = elementMethod.DeclaringType.FullName;
         var methodName = elementMethod.Name;
 
-        var paramSig = string.Join(",", elementMethod.Parameters.Select(p => p.ParameterType.FullName));
+        // Build resolved typeParamMap for param sig resolution.
+        // This ensures the key matches what EmitMethodCall computes (which also resolves via _activeTypeParamMap).
+        var resolvedTypeParamMap = new Dictionary<string, string>(nameMap);
+        var cecilMethodForSig = elementMethod.Resolve();
+        if (cecilMethodForSig != null)
+        {
+            for (int i = 0; i < cecilMethodForSig.GenericParameters.Count && i < resolvedArgs.Count; i++)
+                resolvedTypeParamMap[cecilMethodForSig.GenericParameters[i].Name] = resolvedArgs[i];
+        }
+        var paramSig = string.Join(",", elementMethod.Parameters.Select(p =>
+            ResolveGenericTypeName(p.ParameterType, resolvedTypeParamMap)));
         var key = MakeGenericMethodKey(declaringType, methodName, resolvedArgs, paramSig);
         if (_genericMethodInstantiations.ContainsKey(key)) return;
 
@@ -2553,6 +2589,30 @@ public partial class IRBuilder
             }
         }
         return augmented;
+    }
+
+    /// <summary>
+    /// Collect CppNames of all instance fields in the Cecil base type chain.
+    /// Used to detect C# field hiding (derived class `new` field shadows base field).
+    /// Uses Cecil type definitions rather than IR types because BaseType may not be
+    /// resolved yet at the time fields are created in CreateGenericSpecializations.
+    /// </summary>
+    private static HashSet<string> CollectInheritedFieldCppNames(TypeDefinition openType)
+    {
+        var result = new HashSet<string>();
+        var baseRef = openType.BaseType;
+        while (baseRef != null)
+        {
+            var baseDef = baseRef.Resolve();
+            if (baseDef == null || baseDef.FullName == "System.Object") break;
+            foreach (var f in baseDef.Fields)
+            {
+                if (!f.IsStatic)
+                    result.Add(CppNameMapper.MangleFieldName(f.Name));
+            }
+            baseRef = baseDef.BaseType;
+        }
+        return result;
     }
 
     /// <summary>
@@ -2714,6 +2774,51 @@ public partial class IRBuilder
     /// builds a temporary type param map from the declaring GenericInstanceType
     /// and resolves T → the concrete type argument (e.g., System.Char).
     /// </summary>
+    /// <summary>
+    /// Resolve a field reference to its C++ field name, handling C# field hiding.
+    /// When a derived generic class declares a field with the same name as a base field
+    /// (e.g. auto-property backing field with `new` keyword), the derived field has a
+    /// disambiguated CppName (with "__own" suffix). This method checks the Cecil field
+    /// reference's declaring type to determine which field to use.
+    /// </summary>
+    private string ResolveFieldCppName(FieldReference fieldRef, IRMethod method)
+    {
+        var baseName = CppNameMapper.MangleFieldName(fieldRef.Name);
+        // Check if the method's declaring type has a hidden field with this name
+        if (method.DeclaringType != null)
+        {
+            var hiddenField = method.DeclaringType.Fields.FirstOrDefault(
+                f => f.Name == fieldRef.Name && f.HidesBaseField);
+            if (hiddenField != null)
+            {
+                // If the field reference's field type uses a generic parameter (!0, !!0, etc.),
+                // it's from the current generic type (not a non-generic ancestor).
+                if (FieldTypeUsesGenericParameter(fieldRef.FieldType))
+                    return hiddenField.CppName;
+            }
+        }
+        return baseName;
+    }
+
+    /// <summary>
+    /// Check if a Cecil TypeReference is or contains a GenericParameter.
+    /// Used to distinguish field references to the current generic type's hidden fields
+    /// from references to non-generic base class fields.
+    /// </summary>
+    private static bool FieldTypeUsesGenericParameter(TypeReference typeRef)
+    {
+        if (typeRef is GenericParameter) return true;
+        if (typeRef is GenericInstanceType git)
+            return git.GenericArguments.Any(FieldTypeUsesGenericParameter);
+        if (typeRef is ArrayType at)
+            return FieldTypeUsesGenericParameter(at.ElementType);
+        if (typeRef is ByReferenceType brt)
+            return FieldTypeUsesGenericParameter(brt.ElementType);
+        if (typeRef is PointerType pt)
+            return FieldTypeUsesGenericParameter(pt.ElementType);
+        return false;
+    }
+
     private string ResolveFieldTypeRef(FieldReference fieldRef)
     {
         // If the declaring type is a generic instance, resolve generic params in the field type

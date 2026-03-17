@@ -825,8 +825,12 @@ void* Type_GetField(void* __this, String* name) {
 // ===== System.RuntimeTypeHandle (additional) =====
 
 Object* RuntimeTypeHandle_GetElementType(void* handle) {
-    auto* ti = reinterpret_cast<TypeInfo*>(handle);
-    if (!ti || !ti->element_type_info) return nullptr;
+    // handle is a managed RuntimeType* (Type object), not a TypeInfo*.
+    // Extract the TypeInfo from the Type object's type_info field.
+    auto* t = reinterpret_cast<Type*>(handle);
+    if (!t || !t->type_info) return nullptr;
+    auto* ti = t->type_info;
+    if (!ti->element_type_info) return nullptr;
     return reinterpret_cast<Object*>(type_get_type_object(ti->element_type_info));
 }
 
@@ -845,21 +849,24 @@ void* RuntimeTypeHandle_GetAssembly(void* /*handle*/) {
 }
 
 Boolean RuntimeTypeHandle_IsByRefLike(void* handle) {
-    auto* ti = reinterpret_cast<TypeInfo*>(handle);
-    if (!ti) return false;
-    return (static_cast<UInt32>(ti->flags) & static_cast<UInt32>(TypeFlags::IsByRefLike)) != 0;
+    // handle is a managed RuntimeType* (Type object), not a TypeInfo*.
+    auto* t = reinterpret_cast<Type*>(handle);
+    if (!t || !t->type_info) return false;
+    return (static_cast<UInt32>(t->type_info->flags) & static_cast<UInt32>(TypeFlags::IsByRefLike)) != 0;
 }
 
 Int32 RuntimeTypeHandle_GetToken(void* handle) {
-    auto* ti = reinterpret_cast<TypeInfo*>(handle);
-    if (!ti) return 0;
-    return static_cast<Int32>(ti->metadata_token);
+    // handle is a managed RuntimeType* (Type object), not a TypeInfo*.
+    auto* t = reinterpret_cast<Type*>(handle);
+    if (!t || !t->type_info) return 0;
+    return static_cast<Int32>(t->type_info->metadata_token);
 }
 
 Boolean RuntimeTypeHandle_IsInstanceOfType(void* handle, void* obj) {
-    auto* ti = reinterpret_cast<TypeInfo*>(handle);
-    if (!ti || !obj) return false;
-    return object_is_instance_of(reinterpret_cast<Object*>(obj), ti);
+    // handle is a managed RuntimeType* (Type object), not a TypeInfo*.
+    auto* t = reinterpret_cast<Type*>(handle);
+    if (!t || !t->type_info || !obj) return false;
+    return object_is_instance_of(reinterpret_cast<Object*>(obj), t->type_info);
 }
 
 void* RuntimeTypeHandle_GetDeclaringMethod(void* /*handle*/) {
@@ -868,9 +875,10 @@ void* RuntimeTypeHandle_GetDeclaringMethod(void* /*handle*/) {
 }
 
 Int32 RuntimeTypeHandle_GetArrayRank(void* handle) {
-    auto* ti = reinterpret_cast<TypeInfo*>(handle);
-    if (!ti) return 0;
-    return ti->array_rank;
+    // handle is a managed RuntimeType* (Type object), not a TypeInfo*.
+    auto* t = reinterpret_cast<Type*>(handle);
+    if (!t || !t->type_info) return 0;
+    return t->type_info->array_rank;
 }
 
 // ===== System.RuntimeType =====

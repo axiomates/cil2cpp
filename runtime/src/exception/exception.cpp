@@ -116,6 +116,12 @@ extern TypeInfo KeyNotFoundException_TypeInfo;
 
     // No exception handler — unhandled exception
     fprintf(stderr, "\nUnhandled exception: ");
+    if (ex) {
+        auto* ti = reinterpret_cast<Object*>(ex)->__type_info;
+        if (ti && ti->full_name) {
+            fprintf(stderr, "[%s] ", ti->full_name);
+        }
+    }
     if (ex && ex->f__message) {
         auto msg = string_to_utf8(ex->f__message);
         if (msg) {
@@ -125,7 +131,7 @@ extern TypeInfo KeyNotFoundException_TypeInfo;
             fprintf(stderr, "(message decode failed)\n");
         }
     } else {
-        fprintf(stderr, "(no message)\n");
+        fprintf(stderr, "(no message, ex=%p)\n", (void*)ex);
     }
 
     if (ex && ex->f__stackTraceString) {

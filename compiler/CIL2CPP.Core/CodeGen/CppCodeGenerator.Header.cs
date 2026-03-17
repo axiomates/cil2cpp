@@ -294,7 +294,50 @@ public partial class CppCodeGenerator
         CollectUnknownValueTypeFields(userTypes, definedTypeNames, unknownValueTypeStubs);
         CollectUnknownValueTypeLocals(userTypes, definedTypeNames, unknownValueTypeStubs);
         CollectUnknownValueTypesFromSizeof(userTypes, definedTypeNames, unknownValueTypeStubs);
+        // Emit SIMD opaque structs first, in dependency order (Vector64 → Vector128 → Vector256 → Vector512).
+        // Vector256<T> has f__lower/f__upper of Vector128<T> (BCL field layout), so Vector128 must come first.
+        // Vector512<T> has f__lower/f__upper of Vector256<T>.
+        var simdStubs = new List<(string Name, int Priority)>();
+        var nonSimdStubs = new List<string>();
         foreach (var stubName in unknownValueTypeStubs)
+        {
+            if (stubName.StartsWith("System_Runtime_Intrinsics_Vector64_1_")) simdStubs.Add((stubName, 0));
+            else if (stubName.StartsWith("System_Runtime_Intrinsics_Vector128_1_")) simdStubs.Add((stubName, 1));
+            else if (stubName.StartsWith("System_Numerics_Vector_1_")) simdStubs.Add((stubName, 2));
+            else if (stubName.StartsWith("System_Runtime_Intrinsics_Vector256_1_")) simdStubs.Add((stubName, 3));
+            else if (stubName.StartsWith("System_Runtime_Intrinsics_Vector512_1_")) simdStubs.Add((stubName, 4));
+            else nonSimdStubs.Add(stubName);
+        }
+        foreach (var (stubName, _) in simdStubs.OrderBy(s => s.Priority).ThenBy(s => s.Name))
+        {
+            if (stubName.StartsWith("System_Runtime_Intrinsics_Vector512_1_"))
+            {
+                // Vector512<T> = _lower (Vector256<T>) + _upper (Vector256<T>)
+                var v256Name = stubName.Replace("_Vector512_1_", "_Vector256_1_");
+                if (emittedStructs.Contains(v256Name))
+                    sb.AppendLine($"struct {stubName} {{ {v256Name} f__lower; {v256Name} f__upper; }}; // SIMD Vector512");
+                else
+                    sb.AppendLine($"struct {stubName} {{ uint8_t __opaque[64]; }}; // SIMD Vector512 opaque");
+            }
+            else if (stubName.StartsWith("System_Runtime_Intrinsics_Vector256_1_"))
+            {
+                // Vector256<T> = _lower (Vector128<T>) + _upper (Vector128<T>)
+                var v128Name = stubName.Replace("_Vector256_1_", "_Vector128_1_");
+                if (emittedStructs.Contains(v128Name))
+                    sb.AppendLine($"struct {stubName} {{ {v128Name} f__lower; {v128Name} f__upper; }}; // SIMD Vector256");
+                else
+                    sb.AppendLine($"struct {stubName} {{ uint8_t __opaque[32]; }}; // SIMD Vector256 opaque");
+            }
+            else if (stubName.StartsWith("System_Runtime_Intrinsics_Vector128_1_"))
+                sb.AppendLine($"struct {stubName} {{ uint8_t __opaque[16]; }}; // SIMD Vector128 opaque");
+            else if (stubName.StartsWith("System_Runtime_Intrinsics_Vector64_1_"))
+                sb.AppendLine($"struct {stubName} {{ uint8_t __opaque[8]; }}; // SIMD Vector64 opaque");
+            else if (stubName.StartsWith("System_Numerics_Vector_1_"))
+                sb.AppendLine($"struct {stubName} {{ uint8_t __opaque[16]; }}; // SIMD Vector<T> opaque");
+            emittedStructs.Add(stubName);
+            definedTypeNames.Add(stubName);
+        }
+        foreach (var stubName in nonSimdStubs)
         {
             // Span/ReadOnlySpan opaque stubs need f__reference + f__length for field access
             if (stubName.StartsWith("System_Span_1_") || stubName.StartsWith("System_ReadOnlySpan_1_"))
@@ -308,17 +351,6 @@ public partial class CppCodeGenerator
                 sb.AppendLine($"struct {stubName} {{ bool f__addRefd; void* f__handle; }}; // SafeHandle marshaller stub");
                 opaqueSafeHandleMarshallerStubs.Add(stubName);
             }
-            // SIMD vector types need correct-size opaque buffers (dead code but sizeof must be correct)
-            else if (stubName.StartsWith("System_Runtime_Intrinsics_Vector512_1_"))
-                sb.AppendLine($"struct {stubName} {{ uint8_t __opaque[64]; }}; // SIMD Vector512 opaque");
-            else if (stubName.StartsWith("System_Runtime_Intrinsics_Vector256_1_"))
-                sb.AppendLine($"struct {stubName} {{ uint8_t __opaque[32]; }}; // SIMD Vector256 opaque");
-            else if (stubName.StartsWith("System_Runtime_Intrinsics_Vector128_1_"))
-                sb.AppendLine($"struct {stubName} {{ uint8_t __opaque[16]; }}; // SIMD Vector128 opaque");
-            else if (stubName.StartsWith("System_Runtime_Intrinsics_Vector64_1_"))
-                sb.AppendLine($"struct {stubName} {{ uint8_t __opaque[8]; }}; // SIMD Vector64 opaque");
-            else if (stubName.StartsWith("System_Numerics_Vector_1_"))
-                sb.AppendLine($"struct {stubName} {{ uint8_t __opaque[16]; }}; // SIMD Vector<T> opaque");
             else
                 sb.AppendLine($"struct {stubName} {{ }}; // opaque BCL internal type");
             emittedStructs.Add(stubName);

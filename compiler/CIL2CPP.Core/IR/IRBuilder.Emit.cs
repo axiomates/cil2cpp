@@ -875,7 +875,8 @@ public partial class IRBuilder
             if (TryEmitMemoryMarshalIntrinsic(block, stack, methodRef, mmGim, ref tempCounter))
                 return;
         }
-        // SIMD IsSupported/IsHardwareAccelerated/get_Count → return 0 (disable SIMD, force scalar fallback)
+        // SIMD IsSupported/IsHardwareAccelerated → return 0 (disable SIMD, force scalar fallback)
+        // SIMD get_Count → return correct structural constant for Vector64/128/256/512<T>
         // Covers: Vector64/128/256/512, System.Numerics.Vector (not Vector2/3/4), all X86/Wasm intrinsics
         {
             var declType = methodRef.DeclaringType.FullName;
@@ -883,12 +884,46 @@ public partial class IRBuilder
                 || declType == "System.Numerics.Vector"
                 || declType.StartsWith("System.Numerics.Vector`");
 
-            if (isSimdType && methodRef.Name is "get_IsSupported" or "get_IsHardwareAccelerated" or "get_Count")
+            if (isSimdType && methodRef.Name is "get_IsSupported" or "get_IsHardwareAccelerated")
             {
                 if (methodRef.HasThis && stack.Count > 0) stack.Pop();
                 var tmp = $"__t{tempCounter++}";
                 block.Instructions.Add(new IRRawCpp { Code = $"int32_t {tmp} = 0;", ResultVar = tmp, ResultTypeCpp = "int32_t" });
                 stack.Push(new StackEntry(tmp, "int32_t", CompileTimeConstant: 0));
+                return;
+            }
+
+            // Vector64/128/256/512<T>.Count → structural constant (vectorSize / sizeof(T)).
+            // These are NOT hardware-dependent — Vector128<byte>.Count is always 16, etc.
+            // System.Numerics.Vector<T>.Count is hardware-dependent (behind IsHardwareAccelerated guards) → return 0.
+            if (isSimdType && methodRef.Name == "get_Count")
+            {
+                if (methodRef.HasThis && stack.Count > 0) stack.Pop();
+                int countValue = 0;
+                // Extract vector byte size from declaring type name (Vector64=8, Vector128=16, etc.)
+                int vectorBytes = 0;
+                if (declType.StartsWith("System.Runtime.Intrinsics.Vector64")) vectorBytes = 8;
+                else if (declType.StartsWith("System.Runtime.Intrinsics.Vector128")) vectorBytes = 16;
+                else if (declType.StartsWith("System.Runtime.Intrinsics.Vector256")) vectorBytes = 32;
+                else if (declType.StartsWith("System.Runtime.Intrinsics.Vector512")) vectorBytes = 64;
+                if (vectorBytes > 0 && methodRef.DeclaringType is GenericInstanceType git && git.GenericArguments.Count > 0)
+                {
+                    var elemType = git.GenericArguments[0].FullName;
+                    int elemSize = elemType switch
+                    {
+                        "System.Byte" or "System.SByte" => 1,
+                        "System.Int16" or "System.UInt16" or "System.Char" => 2,
+                        "System.Int32" or "System.UInt32" or "System.Single" => 4,
+                        "System.Int64" or "System.UInt64" or "System.Double" => 8,
+                        "System.IntPtr" or "System.UIntPtr" => 8, // 64-bit target
+                        _ => 0
+                    };
+                    if (elemSize > 0)
+                        countValue = vectorBytes / elemSize;
+                }
+                var tmp = $"__t{tempCounter++}";
+                block.Instructions.Add(new IRRawCpp { Code = $"int32_t {tmp} = {countValue};", ResultVar = tmp, ResultTypeCpp = "int32_t" });
+                stack.Push(new StackEntry(tmp, "int32_t", CompileTimeConstant: countValue));
                 return;
             }
 

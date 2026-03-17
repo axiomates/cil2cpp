@@ -15,6 +15,9 @@
 #include "types.h"
 #include "string.h"
 #include "exception.h"
+#include "reflection.h"
+#include "array.h"
+#include "mdarray.h"
 #include "globalization_interop.h"
 #include <cstdlib>
 #include <cstdio>
@@ -69,9 +72,26 @@ inline void* interop_ucrtbase_malloc(uintptr_t size) { return std::malloc(static
 inline void interop_ucrtbase_free(void* ptr) { std::free(ptr); }
 
 // ===== System.Array.InternalCreate =====
-// Returns nullptr — BCL handles gracefully.
-template<typename... Args>
-inline void* array_internal_create(Args...) { return nullptr; }
+// Creates an array at runtime given a managed RuntimeType (element type), rank, and lengths.
+// 4-arg overload: used by Array.CreateInstance(Type, int) compiled from IL.
+inline void* array_internal_create(void* runtime_type, int32_t rank, int32_t* lengths, int32_t* lower_bounds) {
+    auto* t = reinterpret_cast<Type*>(runtime_type);
+    if (!t || !t->type_info) return nullptr;
+    auto* element_ti = t->type_info;
+    if (rank == 1 && (!lower_bounds || lower_bounds[0] == 0)) {
+        return array_create(element_ti, lengths[0]);
+    }
+    return mdarray_create(element_ti, rank, lengths);
+}
+// 6-arg QCall overload: used by Array.InternalCreate(QCallTypeHandle, ..., ObjectHandleOnStack).
+// QCallTypeHandle.f__ptr is RuntimeType**, ObjectHandleOnStack.f__ptr is Array**.
+template<typename TypeHandle, typename OutHandle>
+inline void array_internal_create(TypeHandle type_handle, int32_t rank, int32_t* lengths,
+                                   int32_t* lower_bounds, int32_t /*pinned*/, OutHandle out_handle) {
+    void* rt = *(void**)type_handle.f__ptr;
+    auto* arr = array_internal_create(rt, rank, lengths, lower_bounds);
+    *(void**)out_handle.f__ptr = arr;
+}
 
 // ===== System.Delegate.BindToMethodInfo =====
 // Returns false (no runtime method binding in AOT).

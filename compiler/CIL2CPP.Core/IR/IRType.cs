@@ -157,6 +157,14 @@ public class IRField
 
     /// <summary>Custom attributes applied to this field</summary>
     public List<IRCustomAttribute> CustomAttributes { get; } = new();
+
+    /// <summary>
+    /// True when this field hides (shadows) a base class field with the same name.
+    /// C# `new` keyword on auto-properties creates a separate backing field with the same name
+    /// but different type. Both fields coexist in the object layout at different offsets.
+    /// The CppName is disambiguated with a "__own" suffix to avoid name collisions in C++ structs.
+    /// </summary>
+    public bool HidesBaseField { get; set; }
 }
 
 /// <summary>

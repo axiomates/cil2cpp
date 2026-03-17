@@ -809,10 +809,31 @@ public partial class CppCodeGenerator
             return DeadCodeCategory.Simd;
 
         // ── SIMD: BCL helper classes behind SIMD guards ──
+        // IndexOfAnyAsciiSearcher has both SIMD-only and scalar fallback methods.
+        // We filter only the SIMD-only inner helpers (AsciiState contains Vector256,
+        // LookupCore/TryIndexOfAny are pure SIMD dispatch).  The scalar-interface methods
+        // (IndexOfAny<DontNegate>, IndexOfAnyScalar, ComputeAnyByteState,
+        // AnyByteState, BitVector256, DontNegate, Negate, ResultMapper) compile from IL
+        // with SIMD branches eliminated by compile-time constant branch elimination.
+        // IndexOfAnyCore with AnyByteState has internal IsHardwareAccelerated guard → compiles from IL.
+        // IndexOfAnyCore with AsciiState lacks guard (caller checks IsVectorizationSupported) → dead code.
+        if (functionName.StartsWith("System_Buffers_IndexOfAnyAsciiSearcher_AsciiState")
+            || functionName.StartsWith("System_Buffers_IndexOfAnyAsciiSearcher_ComputeAsciiState")
+            || functionName.StartsWith("System_Buffers_IndexOfAnyAsciiSearcher_IndexOfAnyLookup") // covers both IndexOfAnyLookup and IndexOfAnyLookupCore
+            || functionName.StartsWith("System_Buffers_IndexOfAnyAsciiSearcher_TryIndexOfAny")
+            || functionName.StartsWith("System_Buffers_IndexOfAnyAsciiSearcher_INegator_NegateIfNeeded")
+            || functionName.StartsWith("System_Buffers_IndexOfAnyAsciiSearcher_IResultMapper_2_")) // constrained interface dispatch on SIMD code path
+            return DeadCodeCategory.Simd;
+        // IndexOfAnyCore with AsciiState parameter: no internal SIMD guard, SIMD code paths
+        // produce UB with default values. Only called when IsVectorizationSupported=true.
+        // AnyByteState variants (contain "AnyByteState" in name) have internal guards and are safe.
+        if (functionName.StartsWith("System_Buffers_IndexOfAnyAsciiSearcher_IndexOfAnyCore_")
+            && !functionName.Contains("AnyByteState"))
+            return DeadCodeCategory.Simd;
+
         if (functionName.StartsWith("System_PackedSpanHelpers_")
             || functionName.StartsWith("System_SpanHelpers_ComputeFirstIndex_")
             || functionName.StartsWith("System_SpanHelpers_ComputeLastIndex_")
-            || functionName.StartsWith("System_Buffers_IndexOfAnyAsciiSearcher_")
             || functionName.StartsWith("System_Text_Ascii_AllCharsInVectorAreAscii_")
             || functionName.StartsWith("System_Text_Ascii_ChangeWidthAndWriteTo_")
             || functionName.StartsWith("System_Text_Ascii_SignedLessThan_")

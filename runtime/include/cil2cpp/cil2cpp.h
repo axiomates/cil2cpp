@@ -98,8 +98,25 @@ inline bool unsigned_le(T1 a, T2 b) { return to_unsigned(a) <= to_unsigned(b); }
 // Used by clt / cgt IL opcodes which interpret operands as signed.
 // CLI evaluation stack doesn't distinguish signed/unsigned — signedness comes from the instruction.
 // When C++ operands are unsigned (e.g., uint64_t from ulong fields), clt must still do signed comparison.
-template<typename T, std::enable_if_t<std::is_integral_v<T> && !std::is_same_v<T, bool>, int> = 0>
+template<typename T, std::enable_if_t<std::is_integral_v<T> && !std::is_same_v<T, bool>
+    && (sizeof(T) >= 4), int> = 0>
 inline auto to_signed(T v) { return static_cast<std::make_signed_t<T>>(v); }
+
+// CLI stack widening for sub-32-bit types (ECMA-335 III.1.1):
+// int8/int16 sign-extend to int32, uint8/uint16/char zero-extend to int32 on the evaluation stack.
+// Signed comparison opcodes (clt, cgt, bge, etc.) compare these int32 values.
+// Without widening, make_signed_t<uint16_t> = int16_t, turning 65535 into -1 and corrupting
+// comparisons like UnicodeRange.Create(0, 0xFFFF) where bge(65535, 0) must be true.
+template<typename T, std::enable_if_t<std::is_integral_v<T> && !std::is_same_v<T, bool>
+    && (sizeof(T) < 4) && std::is_unsigned_v<T>, int> = 0>
+inline int32_t to_signed(T v) { return static_cast<int32_t>(v); }
+
+template<typename T, std::enable_if_t<std::is_integral_v<T> && !std::is_same_v<T, bool>
+    && (sizeof(T) < 4) && std::is_signed_v<T>, int> = 0>
+inline int32_t to_signed(T v) { return static_cast<int32_t>(v); }
+
+// char16_t is a distinct type in C++ (not integral on all compilers) — explicit overload.
+inline int32_t to_signed(char16_t v) { return static_cast<int32_t>(v); }
 
 inline auto to_signed(bool v) { return static_cast<int>(v); }
 

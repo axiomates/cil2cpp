@@ -401,8 +401,10 @@ extern "C" void* System_Reflection_Assembly_get_FullName(void* /*__this*/) {
     return reinterpret_cast<void*>(cil2cpp::string_literal("AOTAssembly, Version=1.0.0.0"));
 }
 extern "C" uint32_t System_Reflection_Assembly_GetAssemblyCount() { return 1; }
-extern "C" void* System_Reflection_Assembly_GetCustomAttributes__System_Type_System_Boolean(void* /*__this*/, void* /*attributeType*/, bool /*inherit*/) {
-    return cil2cpp::gc::alloc_array(&cil2cpp::System_Object_TypeInfo, 0);
+extern "C" void* System_Reflection_Assembly_GetCustomAttributes__System_Type_System_Boolean(void* /*__this*/, void* attributeType, bool /*inherit*/) {
+    auto* typeObj = reinterpret_cast<cil2cpp::Type*>(attributeType);
+    auto* elemTypeInfo = (typeObj && typeObj->type_info) ? typeObj->type_info : &cil2cpp::System_Object_TypeInfo;
+    return cil2cpp::gc::alloc_array(elemTypeInfo, 0);
 }
 extern "C" void System_Reflection_Assembly_GetEntryAssemblyNative(System_Runtime_CompilerServices_ObjectHandleOnStack retAssembly) {
     if (retAssembly.f__ptr) *reinterpret_cast<void**>(retAssembly.f__ptr) = get_singleton_assembly();
@@ -522,8 +524,13 @@ extern "C" void* System_Reflection_MemberInfo_GetCustomAttributes__System_Boolea
     // Return empty Object[] — creating managed attribute objects from CustomAttributeInfo is complex
     return cil2cpp::gc::alloc_array(&cil2cpp::System_Object_TypeInfo, 0);
 }
-extern "C" void* System_Reflection_MemberInfo_GetCustomAttributes__System_Type_System_Boolean(void* /*__this*/, void* /*attributeType*/, bool /*inherit*/) {
-    return cil2cpp::gc::alloc_array(&cil2cpp::System_Object_TypeInfo, 0);
+extern "C" void* System_Reflection_MemberInfo_GetCustomAttributes__System_Type_System_Boolean(void* /*__this*/, void* attributeType, bool /*inherit*/) {
+    // Return empty array typed with the requested attribute type.
+    // .NET's GetCustomAttributes(Type, bool) returns T[] (not Object[]),
+    // enabling IEnumerable<T> casts via array covariance.
+    auto* typeObj = reinterpret_cast<cil2cpp::Type*>(attributeType);
+    auto* elemTypeInfo = (typeObj && typeObj->type_info) ? typeObj->type_info : &cil2cpp::System_Object_TypeInfo;
+    return cil2cpp::gc::alloc_array(elemTypeInfo, 0);
 }
 extern "C" void* System_Reflection_MemberInfo_GetCustomAttributesData(void* /*__this*/) {
     return cil2cpp::gc::alloc_array(&cil2cpp::System_Object_TypeInfo, 0);
@@ -721,8 +728,10 @@ extern "C" void* System_Reflection_ParameterInfo_get_ParameterType(void* __this)
 extern "C" int32_t System_Reflection_ParameterInfo_get_Position(void* __this) {
     return cil2cpp::parameterinfo_get_position(reinterpret_cast<cil2cpp::ManagedParameterInfo*>(__this));
 }
-extern "C" void* System_Reflection_ParameterInfo_GetCustomAttributes__System_Type_System_Boolean(void* /*__this*/, void* /*attributeType*/, bool /*inherit*/) {
-    return cil2cpp::gc::alloc_array(&cil2cpp::System_Object_TypeInfo, 0);
+extern "C" void* System_Reflection_ParameterInfo_GetCustomAttributes__System_Type_System_Boolean(void* /*__this*/, void* attributeType, bool /*inherit*/) {
+    auto* typeObj = reinterpret_cast<cil2cpp::Type*>(attributeType);
+    auto* elemTypeInfo = (typeObj && typeObj->type_info) ? typeObj->type_info : &cil2cpp::System_Object_TypeInfo;
+    return cil2cpp::gc::alloc_array(elemTypeInfo, 0);
 }
 extern "C" void* System_Reflection_ParameterInfo_GetCustomAttributesData(void* /*__this*/) {
     return cil2cpp::gc::alloc_array(&cil2cpp::System_Object_TypeInfo, 0);

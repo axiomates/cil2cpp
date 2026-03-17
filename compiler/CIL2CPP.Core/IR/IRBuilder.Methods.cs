@@ -456,18 +456,42 @@ public partial class IRBuilder
         // Separate dictionary for merge variables created by unconditional br instructions.
         // These carry ternary values across dead/live paths at merge points.
         var brTernaryMerges = new Dictionary<int, StackEntry[]>();
+        // Map each branch target to the set of source offsets that jump to it.
+        // Used by skipUntilOffset to detect labels reachable from live code beyond dead regions.
+        // Without this, compile-time constant branch elimination (SIMD IsSupported=0) empties
+        // basic blocks that are shared between dead SIMD code and live scalar fallback code,
+        // creating infinite loops (C++ UB) that MSVC optimizes into garbage.
+        var branchTargetSources = new Dictionary<int, List<int>>();
         foreach (var instr in instructions)
         {
             if (ILInstructionCategory.IsBranch(instr.OpCode))
             {
                 if (instr.Operand is Instruction target)
+                {
                     branchTargets.Add(target.Offset);
+                    if (!branchTargetSources.TryGetValue(target.Offset, out var list))
+                        branchTargetSources[target.Offset] = list = new List<int>();
+                    list.Add(instr.Offset);
+                }
                 else if (instr.Operand is Instruction[] targets)
-                    foreach (var t in targets) branchTargets.Add(t.Offset);
+                {
+                    foreach (var t in targets)
+                    {
+                        branchTargets.Add(t.Offset);
+                        if (!branchTargetSources.TryGetValue(t.Offset, out var sList))
+                            branchTargetSources[t.Offset] = sList = new List<int>();
+                        sList.Add(instr.Offset);
+                    }
+                }
             }
             // Leave instructions also branch
             if ((instr.OpCode == Code.Leave || instr.OpCode == Code.Leave_S) && instr.Operand is Instruction leaveTarget)
+            {
                 branchTargets.Add(leaveTarget.Offset);
+                if (!branchTargetSources.TryGetValue(leaveTarget.Offset, out var lList))
+                    branchTargetSources[leaveTarget.Offset] = lList = new List<int>();
+                lList.Add(instr.Offset);
+            }
         }
 
         // Build exception handler event map (IL offset -> list of events)
@@ -650,13 +674,20 @@ public partial class IRBuilder
         // Dead code skip tracking: null = not skipping, int.MaxValue = skip until any branch target
         // (post-br/ret/throw), specific offset = skip until that offset (compile-time constant elimination).
         int? skipUntilOffset = null;
+        // Track IL offsets of instructions that were skipped (in dead regions or feature-switch ranges).
+        // Used to determine if a branch target's sources are all from dead code — prevents resuming
+        // at labels only reachable from eliminated compile-time branches (e.g., SIMD paths in IndexOfAnyCore).
+        var skippedOffsets = new HashSet<int>();
         int? lastCondBranchStackDepth = null; // Stack depth after most recent conditional branch (for ternary merge detection)
 
         foreach (var instr in instructions)
         {
             // Skip instructions in feature-switch dead code ranges (SIMD branches etc.)
             if (ReachabilityAnalyzer.IsOffsetInDeadRange(featureSwitchDeadRanges, instr.Offset))
+            {
+                skippedOffsets.Add(instr.Offset);
                 continue;
+            }
             // Emit exception handler markers at this IL offset
             if (exceptionEvents.TryGetValue(instr.Offset, out var events))
             {
@@ -841,11 +872,16 @@ public partial class IRBuilder
             if (branchTargets.Contains(instr.Offset))
             {
                 // Determine if we should resume processing at this branch target.
-                // For post-unconditional-branch dead code (int.MaxValue): resume at any branch target.
-                // For compile-time constant elimination (specific offset): only resume at that offset.
+                // Resume when: (1) not in dead region, (2) at/past the skip target offset, or
+                // (3) at least one branch source targeting this label was NOT skipped (i.e., from live code).
+                // Case (3) handles both: shared scalar/SIMD labels inside dead regions (original fix for
+                // Ascii.GetIndexOfFirstNonAsciiChar_Vector where IL_0143 is in a dead region but targeted
+                // by live code at IL_0188), AND post-terminator dead code (int.MaxValue) where labels
+                // like IL_0060 in IndexOfAnyCore are only targeted from eliminated compile-time branches.
                 bool shouldResume = !skipUntilOffset.HasValue
-                    || skipUntilOffset.Value == int.MaxValue
-                    || instr.Offset >= skipUntilOffset.Value;
+                    || instr.Offset >= skipUntilOffset.Value
+                    || (branchTargetSources.TryGetValue(instr.Offset, out var srcOffsets)
+                        && srcOffsets.Any(s => !skippedOffsets.Contains(s)));
                 var wasDeadCode = skipUntilOffset.HasValue;
 
                 if (shouldResume)
@@ -859,6 +895,7 @@ public partial class IRBuilder
                     // Internal labels (e.g., loop back-edges) must exist in the IR in case
                     // the label is referenced, but the code that follows remains dead.
                     block.Instructions.Add(new IRLabel { LabelName = $"IL_{instr.Offset:X4}" });
+                    skippedOffsets.Add(instr.Offset);
                     continue;
                 }
 
@@ -944,7 +981,10 @@ public partial class IRBuilder
             // Skip dead code after unconditional branches (br, ret, throw, rethrow)
             // These instructions have corrupted stack state and produce invalid C++ (e.g., "16 = 0")
             if (skipUntilOffset.HasValue)
+            {
+                skippedOffsets.Add(instr.Offset);
                 continue;
+            }
 
             int beforeCount = block.Instructions.Count;
 
@@ -1738,7 +1778,7 @@ public partial class IRBuilder
                 block.Instructions.Add(new IRFieldAccess
                 {
                     ObjectExpr = obj,
-                    FieldCppName = CppNameMapper.MangleFieldName(fieldRef.Name),
+                    FieldCppName = ResolveFieldCppName(fieldRef, method),
                     ResultVar = tmp2,
                     IsValueAccess = isValueAccess,
                     CastToType = castToType,
@@ -1783,10 +1823,19 @@ public partial class IRBuilder
                 // in IL vs Dictionary<string,object> in the actual struct field declaration).
                 var fieldTypeName = ResolveFieldTypeRef(fieldRef);
                 var fieldTypeCpp = CppNameMapper.GetCppTypeForDecl(fieldTypeName);
-                // Cross-check with IRType model: if the struct has a different field type, use that
+                // Cross-check with IRType model: if the struct has a different field type, use that.
+                // Skip for hidden fields: LookupIRFieldTypeCpp walks from base → derived and
+                // returns the base type's field (Object*), but for C# field hiding the derived
+                // class has its own field with the correct generic-resolved type.
                 var irFieldTypeCpp = LookupIRFieldTypeCpp(fieldRef);
                 if (irFieldTypeCpp != null && irFieldTypeCpp != fieldTypeCpp)
-                    fieldTypeCpp = irFieldTypeCpp;
+                {
+                    var isHiddenField = method.DeclaringType?.Fields.Any(
+                        f => f.Name == fieldRef.Name && f.HidesBaseField) == true
+                        && FieldTypeUsesGenericParameter(fieldRef.FieldType);
+                    if (!isHiddenField)
+                        fieldTypeCpp = irFieldTypeCpp;
+                }
                 if (fieldTypeCpp.EndsWith("*")
                     && fieldTypeCpp != "void*" && val != "nullptr" && val != "0")
                 {
@@ -1832,7 +1881,7 @@ public partial class IRBuilder
                 block.Instructions.Add(new IRFieldAccess
                 {
                     ObjectExpr = obj,
-                    FieldCppName = CppNameMapper.MangleFieldName(fieldRef.Name),
+                    FieldCppName = ResolveFieldCppName(fieldRef, method),
                     IsStore = true,
                     StoreValue = val,
                     IsValueAccess = isValueAccess,
@@ -1985,7 +2034,7 @@ public partial class IRBuilder
                 }
 
                 var tmp3 = $"__t{tempCounter++}";
-                var fieldName = CppNameMapper.MangleFieldName(fieldRef.Name);
+                var fieldName = ResolveFieldCppName(fieldRef, method);
                 // void* parameter field address: cast to declaring type first
                 if (objEntry.CppType == "void*")
                 {

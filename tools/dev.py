@@ -1309,8 +1309,115 @@ def cmd_integration(args):
     runner.step(f"CMake build ({config})", hsg_cmake_build)
     runner.step("Run and compare C++ vs .NET output", hsg_run_verify)
 
+    # ===== Phase 12: DirTest (Directory operations) =====
+    header("Phase 12: DirTest (Directory.Exists, CreateDirectory)")
+
+    dt_sample = TESTPROJECTS_DIR / "DirTest" / "DirTest.csproj"
+    dt_output = temp_dir / "dt_output"
+    dt_build = temp_dir / "dt_build"
+
+    dotnet_dt_output = None
+
+    def dt_dotnet_run():
+        nonlocal dotnet_dt_output
+        dotnet_dt_output = _get_dotnet_output(dt_sample)
+        print(f"    .NET output: {repr(dotnet_dt_output[:200])}")
+
+    def dt_codegen():
+        run(["dotnet", "run", "--project", str(CLI_PROJECT), "--",
+             "codegen", "-i", str(dt_sample), "-o", str(dt_output)],
+            capture=True)
+
+    def dt_files_exist():
+        for f in ["DirTest.h", "DirTest_data.cpp", "DirTest_stubs.cpp",
+                   "main.cpp", "CMakeLists.txt"]:
+            if not (dt_output / f).exists():
+                raise RuntimeError(f"Missing: {f}")
+
+    def dt_cmake_configure():
+        run(["cmake", "-B", str(dt_build), "-S", str(dt_output),
+             "-G", generator, *cmake_arch,
+             f"-DCMAKE_PREFIX_PATH={runtime_prefix}"],
+            capture=True)
+
+    def dt_cmake_build():
+        return _cmake_build_with_diagnostics(dt_build, config)
+
+    def dt_run_verify():
+        exe = _exe_path(dt_build, config, "DirTest")
+        if not exe.exists():
+            raise RuntimeError(f"Executable not found: {exe}")
+        r = subprocess.run([str(exe)], capture_output=True, text=True, check=False)
+        if r.returncode != 0:
+            raise RuntimeError(f"DirTest exited with code {r.returncode}\nstderr: {r.stderr}")
+        got = r.stdout.strip()
+        # Line 5 (0-indexed) is "Exists testDir:" which differs because
+        # .NET run creates the directory first, so C++ sees it already existing.
+        _compare_output_with_skip(got, dotnet_dt_output, skip_lines={5})
+
+    runner.step("Get .NET reference output", dt_dotnet_run)
+    runner.step("Codegen DirTest", dt_codegen)
+    runner.step("Generated files exist", dt_files_exist)
+    runner.step("CMake configure", dt_cmake_configure)
+    runner.step(f"CMake build ({config})", dt_cmake_build)
+    runner.step("Run and compare C++ vs .NET output", dt_run_verify)
+
+    # ===== Phase 13: JsonSGTest (System.Text.Json serialization/deserialization) =====
+    header("Phase 13: JsonSGTest (System.Text.Json source-generated)")
+
+    js_sample = TESTPROJECTS_DIR / "JsonSGTest" / "JsonSGTest.csproj"
+    js_output = temp_dir / "js_output"
+    js_build = temp_dir / "js_build"
+
+    dotnet_js_output = None
+
+    def js_dotnet_run():
+        nonlocal dotnet_js_output
+        dotnet_js_output = _get_dotnet_output(js_sample)
+        print(f"    .NET output: {repr(dotnet_js_output[:200])}")
+
+    def js_codegen():
+        run(["dotnet", "run", "--project", str(CLI_PROJECT), "--",
+             "codegen", "-i", str(js_sample), "-o", str(js_output)],
+            capture=True)
+
+    def js_files_exist():
+        for f in ["JsonSGTest.h", "JsonSGTest_data.cpp", "JsonSGTest_stubs.cpp",
+                   "main.cpp", "CMakeLists.txt"]:
+            if not (js_output / f).exists():
+                raise RuntimeError(f"Missing: {f}")
+
+    def js_cmake_configure():
+        run(["cmake", "-B", str(js_build), "-S", str(js_output),
+             "-G", generator, *cmake_arch,
+             f"-DCMAKE_PREFIX_PATH={runtime_prefix}"],
+            capture=True)
+
+    def js_cmake_build():
+        return _cmake_build_with_diagnostics(js_build, config)
+
+    def js_run_verify():
+        exe = _exe_path(js_build, config, "JsonSGTest")
+        if not exe.exists():
+            raise RuntimeError(f"Executable not found: {exe}")
+        r = subprocess.run([str(exe)], capture_output=True, text=True, check=False)
+        if r.returncode != 0:
+            raise RuntimeError(f"JsonSGTest exited with code {r.returncode}\nstderr: {r.stderr}")
+        got = r.stdout.strip()
+        expected = dotnet_js_output.strip()
+        if got != expected:
+            raise RuntimeError(
+                f"Output mismatch!\n  Got:      {repr(got[:200])}\n  Expected: {repr(expected[:200])}")
+
+    runner.step("Get .NET reference output", js_dotnet_run)
+    runner.step("Codegen JsonSGTest", js_codegen)
+    runner.step("Generated files exist", js_files_exist)
+    runner.step("CMake configure", js_cmake_configure)
+    runner.step(f"CMake build ({config})", js_cmake_build)
+    runner.step("Run and compare C++ vs .NET output", js_run_verify)
+
     # NOTE: Other test projects (Library, Debug, StringLiterals,
-    # NuGetSimpleTest, JsonSGTest) are disabled.
+    # NuGetSimpleTest) are disabled.
     # Enable them phase-by-phase as issues are fixed.
 
     # ===== Cleanup =====
