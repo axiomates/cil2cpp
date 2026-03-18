@@ -130,10 +130,16 @@ public static class CppNameMapper
             if (_userValueTypes.Contains(ilTypeName))
                 return true;
             // For generic instantiations (e.g. "System.Span`1<System.Byte>"),
-            // check if the open generic type is a registered value type
-            var angleBracket = ilTypeName.IndexOf('<');
-            if (angleBracket > 0 && _userValueTypes.Contains(ilTypeName[..angleBracket]))
-                return true;
+            // check if the open generic type is a registered value type.
+            // Find the '<' after the backtick to avoid matching '<' in type names
+            // like "<PrivateImplementationDetails>/__y__InlineArray2`1<System.String>".
+            var backtick = ilTypeName.IndexOf('`');
+            if (backtick > 0)
+            {
+                var angleBracket = ilTypeName.IndexOf('<', backtick);
+                if (angleBracket > 0 && _userValueTypes.Contains(ilTypeName[..angleBracket]))
+                    return true;
+            }
         }
         return false;
     }

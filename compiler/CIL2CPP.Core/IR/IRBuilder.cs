@@ -993,6 +993,7 @@ public partial class IRBuilder
             else
             {
                 ConvertMethodBody(cecilMethodInfo, method);
+                CompileTransitiveUnreachableCallees(cecilMethodInfo.GetCecilMethod());
                 nonGenericCompiled++;
             }
         }

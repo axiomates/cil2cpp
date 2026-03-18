@@ -146,8 +146,6 @@ public class ICallRegistryTests
     [InlineData("System.Math", "Sin", 1, "cil2cpp::icall::Math_Sin")]
     [InlineData("System.Math", "Cos", 1, "cil2cpp::icall::Math_Cos")]
     [InlineData("System.Math", "Pow", 2, "cil2cpp::icall::Math_Pow")]
-    [InlineData("System.Math", "Floor", 1, "cil2cpp::icall::Math_Floor")]
-    [InlineData("System.Math", "Ceiling", 1, "cil2cpp::icall::Math_Ceiling")]
     public void Lookup_SystemMath_ReturnsICall(string type, string method, int paramCount, string expected)
     {
         var result = ICallRegistry.Lookup(type, method, paramCount);
@@ -161,6 +159,8 @@ public class ICallRegistryTests
     [InlineData("System.Math", "Abs", 1, "System.Int32", "cil2cpp::icall::Math_Abs_int")]
     [InlineData("System.Math", "Max", 2, "System.Double", "cil2cpp::icall::Math_Max_double")]
     [InlineData("System.Math", "Min", 2, "System.Int32", "cil2cpp::icall::Math_Min_int")]
+    [InlineData("System.Math", "Floor", 1, "System.Double", "cil2cpp::icall::Math_Floor")]
+    [InlineData("System.Math", "Ceiling", 1, "System.Double", "cil2cpp::icall::Math_Ceiling")]
     public void Lookup_SystemMath_TypedOverloads(string type, string method, int paramCount, string firstParam, string expected)
     {
         var result = ICallRegistry.Lookup(type, method, paramCount, firstParam);
