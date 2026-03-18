@@ -140,8 +140,9 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 
 ### Stub 分布（HelloWorld, 1,280 个 stubs，~95%+ 翻译率）
 
-> 指标来源：`tests/baselines/stub_budget.json`。
-> Commit: 3f93840 (2026-03-05)。程序集: HelloWorld（~26k 方法，经需求驱动泛型 + 特化方法可达性优化）。
+> 历史基线，来自 commit 3f93840 (2026-03-05)。`stub_budget.json` 已在 Phase X 清理中移除。
+> 程序集: HelloWorld（~26k 方法，经需求驱动泛型 + 特化方法可达性优化）。
+> 获取当前计数：运行 codegen 并检查生成的 `*_stubs.cpp` 文件。
 
 | 类别 | 数量 | 占比 | 性质 |
 |------|------|------|------|
@@ -170,24 +171,23 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 | 项目类型 | 预估完成度 | 关键阻塞项 |
 |---------|-----------|-----------|
 | 简单控制台应用 | ~95% | 反射 stub 可能导致运行时意外 |
-| 类库项目 | ~80% | `[DynamicallyAccessedMembers]` 已解析；NuGet 程序集解析已验证 |
-| 文件 I/O 应用 | ~80% | File.ReadAllBytes 挂起 (B.6)；File ICall 编码缺口 |
-| 网络应用 (HTTP) | ~85% | HTTP GET ✅、HTTPS GET ✅（Windows）。复杂场景（重定向、认证）尚未验证 |
-| 网络应用 (HTTPS) | ~75% | SChannel TLS 基本 HTTPS GET 已通过；边界情况待验证 |
-| JSON 序列化 | ~75% | System.Text.Json SG ✅ + Newtonsoft.Json 13.0.3 ✅（首个 NuGet 包） |
-| REST 客户端 (HTTP+JSON) | ~70% | HTTP + JSON 均已端到端通过；需更多验证 |
-| NuGet 包（简单） | ~60% | Newtonsoft.Json 已验证（3.1M 行，385s）；需更多库 |
+| 类库项目 | ~85% | NuGet PackageReference 已完整验证（Newtonsoft.Json）；DAM 解析完成 |
+| 文件 I/O 应用 | ~90% | FileStream/StreamReader 已工作；File.ReadAllBytes 挂起 (B.6) |
+| 网络应用 (HTTP) | ~90% | HTTP GET ✅、HTTPS GET ✅（Windows）。复杂场景（重定向、认证）尚未验证 |
+| 网络应用 (HTTPS) | ~85% | SChannel TLS 基本 HTTPS GET 已通过；边界情况待验证 |
+| JSON 序列化 | ~85% | System.Text.Json SG ✅ + Newtonsoft.Json 13.0.3 ✅ — 均已端到端验证 |
+| REST 客户端 (HTTP+JSON) | ~80% | HTTP + JSON 均已端到端通过；需更多验证 |
+| NuGet 包（简单） | ~65% | Newtonsoft.Json 已验证（3.1M 行，385s）；M4 目标需 2+ 更多库 |
 | 生产级应用 | ~15% | 需 DI + 日志 + 配置生态 |
-| 任意 NativeAOT .csproj | **~35%** | 大型程序集规模已验证（3.1M 行），stubs 仍存在，`[MarshalAs]` 部分完成 |
+| 任意 NativeAOT .csproj | **~40%** | 大型程序集规模已验证（3.1M 行），stubs 仍存在，`[MarshalAs]` 部分完成 |
 
 > **Linux/macOS**：待定。以上百分比仅限 Windows。Linux 需要 System.Native 集成 (Phase B.5, 待定) + OpenSSL (Phase E.linux, 待定)。当前 Linux 支持：~5%（仅控制台，无文件 I/O 或网络）。
 
 **什么能提升百分比**（累积，Windows）：
-- **35%→50%**：更多 NuGet 包验证（Serilog、Dapper、Polly、MediatR）+ codegen 性能优化
-- **50%→65%**：Stub 消减（NuGetSimpleTest 4,572 个）+ MarshalAs P/Invoke + 压缩 (zlib)
-- **65%→80%**：DI/日志生态 + SIMD 标量完善 + 复杂 HTTP 场景
-- **80%→90%**：10 个 NuGet 包验证 + 综合测试
-- **90%→95%**：边界用例修复 + 打磨
+- **40%→55%**：更多 NuGet 包（3+ 达成 M4）+ codegen 性能优化（385s → 目标 <120s）
+- **55%→70%**：Stub 消减（NuGetSimpleTest 4,572 个）+ 压缩 (zlib) + MarshalAs 完善
+- **70%→85%**：DI/日志生态 + SIMD 标量完善 + 复杂 HTTP 场景
+- **85%→95%**：10 个 NuGet 包验证 + 综合测试 + 边界用例打磨
 
 **实现缺口**（2026-03-18 审计）：
 - `[DynamicallyAccessedMembers]` — **已完成并验证**：13 种 DamFlag，字段/方法/参数扫描，CLI `--rdxml` 已接入，7 个 DAM 可达性测试 + 14 个 rd.xml 解析器测试
@@ -527,11 +527,11 @@ macOS 支持 (Objective-C 桥接)
 | 里程碑 | 达成条件 | 对应阶段 | 状态 |
 |--------|---------|---------|------|
 | **M1: 编译器成熟** | stubs < 2,000，翻译率 > 92% | A | ✅（1,280 stubs, ~95%+） |
-| **M2: 文件 I/O** | FileStream/StreamReader 从 BCL IL 编译并运行 | B | ✅ Windows（~90%） |
-| **M3: 联网应用** | HttpClient HTTP GET 从 BCL IL 编译并运行 | C.6 | ✅ HTTP GET + HTTPS GET 已通过（87/87 集成测试） |
-| **M3.5: REST 客户端** | HTTP GET + JSON 序列化端到端 | C.6+D | ✅ JsonSGTest + NuGetSimpleTest（Newtonsoft.Json）均已端到端运行 |
-| **M4: 库生态** | 3+ NuGet PackageReference 项目编译并运行 | D | 进行中 — 1 个 NuGet 包已验证（Newtonsoft.Json）。需 2+ 更多包。 |
-| **M5: 生产级** | HTTPS + Compression | E | 未开始 |
+| **M2: 文件 I/O** | FileStream/StreamReader 从 BCL IL 编译并运行 | B | ✅ Windows |
+| **M3: 联网应用** | HttpClient HTTP GET 从 BCL IL 编译并运行 | C.6 | ✅ HTTP + HTTPS GET 已通过 |
+| **M3.5: REST 客户端** | HTTP GET + JSON 序列化端到端 | C.6+D | ✅ JsonSGTest + NuGetSimpleTest（Newtonsoft.Json） |
+| **M4: 库生态** | 3+ NuGet PackageReference 项目编译并运行 | D+G.2 | ⬅ **下一目标** — 1/3 完成（Newtonsoft.Json）。需 2+ 更多包。 |
+| **M5: 生产级** | HTTPS + 压缩 + DI/日志生态 | E+F | 未开始 |
 | **M6: 发布** | CI/CD + 10 真实 NuGet 包验证 | G | 未开始 |
 
 ## 指标定义
@@ -548,7 +548,7 @@ macOS 支持 (Objective-C 桥接)
 | 维度 | 值 | 说明 |
 |------|-----|------|
 | **程序集** | HelloWorld（主要），SocketTest（次要） | 所有标题指标使用 HelloWorld，除非另有说明 |
-| **数据来源** | `tests/baselines/stub_budget.json` | 重大变更后手动更新 |
+| **数据来源** | 生成的 `*_stubs.cpp` 文件 | `stub_budget.json` 已在 Phase X 中移除 |
 | **分类** | 7 个 stub 根因分类 | MissingBody, KnownBrokenPattern, RenderedBodyError, ClrInternalType, UndeclaredFunction, UnknownParameterTypes, UnknownBodyReferences |
 | **转译率** | `1 - (stub_total / total_methods)` | `total_methods` 来自所有 pass 完成后的 IRModule |
 | **版本绑定** | 引用指标时包含 commit hash + 日期 | 防止过时数据跨阶段持续 |

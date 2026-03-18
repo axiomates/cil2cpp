@@ -140,8 +140,9 @@ See "RuntimeProvided Type Classification" section above.
 
 ### Stub Distribution (HelloWorld, 1,280 stubs, ~95%+ translation rate)
 
-> Metrics from `tests/baselines/stub_budget.json`.
-> Commit: 3f93840 (2026-03-05). Assembly: HelloWorld (~26k methods after demand-driven generics + specialized method reachability).
+> Historical baseline from commit 3f93840 (2026-03-05). `stub_budget.json` was removed in Phase X cleanup.
+> Assembly: HelloWorld (~26k methods after demand-driven generics + specialized method reachability).
+> To get current counts, run codegen with `--analyze` flag or inspect generated `*_stubs.cpp` files.
 
 | Category | Count | % | Nature |
 |----------|-------|---|--------|
@@ -170,24 +171,23 @@ See "RuntimeProvided Type Classification" section above.
 | Project Type | Est. Completion | Key Blockers |
 |-------------|----------------|-------------|
 | Simple console apps | ~95% | Reflection stubs may cause runtime surprises |
-| Library projects | ~80% | `[DynamicallyAccessedMembers]` parsed; NuGet assembly resolution validated |
-| File I/O apps | ~80% | File.ReadAllBytes hangs (B.6); encoding gaps in File ICalls |
-| Network apps (HTTP) | ~85% | HTTP GET ✅, HTTPS GET ✅ (Windows). Complex scenarios (redirects, auth) not yet validated |
-| Network apps (HTTPS) | ~75% | SChannel TLS working for basic HTTPS GET; edge cases pending |
-| JSON serialization | ~75% | System.Text.Json SG ✅ + Newtonsoft.Json 13.0.3 ✅ (first NuGet package) |
-| REST client (HTTP+JSON) | ~70% | HTTP + JSON both working end-to-end; needs more validation |
-| NuGet packages (simple) | ~60% | Newtonsoft.Json proven (3.1M lines, 385s); needs more libraries |
+| Library projects | ~85% | NuGet PackageReference fully validated (Newtonsoft.Json); DAM parsing complete |
+| File I/O apps | ~90% | FileStream/StreamReader working; File.ReadAllBytes hangs (B.6) |
+| Network apps (HTTP) | ~90% | HTTP GET ✅, HTTPS GET ✅ (Windows). Complex scenarios (redirects, auth) not yet validated |
+| Network apps (HTTPS) | ~85% | SChannel TLS working for basic HTTPS GET; edge cases pending |
+| JSON serialization | ~85% | System.Text.Json SG ✅ + Newtonsoft.Json 13.0.3 ✅ — both proven end-to-end |
+| REST client (HTTP+JSON) | ~80% | HTTP + JSON both working end-to-end; needs more validation |
+| NuGet packages (simple) | ~65% | Newtonsoft.Json proven (3.1M lines, 385s); needs 2+ more libraries for M4 |
 | Production-grade apps | ~15% | Needs DI + logging + config ecosystem |
-| Arbitrary NativeAOT .csproj | **~35%** | Large assembly scale proven (3.1M lines), stubs remain, `[MarshalAs]` partial |
+| Arbitrary NativeAOT .csproj | **~40%** | Large assembly scale proven (3.1M lines), stubs remain, `[MarshalAs]` partial |
 
 > **Linux/macOS**: Deferred. All percentages above are Windows-only. Linux requires System.Native integration (Phase B.5, deferred) + OpenSSL (Phase E.linux, deferred). Current Linux support: ~5% (console-only, no file I/O or networking).
 
 **What moves the needle** (cumulative, Windows):
-- **35%→50%**: More NuGet package validation (Serilog, Dapper, Polly, MediatR) + codegen performance optimization
-- **50%→65%**: Stub reduction (4,572 in NuGetSimpleTest) + MarshalAs P/Invoke + compression (zlib)
-- **65%→80%**: DI/logging ecosystem + SIMD scalar completion + complex HTTP scenarios
-- **80%→90%**: 10 NuGet package validation + comprehensive testing
-- **90%→95%**: Edge case fixes + polish
+- **40%→55%**: More NuGet packages (3+ for M4) + codegen performance optimization (385s → target <120s)
+- **55%→70%**: Stub reduction (4,572 in NuGetSimpleTest) + compression (zlib) + MarshalAs completion
+- **70%→85%**: DI/logging ecosystem + SIMD scalar completion + complex HTTP scenarios
+- **85%→95%**: 10 NuGet package validation + comprehensive testing + edge case polish
 
 **Implementation gaps** (2026-03-18 audit):
 - `[DynamicallyAccessedMembers]` — **complete (validated)**: 13 DamFlags, field/method/parameter scanning, CLI `--rdxml` wired, 7 DAM reachability tests + 14 rd.xml parser tests
@@ -528,11 +528,11 @@ macOS support (Objective-C bridge)
 | Milestone | Criteria | Phase | Status |
 |-----------|---------|-------|--------|
 | **M1: Compiler Maturity** | stubs < 2,000, translation rate > 92% | A | ✅ (1,280 stubs, ~95%+) |
-| **M2: File I/O** | FileStream/StreamReader compile from BCL IL and run | B | ✅ Windows (~90%) |
-| **M3: Networked Apps** | HttpClient HTTP GET compiles from BCL IL and runs | C.6 | ✅ HTTP GET + HTTPS GET working (87/87 integration tests) |
-| **M3.5: REST Client** | HTTP GET + JSON serialization end-to-end | C.6+D | ✅ JsonSGTest + NuGetSimpleTest (Newtonsoft.Json) both run end-to-end |
-| **M4: Library Ecosystem** | Project with 3+ NuGet PackageReferences compiles and runs | D | In progress — 1 NuGet package validated (Newtonsoft.Json). Need 2+ more packages. |
-| **M5: Production-Grade** | HTTPS + Compression | E | Not started |
+| **M2: File I/O** | FileStream/StreamReader compile from BCL IL and run | B | ✅ Windows |
+| **M3: Networked Apps** | HttpClient HTTP GET compiles from BCL IL and runs | C.6 | ✅ HTTP + HTTPS GET working |
+| **M3.5: REST Client** | HTTP GET + JSON serialization end-to-end | C.6+D | ✅ JsonSGTest + NuGetSimpleTest (Newtonsoft.Json) |
+| **M4: Library Ecosystem** | Project with 3+ NuGet PackageReferences compiles and runs | D+G.2 | ⬅ **Next target** — 1/3 done (Newtonsoft.Json). Need 2+ more packages. |
+| **M5: Production-Grade** | HTTPS + Compression + DI/logging ecosystem | E+F | Not started |
 | **M6: Release** | CI/CD + 10 real NuGet package validation | G | Not started |
 
 ## Metric Definitions
@@ -551,7 +551,7 @@ macOS support (Objective-C bridge)
 | Dimension | Value | Notes |
 |-----------|-------|-------|
 | **Assembly** | HelloWorld (primary), SocketTest (secondary) | All headline metrics use HelloWorld unless stated otherwise |
-| **Source of truth** | `tests/baselines/stub_budget.json` | Updated manually after significant changes |
+| **Source of truth** | Generated `*_stubs.cpp` files | `stub_budget.json` was removed in Phase X |
 | **Categories** | 7 stub root cause categories | MissingBody, KnownBrokenPattern, RenderedBodyError, ClrInternalType, UndeclaredFunction, UnknownParameterTypes, UnknownBodyReferences |
 | **Translation rate** | `1 - (stub_total / total_methods)` | `total_methods` from IRModule after all passes |
 | **Commit binding** | Include commit hash + date when citing metrics in docs | Prevents stale numbers persisting across phases |
