@@ -44,11 +44,21 @@ cil2cpp/
 │   │       └── CppCodeGenerator.Utils.cs        # 工具辅助
 │   └── CIL2CPP.Tests/          #   编译器单元测试 (xUnit)
 │       └── Fixtures/           #     测试 fixture 缓存
-├── tests/                      # 测试用 C# 项目（编译器输入）
+├── tests/                      # 测试用 C# 项目（编译器输入，14 个项目）
 │   ├── HelloWorld/
 │   ├── ArrayTest/
 │   ├── FeatureTest/
-│   └── MultiAssemblyTest/
+│   ├── ArglistTest/
+│   ├── MultiAssemblyTest/ + MathLib/
+│   ├── SystemIOTest/
+│   ├── FileStreamTest/
+│   ├── SocketTest/
+│   ├── HttpGetTest/
+│   ├── HttpTest/
+│   ├── HttpsGetTest/
+│   ├── DirTest/
+│   ├── JsonSGTest/
+│   └── NuGetSimpleTest/        # 首个 NuGet 包（Newtonsoft.Json 13.0.3）
 ├── runtime/                    # C++ 运行时库 (CMake)
 │   ├── CMakeLists.txt
 │   ├── cmake/                  #   CMake 包配置模板

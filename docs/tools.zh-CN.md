@@ -177,7 +177,7 @@ python tools/dev.py test --coverage
 
 项目包含三层测试：编译器单元测试、运行时单元测试、端到端集成测试。
 
-### C# 编译器测试（~1273+ 个，xUnit）
+### C# 编译器测试（1,291 个，xUnit）
 
 ```bash
 dotnet test compiler/CIL2CPP.Tests
@@ -187,7 +187,7 @@ dotnet test compiler/CIL2CPP.Tests
 
 > **重要**：新增测试时必须使用 `GetXxxReleaseContext()` / `GetXxxReleaseModule()` 获取缓存的编译结果，禁止在测试方法中直接 `new AssemblySet()` + `new ReachabilityAnalyzer()`（每次约 12 秒）。
 
-### C++ 运行时测试（591 个，Google Test）
+### C++ 运行时测试（600 个，Google Test）
 
 ```bash
 cmake -B runtime/tests/build -S runtime/tests
@@ -195,9 +195,9 @@ cmake --build runtime/tests/build --config Debug
 ctest --test-dir runtime/tests/build -C Debug --output-on-failure
 ```
 
-### 端到端集成测试（35 个）
+### 端到端集成测试（87 个）
 
-完整编译流水线：C# `.csproj` → codegen → CMake configure → C++ build → run → 验证输出。
+完整编译流水线：C# `.csproj` → codegen → CMake configure → C++ build → run → 验证输出。覆盖 14 个测试项目，包括 NuGet 包验证（Newtonsoft.Json 13.0.3）。
 
 ```bash
 python tools/dev.py integration

@@ -38,8 +38,8 @@ CIL2CPP 借鉴了 Unity IL2CPP 的核心架构思路——**将 BCL (Base Class 
 - 集合与 LINQ（List/Dictionary/Where/Select 等）
 - 异步编程（async/await、Task、线程池）
 - 反射（typeof/GetType/GetMethods/GetFields/Invoke）
-- 网络（Socket TCP/DNS 已工作、HttpClient 构造已工作、完整 HTTP GET 进行中）
-- 序列化（System.Text.Json source generator 路径已验证）
+- 网络（Socket TCP/DNS、HttpClient HTTP/HTTPS GET — 全部已工作）
+- 序列化（System.Text.Json SG + Newtonsoft.Json 13.0.3 via NuGet — 两者均已端到端验证）
 
 ## 核心设计原则
 

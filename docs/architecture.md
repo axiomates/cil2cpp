@@ -44,16 +44,21 @@ cil2cpp/
 │   │       └── CppCodeGenerator.Utils.cs        # Utility helpers
 │   └── CIL2CPP.Tests/          #   Compiler unit tests (xUnit)
 │       └── Fixtures/           #     Test fixture caching
-├── tests/                      # Test C# projects (compiler input)
+├── tests/                      # Test C# projects (compiler input, 14 projects)
 │   ├── HelloWorld/
 │   ├── ArrayTest/
 │   ├── FeatureTest/
-│   ├── MultiAssemblyTest/
-│   ├── FileStreamTest/
+│   ├── ArglistTest/
+│   ├── MultiAssemblyTest/ + MathLib/
 │   ├── SystemIOTest/
+│   ├── FileStreamTest/
 │   ├── SocketTest/
+│   ├── HttpGetTest/
 │   ├── HttpTest/
-│   └── MathLib/
+│   ├── HttpsGetTest/
+│   ├── DirTest/
+│   ├── JsonSGTest/
+│   └── NuGetSimpleTest/        # First NuGet package (Newtonsoft.Json 13.0.3)
 ├── runtime/                    # C++ runtime library (CMake)
 │   ├── CMakeLists.txt
 │   ├── cmake/                  #   CMake package config template

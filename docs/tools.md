@@ -177,7 +177,7 @@ python tools/dev.py test --coverage
 
 The project has three layers of tests: compiler unit tests, runtime unit tests, and end-to-end integration tests.
 
-### C# Compiler Tests (~1273+, xUnit)
+### C# Compiler Tests (1,291, xUnit)
 
 ```bash
 dotnet test compiler/CIL2CPP.Tests
@@ -187,7 +187,7 @@ dotnet test compiler/CIL2CPP.Tests
 
 > **Important**: When adding tests, you must use `GetXxxReleaseContext()` / `GetXxxReleaseModule()` to access cached compilation results. Never directly `new AssemblySet()` + `new ReachabilityAnalyzer()` in test methods (~12 seconds each).
 
-### C++ Runtime Tests (591, Google Test)
+### C++ Runtime Tests (600, Google Test)
 
 ```bash
 cmake -B runtime/tests/build -S runtime/tests
@@ -195,9 +195,9 @@ cmake --build runtime/tests/build --config Debug
 ctest --test-dir runtime/tests/build -C Debug --output-on-failure
 ```
 
-### End-to-End Integration Tests (35)
+### End-to-End Integration Tests (87)
 
-Full compilation pipeline: C# `.csproj` → codegen → CMake configure → C++ build → run → verify output.
+Full compilation pipeline: C# `.csproj` → codegen → CMake configure → C++ build → run → verify output. Covers 14 test projects including NuGet package validation (Newtonsoft.Json 13.0.3).
 
 ```bash
 python tools/dev.py integration

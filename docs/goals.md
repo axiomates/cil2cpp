@@ -38,8 +38,8 @@ The goal is not limited to the BCL subset Unity supports, but rather covers the 
 - Collections & LINQ (List/Dictionary/Where/Select etc.)
 - Asynchronous programming (async/await, Task, thread pool)
 - Reflection (typeof/GetType/GetMethods/GetFields/Invoke)
-- Networking (Socket TCP/DNS working, HttpClient construction working, full HTTP GET in progress)
-- Serialization (System.Text.Json source generator path validated)
+- Networking (Socket TCP/DNS, HttpClient HTTP/HTTPS GET — all working)
+- Serialization (System.Text.Json SG + Newtonsoft.Json 13.0.3 via NuGet — both validated end-to-end)
 
 ## Core Design Principles
 
