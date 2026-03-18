@@ -48,11 +48,14 @@
 static cil2cpp::Object* s_singleton_module = nullptr;
 static std::once_flag s_module_once;
 
+// RuntimeModule has ~6 reference-type fields (all zero-initialized for our singleton).
+// This size must be >= the generated RuntimeModule struct's field area.
+static constexpr size_t kRuntimeModuleFieldsSize = 48;
+
 static cil2cpp::Object* get_singleton_module() {
     std::call_once(s_module_once, []() {
-        // Allocate a proper Object with TypeInfo, large enough for RuntimeModule fields (all zero)
         s_singleton_module = static_cast<cil2cpp::Object*>(
-            cil2cpp::gc::alloc(sizeof(cil2cpp::Object) + 48,
+            cil2cpp::gc::alloc(sizeof(cil2cpp::Object) + kRuntimeModuleFieldsSize,
                                &cil2cpp::System_Reflection_Assembly_TypeInfo));
     });
     return s_singleton_module;
@@ -233,12 +236,12 @@ extern "C" void* System_Array_GetEnumerator(void* __this) {
 
 // ===== System.DefaultBinder =====
 extern "C" void System_DefaultBinder__ctor(void* /*__this*/) { }
-extern "C" void* System_DefaultBinder_BindToField(void* /*__this*/, System_Reflection_BindingFlags /*bindingAttr*/, void* /*match*/, void* /*value*/, void* /*cultureInfo*/) { return nullptr; }
-extern "C" void* System_DefaultBinder_BindToMethod(void* /*__this*/, System_Reflection_BindingFlags /*bindingAttr*/, void* /*match*/, void* /*args*/, void* /*modifiers*/, void* /*cultureInfo*/, void* /*names*/, void* /*state*/) { return nullptr; }
-extern "C" void* System_DefaultBinder_ChangeType(void* /*__this*/, void* /*value*/, void* /*type*/, void* /*cultureInfo*/) { return nullptr; }
+extern "C" void* System_DefaultBinder_BindToField(void* /*__this*/, System_Reflection_BindingFlags /*bindingAttr*/, void* /*match*/, void* /*value*/, void* /*cultureInfo*/) { cil2cpp::throw_not_supported(); }
+extern "C" void* System_DefaultBinder_BindToMethod(void* /*__this*/, System_Reflection_BindingFlags /*bindingAttr*/, void* /*match*/, void* /*args*/, void* /*modifiers*/, void* /*cultureInfo*/, void* /*names*/, void* /*state*/) { cil2cpp::throw_not_supported(); }
+extern "C" void* System_DefaultBinder_ChangeType(void* /*__this*/, void* /*value*/, void* /*type*/, void* /*cultureInfo*/) { cil2cpp::throw_not_supported(); }
 extern "C" void System_DefaultBinder_ReorderArgumentArray(void* /*__this*/, void* /*args*/, void* /*state*/) { }
-extern "C" void* System_DefaultBinder_SelectMethod(void* /*__this*/, System_Reflection_BindingFlags /*bindingAttr*/, void* /*match*/, void* /*types*/, void* /*modifiers*/) { return nullptr; }
-extern "C" void* System_DefaultBinder_SelectProperty(void* /*__this*/, System_Reflection_BindingFlags /*bindingAttr*/, void* /*match*/, void* /*returnType*/, void* /*indexes*/, void* /*modifiers*/) { return nullptr; }
+extern "C" void* System_DefaultBinder_SelectMethod(void* /*__this*/, System_Reflection_BindingFlags /*bindingAttr*/, void* /*match*/, void* /*types*/, void* /*modifiers*/) { cil2cpp::throw_not_supported(); }
+extern "C" void* System_DefaultBinder_SelectProperty(void* /*__this*/, System_Reflection_BindingFlags /*bindingAttr*/, void* /*match*/, void* /*returnType*/, void* /*indexes*/, void* /*modifiers*/) { cil2cpp::throw_not_supported(); }
 
 // ===== System.Delegate =====
 extern "C" void* System_Delegate_FindMethodHandle(void* /*__this*/) {
@@ -449,16 +452,16 @@ extern "C" void* System_Reflection_Assembly_GetManifestResourceNames(void* /*__t
     return cil2cpp::gc::alloc_array(&cil2cpp::System_String_TypeInfo, 0);
 }
 extern "C" void* System_Reflection_Assembly_GetManifestResourceStream__System_String(void* /*__this*/, void* /*name*/) {
-    return nullptr; // No embedded resources in AOT
+    cil2cpp::throw_not_supported(); // No embedded resources in AOT
 }
 extern "C" void* System_Reflection_Assembly_get_Location(void* /*__this*/) {
     return reinterpret_cast<void*>(cil2cpp::string_literal(""));
 }
 extern "C" void* System_Reflection_Assembly_GetName(void* /*__this*/) {
-    return nullptr; // AssemblyName requires complex struct — not tracked in AOT
+    cil2cpp::throw_not_supported(); // AssemblyName requires complex struct — not tracked in AOT
 }
 extern "C" void* System_Reflection_Assembly_GetName__System_Boolean(void* /*__this*/, bool /*copiedName*/) {
-    return nullptr; // AssemblyName requires complex struct — not tracked in AOT
+    cil2cpp::throw_not_supported(); // AssemblyName requires complex struct — not tracked in AOT
 }
 extern "C" void* System_Reflection_Assembly_GetType__System_String_System_Boolean_System_Boolean(void* /*__this*/, void* name, bool throwOnError, bool /*ignoreCase*/) {
     if (!name) return nullptr;
@@ -794,10 +797,12 @@ extern "C" void* System_Reflection_MethodBase_Invoke__System_Object_System_Refle
 // ===== System.Reflection.MethodInfo =====
 extern "C" void System_Reflection_MethodInfo__ctor(void* /*__this*/) { }
 extern "C" void* System_Reflection_MethodInfo_CreateDelegate__System_Type_System_Object(void* /*__this*/, void* /*delegateType*/, void* /*target*/) {
-    return nullptr; // Delegate creation from reflection is uncommon in AOT
+    // Runtime delegate creation from MethodInfo is not supported in AOT
+    cil2cpp::throw_not_supported();
 }
 extern "C" void* System_Reflection_MethodInfo_CreateDelegate_System_Text_RegularExpressions_CompiledRegexRunner_ScanDelegate(void* /*__this*/) {
-    return nullptr; // CompiledRegex delegate creation not supported in AOT
+    // CompiledRegex delegate creation not supported in AOT
+    cil2cpp::throw_not_supported();
 }
 extern "C" int32_t System_Reflection_MethodInfo_get_GenericParameterCount(void* /*__this*/) {
     return 0; // All methods are closed (fully specialized) in AOT
@@ -814,7 +819,8 @@ extern "C" void* System_Reflection_MethodInfo_MakeGenericMethod(void* /*__this*/
     cil2cpp::throw_not_supported();
 }
 extern "C" void* System_Reflection_MethodInfo_get_ReturnTypeCustomAttributes(void* /*__this*/) {
-    return nullptr; // Return type custom attributes not tracked in AOT
+    // Return type custom attributes not tracked in AOT
+    cil2cpp::throw_not_supported();
 }
 extern "C" void* System_Reflection_MethodInfo_GetBaseDefinition(void* __this) {
     return __this; // In AOT, return self — base definition walking via GetParentDefinition
@@ -862,40 +868,40 @@ extern "C" void* System_Reflection_ParameterInfo_GetCustomAttributesData(void* /
 extern "C" bool System_Reflection_ParameterInfo_IsDefined(void* /*__this*/, void* /*attributeType*/, bool /*inherit*/) { return false; }
 
 // ===== System.Reflection.RuntimeAssembly. =====
-extern "C" int32_t System_Reflection_RuntimeAssembly__GetCodeBase_g____PInvoke_14_0(System_Runtime_CompilerServices_QCallAssembly /*__assembly_native*/, System_Runtime_CompilerServices_StringHandleOnStack /*__retString_native*/) { return 0; }
-extern "C" int32_t System_Reflection_RuntimeAssembly__GetManifestResourceInfo_g____PInvoke_60_0(System_Runtime_CompilerServices_QCallAssembly /*__assembly_native*/, void* /*__resourceName_native*/, System_Runtime_CompilerServices_ObjectHandleOnStack /*__assemblyRef_native*/, System_Runtime_CompilerServices_StringHandleOnStack /*__retFileName_native*/) { return 0; }
-extern "C" void System_Reflection_RuntimeAssembly__GetModule_g____PInvoke_52_0(System_Runtime_CompilerServices_QCallAssembly /*__assembly_native*/, void* /*__name_native*/, System_Runtime_CompilerServices_ObjectHandleOnStack /*__retModule_native*/) { }
-extern "C" void System_Reflection_RuntimeAssembly__GetModules_g____PInvoke_90_0(System_Runtime_CompilerServices_QCallAssembly /*__assembly_native*/, int32_t /*__loadIfNotFound_native*/, int32_t /*__getResourceModules_native*/, System_Runtime_CompilerServices_ObjectHandleOnStack /*__retModuleHandles_native*/) { }
-extern "C" void* System_Reflection_RuntimeAssembly__GetResource_g____PInvoke_37_0(System_Runtime_CompilerServices_QCallAssembly /*__assembly_native*/, void* /*__resourceName_native*/, void* /*__length_native*/) { return nullptr; }
-extern "C" void System_Reflection_RuntimeAssembly__GetTypeCore_g____PInvoke_26_0(System_Runtime_CompilerServices_QCallAssembly /*__assembly_native*/, void* /*__typeName_native*/, void* /*__nestedTypeNames_native*/, int32_t /*__nestedTypeNamesLength_native*/, System_Runtime_CompilerServices_ObjectHandleOnStack /*__retType_native*/) { }
-extern "C" void System_Reflection_RuntimeAssembly__GetTypeCoreIgnoreCase_g____PInvoke_27_0(System_Runtime_CompilerServices_QCallAssembly /*__assembly_native*/, void* /*__typeName_native*/, void* /*__nestedTypeNames_native*/, int32_t /*__nestedTypeNamesLength_native*/, System_Runtime_CompilerServices_ObjectHandleOnStack /*__retType_native*/) { }
-extern "C" void System_Reflection_RuntimeAssembly__GetVersion_g____PInvoke_72_0(System_Runtime_CompilerServices_QCallAssembly /*__assembly_native*/, void* /*__majVer_native*/, void* /*__minVer_native*/, void* /*__buildNum_native*/, void* /*__revNum_native*/) { }
+extern "C" int32_t System_Reflection_RuntimeAssembly__GetCodeBase_g____PInvoke_14_0(System_Runtime_CompilerServices_QCallAssembly /*__assembly_native*/, System_Runtime_CompilerServices_StringHandleOnStack /*__retString_native*/) { cil2cpp::throw_not_supported(); }
+extern "C" int32_t System_Reflection_RuntimeAssembly__GetManifestResourceInfo_g____PInvoke_60_0(System_Runtime_CompilerServices_QCallAssembly /*__assembly_native*/, void* /*__resourceName_native*/, System_Runtime_CompilerServices_ObjectHandleOnStack /*__assemblyRef_native*/, System_Runtime_CompilerServices_StringHandleOnStack /*__retFileName_native*/) { cil2cpp::throw_not_supported(); }
+extern "C" void System_Reflection_RuntimeAssembly__GetModule_g____PInvoke_52_0(System_Runtime_CompilerServices_QCallAssembly /*__assembly_native*/, void* /*__name_native*/, System_Runtime_CompilerServices_ObjectHandleOnStack /*__retModule_native*/) { cil2cpp::throw_not_supported(); }
+extern "C" void System_Reflection_RuntimeAssembly__GetModules_g____PInvoke_90_0(System_Runtime_CompilerServices_QCallAssembly /*__assembly_native*/, int32_t /*__loadIfNotFound_native*/, int32_t /*__getResourceModules_native*/, System_Runtime_CompilerServices_ObjectHandleOnStack /*__retModuleHandles_native*/) { cil2cpp::throw_not_supported(); }
+extern "C" void* System_Reflection_RuntimeAssembly__GetResource_g____PInvoke_37_0(System_Runtime_CompilerServices_QCallAssembly /*__assembly_native*/, void* /*__resourceName_native*/, void* /*__length_native*/) { cil2cpp::throw_not_supported(); }
+extern "C" void System_Reflection_RuntimeAssembly__GetTypeCore_g____PInvoke_26_0(System_Runtime_CompilerServices_QCallAssembly /*__assembly_native*/, void* /*__typeName_native*/, void* /*__nestedTypeNames_native*/, int32_t /*__nestedTypeNamesLength_native*/, System_Runtime_CompilerServices_ObjectHandleOnStack /*__retType_native*/) { cil2cpp::throw_not_supported(); }
+extern "C" void System_Reflection_RuntimeAssembly__GetTypeCoreIgnoreCase_g____PInvoke_27_0(System_Runtime_CompilerServices_QCallAssembly /*__assembly_native*/, void* /*__typeName_native*/, void* /*__nestedTypeNames_native*/, int32_t /*__nestedTypeNamesLength_native*/, System_Runtime_CompilerServices_ObjectHandleOnStack /*__retType_native*/) { cil2cpp::throw_not_supported(); }
+extern "C" void System_Reflection_RuntimeAssembly__GetVersion_g____PInvoke_72_0(System_Runtime_CompilerServices_QCallAssembly /*__assembly_native*/, void* /*__majVer_native*/, void* /*__minVer_native*/, void* /*__buildNum_native*/, void* /*__revNum_native*/) { cil2cpp::throw_not_supported(); }
 extern "C" void System_Reflection_RuntimeAssembly__InternalLoad_g____PInvoke_49_0(void* /*__pAssemblyNameParts_native*/, System_Runtime_CompilerServices_ObjectHandleOnStack /*__requestingAssembly_native*/, System_Runtime_CompilerServices_StackCrawlMarkHandle /*__stackMark_native*/, int32_t /*__throwOnFileNotFound_native*/, System_Runtime_CompilerServices_ObjectHandleOnStack /*__assemblyLoadContext_native*/, System_Runtime_CompilerServices_ObjectHandleOnStack /*__retAssembly_native*/) {
     // Runtime assembly loading is not supported in AOT compilation
     cil2cpp::throw_not_supported();
 }
 
 // ===== System.Reflection.RuntimeAssembly.GetEntryPoint =====
-extern "C" void System_Reflection_RuntimeAssembly_GetEntryPoint(System_Runtime_CompilerServices_QCallAssembly /*assembly*/, System_Runtime_CompilerServices_ObjectHandleOnStack /*retMethod*/) { }
+extern "C" void System_Reflection_RuntimeAssembly_GetEntryPoint(System_Runtime_CompilerServices_QCallAssembly /*assembly*/, System_Runtime_CompilerServices_ObjectHandleOnStack /*retMethod*/) { cil2cpp::throw_not_supported(); }
 
 // ===== System.Reflection.RuntimeAssembly.GetExportedTypes =====
-extern "C" void System_Reflection_RuntimeAssembly_GetExportedTypes__System_Runtime_CompilerServices_QCallAssembly_System_Runtime_CompilerServices_ObjectHandleOnStack(System_Runtime_CompilerServices_QCallAssembly /*assembly*/, System_Runtime_CompilerServices_ObjectHandleOnStack /*retTypes*/) { }
+extern "C" void System_Reflection_RuntimeAssembly_GetExportedTypes__System_Runtime_CompilerServices_QCallAssembly_System_Runtime_CompilerServices_ObjectHandleOnStack(System_Runtime_CompilerServices_QCallAssembly /*assembly*/, System_Runtime_CompilerServices_ObjectHandleOnStack /*retTypes*/) { cil2cpp::throw_not_supported(); }
 
 // ===== System.Reflection.RuntimeAssembly.GetFlags =====
 extern "C" System_Reflection_AssemblyNameFlags System_Reflection_RuntimeAssembly_GetFlags(void* /*__this*/) { return 0; }
 extern "C" System_Reflection_AssemblyNameFlags System_Reflection_RuntimeAssembly_GetFlags__System_Runtime_CompilerServices_QCallAssembly(System_Runtime_CompilerServices_QCallAssembly /*assembly*/) { return 0; }
 
 // ===== System.Reflection.RuntimeAssembly.GetForwardedType =====
-extern "C" void System_Reflection_RuntimeAssembly_GetForwardedType(System_Runtime_CompilerServices_QCallAssembly /*assembly*/, System_Reflection_MetadataToken /*mdtExternalType*/, System_Runtime_CompilerServices_ObjectHandleOnStack /*type*/) { }
+extern "C" void System_Reflection_RuntimeAssembly_GetForwardedType(System_Runtime_CompilerServices_QCallAssembly /*assembly*/, System_Reflection_MetadataToken /*mdtExternalType*/, System_Runtime_CompilerServices_ObjectHandleOnStack /*type*/) { cil2cpp::throw_not_supported(); }
 
 // ===== System.Reflection.RuntimeAssembly.GetFullName =====
-extern "C" void System_Reflection_RuntimeAssembly_GetFullName(System_Runtime_CompilerServices_QCallAssembly /*assembly*/, System_Runtime_CompilerServices_StringHandleOnStack /*retString*/) { }
+extern "C" void System_Reflection_RuntimeAssembly_GetFullName(System_Runtime_CompilerServices_QCallAssembly /*assembly*/, System_Runtime_CompilerServices_StringHandleOnStack /*retString*/) { cil2cpp::throw_not_supported(); }
 
 // ===== System.Reflection.RuntimeAssembly.GetHashAlgorithm =====
 extern "C" System_Configuration_Assemblies_AssemblyHashAlgorithm System_Reflection_RuntimeAssembly_GetHashAlgorithm__System_Runtime_CompilerServices_QCallAssembly(System_Runtime_CompilerServices_QCallAssembly /*assembly*/) { return 0; }
 
 // ===== System.Reflection.RuntimeAssembly.GetImageRuntimeVersion =====
-extern "C" void System_Reflection_RuntimeAssembly_GetImageRuntimeVersion(System_Runtime_CompilerServices_QCallAssembly /*assembly*/, System_Runtime_CompilerServices_StringHandleOnStack /*retString*/) { }
+extern "C" void System_Reflection_RuntimeAssembly_GetImageRuntimeVersion(System_Runtime_CompilerServices_QCallAssembly /*assembly*/, System_Runtime_CompilerServices_StringHandleOnStack /*retString*/) { cil2cpp::throw_not_supported(); }
 
 // ===== System.Reflection.RuntimeAssembly.GetIsCollectible =====
 extern "C" Interop_BOOL System_Reflection_RuntimeAssembly_GetIsCollectible(System_Runtime_CompilerServices_QCallAssembly /*assembly*/) {
@@ -903,31 +909,32 @@ extern "C" Interop_BOOL System_Reflection_RuntimeAssembly_GetIsCollectible(Syste
 }
 
 // ===== System.Reflection.RuntimeAssembly.GetLocale =====
-extern "C" void System_Reflection_RuntimeAssembly_GetLocale__System_Runtime_CompilerServices_QCallAssembly_System_Runtime_CompilerServices_StringHandleOnStack(System_Runtime_CompilerServices_QCallAssembly /*assembly*/, System_Runtime_CompilerServices_StringHandleOnStack /*retString*/) { }
+extern "C" void System_Reflection_RuntimeAssembly_GetLocale__System_Runtime_CompilerServices_QCallAssembly_System_Runtime_CompilerServices_StringHandleOnStack(System_Runtime_CompilerServices_QCallAssembly /*assembly*/, System_Runtime_CompilerServices_StringHandleOnStack /*retString*/) { cil2cpp::throw_not_supported(); }
 
 // ===== System.Reflection.RuntimeAssembly.GetLocation =====
-extern "C" void System_Reflection_RuntimeAssembly_GetLocation(System_Runtime_CompilerServices_QCallAssembly /*assembly*/, System_Runtime_CompilerServices_StringHandleOnStack /*retString*/) { }
+extern "C" void System_Reflection_RuntimeAssembly_GetLocation(System_Runtime_CompilerServices_QCallAssembly /*assembly*/, System_Runtime_CompilerServices_StringHandleOnStack /*retString*/) { cil2cpp::throw_not_supported(); }
 
 // ===== System.Reflection.RuntimeAssembly.GetPublicKey =====
-extern "C" void* System_Reflection_RuntimeAssembly_GetPublicKey(void* /*__this*/) { return nullptr; }
-extern "C" void System_Reflection_RuntimeAssembly_GetPublicKey__System_Runtime_CompilerServices_QCallAssembly_System_Runtime_CompilerServices_ObjectHandleOnStack(System_Runtime_CompilerServices_QCallAssembly /*assembly*/, System_Runtime_CompilerServices_ObjectHandleOnStack /*retPublicKey*/) { }
+extern "C" void* System_Reflection_RuntimeAssembly_GetPublicKey(void* /*__this*/) { cil2cpp::throw_not_supported(); }
+extern "C" void System_Reflection_RuntimeAssembly_GetPublicKey__System_Runtime_CompilerServices_QCallAssembly_System_Runtime_CompilerServices_ObjectHandleOnStack(System_Runtime_CompilerServices_QCallAssembly /*assembly*/, System_Runtime_CompilerServices_ObjectHandleOnStack /*retPublicKey*/) { cil2cpp::throw_not_supported(); }
 
 // ===== System.Reflection.RuntimeAssembly.GetSimpleName =====
-extern "C" void* System_Reflection_RuntimeAssembly_GetSimpleName(void* /*__this*/) { return nullptr; }
-extern "C" void System_Reflection_RuntimeAssembly_GetSimpleName__System_Runtime_CompilerServices_QCallAssembly_System_Runtime_CompilerServices_StringHandleOnStack(System_Runtime_CompilerServices_QCallAssembly /*assembly*/, System_Runtime_CompilerServices_StringHandleOnStack /*retSimpleName*/) { }
+extern "C" void* System_Reflection_RuntimeAssembly_GetSimpleName(void* /*__this*/) { cil2cpp::throw_not_supported(); }
+extern "C" void System_Reflection_RuntimeAssembly_GetSimpleName__System_Runtime_CompilerServices_QCallAssembly_System_Runtime_CompilerServices_StringHandleOnStack(System_Runtime_CompilerServices_QCallAssembly /*assembly*/, System_Runtime_CompilerServices_StringHandleOnStack /*retSimpleName*/) { cil2cpp::throw_not_supported(); }
 
 // ===== System.Reflection.RuntimeAssembly.GetTypeCore =====
-extern "C" void* System_Reflection_RuntimeAssembly_GetTypeCore__System_String_System_ReadOnlySpan_1_System_String__System_Boolean_System_Boolean(void* /*__this*/, void* /*typeName*/, System_ReadOnlySpan_1_System_String /*nestedTypeNames*/, bool /*throwOnError*/, bool /*ignoreCase*/) { return nullptr; }
+extern "C" void* System_Reflection_RuntimeAssembly_GetTypeCore__System_String_System_ReadOnlySpan_1_System_String__System_Boolean_System_Boolean(void* /*__this*/, void* /*typeName*/, System_ReadOnlySpan_1_System_String /*nestedTypeNames*/, bool /*throwOnError*/, bool /*ignoreCase*/) { cil2cpp::throw_not_supported(); }
 
 // ===== System.Reflection.RuntimeAssembly.GetVersion =====
-extern "C" void* System_Reflection_RuntimeAssembly_GetVersion(void* /*__this*/) { return nullptr; }
+extern "C" void* System_Reflection_RuntimeAssembly_GetVersion(void* /*__this*/) { cil2cpp::throw_not_supported(); }
 
 // ===== System.Reflection.RuntimeAssembly.InternalGetSatelliteAssembly =====
 // (provided by generated code: compiled from IL or linker stub)
 
 // ===== System.Reflection.RuntimeConstructorInfo. =====
 extern "C" void* System_Reflection_RuntimeConstructorInfo__get_Signature_g__LazyCreateSignature_21_0(void* /*__this*/) {
-    return nullptr; // Signature is a CoreCLR internal — not applicable in AOT
+    // Signature is a CoreCLR JIT internal — not applicable in AOT
+    cil2cpp::throw_not_supported();
 }
 
 // ===== System.Reflection.RuntimeConstructorInfo.ComputeAndUpdateInvocationFlags =====
@@ -982,7 +989,8 @@ extern "C" System_Reflection_InvocationFlags System_Reflection_RuntimeConstructo
     return System_Reflection_RuntimeConstructorInfo_ComputeAndUpdateInvocationFlags(__this);
 }
 extern "C" void* System_Reflection_RuntimeConstructorInfo_get_Invoker(void* /*__this*/) {
-    return nullptr; // MethodInvoker struct not tracked in AOT
+    // MethodInvoker is a CoreCLR JIT internal — not applicable in AOT
+    cil2cpp::throw_not_supported();
 }
 extern "C" void* System_Reflection_RuntimeConstructorInfo_get_ReflectedTypeInternal(void* __this) {
     auto* ni = _get_native_mi(__this);
@@ -992,7 +1000,8 @@ extern "C" void* System_Reflection_RuntimeConstructorInfo_get_ReflectedTypeInter
     return nullptr;
 }
 extern "C" void* System_Reflection_RuntimeConstructorInfo_get_Signature(void* /*__this*/) {
-    return nullptr; // Signature is a CoreCLR internal
+    // Signature is a CoreCLR JIT internal — not applicable in AOT
+    cil2cpp::throw_not_supported();
 }
 
 // ===== System.Reflection.RuntimeFieldInfo =====
@@ -1014,7 +1023,8 @@ extern "C" void* System_Reflection_RuntimeFieldInfo_get_ReflectedTypeInternal(vo
 
 // ===== System.Reflection.RuntimeMethodInfo. =====
 extern "C" void* System_Reflection_RuntimeMethodInfo__get_Signature_g__LazyCreateSignature_25_0(void* /*__this*/) {
-    return nullptr; // Signature is a CoreCLR internal
+    // Signature is a CoreCLR JIT internal — not applicable in AOT
+    cil2cpp::throw_not_supported();
 }
 
 // ===== System.Reflection.RuntimeMethodInfo.ComputeAndUpdateInvocationFlags =====
@@ -1095,7 +1105,8 @@ extern "C" System_Reflection_InvocationFlags System_Reflection_RuntimeMethodInfo
     return System_Reflection_RuntimeMethodInfo_ComputeAndUpdateInvocationFlags(__this);
 }
 extern "C" void* System_Reflection_RuntimeMethodInfo_get_Invoker(void* /*__this*/) {
-    return nullptr; // MethodInvoker struct not tracked in AOT
+    // MethodInvoker is a CoreCLR JIT internal — not applicable in AOT
+    cil2cpp::throw_not_supported();
 }
 extern "C" void* System_Reflection_RuntimeMethodInfo_get_ReflectedTypeInternal(void* __this) {
     auto* ni = _get_native_mi(__this);
@@ -1105,7 +1116,8 @@ extern "C" void* System_Reflection_RuntimeMethodInfo_get_ReflectedTypeInternal(v
     return nullptr;
 }
 extern "C" void* System_Reflection_RuntimeMethodInfo_get_Signature(void* /*__this*/) {
-    return nullptr; // Signature is a CoreCLR internal
+    // Signature is a CoreCLR JIT internal — not applicable in AOT
+    cil2cpp::throw_not_supported();
 }
 
 // ===== System.Reflection.RuntimePropertyInfo.get_CanRead =====
@@ -1177,7 +1189,8 @@ extern "C" void* System_Reflection_RuntimePropertyInfo_get_ReflectedTypeInternal
     return cil2cpp::propertyinfo_get_declaring_type(pi);
 }
 extern "C" void* System_Reflection_RuntimePropertyInfo_get_Signature(void* /*__this*/) {
-    return nullptr; // Signature is a CoreCLR internal
+    // Signature is a CoreCLR JIT internal — not applicable in AOT
+    cil2cpp::throw_not_supported();
 }
 
 // ===== System.Reflection.TypeInfo =====
@@ -1197,8 +1210,9 @@ extern "C" bool System_RuntimeType_CanValueSpecialCast(void* /*valueType*/, void
 extern "C" void System_RuntimeType_GetGUID(void* /*__this*/, void* /*result*/) {
     // COM type GUID — not applicable in AOT
 }
-extern "C" void* System_RuntimeType_InvokeDispMethod(void* /*__this*/, void* /*name*/, System_Reflection_BindingFlags invokeAttr, void* /*target*/, void* /*args*/, void* /*byrefModifiers*/, int32_t culture, void* /*namedParameters*/) {
-    return nullptr; // COM IDispatch not supported in AOT
+extern "C" void* System_RuntimeType_InvokeDispMethod(void* /*__this*/, void* /*name*/, System_Reflection_BindingFlags /*invokeAttr*/, void* /*target*/, void* /*args*/, void* /*byrefModifiers*/, int32_t /*culture*/, void* /*namedParameters*/) {
+    // COM IDispatch not supported in AOT
+    cil2cpp::throw_not_supported();
 }
 // RuntimeType.get_IsEnum / get_IsActualEnum / IsDelegate:
 // These methods in CoreCLR read MethodTable.f_ParentMethodTable to compare against
@@ -2399,12 +2413,12 @@ extern "C" int32_t System_ValueType__CanCompareBitsOrUseFastGetHashCodeHelper_g_
 // Delegate.InternalAllocLike — QCall variant (ObjectHandleOnStack)
 // The non-QCall variant (InternalAlloc) is in icall.cpp. This is the QCall bridge.
 extern "C" void System_Delegate_InternalAllocLike__System_Runtime_CompilerServices_ObjectHandleOnStack(void* /*d*/) {
-    // Delegate cloning via ObjectHandleOnStack — not commonly used in AOT paths
+    // Delegate cloning via ObjectHandleOnStack — not supported in AOT
+    cil2cpp::throw_not_supported();
 }
 
-// RuntimeTypeHandle.GetNumVirtualsAndStaticVirtuals — QCall wrapper
-// Returns the virtual method count from TypeInfo.
-extern "C" int32_t System_RuntimeTypeHandle_GetNumVirtualsAndStaticVirtuals__System_Runtime_CompilerServices_QCallTypeHandle(void* /*type*/) { return 0; }
+// RuntimeTypeHandle.GetNumVirtualsAndStaticVirtuals — CoreCLR vtable enumeration API, not used in AOT
+extern "C" int32_t System_RuntimeTypeHandle_GetNumVirtualsAndStaticVirtuals__System_Runtime_CompilerServices_QCallTypeHandle(void* /*type*/) { cil2cpp::throw_not_supported(); }
 
 // Thread.InformThreadNameChange — P/Invoke wrapper (CLR-internal thread naming)
 // No-op for AOT — we don't have CLR thread naming infrastructure.
@@ -2450,8 +2464,8 @@ extern "C" cil2cpp::Object* System_Array_GetValue__System_Int32__(cil2cpp::Array
     return static_cast<cil2cpp::Object*>(cil2cpp::array_get_value(__this, static_cast<int32_t>(flat)));
 }
 
-// Reflection.MethodBase.GetParametersAsSpan — returns empty span (most callers handle null/empty)
-extern "C" void* System_Reflection_MethodBase_GetParametersAsSpan(void* /*__this*/) { return nullptr; }
+// Reflection.MethodBase.GetParametersAsSpan — return empty span (no parameter metadata via this path)
+extern "C" void* System_Reflection_MethodBase_GetParametersAsSpan(void* /*__this*/) { return {}; }
 
-// Reflection.TypeInfo.GetDeclaredProperty — returns null (property not found)
-extern "C" void* System_Reflection_TypeInfo_GetDeclaredProperty(void* /*__this*/, void* /*name*/) { return nullptr; }
+// Reflection.TypeInfo.GetDeclaredProperty — property lookup not implemented via this path
+extern "C" void* System_Reflection_TypeInfo_GetDeclaredProperty(void* /*__this*/, void* /*name*/) { cil2cpp::throw_not_supported(); }

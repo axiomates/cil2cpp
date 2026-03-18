@@ -155,6 +155,7 @@ public partial class CppCodeGenerator
     private readonly List<(string TypeIL, string MethodCpp, string UndeclaredCall)> _skippedByUndeclaredFunction = new();
     private readonly List<(string TypeIL, string MethodCpp)> _skippedByInvalidSignature = new();
     private readonly List<(string TypeIL, string MethodCpp)> _skippedByGenericBodyConflict = new();
+    private readonly List<(string Category, string FunctionName, string InMethod)> _deadCodeReplacements = new();
 
     /// <summary>
     /// Map of function name → set of declared parameter counts (populated during header generation).
@@ -302,6 +303,15 @@ public partial class CppCodeGenerator
 
         // Generate CMakeLists.txt
         output.CMakeFile = GenerateCMakeLists(output);
+
+        // ── Diagnostic summary: dead-code replacements ──
+        if (_deadCodeReplacements.Count > 0)
+        {
+            Console.Error.WriteLine($"[CIL2CPP] Dead-code replacements for {_module.Name}: {_deadCodeReplacements.Count} calls replaced");
+            var byCategory = _deadCodeReplacements.GroupBy(x => x.Category).OrderByDescending(g => g.Count());
+            foreach (var g in byCategory)
+                Console.Error.WriteLine($"  {g.Key}: {g.Count()} replacements");
+        }
 
         // ── Diagnostic summary: render-time filter skips ──
         if (_skippedByUndeclaredFunction.Count > 0 || _skippedByInvalidSignature.Count > 0 || _skippedByGenericBodyConflict.Count > 0)
@@ -485,7 +495,8 @@ public partial class CppCodeGenerator
         sb.AppendLine("    )");
         if (isExe)
         {
-            // HACK: BCL cctor chains (e.g. HttpClient) can be very deep; default stack may overflow
+            // BCL cctor chains (e.g. HttpClient → CultureInfo → NumberFormatInfo) create deep call stacks.
+            // 8MB stack is a platform requirement for AOT-compiled .NET programs (same as NativeAOT default).
             sb.AppendLine($"    target_link_options({projectName} PRIVATE -Wl,-z,stacksize=8388608)");
         }
         sb.AppendLine("endif()");

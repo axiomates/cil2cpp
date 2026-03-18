@@ -187,7 +187,7 @@ dotnet test compiler/CIL2CPP.Tests
 
 > **Important**: When adding tests, you must use `GetXxxReleaseContext()` / `GetXxxReleaseModule()` to access cached compilation results. Never directly `new AssemblySet()` + `new ReachabilityAnalyzer()` in test methods (~12 seconds each).
 
-### C++ Runtime Tests (600, Google Test)
+### C++ Runtime Tests (576, Google Test)
 
 ```bash
 cmake -B runtime/tests/build -S runtime/tests

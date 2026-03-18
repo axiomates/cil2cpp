@@ -187,7 +187,7 @@ dotnet test compiler/CIL2CPP.Tests
 
 > **重要**：新增测试时必须使用 `GetXxxReleaseContext()` / `GetXxxReleaseModule()` 获取缓存的编译结果，禁止在测试方法中直接 `new AssemblySet()` + `new ReachabilityAnalyzer()`（每次约 12 秒）。
 
-### C++ 运行时测试（600 个，Google Test）
+### C++ 运行时测试（576 个，Google Test）
 
 ```bash
 cmake -B runtime/tests/build -S runtime/tests

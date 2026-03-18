@@ -8,7 +8,7 @@
 
 ## Overview
 
-CIL2CPP is a C# → C++ AOT compiler (similar to Unity IL2CPP). Currently supports complete C# syntax (100% IL opcode coverage), BCL compiled from IL (Unity IL2CPP architecture), ~484 ICall entries. 1,291 C# + 600 C++ + 87 integration tests all passing. First NuGet package (Newtonsoft.Json 13.0.3) fully validated.
+CIL2CPP is a C# → C++ AOT compiler (similar to Unity IL2CPP). Currently supports complete C# syntax (100% IL opcode coverage), BCL compiled from IL (Unity IL2CPP architecture), ~484 ICall entries. 1,291 C# + 576 C++ + 87 integration tests all passing. First NuGet package (Newtonsoft.Json 13.0.3) fully validated.
 
 ## Key Metrics
 
@@ -17,7 +17,7 @@ CIL2CPP is a C# → C++ AOT compiler (similar to Unity IL2CPP). Currently suppor
 | IL opcode coverage | **100%** (all ~230 ECMA-335 opcodes) |
 | ICallRegistry entries | **~484** (covering 30+ categories) |
 | C# compiler tests | **1,291** (xUnit) |
-| C++ runtime tests | **600** (Google Test, 18 test files) |
+| C++ runtime tests | **576** (Google Test, 17 test files) |
 | End-to-end integration tests | **87** (14 test projects) |
 | Runtime headers | **32** |
 
@@ -295,7 +295,7 @@ FileStream / StreamReader / StreamWriter compile from BCL IL and work end-to-end
 
 ## Test Coverage
 
-### C++ Runtime Tests (600, 18 files)
+### C++ Runtime Tests (576, 17 files)
 
 | Module | Test Count |
 |--------|-----------|
@@ -317,7 +317,7 @@ FileStream / StreamReader / StreamWriter compile from BCL IL and work end-to-end
 | Threading | 17 |
 | GC | 16 |
 | TypedReference | 11 |
-| **Total** | **600** |
+| **Total** | **576** |
 
 ### End-to-End Integration Tests (87)
 

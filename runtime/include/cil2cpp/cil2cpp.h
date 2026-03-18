@@ -35,7 +35,6 @@
 #include "interop.h"
 #include "safe_handle.h"
 #include "waithandle.h"
-#include "io.h"
 #include "eventsource.h"
 #include "interop_stubs.h"
 

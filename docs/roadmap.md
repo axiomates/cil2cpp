@@ -156,7 +156,7 @@ See "RuntimeProvided Type Classification" section above.
 **Unfixable or deferred**: SIMD dead-code branches are handled by FeatureSwitchResolver (IsSupported=false dead-branch elimination). CLR internal types (~96) are permanently retained.
 
 **IL translation rate**: ~95%+. History: Phase A: 2,777 → 1,478; Phase B: 1,478 → 1,537; Phase C: → 1,666; Phase X + demand-driven generics: → 1,280 (method count also reduced ~26k from ~31k via specialized method reachability).
-**Tests**: 1,291 C# + 600 C++ + 87 integration — all passing.
+**Tests**: 1,291 C# + 576 C++ + 87 integration — all passing.
 
 ### Implemented Architecture Capabilities
 
@@ -369,7 +369,7 @@ See "RuntimeProvided Type Classification" section above.
 - All async/await, Task combinators, continuations work with true concurrency
 - BCL ThreadPool ICalls (9 entries) are intentional no-ops — CIL2CPP routes work through its own C++ pool
 
-**What works** (verified by 600 runtime tests + 87 integration tests):
+**What works** (verified by 576 runtime tests + 87 integration tests):
 - `queue_work()` executes on worker threads (100 concurrent items ✅)
 - Task.Run / task_delay / task_when_all / task_when_any ✅
 - Continuations: thread-safe linked list, 400 concurrent registrations ✅

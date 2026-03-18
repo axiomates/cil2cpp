@@ -25,3 +25,37 @@ cil2cpp::TypeInfo System_RuntimeType_TypeInfo = {
 // Task_FinishContinuations is defined in generated code (BCL IL).
 // Tests need a no-op stub.
 void System_Threading_Tasks_Task_FinishContinuations(cil2cpp::Task*) {}
+
+// ThreadPool DispatchWorkItem — defined in generated code (BCL IL).
+void System_Threading_ThreadPoolWorkQueue_DispatchWorkItem(cil2cpp::Object*, cil2cpp::ManagedThread*) {}
+
+// AttributeUsageAttribute TypeInfo — defined in generated code.
+cil2cpp::TypeInfo System_AttributeUsageAttribute_TypeInfo = {
+    .name = "AttributeUsageAttribute", .namespace_name = "System",
+    .full_name = "System.AttributeUsageAttribute",
+    .base_type = nullptr, .interfaces = nullptr, .interface_count = 0,
+    .instance_size = 24, .element_size = 0,
+    .flags = cil2cpp::TypeFlags::Sealed, .vtable = nullptr,
+    .fields = nullptr, .field_count = 0, .methods = nullptr, .method_count = 0,
+    .properties = nullptr, .property_count = 0,
+    .default_ctor = nullptr, .finalizer = nullptr,
+    .interface_vtables = nullptr, .interface_vtable_count = 0,
+};
+
+// RuntimeType.RuntimeTypeCache TypeInfo — defined in generated code.
+cil2cpp::TypeInfo System_RuntimeType_RuntimeTypeCache_TypeInfo = {
+    .name = "RuntimeTypeCache", .namespace_name = "System",
+    .full_name = "System.RuntimeType+RuntimeTypeCache",
+    .base_type = nullptr, .interfaces = nullptr, .interface_count = 0,
+    .instance_size = 176, .element_size = 0,
+    .flags = cil2cpp::TypeFlags::None, .vtable = nullptr,
+    .fields = nullptr, .field_count = 0, .methods = nullptr, .method_count = 0,
+    .properties = nullptr, .property_count = 0,
+    .default_ctor = nullptr, .finalizer = nullptr,
+    .interface_vtables = nullptr, .interface_vtable_count = 0,
+};
+
+// IOCP CompletionCallback — defined in generated code (BCL IL).
+struct System_Threading_NativeOverlapped;
+void System_Threading_ThreadPoolBoundHandleOverlapped_CompletionCallback(
+    uint32_t, uint32_t, System_Threading_NativeOverlapped*) {}

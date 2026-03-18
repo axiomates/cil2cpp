@@ -376,13 +376,13 @@ public partial class CppCodeGenerator
             sb.AppendLine();
         }
 
-        // HACK: Patch runtime built-in TypeInfos with codegen vtable/interfaces.
+        // Runtime init: Patch runtime built-in TypeInfos with codegen vtable/interfaces.
         // Runtime has TWO TypeInfos for String/Object:
         //   1. cil2cpp::System::String_TypeInfo (BCL, used by string_literal/string_create_utf8)
         //   2. cil2cpp::System_String_TypeInfo (reflection, used by codegen reference alias)
-        // Both have vtable=nullptr. We must patch both so virtual dispatch works on
-        // strings regardless of which TypeInfo pointer they carry.
-        // This function is emitted AFTER all VTable/interface data is visible in this TU.
+        // Both have vtable=nullptr at startup. Codegen patches both so virtual dispatch works
+        // on strings regardless of which TypeInfo pointer they carry.
+        // This is standard IL2CPP architecture — runtime provides struct layout, codegen provides vtables.
         EmitRuntimeVTablePatching(sb, needsStringAlias, needsObjectAlias);
 
         return new GeneratedFile
@@ -799,13 +799,13 @@ public partial class CppCodeGenerator
             sb.AppendLine($"    cil2cpp::stub_called(\"{method.CppName}\");");
             sb.AppendLine($"#endif");
             if (method.ReturnTypeCpp == "void" || string.IsNullOrEmpty(method.ReturnTypeCpp))
-                sb.AppendLine("    // TODO: compile from IL");
+                sb.AppendLine("    // stub: method unreachable (tree-shaking gap)");
             else if (method.ReturnTypeCpp.EndsWith("*"))
-                sb.AppendLine("    return nullptr; // TODO: compile from IL");
+                sb.AppendLine("    return nullptr; // stub: method unreachable (tree-shaking gap)");
             else if (method.ReturnTypeCpp == "bool")
-                sb.AppendLine("    return false; // TODO: compile from IL");
+                sb.AppendLine("    return false; // stub: method unreachable (tree-shaking gap)");
             else
-                sb.AppendLine("    return {}; // TODO: compile from IL");
+                sb.AppendLine("    return {}; // stub: method unreachable (tree-shaking gap)");
             sb.AppendLine("}");
         }
     }
@@ -1372,6 +1372,7 @@ public partial class CppCodeGenerator
                             DeadCodeCategory.AotIncompatible => "AOT-incompatible",
                             _ => "dead"
                         };
+                        _deadCodeReplacements.Add((label, deadCall.FunctionName, method.CppName));
                         if (deadCall.ResultVar != null)
                         {
                             var type = deadCall.ResultTypeCpp ?? "int";

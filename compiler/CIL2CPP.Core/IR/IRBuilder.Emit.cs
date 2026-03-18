@@ -1794,8 +1794,9 @@ public partial class IRBuilder
                 var resolved = methodRef.Resolve();
                 fixedCount = resolved?.Parameters.Count ?? args.Count;
             }
-            catch
+            catch (Exception ex)
             {
+                Console.Error.WriteLine($"[CIL2CPP] Warning: vararg method resolution failed for {methodRef.FullName}: {ex.Message}");
                 fixedCount = args.Count; // fallback: treat all as fixed
             }
 

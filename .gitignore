@@ -51,6 +51,7 @@ TestResults/
 CoverageResults/
 CoverageReport/
 LastCoverageResults.log
+*_output.log
 
 # === Claude Code ===
 .claude/

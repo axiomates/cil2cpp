@@ -156,7 +156,7 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 **不可修复或暂缓**：SIMD 死代码分支由 FeatureSwitchResolver 处理（IsSupported=false 死分支消除）。CLR 内部类型（~96）永久保留。
 
 **IL 转译率**：~95%+。历程：Phase A: 2,777 → 1,478; Phase B: 1,478 → 1,537; Phase C: → 1,666; Phase X + 需求驱动泛型: → 1,280（方法总数也从 ~31k 降至 ~26k，得益于特化方法可达性分析）。
-**测试**：1,291 C# + 600 C++ + 87 集成 — 全部通过。
+**测试**：1,291 C# + 576 C++ + 87 集成 — 全部通过。
 
 ### 已实现的架构能力
 
@@ -370,7 +370,7 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 - 所有 async/await、Task 组合器、continuations 均以真正并发工作
 - BCL ThreadPool ICalls（9 个条目）均为有意的 no-op — CIL2CPP 通过自己的 C++ 线程池路由工作
 
-**已验证工作**（600 运行时测试 + 87 集成测试）：
+**已验证工作**（576 运行时测试 + 87 集成测试）：
 - `queue_work()` 在工作线程上执行（100 个并发项 ✅）
 - Task.Run / task_delay / task_when_all / task_when_any ✅
 - Continuations: 线程安全链表，400 个并发注册 ✅
