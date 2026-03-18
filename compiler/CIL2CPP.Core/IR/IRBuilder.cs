@@ -465,6 +465,7 @@ public partial class IRBuilder
         // Skip open generic types — they are templates, not concrete types
         // Partial classes (e.g., Interop.Kernel32) may span multiple assemblies —
         // reuse the existing IRType so methods from all assemblies merge onto one type.
+        var pass1sw = System.Diagnostics.Stopwatch.StartNew();
         foreach (var typeDef in _allTypes)
         {
             if (typeDef.HasGenericParameters)
@@ -491,10 +492,18 @@ public partial class IRBuilder
         // (via EnsureBodyReferencedTypesExist in ConvertDeferredGenericBodies fixpoint).
         // This avoids the exponential blowup from scanning all methods of all discovered types.
 
+        pass1sw.Stop();
+        Console.Error.WriteLine($"[perf] Pass 1 TypeShells: {pass1sw.ElapsedMilliseconds}ms, types={_module.Types.Count}");
+
         // Pass 1.5: Create specialized types for each generic instantiation
+        var pass15sw = System.Diagnostics.Stopwatch.StartNew();
         CreateGenericSpecializations();
+        pass15sw.Stop();
+        Console.Error.WriteLine($"[perf] Pass 1.5 CreateGenericSpecializations: {pass15sw.ElapsedMilliseconds}ms, " +
+            $"types={_module.Types.Count}, genericInstantiations={_genericInstantiations.Count}");
 
         // Pass 2: Fill in fields, base types, interfaces
+        var pass2sw = System.Diagnostics.Stopwatch.StartNew();
         foreach (var typeDef in _allTypes)
         {
             if (typeDef.HasGenericParameters) continue;
@@ -546,8 +555,12 @@ public partial class IRBuilder
             }
         }
 
+        pass2sw.Stop();
+        Console.Error.WriteLine($"[perf] Pass 2 PopulateTypeDetails+Interfaces+Cctor: {pass2sw.ElapsedMilliseconds}ms");
+
         // Pass 3: Create method shells (no body yet — needed for VTable)
         // Skip open generic methods — they are templates, specialized in Pass 3.5
+        var pass3sw = System.Diagnostics.Stopwatch.StartNew();
         var methodBodies = new List<(IL.MethodInfo MethodDef, IRMethod IRMethod)>();
         foreach (var typeDef in _allTypes)
         {
@@ -627,12 +640,16 @@ public partial class IRBuilder
         // (e.g. different C# enum types collapse to same C++ type via using aliases)
         DisambiguateOverloadedMethods();
 
+        pass3sw.Stop();
+        Console.Error.WriteLine($"[perf] Pass 3 MethodShells+Disambig: {pass3sw.ElapsedMilliseconds}ms, methods={methodBodies.Count}");
+
         // Pass 3.3b: Build vtables for types discovered so far.
         // This enables virtual dispatch resolution in Pass 3.4/3.5 method body compilation.
         // Without this, callvirt in generic method bodies (Pass 3.5) would find empty VTables
         // and fall back to direct calls, breaking polymorphic dispatch (e.g., Iterator_1.ToArray).
         // BuildVTable is idempotent (skips if already built), so Pass 4 safely handles
         // any new types created in Pass 3.6.
+        var pass34sw = System.Diagnostics.Stopwatch.StartNew();
         foreach (var irType in _module.Types)
         {
             BuildVTableRecursive(irType, _vtableBuilt);
@@ -642,6 +659,9 @@ public partial class IRBuilder
         // Must happen AFTER disambiguation (Pass 3.3) so that call sites in generic method
         // bodies resolve to the correct disambiguated function names.
         ConvertDeferredGenericBodies();
+        pass34sw.Stop();
+        Console.Error.WriteLine($"[perf] Pass 3.3b-3.4 VTable+DeferredBodies: {pass34sw.ElapsedMilliseconds}ms, " +
+            $"types={_module.Types.Count}, deferredRemaining={_deferredGenericBodies.Count}");
 
         // Post-3.4: Re-evaluate HasCctor for GENERIC types whose cctor body was never compiled.
         // CreateGenericSpecializations sets HasCctor=true when the cctor is in _deferredGenericBodies,
@@ -659,6 +679,7 @@ public partial class IRBuilder
         }
 
         // Pass 3.5: Create specialized methods for each generic method instantiation
+        var pass35sw = System.Diagnostics.Stopwatch.StartNew();
         CreateGenericMethodSpecializations();
 
         // Pass 3.5a: Recover specialized methods whose keys were added during Pass 3.5.
@@ -680,6 +701,9 @@ public partial class IRBuilder
             DisambiguateOverloadedMethods();
             ConvertDeferredGenericBodies();
         }
+        pass35sw.Stop();
+        Console.Error.WriteLine($"[perf] Pass 3.5-3.5b GenericMethodSpecs+Drain: {pass35sw.ElapsedMilliseconds}ms, " +
+            $"types={_module.Types.Count}");
 
         // Pass 3.6: Post-specialization cleanup (demand-driven replaced bulk scanning).
         // Ensure disambiguation is up to date for types created during 3.4/3.5/3.5b.
@@ -707,6 +731,7 @@ public partial class IRBuilder
 
         // Pass 4: Build vtables for new types from Pass 3.6 (re-discovery).
         // Types from Pass 3.3b already have VTables (BuildVTable is idempotent).
+        var pass45sw = System.Diagnostics.Stopwatch.StartNew();
         foreach (var irType in _module.Types)
         {
             BuildVTableRecursive(irType, _vtableBuilt);
@@ -749,8 +774,11 @@ public partial class IRBuilder
 
         // Pass 5.5: Collect custom attributes from Cecil metadata
         PopulateCustomAttributes();
+        pass45sw.Stop();
+        Console.Error.WriteLine($"[perf] Pass 4-5.5 VTable+InterfaceImpls+Attrs: {pass45sw.ElapsedMilliseconds}ms");
 
         // Pass 6: Convert method bodies (vtables are now available for virtual dispatch)
+        var pass6sw = System.Diagnostics.Stopwatch.StartNew();
         foreach (var (methodDef, irMethod) in methodBodies)
         {
             // Skip record compiler-generated methods — Pass 7 synthesizes replacements
@@ -814,6 +842,9 @@ public partial class IRBuilder
         // of SafeHandleZeroOrMinusOneIsInvalid). Fills abstract slots from sibling types.
         FixupAbstractVTableSlots();
 
+        pass6sw.Stop();
+        Console.Error.WriteLine($"[perf] Pass 6 MethodBodies+GenericMethodSpecs+MissingCallees: {pass6sw.ElapsedMilliseconds}ms");
+
         // Pass 7: Synthesize record method bodies (replace compiler-generated bodies
         // that reference unsupported BCL types like StringBuilder, EqualityComparer<T>)
         foreach (var irType in _module.Types)
@@ -821,6 +852,9 @@ public partial class IRBuilder
             if (irType.IsRecord)
                 SynthesizeRecordMethods(irType);
         }
+
+        var totalMethods = _module.Types.Sum(t => t.Methods.Count);
+        Console.Error.WriteLine($"[perf] IRBuilder total: types={_module.Types.Count}, methods={totalMethods}");
 
         return _module;
     }

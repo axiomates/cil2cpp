@@ -282,6 +282,7 @@ public static class ICallRegistry
         RegisterICall("System.Environment", "get_TickCount", 0, "cil2cpp::icall::Environment_get_TickCount");
         RegisterICall("System.Environment", "get_TickCount64", 0, "cil2cpp::icall::Environment_get_TickCount64");
         RegisterICall("System.Environment", "get_ProcessorCount", 0, "cil2cpp::icall::Environment_get_ProcessorCount");
+        RegisterICall("System.Environment", "GetProcessorCount", 0, "cil2cpp::icall::Environment_get_ProcessorCount");
         RegisterICall("System.Environment", "get_CurrentManagedThreadId", 0, "cil2cpp::icall::Environment_get_CurrentManagedThreadId");
         RegisterICall("System.Environment", "Exit", 1, "cil2cpp::icall::Environment_Exit");
         RegisterICall("System.Environment", "GetCommandLineArgs", 0, "cil2cpp::icall::Environment_GetCommandLineArgs");
@@ -528,10 +529,14 @@ public static class ICallRegistry
         // (System.Buffers) ARE reachable and call base EventSource methods.
         // Returning false from IsEnabled() makes all tracing methods early-return (no-op at runtime).
         RegisterICall("System.Diagnostics.Tracing.EventSource", ".ctor", 0, "cil2cpp::eventsource_ctor");
+        RegisterICall("System.Diagnostics.Tracing.EventSource", ".ctor", 1, "cil2cpp::eventsource_ctor_name");
+        RegisterICall("System.Diagnostics.Tracing.EventSource", ".ctor", 2, "cil2cpp::eventsource_ctor_name_settings");
         RegisterICall("System.Diagnostics.Tracing.EventSource", "IsEnabled", 0, "cil2cpp::eventsource_is_enabled");
         RegisterICall("System.Diagnostics.Tracing.EventSource", "IsEnabled", 2, "cil2cpp::eventsource_is_enabled_level");
         RegisterICall("System.Diagnostics.Tracing.EventSource", "get_IsSupported", 0, "cil2cpp::eventsource_get_is_supported");
         RegisterICallWildcard("System.Diagnostics.Tracing.EventSource", "WriteEvent", "cil2cpp::eventsource_write_event");
+        RegisterICallWildcard("System.Diagnostics.Tracing.EventSource", "WriteEventCore", "cil2cpp::eventsource_write_event");
+        RegisterICallWildcard("System.Diagnostics.Tracing.EventSource", "WriteEventWithRelatedActivityIdCore", "cil2cpp::eventsource_write_event");
 
         // ===== Interop.GetRandomBytes — platform-specific RNG =====
         // BCL uses Interop.GetRandomBytes (→ BCrypt.GenRandom on Windows, /dev/urandom on Linux)
@@ -541,7 +546,13 @@ public static class ICallRegistry
 
         // ===== System.Diagnostics.Tracing (additional no-ops) =====
         RegisterICall("System.Diagnostics.Tracing.EventSource", "SetCurrentThreadActivityId", 1,
-            "cil2cpp::eventsource_write_event"); // no-op
+            "cil2cpp::eventsource_write_event"); // no-op (Guid)
+        RegisterICall("System.Diagnostics.Tracing.EventSource", "SetCurrentThreadActivityId", 2,
+            "cil2cpp::eventsource_set_activity_id_2"); // no-op (Guid, out Guid)
+        // EventSource nested types (EventData, EventSourcePrimitive) and derived FrameworkEventSource
+        // tracing methods — NOT registered as ICalls. Methods that reference these types/methods
+        // are event-writing dead code (guarded by IsEnabled()=false at runtime). They get
+        // correctly stubbed by CallsUndeclaredFunction filter, which is the intended behavior.
         RegisterICall("System.Diagnostics.Tracing.ActivityTracker", "get_Instance", 0,
             "cil2cpp::icall::ActivityTracker_get_Instance");
 
@@ -624,6 +635,10 @@ public static class ICallRegistry
             "cil2cpp::icall::RuntimeMethodInfo_GetDeclaringTypeInternal");
         RegisterICall("System.Reflection.RuntimeConstructorInfo", "get_BindingFlags", 0,
             "cil2cpp::icall::RuntimeConstructorInfo_get_BindingFlags");
+        // ConstructorInfo.Invoke(BindingFlags, Binder, object[], CultureInfo) — creates new instance
+        // Used by DI's CallSiteRuntimeResolver.VisitConstructor to construct services.
+        RegisterICall("System.Reflection.ConstructorInfo", "Invoke", 4,
+            "cil2cpp::icall::ConstructorInfo_Invoke");
         RegisterICall("System.Reflection.RuntimeFieldInfo", "get_BindingFlags", 0,
             "cil2cpp::icall::RuntimeFieldInfo_get_BindingFlags");
 

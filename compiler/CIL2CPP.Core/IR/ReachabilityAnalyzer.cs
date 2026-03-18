@@ -1497,6 +1497,55 @@ public class ReachabilityAnalyzer
                     SeedMethod(defaultCtor);
             }
         }
+
+        // D.1 call-site: When a generic method instance is called, check if any generic
+        // parameter has [DynamicallyAccessedMembers]. If so, apply the DAM flags to the
+        // concrete type argument. This is critical for DI: AddSingleton<TService, [DAM] TImpl>()
+        // needs TImpl's constructors preserved for reflection-based construction.
+        if (methodRef is GenericInstanceMethod gimDam && methodDef != null
+            && methodDef.HasGenericParameters)
+        {
+            for (int i = 0; i < methodDef.GenericParameters.Count && i < gimDam.GenericArguments.Count; i++)
+            {
+                var gp = methodDef.GenericParameters[i];
+                if (!gp.HasCustomAttributes) continue;
+                var damFlags = GetDynamicallyAccessedMemberTypes(gp.CustomAttributes);
+                if (damFlags == 0) continue;
+
+                var argTypeDef = TryResolve(gimDam.GenericArguments[i]);
+                if (argTypeDef != null)
+                {
+                    SeedDynamicallyAccessedMembers(argTypeDef, damFlags);
+                    // DAM with PublicConstructors implies the type may be instantiated
+                    if ((damFlags & (int)DamFlags.PublicConstructors) != 0)
+                        MarkTypeConstructed(argTypeDef);
+                }
+            }
+        }
+
+        // Also check declaring type's generic parameters for [DAM] (e.g., IEnumerable<[DAM] T>)
+        if (methodRef.DeclaringType is GenericInstanceType gitDam)
+        {
+            var declTypeDef = TryResolve(gitDam.ElementType);
+            if (declTypeDef != null && declTypeDef.HasGenericParameters)
+            {
+                for (int i = 0; i < declTypeDef.GenericParameters.Count && i < gitDam.GenericArguments.Count; i++)
+                {
+                    var gp = declTypeDef.GenericParameters[i];
+                    if (!gp.HasCustomAttributes) continue;
+                    var damFlags = GetDynamicallyAccessedMemberTypes(gp.CustomAttributes);
+                    if (damFlags == 0) continue;
+
+                    var argTypeDef = TryResolve(gitDam.GenericArguments[i]);
+                    if (argTypeDef != null)
+                    {
+                        SeedDynamicallyAccessedMembers(argTypeDef, damFlags);
+                        if ((damFlags & (int)DamFlags.PublicConstructors) != 0)
+                            MarkTypeConstructed(argTypeDef);
+                    }
+                }
+            }
+        }
     }
 
     /// <summary>

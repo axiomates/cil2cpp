@@ -100,6 +100,8 @@ Int32 RuntimeMethodInfo_get_BindingFlags(void* __this);
 void* RuntimeMethodInfo_GetGenericArgumentsInternal(void* __this);
 void* RuntimeMethodInfo_GetDeclaringTypeInternal(void* __this);
 Int32 RuntimeConstructorInfo_get_BindingFlags(void* __this);
+void* ConstructorInfo_Invoke(void* __this, Int32 invokeAttr, void* binder,
+                             void* parameters, void* culture);
 Int32 RuntimeFieldInfo_get_BindingFlags(void* __this);
 
 // System.RuntimeType/RuntimeTypeCache (reflection member lists)

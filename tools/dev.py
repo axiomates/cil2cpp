@@ -1470,6 +1470,60 @@ def cmd_integration(args):
     runner.step(f"CMake build ({config})", ng_cmake_build)
     runner.step("Run and compare C++ vs .NET output", ng_run_verify)
 
+    # ===== Phase 15: DITest (Microsoft.Extensions.DependencyInjection) =====
+    header("Phase 15: DITest (DependencyInjection + Logging + Console)")
+
+    di_sample = TESTPROJECTS_DIR / "DITest" / "DITest.csproj"
+    di_output = temp_dir / "di_output"
+    di_build = temp_dir / "di_build"
+
+    dotnet_di_output = None
+
+    def di_dotnet_run():
+        nonlocal dotnet_di_output
+        dotnet_di_output = _get_dotnet_output(di_sample)
+        print(f"    .NET output: {repr(dotnet_di_output[:200])}")
+
+    def di_codegen():
+        run(["dotnet", "run", "--project", str(CLI_PROJECT), "--",
+             "codegen", "-i", str(di_sample), "-o", str(di_output), "-c", "Debug"],
+            capture=True)
+
+    def di_files_exist():
+        for f in ["DITest.h", "DITest_data.cpp", "DITest_stubs.cpp",
+                   "main.cpp", "CMakeLists.txt"]:
+            if not (di_output / f).exists():
+                raise RuntimeError(f"Missing: {f}")
+
+    def di_cmake_configure():
+        run(["cmake", "-B", str(di_build), "-S", str(di_output),
+             "-G", generator, *cmake_arch,
+             f"-DCMAKE_PREFIX_PATH={runtime_prefix}"],
+            capture=True)
+
+    def di_cmake_build():
+        return _cmake_build_with_diagnostics(di_build, config)
+
+    def di_run_verify():
+        exe = _exe_path(di_build, config, "DITest")
+        if not exe.exists():
+            raise RuntimeError(f"Executable not found: {exe}")
+        r = subprocess.run([str(exe)], capture_output=True, text=True, check=False)
+        if r.returncode != 0:
+            raise RuntimeError(f"DITest exited with code {r.returncode}\nstderr: {r.stderr}")
+        got = r.stdout.strip()
+        expected = dotnet_di_output.strip()
+        if got != expected:
+            raise RuntimeError(
+                f"Output mismatch!\n  Got:      {repr(got[:200])}\n  Expected: {repr(expected[:200])}")
+
+    runner.step("Get .NET reference output", di_dotnet_run)
+    runner.step("Codegen DITest", di_codegen)
+    runner.step("Generated files exist", di_files_exist)
+    runner.step("CMake configure", di_cmake_configure)
+    runner.step(f"CMake build ({config})", di_cmake_build)
+    runner.step("Run and compare C++ vs .NET output", di_run_verify)
+
     # ===== Cleanup =====
     header("Cleanup")
 

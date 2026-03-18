@@ -386,7 +386,7 @@ Array* methodinfo_get_parameters(ManagedMethodInfo* mi) {
     auto** data = static_cast<ManagedParameterInfo**>(array_data(arr));
     for (UInt32 i = 0; i < native->parameter_count; i++) {
         auto* pi = static_cast<ManagedParameterInfo*>(
-            gc::alloc(sizeof(ManagedParameterInfo), &System_Reflection_ParameterInfo_TypeInfo));
+            gc::alloc(sizeof(ManagedParameterInfo), s_parameterinfo_ti));
         pi->name = nullptr; // parameter names not stored in native MethodInfo
         pi->param_type = (native->parameter_types && native->parameter_types[i])
                          ? native->parameter_types[i] : nullptr;

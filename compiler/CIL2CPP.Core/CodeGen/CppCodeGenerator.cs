@@ -249,10 +249,14 @@ public partial class CppCodeGenerator
     /// </summary>
     public GeneratedOutput Generate()
     {
+        var codegenSw = System.Diagnostics.Stopwatch.StartNew();
         var output = new GeneratedOutput();
 
         // Generate header file with all type declarations
+        var headerSw = System.Diagnostics.Stopwatch.StartNew();
         output.HeaderFile = GenerateHeader();
+        headerSw.Stop();
+        Console.Error.WriteLine($"[perf] CodeGen GenerateHeader: {headerSw.ElapsedMilliseconds}ms");
 
         // Build shared userTypes list (used by all source generators)
         var seenTypeNames = new HashSet<string>();
@@ -288,12 +292,16 @@ public partial class CppCodeGenerator
         // Forward-declared types only support pointer usage (Type*), not value usage (sizeof/locals).
 
         // Generate split source files
+        var sourceSw = System.Diagnostics.Stopwatch.StartNew();
         output.DataFile = GenerateDataFile();
         output.MethodFiles = GenerateMethodFiles();
         // CoreRuntimeTypes method bodies are provided by the runtime library (core_methods.cpp).
         // No runtime_glue.cpp is generated — the compiler only generates stubs for
         // non-CoreRuntimeTypes methods that couldn't be compiled from IL.
         output.StubFile = GenerateStubFile();
+        sourceSw.Stop();
+        Console.Error.WriteLine($"[perf] CodeGen Data+Methods+Stubs: {sourceSw.ElapsedMilliseconds}ms, " +
+            $"methodFiles={output.MethodFiles.Count}");
 
         // Generate main entry point only for executable projects (with entry point)
         if (_module.EntryPoint != null)
@@ -341,6 +349,9 @@ public partial class CppCodeGenerator
                     Console.Error.WriteLine($"    {typeIL}::{methodCpp}");
             }
         }
+
+        codegenSw.Stop();
+        Console.Error.WriteLine($"[perf] CodeGen total: {codegenSw.ElapsedMilliseconds}ms");
 
         return output;
     }

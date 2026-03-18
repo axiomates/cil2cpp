@@ -1028,6 +1028,27 @@ Int32 RuntimeConstructorInfo_get_BindingFlags(void* __this) {
     return flags;
 }
 
+// ConstructorInfo.Invoke(BindingFlags, Binder, object[], CultureInfo)
+// Allocates a new object of the constructor's declaring type and invokes the ctor.
+// Used by DI's CallSiteRuntimeResolver.VisitConstructor to construct services.
+void* ConstructorInfo_Invoke(void* __this, Int32 /*invokeAttr*/, void* /*binder*/,
+                             void* parameters, void* /*culture*/) {
+    auto* ni = get_native_method_info(__this);
+    if (!ni || !ni->method_pointer || !ni->declaring_type) {
+        throw_invalid_operation();
+    }
+
+    // Allocate new instance of the declaring type
+    auto* type_info = ni->declaring_type;
+    auto* obj = static_cast<Object*>(gc::alloc(type_info->instance_size, type_info));
+
+    // Invoke the constructor on the new instance
+    methodinfo_invoke(reinterpret_cast<ManagedMethodInfo*>(__this), obj,
+                      reinterpret_cast<Array*>(parameters));
+
+    return obj;
+}
+
 Int32 RuntimeFieldInfo_get_BindingFlags(void* __this) {
     // RuntimeFieldInfo aliases to ManagedFieldInfo which has native_info (FieldInfo*)
     if (!__this) return 0x14;
