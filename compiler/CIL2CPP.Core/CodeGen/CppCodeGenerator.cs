@@ -17,6 +17,7 @@ public partial class CppCodeGenerator
         ["ToString"] = "(void*)cil2cpp::object_to_string",
         ["Equals"] = "(void*)cil2cpp::object_equals",
         ["GetHashCode"] = "(void*)cil2cpp::object_get_hash_code",
+        ["Finalize"] = "(void*)(void(*)(System_Object*))&System_Object_Finalize",
     };
 
     /// <summary>

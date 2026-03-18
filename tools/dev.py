@@ -1416,9 +1416,59 @@ def cmd_integration(args):
     runner.step(f"CMake build ({config})", js_cmake_build)
     runner.step("Run and compare C++ vs .NET output", js_run_verify)
 
-    # NOTE: Other test projects (Library, Debug, StringLiterals,
-    # NuGetSimpleTest) are disabled.
-    # Enable them phase-by-phase as issues are fixed.
+    # ===== Phase 14: NuGetSimpleTest (Newtonsoft.Json serialization/deserialization) =====
+    header("Phase 14: NuGetSimpleTest (Newtonsoft.Json 13.0.3)")
+
+    ng_sample = TESTPROJECTS_DIR / "NuGetSimpleTest" / "NuGetSimpleTest.csproj"
+    ng_output = temp_dir / "ng_output"
+    ng_build = temp_dir / "ng_build"
+
+    dotnet_ng_output = None
+
+    def ng_dotnet_run():
+        nonlocal dotnet_ng_output
+        dotnet_ng_output = _get_dotnet_output(ng_sample)
+        print(f"    .NET output: {repr(dotnet_ng_output[:200])}")
+
+    def ng_codegen():
+        run(["dotnet", "run", "--project", str(CLI_PROJECT), "--",
+             "codegen", "-i", str(ng_sample), "-o", str(ng_output)],
+            capture=True)
+
+    def ng_files_exist():
+        for f in ["NuGetSimpleTest.h", "NuGetSimpleTest_data.cpp", "NuGetSimpleTest_stubs.cpp",
+                   "main.cpp", "CMakeLists.txt"]:
+            if not (ng_output / f).exists():
+                raise RuntimeError(f"Missing: {f}")
+
+    def ng_cmake_configure():
+        run(["cmake", "-B", str(ng_build), "-S", str(ng_output),
+             "-G", generator, *cmake_arch,
+             f"-DCMAKE_PREFIX_PATH={runtime_prefix}"],
+            capture=True)
+
+    def ng_cmake_build():
+        return _cmake_build_with_diagnostics(ng_build, config)
+
+    def ng_run_verify():
+        exe = _exe_path(ng_build, config, "NuGetSimpleTest")
+        if not exe.exists():
+            raise RuntimeError(f"Executable not found: {exe}")
+        r = subprocess.run([str(exe)], capture_output=True, text=True, check=False)
+        if r.returncode != 0:
+            raise RuntimeError(f"NuGetSimpleTest exited with code {r.returncode}\nstderr: {r.stderr}")
+        got = r.stdout.strip()
+        expected = dotnet_ng_output.strip()
+        if got != expected:
+            raise RuntimeError(
+                f"Output mismatch!\n  Got:      {repr(got[:200])}\n  Expected: {repr(expected[:200])}")
+
+    runner.step("Get .NET reference output", ng_dotnet_run)
+    runner.step("Codegen NuGetSimpleTest", ng_codegen)
+    runner.step("Generated files exist", ng_files_exist)
+    runner.step("CMake configure", ng_cmake_configure)
+    runner.step(f"CMake build ({config})", ng_cmake_build)
+    runner.step("Run and compare C++ vs .NET output", ng_run_verify)
 
     # ===== Cleanup =====
     header("Cleanup")

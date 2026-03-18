@@ -79,8 +79,19 @@ public partial class IRBuilder
         if (!hasAlias) return;
 
         // Materialize: emit a temporary to capture the current value
+        // Use the actual CppType from the stack entry (not "auto") so that cross-scope
+        // pre-declarations and sizeof() in memset replacements use the correct type.
         var tmp = $"__t{tempCounter++}";
-        block.Instructions.Add(new IRDeclareLocal { TypeName = "auto", VarName = tmp, InitValue = varName });
+        string typeName = "auto";
+        foreach (var entry in stack)
+        {
+            if (entry.Expr == varName && entry.CppType != null)
+            {
+                typeName = entry.CppType;
+                break;
+            }
+        }
+        block.Instructions.Add(new IRDeclareLocal { TypeName = typeName, VarName = tmp, InitValue = varName });
 
         // Replace all matching stack entries with the temporary
         var entries = stack.ToArray(); // index 0 = top of stack
@@ -769,6 +780,40 @@ public partial class IRBuilder
             && methodRef.Name == "NullRef" && methodRef.Parameters.Count == 0)
         {
             stack.Push(new StackEntry("nullptr", "void*"));
+            return;
+        }
+
+        // Unsafe.IsAddressLessThan<T>(ref T, ref T) — pointer comparison
+        if (methodRef.DeclaringType.FullName == "System.Runtime.CompilerServices.Unsafe"
+            && methodRef.Name == "IsAddressLessThan" && methodRef.Parameters.Count == 2)
+        {
+            var right = stack.PopExprOr("nullptr");
+            var left = stack.PopExprOr("nullptr");
+            var tmp = $"__t{tempCounter++}";
+            block.Instructions.Add(new IRRawCpp
+            {
+                Code = $"auto {tmp} = ((void*){left} < (void*){right});",
+                ResultVar = tmp,
+                ResultTypeCpp = "bool",
+            });
+            stack.Push(new StackEntry(tmp, "bool"));
+            return;
+        }
+
+        // Unsafe.IsAddressGreaterThan<T>(ref T, ref T) — pointer comparison
+        if (methodRef.DeclaringType.FullName == "System.Runtime.CompilerServices.Unsafe"
+            && methodRef.Name == "IsAddressGreaterThan" && methodRef.Parameters.Count == 2)
+        {
+            var right = stack.PopExprOr("nullptr");
+            var left = stack.PopExprOr("nullptr");
+            var tmp = $"__t{tempCounter++}";
+            block.Instructions.Add(new IRRawCpp
+            {
+                Code = $"auto {tmp} = ((void*){left} > (void*){right});",
+                ResultVar = tmp,
+                ResultTypeCpp = "bool",
+            });
+            stack.Push(new StackEntry(tmp, "bool"));
             return;
         }
 
@@ -2291,6 +2336,7 @@ public partial class IRBuilder
                     "ToString" => ObjectVTableSlots.ToStringSlot,
                     "Equals" => ObjectVTableSlots.EqualsSlot,
                     "GetHashCode" => ObjectVTableSlots.GetHashCodeSlot,
+                    "Finalize" => ObjectVTableSlots.FinalizeSlot,
                     _ => -1
                 };
                 if (slot >= 0)
@@ -2313,8 +2359,9 @@ public partial class IRBuilder
             irCall.ResultTypeCpp = retType;
             stack.Push(new StackEntry(tmp, retType));
 
-            // Interlocked _obj methods return void* — cast to expected type
-            if (isInterlockedObj && retType.EndsWith("*") && retType != "void*")
+            // ICalls return void* for reference types — cast to expected C++ pointer type.
+            // Covers Interlocked _obj methods, Type_GetMethod, Type_GetField, etc.
+            if (mappedName != null && retType.EndsWith("*") && retType != "void*")
             {
                 var castTmp = $"__t{tempCounter++}";
                 irCall.ResultVar = tmp; // keep tmp for intermediate void* result
@@ -3136,7 +3183,15 @@ public partial class IRBuilder
     /// </summary>
     private void BuildVTableRecursive(IRType irType, HashSet<IRType> built)
     {
-        if (!built.Add(irType)) return;
+        if (!built.Add(irType))
+        {
+            // Re-entry: if the type was previously processed but its VTable is still empty
+            // (e.g., it was added to the built set before its methods were populated during
+            // CreateGenericSpecializations), rebuild it now.
+            if (irType.VTable.Count == 0 && irType.Methods.Any(m => m.IsVirtual))
+                BuildVTable(irType);
+            return;
+        }
         if (irType.BaseType != null)
             BuildVTableRecursive(irType.BaseType, built);
         BuildVTable(irType);
@@ -3169,6 +3224,7 @@ public partial class IRBuilder
             irType.VTable.Add(new IRVTableEntry { Slot = ObjectVTableSlots.ToStringSlot, MethodName = "ToString", Method = null, DeclaringType = null });
             irType.VTable.Add(new IRVTableEntry { Slot = ObjectVTableSlots.EqualsSlot, MethodName = "Equals", Method = null, DeclaringType = null });
             irType.VTable.Add(new IRVTableEntry { Slot = ObjectVTableSlots.GetHashCodeSlot, MethodName = "GetHashCode", Method = null, DeclaringType = null });
+            irType.VTable.Add(new IRVTableEntry { Slot = ObjectVTableSlots.FinalizeSlot, MethodName = "Finalize", Method = null, DeclaringType = null });
         }
 
         // Override or add virtual methods
@@ -3191,8 +3247,8 @@ public partial class IRBuilder
             {
                 // Even newslot methods should fill seeded placeholder slots (Method == null).
                 // System.Object's methods are newslot=true (they ARE the original declarations),
-                // but we pre-seed slots 0-2 so overrides in derived types find them.
-                // Without this, Object's methods create new slots 3-5, leaving seeds orphaned.
+                // but we pre-seed slots 0-3 so overrides in derived types find them.
+                // Without this, Object's methods create new slots 4-7, leaving seeds orphaned.
                 existing = irType.VTable.LastOrDefault(e => e.MethodName == method.Name
                     && e.Method == null && SeedSlotParamsMatch(e.MethodName, method));
             }
@@ -4093,6 +4149,7 @@ public partial class IRBuilder
             "ToString" => 0,
             "Equals" => 1,
             "GetHashCode" => 0,
+            "Finalize" => 0,
             _ => method.Parameters.Count, // Unknown seed — allow match
         };
         return method.Parameters.Count == expectedParamCount;

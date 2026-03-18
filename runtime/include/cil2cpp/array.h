@@ -154,4 +154,8 @@ Boolean array_is_value_of_element_type(void* __this, void* value);
 /// Returns a synthesized InterfaceVTable for array-to-generic-interface dispatch, or nullptr.
 InterfaceVTable* array_get_generic_interface_vtable(TypeInfo* array_type, TypeInfo* interface_type);
 
+/// Array non-generic interface vtable adapter: arrays implement ICollection, IList, IEnumerable.
+/// Returns a synthesized InterfaceVTable for array-to-nongeneric-interface dispatch, or nullptr.
+InterfaceVTable* array_get_nongeneric_interface_vtable(TypeInfo* interface_type);
+
 } // namespace cil2cpp

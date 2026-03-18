@@ -107,6 +107,20 @@ public static class ICallRegistry
 
         // ===== System.RuntimeType =====
         RegisterICall("System.RuntimeType", "AllocateValueType", 2, "cil2cpp::icall::RuntimeType_AllocateValueType");
+        // get_Cache: bypass compiled-from-IL version that accesses f_m_cache field
+        // which overlaps with cil2cpp::Type::type_info, corrupting the Type object.
+        // Our ICall uses a separate map (TypeInfo* → RuntimeTypeCache*) instead.
+        RegisterICall("System.RuntimeType", "get_Cache", 0,
+            "cil2cpp::icall::RuntimeType_get_Cache");
+        // GetMethodImplCommon: bypass compiled-from-IL version that depends on CLR
+        // internal APIs (DefaultBinder.CompareMethodSig, MetadataImport).
+        // Both GetMethodImpl overloads (6-param and 7-param) call this method.
+        RegisterICall("System.RuntimeType", "GetMethodImplCommon", 7,
+            "cil2cpp::icall::RuntimeType_GetMethodImpl");
+        RegisterICall("System.RuntimeType", "GetFieldImpl", 2,
+            "cil2cpp::icall::RuntimeType_GetFieldImpl");
+        RegisterICall("System.RuntimeType", "GetPropertyImpl", 6,
+            "cil2cpp::icall::RuntimeType_GetPropertyImpl");
 
         // ===== System.Reflection.RuntimeAssembly =====
         // Satellite assemblies don't exist in AOT — always return nullptr.
@@ -415,10 +429,12 @@ public static class ICallRegistry
         RegisterICall("System.Math", "Log", 1, "cil2cpp::icall::Math_Log");
         RegisterICall("System.Math", "Log10", 1, "cil2cpp::icall::Math_Log10");
         RegisterICall("System.Math", "Log2", 1, "cil2cpp::icall::Math_Log2");
-        RegisterICall("System.Math", "Floor", 1, "cil2cpp::icall::Math_Floor");
-        RegisterICall("System.Math", "Ceiling", 1, "cil2cpp::icall::Math_Ceiling");
-        RegisterICall("System.Math", "Round", 1, "cil2cpp::icall::Math_Round");
-        RegisterICall("System.Math", "Truncate", 1, "cil2cpp::icall::Math_Truncate");
+        // Floor/Ceiling/Round/Truncate have both double and Decimal overloads (same param count).
+        // Use RegisterICallTyped to dispatch only the double overload; Decimal compiles from IL.
+        RegisterICallTyped("System.Math", "Floor", 1, "System.Double", "cil2cpp::icall::Math_Floor");
+        RegisterICallTyped("System.Math", "Ceiling", 1, "System.Double", "cil2cpp::icall::Math_Ceiling");
+        RegisterICallTyped("System.Math", "Round", 1, "System.Double", "cil2cpp::icall::Math_Round");
+        RegisterICallTyped("System.Math", "Truncate", 1, "System.Double", "cil2cpp::icall::Math_Truncate");
         RegisterICallTyped("System.Math", "Max", 2, "System.Double", "cil2cpp::icall::Math_Max_double");
         RegisterICallTyped("System.Math", "Min", 2, "System.Double", "cil2cpp::icall::Math_Min_double");
         RegisterICallTyped("System.Math", "Max", 2, "System.Int32", "cil2cpp::icall::Math_Max_int");
@@ -577,6 +593,21 @@ public static class ICallRegistry
         RegisterICall("System.RuntimeType", "_CreateEnum", 2,
             "cil2cpp::icall::RuntimeType_CreateEnum");
 
+        // ===== System.RuntimeType/RuntimeTypeCache (reflection member lists) =====
+        // MemberInfoCache<T>.GetMemberList has generic body type conflicts (different
+        // MemberInfo subtypes cross-reference in IL). Bypass via ICalls using our runtime's
+        // reflection system which already provides type_get_methods/type_get_fields/type_get_properties.
+        RegisterICall("System.RuntimeType/RuntimeTypeCache", "GetMethodList", 2,
+            "cil2cpp::icall::RuntimeTypeCache_GetMethodList");
+        RegisterICall("System.RuntimeType/RuntimeTypeCache", "GetConstructorList", 2,
+            "cil2cpp::icall::RuntimeTypeCache_GetConstructorList");
+        RegisterICall("System.RuntimeType/RuntimeTypeCache", "GetFieldList", 2,
+            "cil2cpp::icall::RuntimeTypeCache_GetFieldList");
+        RegisterICall("System.RuntimeType/RuntimeTypeCache", "GetPropertyList", 2,
+            "cil2cpp::icall::RuntimeTypeCache_GetPropertyList");
+        RegisterICall("System.RuntimeType/RuntimeTypeCache", "GetEventList", 2,
+            "cil2cpp::icall::RuntimeTypeCache_GetEventList");
+
         // ===== System.Reflection (binding flags and introspection) =====
         RegisterICall("System.Reflection.TypeInfo", "AsType", 0, "cil2cpp::icall::TypeInfo_AsType");
         RegisterICall("System.Reflection.MethodBase", "get_IsVirtual", 0,
@@ -595,6 +626,13 @@ public static class ICallRegistry
             "cil2cpp::icall::RuntimeConstructorInfo_get_BindingFlags");
         RegisterICall("System.Reflection.RuntimeFieldInfo", "get_BindingFlags", 0,
             "cil2cpp::icall::RuntimeFieldInfo_get_BindingFlags");
+
+        // ===== System.Reflection.CustomAttribute (AOT attribute handling) =====
+        // CLR's GetAttributeUsage depends on MetadataImport/metadata tokens which don't exist in AOT.
+        // Returns default AttributeUsage(All, Inherited=true, AllowMultiple=false).
+        // AddCustomAttributes remains a linker stub (no-op, void return — safe as stub).
+        RegisterICall("System.Reflection.CustomAttribute", "GetAttributeUsage", 1,
+            "cil2cpp::icall::CustomAttribute_GetAttributeUsage");
 
         // ===== System.Delegate (reflection) =====
         RegisterICall("System.Delegate", "get_Method", 0, "cil2cpp::icall::Delegate_get_Method");
@@ -761,6 +799,20 @@ public static class ICallRegistry
         // ===== System.Reflection.Emit (dynamic code gen — AOT-incompatible) =====
         RegisterICallWildcard("System.Reflection.Emit.ILGenerator", "Emit",
             "cil2cpp::icall_throw_platform_not_supported");
+
+        // ===== Newtonsoft.Json AOT delegate factories =====
+        // ExpressionReflectionDelegateFactory uses Expression.Compile() (JIT-only).
+        // These ICalls provide AOT-compatible alternatives using runtime reflection.
+        RegisterICallTyped("Newtonsoft.Json.Utilities.ReflectionDelegateFactory", "CreateGet", 1,
+            "System.Reflection.PropertyInfo", "cil2cpp::icall::reflection_create_get_property");
+        RegisterICallTyped("Newtonsoft.Json.Utilities.ReflectionDelegateFactory", "CreateSet", 1,
+            "System.Reflection.PropertyInfo", "cil2cpp::icall::reflection_create_set_property");
+        RegisterICallTyped("Newtonsoft.Json.Utilities.ReflectionDelegateFactory", "CreateGet", 1,
+            "System.Reflection.FieldInfo", "cil2cpp::icall::reflection_create_get_field");
+        RegisterICallTyped("Newtonsoft.Json.Utilities.ReflectionDelegateFactory", "CreateSet", 1,
+            "System.Reflection.FieldInfo", "cil2cpp::icall::reflection_create_set_field");
+        RegisterICallTyped("Newtonsoft.Json.Utilities.ReflectionDelegateFactory", "CreateDefaultConstructor", 1,
+            "System.Type", "cil2cpp::icall::reflection_create_default_ctor");
     }
 
     // ===== Registration methods =====

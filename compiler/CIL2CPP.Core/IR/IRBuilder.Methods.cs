@@ -1243,9 +1243,7 @@ public partial class IRBuilder
                     else
                     {
                         typeInfoName = GetMangledTypeNameForRef(typeRef);
-                        // Record CppName → ILName mapping for correct full_name in auto TypeInfos
-                        var resolvedILName = ResolveCacheKey(typeRef);
-                        _module.TypeInfoCppToILMap.TryAdd(typeInfoName, resolvedILName);
+                        RecordAutoTypeInfoMetadata(typeRef);
                         // Ensure TypeInfo exists for primitive types used in typeof()
                         if (CppNameMapper.IsPrimitive(typeRef.FullName))
                         {
@@ -2410,6 +2408,7 @@ public partial class IRBuilder
             case Code.Newarr:
             {
                 var elemType = (TypeReference)instr.Operand!;
+                RecordAutoTypeInfoMetadata(elemType);
                 var resolvedName = ResolveTypeRefOperand(elemType);
                 var length = stack.PopExpr();
                 var tmp = $"__t{tempCounter++}";
@@ -2457,12 +2456,13 @@ public partial class IRBuilder
                 var index = stack.PopExpr();
                 var arr = stack.PopExprOr("nullptr");
                 var tmp = $"__t{tempCounter++}";
+                var elemType = GetArrayElementType(instr.OpCode);
                 block.Instructions.Add(new IRArrayAccess
                 {
                     ArrayExpr = arr, IndexExpr = index,
-                    ElementType = GetArrayElementType(instr.OpCode), ResultVar = tmp
+                    ElementType = elemType, ResultVar = tmp
                 });
-                stack.Push(tmp);
+                stack.Push(new StackEntry(tmp, elemType));
                 break;
             }
 
@@ -2565,6 +2565,7 @@ public partial class IRBuilder
             case Code.Castclass:
             {
                 var typeRef = (TypeReference)instr.Operand!;
+                RecordAutoTypeInfoMetadata(typeRef);
                 var obj = stack.PopExprOr("nullptr");
                 var tmp = $"__t{tempCounter++}";
                 // Array types always use cil2cpp::Array* regardless of element type
@@ -2587,6 +2588,7 @@ public partial class IRBuilder
             case Code.Isinst:
             {
                 var typeRef = (TypeReference)instr.Operand!;
+                RecordAutoTypeInfoMetadata(typeRef);
                 var obj = stack.PopExprOr("nullptr");
                 var tmp = $"__t{tempCounter++}";
                 var isArray = typeRef is ArrayType;
@@ -3543,4 +3545,55 @@ public partial class IRBuilder
         Code.No, Code.Jmp, Code.Mkrefany, Code.Refanyval, Code.Refanytype, Code.Arglist,
     };
 
+    /// <summary>
+    /// Record auto-discovered TypeInfo metadata for a type reference.
+    /// Called whenever generated code references a TypeInfo symbol (ldtoken, isinst, castclass, newobj, etc.).
+    /// Ensures proper base_type, namespace, and flags emission for types not in the module's type list.
+    /// </summary>
+    private void RecordAutoTypeInfoMetadata(TypeReference typeRef)
+    {
+        if (typeRef is Mono.Cecil.ArrayType) return;
+        // Resolve generic parameters to concrete types via the active generic parameter map.
+        // e.g., ReadOnlySpan<T>.ctor's ldtoken T → resolves to JsonRequiredAttribute.
+        var resolvedKey = ResolveCacheKey(typeRef);
+        var typeInfoName = GetMangledTypeNameForRef(typeRef);
+        _module.TypeInfoCppToILMap.TryAdd(typeInfoName, resolvedKey);
+        if (_module.TypeInfoAutoMetadata.ContainsKey(typeInfoName)) return;
+        // Try to resolve the concrete type through Cecil.
+        // For generic parameters, use the resolved key (IL name) to find the TypeDefinition
+        // across all loaded assemblies.
+        TypeDefinition? resolved = null;
+        if (typeRef is GenericParameter)
+        {
+            // resolvedKey is the concrete IL type name (e.g., "Newtonsoft.Json.JsonRequiredAttribute").
+            // Search across all loaded assemblies.
+            foreach (var asm in _assemblySet.LoadedAssemblies.Values)
+            {
+                // Handle nested types: IL uses '/' separator, Cecil uses '/'
+                resolved = asm.MainModule.GetType(resolvedKey.Replace('/', '.'));
+                if (resolved == null)
+                    resolved = asm.MainModule.GetType(resolvedKey);
+                if (resolved != null) break;
+            }
+        }
+        else
+        {
+            resolved = typeRef.Resolve();
+        }
+        if (resolved == null) return;
+        string? baseTypeCppName = null;
+        if (resolved.BaseType != null)
+            baseTypeCppName = CppNameMapper.MangleTypeName(resolved.BaseType.FullName);
+        _module.TypeInfoAutoMetadata[typeInfoName] = new AutoTypeInfoMetadata(
+            IsInterface: resolved.IsInterface,
+            IsAbstract: resolved.IsAbstract,
+            IsSealed: resolved.IsSealed,
+            IsValueType: resolved.IsValueType,
+            IsEnum: resolved.IsEnum,
+            IsPublic: resolved.IsPublic,
+            GenericParameterCount: resolved.GenericParameters.Count,
+            BaseTypeCppName: baseTypeCppName,
+            NamespaceName: resolved.Namespace
+        );
+    }
 }

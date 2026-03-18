@@ -55,10 +55,6 @@ void* alloc(size_t size, TypeInfo* type) {
             [](void* p, void*) {
                 Object* o = static_cast<Object*>(p);
                 if (o->__type_info && o->__type_info->finalizer) {
-#ifndef NDEBUG
-                    fprintf(stderr, "DBG: GC finalizer running for %p type=%s\n", p,
-                        o->__type_info->name ? o->__type_info->name : "?"); fflush(stderr);
-#endif
                     // Guard against exceptions escaping the finalizer.
                     // CIL2CPP uses setjmp/longjmp; an unguarded throw would
                     // longjmp through the BoehmGC callback stack (UB).

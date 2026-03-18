@@ -54,6 +54,13 @@ struct ManagedParameterInfo : Object {
  */
 void reflection_set_typeinfos(TypeInfo* method_ti, TypeInfo* field_ti, TypeInfo* param_ti, TypeInfo* prop_ti);
 
+/**
+ * Patch PropertyInfo/RuntimePropertyInfo vtable slots that are null because
+ * RuntimePropertyInfo is ReflectionAliased (all methods blocked at codegen).
+ * Called from __init_runtime_vtables() in generated code.
+ */
+void reflection_patch_property_vtables(TypeInfo* prop_ti, TypeInfo* runtime_prop_ti);
+
 // ===== Type → GetMethods/GetFields API =====
 
 /**
@@ -62,9 +69,21 @@ void reflection_set_typeinfos(TypeInfo* method_ti, TypeInfo* field_ti, TypeInfo*
 Array* type_get_methods(Type* t);
 
 /**
+ * Type.GetMethods filtered by name — used by RuntimeTypeCache.GetMethodList
+ * listType: 0=All, 1=CaseSensitive, 2=CaseInsensitive
+ */
+Array* type_get_methods_by_name(Type* t, const char* name, int listType);
+
+/**
  * Type.GetFields() → FieldInfo[] (public instance + static fields)
  */
 Array* type_get_fields(Type* t);
+
+/**
+ * Type.GetFields filtered by name — used by RuntimeTypeCache.GetFieldList
+ * listType: 0=All, 1=CaseSensitive, 2=CaseInsensitive
+ */
+Array* type_get_fields_by_name(Type* t, const char* name, int listType);
 
 /**
  * Type.GetMethod(string name) → MethodInfo or nullptr
@@ -120,6 +139,7 @@ void fieldinfo_set_value(ManagedFieldInfo* fi, Object* obj, Object* value);
 // ===== Type → GetProperties API =====
 
 Array* type_get_properties(Type* t);
+Array* type_get_properties_by_name(Type* t, const char* name, int listType);
 ManagedPropertyInfo* type_get_property(Type* t, String* name);
 
 // ===== PropertyInfo Property Accessors =====

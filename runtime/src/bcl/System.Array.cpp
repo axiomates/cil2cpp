@@ -330,6 +330,28 @@ void array_iface_remove_at(void* /*__this*/, int32_t /*index*/) {
     cil2cpp::throw_not_supported();
 }
 
+// Non-generic ICollection/IList adapter methods specific to arrays.
+// These differ from the generic adapters in return type or semantics.
+void* array_iface_get_sync_root(void* __this) {
+    return __this;  // Arrays use themselves as sync root (same as CLR)
+}
+
+bool array_iface_get_is_synchronized(void* /*__this*/) {
+    return false;  // Arrays are not synchronized
+}
+
+bool array_iface_get_is_fixed_size(void* /*__this*/) {
+    return true;  // Arrays are fixed-size
+}
+
+int32_t array_iface_ilist_add(void* /*__this*/, void* /*item*/) {
+    cil2cpp::throw_not_supported();
+}
+
+void array_iface_ilist_remove(void* /*__this*/, void* /*item*/) {
+    cil2cpp::throw_not_supported();
+}
+
 // Layout shared by all SZGenericArrayEnumerator<T> specializations.
 // All monomorphized versions have identical field layout, only TypeInfo differs.
 struct SZGenericArrayEnumeratorLayout {
@@ -409,6 +431,35 @@ static void* g_array_ienumerable_methods[] = {
     (void*)&array_iface_get_enumerator,
 };
 
+// Non-generic ICollection: CopyTo, get_Count, get_SyncRoot, get_IsSynchronized
+static void* g_array_nongeric_icollection_methods[] = {
+    (void*)&array_iface_copy_to,
+    (void*)&array_iface_get_count,
+    (void*)&array_iface_get_sync_root,
+    (void*)&array_iface_get_is_synchronized,
+};
+
+// Non-generic IEnumerable: GetEnumerator
+static void* g_array_nongeneric_ienumerable_methods[] = {
+    (void*)&array_iface_get_enumerator,
+};
+
+// Non-generic IList: get_Item, set_Item, Add, Contains, Clear, get_IsReadOnly, get_IsFixedSize,
+//                     IndexOf, Insert, Remove, RemoveAt
+static void* g_array_nongeneric_ilist_methods[] = {
+    (void*)&array_iface_get_item,
+    (void*)&array_iface_set_item,
+    (void*)&array_iface_ilist_add,
+    (void*)&array_iface_contains,
+    (void*)&array_iface_clear,
+    (void*)&array_iface_get_is_readonly,
+    (void*)&array_iface_get_is_fixed_size,
+    (void*)&array_iface_index_of,
+    (void*)&array_iface_insert,
+    (void*)&array_iface_ilist_remove,
+    (void*)&array_iface_remove_at,
+};
+
 // Cache: one InterfaceVTable per (interface_type) that we've synthesized.
 // Thread-safe access: single-threaded initialization is fine since .NET doesn't
 // guarantee thread safety for array interface dispatch in practice.
@@ -439,6 +490,23 @@ bool is_array_generic_collection_interface(cil2cpp::TypeInfo* iface_type, void**
     return false;
 }
 
+// Check if interface is one of the non-generic collection interfaces that arrays implement.
+bool is_array_nongeneric_collection_interface(cil2cpp::TypeInfo* iface_type, void**& methods, uint32_t& count) {
+    if (!iface_type || !iface_type->full_name) return false;
+
+    const char* name = iface_type->full_name;
+    if (std::strcmp(name, "System.Collections.ICollection") == 0) {
+        methods = g_array_nongeric_icollection_methods; count = 4; return true;
+    }
+    if (std::strcmp(name, "System.Collections.IEnumerable") == 0) {
+        methods = g_array_nongeneric_ienumerable_methods; count = 1; return true;
+    }
+    if (std::strcmp(name, "System.Collections.IList") == 0) {
+        methods = g_array_nongeneric_ilist_methods; count = 11; return true;
+    }
+    return false;
+}
+
 } // anonymous namespace
 
 InterfaceVTable* array_get_generic_interface_vtable(TypeInfo* type, TypeInfo* interface_type) {
@@ -458,6 +526,26 @@ InterfaceVTable* array_get_generic_interface_vtable(TypeInfo* type, TypeInfo* in
     // The array's __type_info is the element TypeInfo, but here 'type' is the calling
     // object's TypeInfo. We can't verify element type here since we don't have the
     // object pointer — trust that object_is_instance_of already verified compatibility.
+
+    std::lock_guard lock(g_array_iface_mutex);
+    auto it = g_array_iface_cache.find(interface_type);
+    if (it != g_array_iface_cache.end())
+        return &it->second;
+
+    auto& vtable = g_array_iface_cache[interface_type];
+    vtable.interface_type = interface_type;
+    vtable.methods = methods;
+    vtable.method_count = count;
+    return &vtable;
+}
+
+InterfaceVTable* array_get_nongeneric_interface_vtable(TypeInfo* interface_type) {
+    if (!interface_type) return nullptr;
+
+    void** methods = nullptr;
+    uint32_t count = 0;
+    if (!is_array_nongeneric_collection_interface(interface_type, methods, count))
+        return nullptr;
 
     std::lock_guard lock(g_array_iface_mutex);
     auto it = g_array_iface_cache.find(interface_type);

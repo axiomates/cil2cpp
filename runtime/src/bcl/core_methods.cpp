@@ -29,6 +29,7 @@
 #include <cil2cpp/gchandle.h>
 #include <cil2cpp/assembly.h>
 #include <cil2cpp/mdarray.h>
+#include <cil2cpp/boxing.h>
 
 // Platform headers — MUST come after cil2cpp headers to avoid VOID/BOOLEAN macro conflicts
 #ifdef _WIN32
@@ -196,6 +197,38 @@ extern "C" void System_Array_SetValue__System_Object_System_Int32__(void* __this
     if (cil2cpp::array_length(idxArr) == 0) { cil2cpp::throw_argument(); }
     auto* data = reinterpret_cast<int32_t*>(cil2cpp::array_data(idxArr));
     System_Array_InternalSetValue(__this, value, static_cast<intptr_t>(data[0]));
+}
+
+extern "C" int32_t System_Array_GetUpperBound(void* __this, int32_t dimension) {
+    auto* arr = reinterpret_cast<cil2cpp::Array*>(__this);
+    if (!arr) cil2cpp::throw_null_reference();
+    if (dimension != 0) cil2cpp::throw_index_out_of_range(); // SZArray: only dimension 0
+    return static_cast<int32_t>(cil2cpp::array_length(arr)) - 1;
+}
+extern "C" void* System_Array_GetEnumerator(void* __this) {
+    // Array.GetEnumerator() — create SZGenericArrayEnumerator for element type
+    auto* arr = reinterpret_cast<cil2cpp::Array*>(__this);
+    if (!arr) cil2cpp::throw_null_reference();
+    const char* elem_name = arr->element_type ? arr->element_type->full_name : nullptr;
+    cil2cpp::TypeInfo* enum_type = nullptr;
+    if (elem_name) {
+        std::string type_name = "System.SZGenericArrayEnumerator`1<";
+        type_name += elem_name;
+        type_name += ">";
+        enum_type = cil2cpp::type_get_by_name(type_name.c_str());
+    }
+    if (!enum_type) {
+        enum_type = cil2cpp::type_get_by_name("System.SZGenericArrayEnumerator`1<System.Object>");
+    }
+    if (!enum_type) cil2cpp::throw_not_supported();
+    // SZGenericArrayEnumerator layout: [Object header] _index(int32), _endIndex(int32), _array(Array*)
+    auto* obj = cil2cpp::object_alloc(enum_type);
+    auto* base = reinterpret_cast<uint8_t*>(obj);
+    size_t off = sizeof(cil2cpp::Object); // after header
+    *reinterpret_cast<int32_t*>(base + off) = -1;           // _index
+    *reinterpret_cast<int32_t*>(base + off + 4) = static_cast<int32_t>(arr->length); // _endIndex
+    *reinterpret_cast<cil2cpp::Array**>(base + off + 8) = arr; // _array
+    return obj;
 }
 
 // ===== System.DefaultBinder =====
@@ -436,6 +469,28 @@ extern "C" void* System_Reflection_Assembly_GetType__System_String_System_Boolea
     return ti ? reinterpret_cast<void*>(cil2cpp::type_get_type_object(ti)) : nullptr;
 }
 
+extern "C" bool System_Reflection_Assembly_get_IsDynamic(void* /*__this*/) {
+    return false; // AOT assemblies are never dynamic
+}
+extern "C" void* System_Reflection_Assembly_GetType__System_String(void* /*__this*/, void* name) {
+    if (!name) return nullptr;
+    auto* nameStr = reinterpret_cast<cil2cpp::String*>(name);
+    char* utf8 = cil2cpp::string_to_utf8(nameStr);
+    auto* ti = cil2cpp::type_get_by_name(utf8);
+    return ti ? reinterpret_cast<void*>(cil2cpp::type_get_type_object(ti)) : nullptr;
+}
+extern "C" void* System_Reflection_Assembly_LoadFile(void* /*path*/) {
+    cil2cpp::throw_not_supported(); // AOT: cannot load assemblies at runtime
+}
+extern "C" void* System_Reflection_Assembly_GetModules(void* __this) {
+    // Return a single-element Module[] with the singleton module
+    auto* moduleArr = static_cast<cil2cpp::Array*>(
+        cil2cpp::gc::alloc_array(&cil2cpp::System_Reflection_Assembly_TypeInfo, 1));
+    auto** data = reinterpret_cast<void**>(cil2cpp::array_data(moduleArr));
+    data[0] = get_singleton_module();
+    return moduleArr;
+}
+
 // ===== System.Reflection.FieldInfo =====
 extern "C" void System_Reflection_FieldInfo__ctor(void* /*__this*/) { }
 extern "C" System_Reflection_FieldAttributes System_Reflection_FieldInfo_get_Attributes(void* __this) {
@@ -446,8 +501,17 @@ extern "C" System_Reflection_FieldAttributes System_Reflection_FieldInfo_get_Att
 extern "C" void* System_Reflection_FieldInfo_get_FieldType(void* __this) {
     return cil2cpp::fieldinfo_get_field_type(reinterpret_cast<cil2cpp::ManagedFieldInfo*>(__this));
 }
-extern "C" void* System_Reflection_FieldInfo_GetRawConstantValue(void* /*__this*/) {
-    return nullptr; // No constant value storage in FieldInfo metadata
+extern "C" void* System_Reflection_FieldInfo_GetRawConstantValue(void* __this) {
+    auto* fi = reinterpret_cast<cil2cpp::ManagedFieldInfo*>(__this);
+    if (!fi || !fi->native_info) return nullptr;
+    auto* native = fi->native_info;
+    bool is_literal = (native->flags & 0x0040) != 0;
+    if (is_literal && native->field_type) {
+        auto elem_size = native->field_type->element_size;
+        if (elem_size == 0) elem_size = native->field_type->instance_size;
+        return cil2cpp::box_raw(&native->constant_value, elem_size, native->field_type);
+    }
+    return nullptr;
 }
 extern "C" void* System_Reflection_FieldInfo_GetValue(void* __this, void* obj) {
     return cil2cpp::fieldinfo_get_value(reinterpret_cast<cil2cpp::ManagedFieldInfo*>(__this), reinterpret_cast<cil2cpp::Object*>(obj));
@@ -466,6 +530,31 @@ extern "C" System_RuntimeFieldHandle System_Reflection_FieldInfo_get_FieldHandle
 extern "C" bool System_Reflection_FieldInfo_get_IsStatic(void* __this) {
     return cil2cpp::fieldinfo_get_is_static(reinterpret_cast<cil2cpp::ManagedFieldInfo*>(__this));
 }
+extern "C" bool System_Reflection_FieldInfo_get_IsPublic(void* __this) {
+    auto* fi = reinterpret_cast<cil2cpp::ManagedFieldInfo*>(__this);
+    if (!fi || !fi->native_info) return false;
+    return (fi->native_info->flags & 0x0007) == 0x0006; // FieldAttributes.Public
+}
+extern "C" bool System_Reflection_FieldInfo_get_IsPrivate(void* __this) {
+    auto* fi = reinterpret_cast<cil2cpp::ManagedFieldInfo*>(__this);
+    if (!fi || !fi->native_info) return false;
+    return (fi->native_info->flags & 0x0007) == 0x0001; // FieldAttributes.Private
+}
+extern "C" bool System_Reflection_FieldInfo_get_IsInitOnly(void* __this) {
+    auto* fi = reinterpret_cast<cil2cpp::ManagedFieldInfo*>(__this);
+    if (!fi || !fi->native_info) return false;
+    return (fi->native_info->flags & 0x0020) != 0; // FieldAttributes.InitOnly
+}
+extern "C" bool System_Reflection_FieldInfo_get_IsLiteral(void* __this) {
+    auto* fi = reinterpret_cast<cil2cpp::ManagedFieldInfo*>(__this);
+    if (!fi || !fi->native_info) return false;
+    return (fi->native_info->flags & 0x0040) != 0; // FieldAttributes.Literal
+}
+extern "C" bool System_Reflection_FieldInfo_get_IsSpecialName(void* __this) {
+    auto* fi = reinterpret_cast<cil2cpp::ManagedFieldInfo*>(__this);
+    if (!fi || !fi->native_info) return false;
+    return (fi->native_info->flags & 0x0200) != 0; // FieldAttributes.SpecialName
+}
 
 // ===== System.Reflection.MemberInfo =====
 extern "C" void System_Reflection_MemberInfo__ctor(void* /*__this*/) { }
@@ -473,7 +562,19 @@ extern "C" bool System_Reflection_MemberInfo_CacheEquals(void* __this, void* o) 
     return __this == o; // Reference equality for cached member info objects
 }
 extern "C" bool System_Reflection_MemberInfo_Equals(void* __this, void* obj) {
-    return __this == obj; // Reference equality — each MemberInfo wraps a unique native info
+    if (__this == obj) return true;
+    if (!__this || !obj) return false;
+    // Compare by underlying native_info pointer — different managed wrappers
+    // for the same native PropertyInfo/MethodInfo/FieldInfo should be equal.
+    // native_info is the first field after Object header in all ManagedXxxInfo types.
+    auto* a = reinterpret_cast<cil2cpp::Object*>(__this);
+    auto* b = reinterpret_cast<cil2cpp::Object*>(obj);
+    if (a->__type_info != b->__type_info) {
+        return false;
+    }
+    auto* a_native = *reinterpret_cast<void**>(reinterpret_cast<char*>(a) + sizeof(cil2cpp::Object));
+    auto* b_native = *reinterpret_cast<void**>(reinterpret_cast<char*>(b) + sizeof(cil2cpp::Object));
+    return a_native == b_native;
 }
 extern "C" void* System_Reflection_MemberInfo_get_DeclaringType(void* __this) {
     return cil2cpp::memberinfo_get_declaring_type(reinterpret_cast<cil2cpp::Object*>(__this));
@@ -536,8 +637,10 @@ extern "C" void* System_Reflection_MemberInfo_GetCustomAttributesData(void* /*__
     return cil2cpp::gc::alloc_array(&cil2cpp::System_Object_TypeInfo, 0);
 }
 extern "C" int32_t System_Reflection_MemberInfo_GetHashCode(void* __this) {
-    // Use pointer identity as hash — stable for the lifetime of the object
-    return static_cast<int32_t>(reinterpret_cast<uintptr_t>(__this) >> 3);
+    // Hash by native_info pointer for consistency with Equals
+    if (!__this) return 0;
+    auto* native = *reinterpret_cast<void**>(reinterpret_cast<char*>(__this) + sizeof(cil2cpp::Object));
+    return static_cast<int32_t>(reinterpret_cast<uintptr_t>(native) >> 3);
 }
 extern "C" bool System_Reflection_MemberInfo_HasSameMetadataDefinitionAs(void* __this, void* other) {
     return __this == other; // In AOT, identity equals metadata definition equality
@@ -637,6 +740,10 @@ extern "C" bool System_Reflection_MethodBase_get_IsStatic(void* __this) {
     auto* ni = _get_native_mi(__this);
     return ni && (ni->flags & 0x0010) != 0;
 }
+extern "C" bool System_Reflection_MethodBase_get_IsFinal(void* __this) {
+    auto* ni = _get_native_mi(__this);
+    return ni && (ni->flags & 0x0020) != 0; // MethodAttributes.Final
+}
 extern "C" System_RuntimeMethodHandle System_Reflection_MethodBase_get_MethodHandle(void* __this) {
     auto* ni = _get_native_mi(__this);
     return { ni ? ni->method_pointer : nullptr };
@@ -685,8 +792,12 @@ extern "C" void* System_Reflection_MethodBase_Invoke__System_Object_System_Refle
 }
 
 // ===== System.Reflection.MethodInfo =====
+extern "C" void System_Reflection_MethodInfo__ctor(void* /*__this*/) { }
 extern "C" void* System_Reflection_MethodInfo_CreateDelegate__System_Type_System_Object(void* /*__this*/, void* /*delegateType*/, void* /*target*/) {
     return nullptr; // Delegate creation from reflection is uncommon in AOT
+}
+extern "C" void* System_Reflection_MethodInfo_CreateDelegate_System_Text_RegularExpressions_CompiledRegexRunner_ScanDelegate(void* /*__this*/) {
+    return nullptr; // CompiledRegex delegate creation not supported in AOT
 }
 extern "C" int32_t System_Reflection_MethodInfo_get_GenericParameterCount(void* /*__this*/) {
     return 0; // All methods are closed (fully specialized) in AOT
@@ -707,6 +818,18 @@ extern "C" void* System_Reflection_MethodInfo_get_ReturnTypeCustomAttributes(voi
 }
 extern "C" void* System_Reflection_MethodInfo_GetBaseDefinition(void* __this) {
     return __this; // In AOT, return self — base definition walking via GetParentDefinition
+}
+
+extern "C" void* System_Reflection_MethodInfo_get_ReturnParameter(void* __this) {
+    // Create a ParameterInfo wrapping the return type with position -1
+    auto* mi = reinterpret_cast<cil2cpp::ManagedMethodInfo*>(__this);
+    if (!mi || !mi->native_info) return nullptr;
+    auto* pi = static_cast<cil2cpp::ManagedParameterInfo*>(
+        cil2cpp::object_alloc(&cil2cpp::System_Reflection_ParameterInfo_TypeInfo));
+    pi->name = nullptr; // Return parameter has no name
+    pi->param_type = mi->native_info->return_type;
+    pi->position = -1;  // ECMA-335: return parameter has position -1
+    return pi;
 }
 
 // ===== System.Reflection.ParameterInfo =====
@@ -985,10 +1108,48 @@ extern "C" void* System_Reflection_RuntimeMethodInfo_get_Signature(void* /*__thi
     return nullptr; // Signature is a CoreCLR internal
 }
 
+// ===== System.Reflection.RuntimePropertyInfo.get_CanRead =====
+extern "C" bool System_Reflection_RuntimePropertyInfo_get_CanRead(void* __this) {
+    auto* pi = reinterpret_cast<cil2cpp::ManagedPropertyInfo*>(__this);
+    return cil2cpp::propertyinfo_can_read(pi);
+}
+
+// ===== System.Reflection.RuntimePropertyInfo.get_CanWrite =====
+extern "C" bool System_Reflection_RuntimePropertyInfo_get_CanWrite(void* __this) {
+    auto* pi = reinterpret_cast<cil2cpp::ManagedPropertyInfo*>(__this);
+    return cil2cpp::propertyinfo_can_write(pi);
+}
+
+// ===== System.Reflection.RuntimePropertyInfo.GetValue (5-param) =====
+extern "C" void* System_Reflection_RuntimePropertyInfo_GetValue_5(void* __this, void* obj,
+    int32_t /*invokeAttr*/, void* /*binder*/, void* /*index*/, void* /*culture*/) {
+    auto* pi = reinterpret_cast<cil2cpp::ManagedPropertyInfo*>(__this);
+    return cil2cpp::propertyinfo_get_value(pi, reinterpret_cast<cil2cpp::Object*>(obj), nullptr);
+}
+
+// ===== System.Reflection.RuntimePropertyInfo.SetValue (6-param) =====
+extern "C" void System_Reflection_RuntimePropertyInfo_SetValue_6(void* __this, void* obj,
+    void* value, int32_t /*invokeAttr*/, void* /*binder*/, void* /*index*/, void* /*culture*/) {
+    auto* pi = reinterpret_cast<cil2cpp::ManagedPropertyInfo*>(__this);
+    cil2cpp::propertyinfo_set_value(pi, reinterpret_cast<cil2cpp::Object*>(obj),
+        reinterpret_cast<cil2cpp::Object*>(value), nullptr);
+}
+
 // ===== System.Reflection.RuntimePropertyInfo.GetGetMethod =====
 extern "C" void* System_Reflection_RuntimePropertyInfo_GetGetMethod(void* __this, bool /*nonPublic*/) {
     auto* pi = reinterpret_cast<cil2cpp::ManagedPropertyInfo*>(__this);
     return cil2cpp::propertyinfo_get_get_method(pi);
+}
+
+// ===== System.Reflection.RuntimePropertyInfo.get_PropertyType =====
+extern "C" void* System_Reflection_RuntimePropertyInfo_get_PropertyType(void* __this) {
+    auto* pi = reinterpret_cast<cil2cpp::ManagedPropertyInfo*>(__this);
+    return cil2cpp::propertyinfo_get_property_type(pi);
+}
+
+// ===== System.Reflection.RuntimePropertyInfo.GetIndexParameters =====
+extern "C" void* System_Reflection_RuntimePropertyInfo_GetIndexParameters(void* /*__this*/) {
+    return cil2cpp::gc::alloc_array(&cil2cpp::System_Reflection_ParameterInfo_TypeInfo, 0);
 }
 
 // ===== System.Reflection.RuntimePropertyInfo.GetIndexParametersNoCopy =====
@@ -1701,8 +1862,14 @@ extern "C" bool System_Runtime_CompilerServices_MethodTable_get_HasInstantiation
     auto* ti = reinterpret_cast<cil2cpp::TypeInfo*>(__this);
     return ti && (ti->flags & cil2cpp::TypeFlags::Generic);
 }
-extern "C" bool System_Runtime_CompilerServices_MethodTable_get_IsGenericTypeDefinition(void* /*__this*/) {
-    return false; // Closed generic types only in AOT
+extern "C" bool System_Runtime_CompilerServices_MethodTable_get_IsGenericTypeDefinition(void* __this) {
+    // Open generic type definition: full_name contains backtick (e.g. "System.Collections.Generic.IDictionary`2")
+    // but NOT angle brackets (closed generics have "<...>" in full_name).
+    auto* ti = reinterpret_cast<cil2cpp::TypeInfo*>(__this);
+    if (!ti || !ti->full_name) return false;
+    const char* backtick = std::strchr(ti->full_name, '`');
+    if (!backtick) return false;
+    return std::strchr(ti->full_name, '<') == nullptr;
 }
 extern "C" bool System_Runtime_CompilerServices_MethodTable_get_IsConstructedGenericType(void* __this) {
     auto* ti = reinterpret_cast<cil2cpp::TypeInfo*>(__this);

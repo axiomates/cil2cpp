@@ -1,6 +1,21 @@
 namespace CIL2CPP.Core.IR;
 
 /// <summary>
+/// Metadata for auto-discovered TypeInfos (ldtoken references to types not in module.Types).
+/// </summary>
+public record AutoTypeInfoMetadata(
+    bool IsInterface,
+    bool IsAbstract,
+    bool IsSealed,
+    bool IsValueType,
+    bool IsEnum,
+    bool IsPublic,
+    int GenericParameterCount,
+    string? BaseTypeCppName = null,
+    string? NamespaceName = null
+);
+
+/// <summary>
 /// Represents an entire compiled module (assembly) in IR form.
 /// </summary>
 public class IRModule
@@ -98,6 +113,12 @@ public class IRModule
     /// Populated during ldtoken processing when open generic types are referenced.
     /// </summary>
     public Dictionary<string, string> TypeInfoCppToILMap { get; } = new();
+
+    /// <summary>
+    /// Extra metadata for auto-discovered TypeInfos (flags, generic argument count).
+    /// Populated during ldtoken processing to emit proper TypeInfo fields.
+    /// </summary>
+    public Dictionary<string, AutoTypeInfoMetadata> TypeInfoAutoMetadata { get; } = new();
 
     /// <summary>
     /// Register a primitive type that needs a TypeInfo (used as array element type).

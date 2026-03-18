@@ -271,8 +271,31 @@ public partial class CppCodeGenerator
             // Extract name part (last segment) and namespace (everything before)
             var lastSep = typeName.LastIndexOf('_');
             var name = lastSep >= 0 ? typeName[(lastSep + 1)..] : typeName;
-            sb.AppendLine($"cil2cpp::TypeInfo {typeName}_TypeInfo = {{ .name = \"{name}\", " +
-                $".full_name = \"{ilFullName}\" }};");
+            // Build fields from metadata if available
+            var flagsPart = "";
+            var basePart = "";
+            var nsPart = "";
+            if (_module.TypeInfoAutoMetadata.TryGetValue(typeName, out var meta))
+            {
+                var flags = new List<string>();
+                if (meta.IsInterface) flags.Add("cil2cpp::TypeFlags::Interface");
+                if (meta.IsAbstract) flags.Add("cil2cpp::TypeFlags::Abstract");
+                if (meta.IsSealed) flags.Add("cil2cpp::TypeFlags::Sealed");
+                if (meta.IsValueType) flags.Add("cil2cpp::TypeFlags::ValueType");
+                if (meta.IsEnum) flags.Add("cil2cpp::TypeFlags::Enum");
+                if (meta.IsPublic) flags.Add("cil2cpp::TypeFlags::Public");
+                if (flags.Count > 0)
+                    flagsPart = $", .flags = {string.Join(" | ", flags)}";
+                // base_type: needed for IsSubclassOf (e.g., Attribute.GetCustomAttributes checks)
+                // Only emit if the base type's TypeInfo is actually declared (skip open generic types etc.)
+                if (meta.BaseTypeCppName != null &&
+                    (emittedTypeInfo.Contains(meta.BaseTypeCppName) || _autoTypeInfoDecls.Contains(meta.BaseTypeCppName)))
+                    basePart = $", .base_type = &{meta.BaseTypeCppName}_TypeInfo";
+                if (meta.NamespaceName != null)
+                    nsPart = $", .namespace_name = \"{meta.NamespaceName}\"";
+            }
+            sb.AppendLine($"cil2cpp::TypeInfo {typeName}_TypeInfo = {{ .name = \"{name}\"{nsPart}, " +
+                $".full_name = \"{ilFullName}\"{basePart}{flagsPart} }};");
             emittedTypeInfo.Add(typeName);
         }
         sb.AppendLine();
@@ -881,8 +904,9 @@ public partial class CppCodeGenerator
 
     private void GenerateTypeInfo(StringBuilder sb, IRType type)
     {
-        // For enum/delegate types skipped by EmitReflectionMetadata, emit type-level custom attrs
-        if ((type.IsEnum || type.IsDelegate) && type.CustomAttributes.Count > 0)
+        // For delegate types skipped by EmitReflectionMetadata, emit type-level custom attrs
+        // (Enum types now go through EmitReflectionMetadata for full field metadata)
+        if (type.IsDelegate && type.CustomAttributes.Count > 0)
         {
             EmitAttributeInfoArray(sb, $"{type.CppName}_custom_attrs", type.CustomAttributes);
         }
@@ -1025,14 +1049,23 @@ public partial class CppCodeGenerator
         // Compute reflection metadata expressions
         var allFields = type.Fields.Concat(type.StaticFields).ToList();
         var reflectableMethods = type.Methods.Where(m => !CppNameMapper.IsCompilerGeneratedType(m.Name)).ToList();
+        var reflectableProperties = type.Properties;
         var reflectionTargets = _module.ReflectionTargetTypes;
-        var skipReflection = type.IsEnum || type.IsDelegate || type.IsRuntimeProvided
+        // Field/method metadata: gated by reflection targets + enum types
+        var skipFieldMethodReflection = type.IsDelegate || type.IsRuntimeProvided
             || CppNameMapper.IsRuntimeExceptionType(type.ILFullName)
             || (allFields.Count == 0 && reflectableMethods.Count == 0)
-            || (reflectionTargets.Count > 0 && !reflectionTargets.Contains(type.ILFullName));
-        var fieldsExpr = (!skipReflection && allFields.Count > 0) ? $"{type.CppName}_fields" : "nullptr";
-        var methodsExpr = (!skipReflection && reflectableMethods.Count > 0) ? $"{type.CppName}_methods" : "nullptr";
-        if (skipReflection) { allFields = new(); reflectableMethods = new(); }
+            || (!type.IsEnum && reflectionTargets.Count > 0 && !reflectionTargets.Contains(type.ILFullName));
+        // Property metadata: always emitted for non-runtime types with properties
+        var skipPropertyReflection = type.IsDelegate || type.IsRuntimeProvided
+            || CppNameMapper.IsRuntimeExceptionType(type.ILFullName)
+            || reflectableProperties.Count == 0;
+        var skipReflection = skipFieldMethodReflection && skipPropertyReflection;
+        var fieldsExpr = (!skipFieldMethodReflection && allFields.Count > 0) ? $"{type.CppName}_fields" : "nullptr";
+        var methodsExpr = (!skipFieldMethodReflection && reflectableMethods.Count > 0) ? $"{type.CppName}_methods" : "nullptr";
+        var propsExpr = (!skipPropertyReflection && reflectableProperties.Count > 0) ? $"{type.CppName}_properties" : "nullptr";
+        if (skipFieldMethodReflection) { allFields = new(); reflectableMethods = new(); }
+        if (skipPropertyReflection) { reflectableProperties = new(); }
         var typeAttrsExpr = (!skipReflection && type.CustomAttributes.Count > 0)
             ? $"{type.CppName}_custom_attrs" : "nullptr";
         var typeAttrCount = skipReflection ? 0 : type.CustomAttributes.Count;
@@ -1099,6 +1132,11 @@ public partial class CppCodeGenerator
             sb.AppendLine($"    .methods = {methodsExpr},");
             sb.AppendLine($"    .method_count = {reflectableMethods.Count},");
         }
+        if (propsExpr != "nullptr")
+        {
+            sb.AppendLine($"    .properties = {propsExpr},");
+            sb.AppendLine($"    .property_count = {reflectableProperties.Count},");
+        }
         // .default_ctor always nullptr — omit
         if (finalizerExpr != "nullptr")
             sb.AppendLine($"    .finalizer = {finalizerExpr},");
@@ -1144,6 +1182,10 @@ public partial class CppCodeGenerator
         sb.AppendLine($"// {method.DeclaringType?.ILFullName}::{method.Name}");
         sb.AppendLine($"{method.GetCppSignature()} {{");
 
+        // MSVC /O2 can clobber register variables across setjmp/longjmp (CIL2CPP_TRY).
+        // Declare pointer-type locals as volatile in methods that contain exception handlers.
+        bool hasSetjmp = method.BasicBlocks.SelectMany(b => b.Instructions).Any(i => i is IRTryBegin);
+
         // Declare local variables
         foreach (var local in method.Locals)
         {
@@ -1154,7 +1196,12 @@ public partial class CppCodeGenerator
             if (defaultVal == "nullptr" && !local.CppTypeName.EndsWith("*")
                 && !local.CppTypeName.StartsWith("cil2cpp::"))
                 defaultVal = "{}";
-            sb.AppendLine($"    {local.CppTypeName} {local.CppName} = {defaultVal};");
+            // Pointer locals in setjmp functions must be volatile to prevent register clobbering.
+            // volatile goes after * so the pointer itself (not the pointee) is volatile.
+            if (hasSetjmp && local.CppTypeName.EndsWith("*"))
+                sb.AppendLine($"    {local.CppTypeName} volatile {local.CppName} = {defaultVal};");
+            else
+                sb.AppendLine($"    {local.CppTypeName} {local.CppName} = {defaultVal};");
         }
 
         // Collect temp variables that need auto declarations
@@ -1187,13 +1234,15 @@ public partial class CppCodeGenerator
                 if (typeName == null)
                 {
                     // Type unknown: default to Object* (most cross-scope temps are pointer types)
-                    sb.AppendLine($"    cil2cpp::Object* {varName} = nullptr;");
+                    var vol = hasSetjmp ? " volatile" : "";
+                    sb.AppendLine($"    cil2cpp::Object*{vol} {varName} = nullptr;");
                     crossScopePtrVars[varName] = "cil2cpp::Object*";
                 }
                 else
                 {
                     var initVal = typeName.EndsWith("*") ? "nullptr" : "{}";
-                    sb.AppendLine($"    {typeName} {varName} = {initVal};");
+                    var vol = hasSetjmp && typeName.EndsWith("*") ? " volatile" : "";
+                    sb.AppendLine($"    {typeName}{vol} {varName} = {initVal};");
                     if (typeName.EndsWith("*"))
                         crossScopePtrVars[varName] = typeName;
                     // Track intptr_t/uintptr_t vars: in IL, native int and pointers are
@@ -2431,10 +2480,12 @@ public partial class CppCodeGenerator
     {
         var lookup = new Dictionary<string, string>();
 
-        // User types that are not runtime-provided
+        // All types (including runtime-provided) — their TypeInfo symbols exist in generated code
+        // Runtime-provided types need to be in the lookup so that generic variance data
+        // (e.g., IEnumerable<MemberInfo>) can reference their TypeInfo pointers.
         foreach (var type in _module.Types)
         {
-            if (!type.IsRuntimeProvided && !CppNameMapper.IsCompilerGeneratedType(type.ILFullName))
+            if (!CppNameMapper.IsCompilerGeneratedType(type.ILFullName))
             {
                 lookup[type.ILFullName] = $"&{type.CppName}_TypeInfo";
             }
@@ -2458,21 +2509,23 @@ public partial class CppCodeGenerator
 
         foreach (var type in userTypes)
         {
-            if (type.IsRuntimeProvided || type.IsEnum || type.IsDelegate) continue;
-            // Skip runtime exception types — their C++ struct layout is defined by the runtime
-            // and doesn't match the generated field layout (e.g., cil2cpp::ArgumentException has no f__paramName)
+            if (type.IsRuntimeProvided || type.IsDelegate) continue;
             if (CppNameMapper.IsRuntimeExceptionType(type.ILFullName)) continue;
-            // Skip types not accessed via reflection — no FieldInfo[]/MethodInfo[] needed
-            if (reflectionTargets.Count > 0 && !reflectionTargets.Contains(type.ILFullName)) continue;
             // Deduplicate — BCL proxies may appear multiple times
             if (!emittedReflection.Add(type.CppName)) continue;
 
-            var allFields = type.Fields.Concat(type.StaticFields).ToList();
-            var reflectableMethods = type.Methods
-                .Where(m => !CppNameMapper.IsCompilerGeneratedType(m.Name))
-                .ToList();
+            // Field/method metadata: gated by reflection targets + enum types
+            var skipFieldMethod = !type.IsEnum
+                && reflectionTargets.Count > 0 && !reflectionTargets.Contains(type.ILFullName);
+            // Property metadata: always emitted for types with properties
+            var reflectableProperties = type.Properties;
 
-            if (allFields.Count == 0 && reflectableMethods.Count == 0) continue;
+            var allFields = skipFieldMethod ? new List<IRField>()
+                : type.Fields.Concat(type.StaticFields).ToList();
+            var reflectableMethods = skipFieldMethod ? new List<IRMethod>()
+                : type.Methods.Where(m => !CppNameMapper.IsCompilerGeneratedType(m.Name)).ToList();
+
+            if (allFields.Count == 0 && reflectableMethods.Count == 0 && reflectableProperties.Count == 0) continue;
 
             if (!any)
             {
@@ -2514,13 +2567,20 @@ public partial class CppCodeGenerator
                         : $"offsetof({type.CppName}, {field.CppName})";
                     var fieldAttrsExpr = field.CustomAttributes.Count > 0
                         ? $"{type.CppName}_{field.CppName}_attrs" : "nullptr";
+                    var constantExpr = "0";
+                    if (field.ConstantValue != null && field.ConstantValue is not string)
+                    {
+                        try { constantExpr = FormatEnumInt64(EnumConstantToInt64(field.ConstantValue)); }
+                        catch { /* Non-numeric constant (e.g. string) — leave as 0 */ }
+                    }
                     sb.AppendLine($"    {{ .name = \"{field.Name}\", " +
                         $".declaring_type = &{type.CppName}_TypeInfo, " +
                         $".field_type = {fieldTypeExpr}, " +
                         $".offset = {offsetExpr}, " +
                         $".flags = 0x{field.Attributes:X4}, " +
                         $".custom_attributes = {fieldAttrsExpr}, " +
-                        $".custom_attribute_count = {field.CustomAttributes.Count} }},");
+                        $".custom_attribute_count = {field.CustomAttributes.Count}, " +
+                        $".constant_value = {constantExpr} }},");
                 }
                 sb.AppendLine("};");
             }
@@ -2570,6 +2630,29 @@ public partial class CppCodeGenerator
                         $".vtable_slot = {method.VTableSlot}, " +
                         $".custom_attributes = {methodAttrsExpr}, " +
                         $".custom_attribute_count = {method.CustomAttributes.Count} }},");
+                }
+                sb.AppendLine("};");
+            }
+
+            // Emit PropertyInfo array
+            if (reflectableProperties.Count > 0)
+            {
+                sb.AppendLine($"static cil2cpp::PropertyInfo {type.CppName}_properties[] = {{");
+                foreach (var prop in reflectableProperties)
+                {
+                    var propTypeExpr = typeInfoLookup.GetValueOrDefault(prop.PropertyTypeName, "nullptr");
+                    var getterExpr = "nullptr";
+                    var setterExpr = "nullptr";
+                    if (prop.Getter != null && _declaredFunctionNames.Contains(prop.Getter.CppName))
+                        getterExpr = $"(void*){prop.Getter.CppName}";
+                    if (prop.Setter != null && _declaredFunctionNames.Contains(prop.Setter.CppName))
+                        setterExpr = $"(void*){prop.Setter.CppName}";
+                    sb.AppendLine($"    {{ .name = \"{prop.Name}\", " +
+                        $".declaring_type = &{type.CppName}_TypeInfo, " +
+                        $".property_type = {propTypeExpr}, " +
+                        $".getter = {getterExpr}, " +
+                        $".setter = {setterExpr}, " +
+                        $".flags = 0x{prop.Attributes:X4} }},");
                 }
                 sb.AppendLine("};");
             }
@@ -3180,6 +3263,17 @@ public partial class CppCodeGenerator
             sb.AppendLine($"    cil2cpp::task_set_typeinfo(&{taskType.CppName}_TypeInfo);");
         }
 
+        // Patch System.Object's runtime TypeInfo with generated VTable.
+        // The runtime defines System_Object_TypeInfo with vtable=nullptr.
+        // Without this patch, virtual calls (GetHashCode, Equals, ToString) on
+        // plain Object instances crash with null dereference.
+        var objectType = _userTypes.FirstOrDefault(t => t.ILFullName == "System.Object");
+        if (objectType != null && objectType.VTable.Count > 0)
+        {
+            sb.AppendLine("    // Patch System.Object TypeInfo with generated VTable");
+            sb.AppendLine($"    System_Object_TypeInfo.vtable = &{objectType.CppName}_VTable;");
+        }
+
         // Register reflection TypeInfos so runtime-created ManagedMethodInfo/FieldInfo objects have proper vtables
         {
             var methodInfoType = _userTypes.FirstOrDefault(t => t.ILFullName == "System.Reflection.MethodInfo");
@@ -3197,6 +3291,19 @@ public partial class CppCodeGenerator
                 sb.Append(paramInfoType != null ? $"&{paramInfoType.CppName}_TypeInfo" : "nullptr");
                 sb.Append(", ");
                 sb.Append(propInfoType != null ? $"&{propInfoType.CppName}_TypeInfo" : "nullptr");
+                sb.AppendLine(");");
+            }
+
+            // Patch PropertyInfo/RuntimePropertyInfo vtable slots for get_PropertyType and GetIndexParameters.
+            // These are abstract on PropertyInfo, overridden by RuntimePropertyInfo which is ReflectionAliased
+            // (all instance methods blocked at codegen), leaving null vtable slots.
+            var runtimePropInfoType = _userTypes.FirstOrDefault(t => t.ILFullName == "System.Reflection.RuntimePropertyInfo");
+            if (propInfoType != null || runtimePropInfoType != null)
+            {
+                sb.Append("    cil2cpp::reflection_patch_property_vtables(");
+                sb.Append(propInfoType != null ? $"&{propInfoType.CppName}_TypeInfo" : "nullptr");
+                sb.Append(", ");
+                sb.Append(runtimePropInfoType != null ? $"&{runtimePropInfoType.CppName}_TypeInfo" : "nullptr");
                 sb.AppendLine(");");
             }
         }

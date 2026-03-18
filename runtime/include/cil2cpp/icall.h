@@ -89,12 +89,38 @@ Boolean MethodBase_get_IsVirtual(void* __this);
 Boolean MethodBase_get_IsPublic(void* __this);
 Boolean MethodBase_get_IsStatic(void* __this);
 Boolean MethodBase_get_IsAbstract(void* __this);
+Boolean MethodBase_get_IsFinal(void* __this);
+Boolean FieldInfo_get_IsPublic(void* __this);
+Boolean FieldInfo_get_IsPrivate(void* __this);
+Boolean FieldInfo_get_IsInitOnly(void* __this);
+Boolean FieldInfo_get_IsLiteral(void* __this);
+Boolean FieldInfo_get_IsSpecialName(void* __this);
 String* MemberInfo_get_Name(void* __this);
 Int32 RuntimeMethodInfo_get_BindingFlags(void* __this);
 void* RuntimeMethodInfo_GetGenericArgumentsInternal(void* __this);
 void* RuntimeMethodInfo_GetDeclaringTypeInternal(void* __this);
 Int32 RuntimeConstructorInfo_get_BindingFlags(void* __this);
 Int32 RuntimeFieldInfo_get_BindingFlags(void* __this);
+
+// System.RuntimeType/RuntimeTypeCache (reflection member lists)
+void* RuntimeTypeCache_GetMethodList(void* __this, Int32 listType, void* name);
+void* RuntimeTypeCache_GetConstructorList(void* __this, Int32 listType, void* name);
+void* RuntimeTypeCache_GetFieldList(void* __this, Int32 listType, void* name);
+void* RuntimeTypeCache_GetPropertyList(void* __this, Int32 listType, void* name);
+void* RuntimeTypeCache_GetEventList(void* __this, Int32 listType, void* name);
+
+// System.Reflection.CustomAttribute (AOT attribute handling)
+Object* CustomAttribute_GetAttributeUsage(void* decoratedAttribute);
+
+// RuntimeType.get_Cache: returns a RuntimeTypeCache without corrupting Type struct
+void* RuntimeType_get_Cache(void* __this);
+
+// RuntimeType reflection impl — bypass CLR-internal method resolution
+void* RuntimeType_GetMethodImpl(void* __this, void* name, Int32 genericParamCount,
+    Int32 bindingAttr, void* binder, Int32 callConv, void* types, void* modifiers);
+void* RuntimeType_GetFieldImpl(void* __this, void* name, Int32 bindingAttr);
+void* RuntimeType_GetPropertyImpl(void* __this, void* name, Int32 bindingAttr,
+    void* binder, void* returnType, void* types, void* modifiers);
 
 // System.Delegate
 void* Delegate_get_Method(void* __this);
@@ -314,6 +340,15 @@ Object* RuntimeType_AllocateValueType(void* thisType, Object* value);
 
 // Satellite assemblies don't exist in AOT — always returns nullptr.
 void* RuntimeAssembly_InternalGetSatelliteAssembly(void* thisPtr, void* culture, void* version, bool throwOnFileNotFound);
+
+// Newtonsoft.Json AOT delegate factories
+// ExpressionReflectionDelegateFactory uses Expression.Compile() (JIT-only).
+// These ICalls provide AOT-compatible alternatives using runtime reflection.
+void* reflection_create_get_property(void* __this, void* propertyInfo);
+void* reflection_create_set_property(void* __this, void* propertyInfo);
+void* reflection_create_get_field(void* __this, void* fieldInfo);
+void* reflection_create_set_field(void* __this, void* fieldInfo);
+void* reflection_create_default_ctor(void* __this, void* type);
 
 } // namespace icall
 

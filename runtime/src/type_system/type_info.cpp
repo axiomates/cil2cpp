@@ -211,6 +211,9 @@ InterfaceVTable* obj_get_interface_vtable(Object* obj, TypeInfo* interface_type)
         // This is an array — try the array generic interface adapter
         result = array_get_generic_interface_vtable(obj->__type_info, interface_type);
         if (result) return result;
+        // Also try non-generic collection interfaces (ICollection, IList, IEnumerable)
+        result = array_get_nongeneric_interface_vtable(interface_type);
+        if (result) return result;
     }
 
     // Not found — throw InvalidCastException with diagnostic info
@@ -311,10 +314,10 @@ Boolean object_is_instance_of(Object* obj, TypeInfo* type) {
             }
             // Generic interfaces: T[] implements IList<T>, ICollection<T>, IEnumerable<T>,
             // IReadOnlyList<T>, IReadOnlyCollection<T>
+            // First try structured generic metadata (if available)
             if (type->generic_definition_name && type->generic_argument_count == 1
                 && type->generic_arguments && type->generic_arguments[0]) {
                 const char* genDef = type->generic_definition_name;
-                // Check if this is one of the array-compatible generic interfaces
                 bool isArrayInterface =
                     std::strcmp(genDef, "System_Collections_Generic_IList_1") == 0 ||
                     std::strcmp(genDef, "System_Collections_Generic_ICollection_1") == 0 ||
@@ -322,13 +325,39 @@ Boolean object_is_instance_of(Object* obj, TypeInfo* type) {
                     std::strcmp(genDef, "System_Collections_Generic_IReadOnlyList_1") == 0 ||
                     std::strcmp(genDef, "System_Collections_Generic_IReadOnlyCollection_1") == 0;
                 if (isArrayInterface) {
-                    // Array element type: the array's __type_info IS the element TypeInfo
                     auto* elemType = obj->__type_info;
                     auto* interfaceArgType = type->generic_arguments[0];
-                    // Exact match or assignability (for reference type covariance)
                     if (elemType == interfaceArgType ||
                         type_is_assignable_from(interfaceArgType, elemType)) {
                         return true;
+                    }
+                }
+            }
+            // Fallback: use full_name prefix matching for concrete generic interface TypeInfos
+            // that lack generic_definition_name (common in AOT-compiled code)
+            if (type->full_name) {
+                const char* fn = type->full_name;
+                static const char* prefixes[] = {
+                    "System.Collections.Generic.IList`1<",
+                    "System.Collections.Generic.ICollection`1<",
+                    "System.Collections.Generic.IEnumerable`1<",
+                    "System.Collections.Generic.IReadOnlyList`1<",
+                    "System.Collections.Generic.IReadOnlyCollection`1<",
+                };
+                for (auto* prefix : prefixes) {
+                    size_t plen = std::strlen(prefix);
+                    if (std::strncmp(fn, prefix, plen) == 0) {
+                        // Extract type argument from full_name: "prefix<TypeArg>"
+                        // Compare with the array element type's full_name
+                        auto* elemType = obj->__type_info;
+                        if (elemType && elemType->full_name) {
+                            size_t argLen = std::strlen(fn) - plen - 1; // -1 for trailing '>'
+                            if (argLen > 0 && std::strncmp(fn + plen, elemType->full_name, argLen) == 0
+                                && std::strlen(elemType->full_name) == argLen) {
+                                return true;
+                            }
+                        }
+                        break;
                     }
                 }
             }

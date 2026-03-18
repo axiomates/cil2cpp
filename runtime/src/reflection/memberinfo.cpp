@@ -104,6 +104,43 @@ void reflection_set_typeinfos(TypeInfo* method_ti, TypeInfo* field_ti, TypeInfo*
     if (prop_ti)   s_propertyinfo_ti = prop_ti;
 }
 
+// Forward declarations for extern "C" functions in core_methods.cpp
+extern "C" void* System_Reflection_RuntimePropertyInfo_get_PropertyType(void*);
+extern "C" void* System_Reflection_RuntimePropertyInfo_GetIndexParameters(void*);
+extern "C" bool  System_Reflection_RuntimePropertyInfo_get_CanRead(void*);
+extern "C" bool  System_Reflection_RuntimePropertyInfo_get_CanWrite(void*);
+extern "C" void* System_Reflection_RuntimePropertyInfo_GetGetMethod(void*, bool);
+extern "C" void* System_Reflection_RuntimePropertyInfo_GetSetMethod(void*, bool);
+extern "C" void* System_Reflection_RuntimePropertyInfo_GetValue_5(void*, void*, int32_t, void*, void*, void*);
+extern "C" void  System_Reflection_RuntimePropertyInfo_SetValue_6(void*, void*, void*, int32_t, void*, void*, void*);
+
+void reflection_patch_property_vtables(TypeInfo* prop_ti, TypeInfo* runtime_prop_ti) {
+    // Patch null vtable slots for RuntimePropertyInfo methods.
+    // Since RuntimePropertyInfo is ReflectionAliased, the codegen blocks all instance methods,
+    // leaving these vtable slots as nullptr. We patch them at runtime.
+    // Slot mapping (from generated vtable order):
+    //   18: get_PropertyType      21: get_CanRead           25: GetGetMethod(bool)
+    //   19: GetIndexParameters     22: get_CanWrite          27: GetSetMethod(bool)
+    //   32: GetValue(5-param)      36: SetValue(6-param)
+    auto patch = [](TypeInfo* ti, const char* label) {
+        if (!ti || !ti->vtable) {
+            return;
+        }
+        auto** m = ti->vtable->methods;
+        auto count = ti->vtable->method_count;
+        if (count > 18 && !m[18]) m[18] = (void*)System_Reflection_RuntimePropertyInfo_get_PropertyType;
+        if (count > 19 && !m[19]) m[19] = (void*)System_Reflection_RuntimePropertyInfo_GetIndexParameters;
+        if (count > 21 && !m[21]) m[21] = (void*)System_Reflection_RuntimePropertyInfo_get_CanRead;
+        if (count > 22 && !m[22]) m[22] = (void*)System_Reflection_RuntimePropertyInfo_get_CanWrite;
+        if (count > 25 && !m[25]) m[25] = (void*)System_Reflection_RuntimePropertyInfo_GetGetMethod;
+        if (count > 27 && !m[27]) m[27] = (void*)System_Reflection_RuntimePropertyInfo_GetSetMethod;
+        if (count > 32 && !m[32]) m[32] = (void*)System_Reflection_RuntimePropertyInfo_GetValue_5;
+        if (count > 36 && !m[36]) m[36] = (void*)System_Reflection_RuntimePropertyInfo_SetValue_6;
+    };
+    patch(prop_ti, "PropertyInfo");
+    patch(runtime_prop_ti, "RuntimePropertyInfo");
+}
+
 // ===== Helper: Create managed wrappers =====
 
 static ManagedMethodInfo* create_managed_method_info(MethodInfo* native) {
@@ -120,10 +157,27 @@ static ManagedFieldInfo* create_managed_field_info(FieldInfo* native) {
     return fi;
 }
 
+// Cache managed PropertyInfo wrappers so the same native PropertyInfo always
+// returns the same managed object. This is critical for reference-equality checks
+// in List<MemberInfo>.Contains() used by Newtonsoft.Json's GetSerializableMembers.
+static constexpr size_t PROPINFO_CACHE_SIZE = 64;
+static PropertyInfo* s_propinfo_cache_keys[PROPINFO_CACHE_SIZE] = {};
+static ManagedPropertyInfo* s_propinfo_cache_values[PROPINFO_CACHE_SIZE] = {};
+
 static ManagedPropertyInfo* create_managed_property_info(PropertyInfo* native) {
+    // Check cache first
+    auto slot = reinterpret_cast<uintptr_t>(native) / sizeof(void*) % PROPINFO_CACHE_SIZE;
+    if (s_propinfo_cache_keys[slot] == native && s_propinfo_cache_values[slot]) {
+        return s_propinfo_cache_values[slot];
+    }
+
     auto* pi = static_cast<ManagedPropertyInfo*>(
         gc::alloc(sizeof(ManagedPropertyInfo), s_propertyinfo_ti));
     pi->native_info = native;
+
+    // Store in cache
+    s_propinfo_cache_keys[slot] = native;
+    s_propinfo_cache_values[slot] = pi;
     return pi;
 }
 
@@ -146,6 +200,34 @@ Array* type_get_methods(Type* t) {
     return arr;
 }
 
+Array* type_get_methods_by_name(Type* t, const char* name, int listType) {
+    if (!t || !t->type_info) throw_null_reference();
+    auto* info = t->type_info;
+    UInt32 count = info->methods ? info->method_count : 0;
+    if (!name || listType == 0) return type_get_methods(t);
+
+    UInt32 matchCount = 0;
+    for (UInt32 i = 0; i < count; i++) {
+        if (!info->methods[i].name) continue;
+        bool match = (listType == 1)
+            ? (std::strcmp(info->methods[i].name, name) == 0)
+            : (_stricmp(info->methods[i].name, name) == 0);
+        if (match) matchCount++;
+    }
+
+    auto* arr = array_create(s_methodinfo_ti, static_cast<Int32>(matchCount));
+    auto** data = static_cast<ManagedMethodInfo**>(array_data(arr));
+    UInt32 idx = 0;
+    for (UInt32 i = 0; i < count && idx < matchCount; i++) {
+        if (!info->methods[i].name) continue;
+        bool match = (listType == 1)
+            ? (std::strcmp(info->methods[i].name, name) == 0)
+            : (_stricmp(info->methods[i].name, name) == 0);
+        if (match) data[idx++] = create_managed_method_info(&info->methods[i]);
+    }
+    return arr;
+}
+
 Array* type_get_fields(Type* t) {
     if (!t || !t->type_info) throw_null_reference();
 
@@ -158,6 +240,35 @@ Array* type_get_fields(Type* t) {
     auto** data = static_cast<ManagedFieldInfo**>(array_data(arr));
     for (UInt32 i = 0; i < count; i++) {
         data[i] = create_managed_field_info(&info->fields[i]);
+    }
+    return arr;
+}
+
+Array* type_get_fields_by_name(Type* t, const char* name, int listType) {
+    if (!t || !t->type_info) throw_null_reference();
+    auto* info = t->type_info;
+    UInt32 count = info->fields ? info->field_count : 0;
+    if (!name || listType == 0) return type_get_fields(t);
+
+    // Count matches
+    UInt32 matchCount = 0;
+    for (UInt32 i = 0; i < count; i++) {
+        if (!info->fields[i].name) continue;
+        bool match = (listType == 1)
+            ? (std::strcmp(info->fields[i].name, name) == 0)
+            : (_stricmp(info->fields[i].name, name) == 0);
+        if (match) matchCount++;
+    }
+
+    auto* arr = array_create(s_fieldinfo_ti, static_cast<Int32>(matchCount));
+    auto** data = static_cast<ManagedFieldInfo**>(array_data(arr));
+    UInt32 idx = 0;
+    for (UInt32 i = 0; i < count && idx < matchCount; i++) {
+        if (!info->fields[i].name) continue;
+        bool match = (listType == 1)
+            ? (std::strcmp(info->fields[i].name, name) == 0)
+            : (_stricmp(info->fields[i].name, name) == 0);
+        if (match) data[idx++] = create_managed_field_info(&info->fields[i]);
     }
     return arr;
 }
@@ -237,6 +348,11 @@ Boolean methodinfo_get_is_virtual(ManagedMethodInfo* mi) {
 Boolean methodinfo_get_is_abstract(ManagedMethodInfo* mi) {
     if (!mi || !mi->native_info) throw_null_reference();
     return (mi->native_info->flags & 0x0400) != 0; // Abstract
+}
+
+Boolean methodinfo_get_is_final(ManagedMethodInfo* mi) {
+    if (!mi || !mi->native_info) throw_null_reference();
+    return (mi->native_info->flags & 0x0020) != 0; // Final
 }
 
 String* methodinfo_to_string(ManagedMethodInfo* mi) {
@@ -371,6 +487,21 @@ Boolean fieldinfo_get_is_init_only(ManagedFieldInfo* fi) {
     return (fi->native_info->flags & 0x0020) != 0; // InitOnly
 }
 
+Boolean fieldinfo_get_is_literal(ManagedFieldInfo* fi) {
+    if (!fi || !fi->native_info) throw_null_reference();
+    return (fi->native_info->flags & 0x0040) != 0; // Literal
+}
+
+Boolean fieldinfo_get_is_private(ManagedFieldInfo* fi) {
+    if (!fi || !fi->native_info) throw_null_reference();
+    return (fi->native_info->flags & 0x0007) == 0x0001; // Private
+}
+
+Boolean fieldinfo_get_is_special_name(ManagedFieldInfo* fi) {
+    if (!fi || !fi->native_info) throw_null_reference();
+    return (fi->native_info->flags & 0x0200) != 0; // SpecialName
+}
+
 String* fieldinfo_to_string(ManagedFieldInfo* fi) {
     if (!fi || !fi->native_info) throw_null_reference();
     auto* native = fi->native_info;
@@ -391,11 +522,17 @@ Object* fieldinfo_get_value(ManagedFieldInfo* fi, Object* obj) {
 
     if (!is_static && !obj) throw_null_reference();
 
-    // For static fields, offset is 0 and we can't compute the address
-    // without knowing the static storage location, which isn't stored in native FieldInfo.
-    // For now, only support instance field access.
-    if (is_static)
+    // For literal static fields (enum constants, const), box the constant_value
+    if (is_static) {
+        bool is_literal = (native->flags & 0x0040) != 0;
+        if (is_literal && native->field_type) {
+            auto elem_size = native->field_type->element_size;
+            if (elem_size == 0) elem_size = native->field_type->instance_size;
+            return box_raw(&native->constant_value, elem_size, native->field_type);
+        }
+        // Non-literal static fields: offset-based access not supported yet
         throw_invalid_operation();
+    }
 
     // Compute field address from object base + offset
     auto* field_ptr = reinterpret_cast<char*>(obj) + native->offset;
@@ -466,6 +603,34 @@ Array* type_get_properties(Type* t) {
     auto** data = static_cast<ManagedPropertyInfo**>(array_data(arr));
     for (UInt32 i = 0; i < count; i++) {
         data[i] = create_managed_property_info(&info->properties[i]);
+    }
+    return arr;
+}
+
+Array* type_get_properties_by_name(Type* t, const char* name, int listType) {
+    if (!t || !t->type_info) throw_null_reference();
+    auto* info = t->type_info;
+    UInt32 count = info->properties ? info->property_count : 0;
+    if (!name || listType == 0) return type_get_properties(t);
+
+    UInt32 matchCount = 0;
+    for (UInt32 i = 0; i < count; i++) {
+        if (!info->properties[i].name) continue;
+        bool match = (listType == 1)
+            ? (std::strcmp(info->properties[i].name, name) == 0)
+            : (_stricmp(info->properties[i].name, name) == 0);
+        if (match) matchCount++;
+    }
+
+    auto* arr = array_create(s_propertyinfo_ti, static_cast<Int32>(matchCount));
+    auto** data = static_cast<ManagedPropertyInfo**>(array_data(arr));
+    UInt32 idx = 0;
+    for (UInt32 i = 0; i < count && idx < matchCount; i++) {
+        if (!info->properties[i].name) continue;
+        bool match = (listType == 1)
+            ? (std::strcmp(info->properties[i].name, name) == 0)
+            : (_stricmp(info->properties[i].name, name) == 0);
+        if (match) data[idx++] = create_managed_property_info(&info->properties[i]);
     }
     return arr;
 }
@@ -557,9 +722,69 @@ Object* propertyinfo_get_value(ManagedPropertyInfo* pi, Object* obj, Array* /*in
     if (!pi->native_info->getter)
         throw_invalid_operation();
 
-    // Call the getter: instance method with obj as first param, returns Object*
-    auto fn = reinterpret_cast<Object*(*)(Object*)>(pi->native_info->getter);
-    return fn(obj);
+    auto* prop_type = pi->native_info->property_type;
+    auto getter = pi->native_info->getter;
+
+    // Reference types: call directly, return pointer
+    if (!prop_type || !(prop_type->flags & TypeFlags::ValueType)) {
+        auto fn = reinterpret_cast<Object*(*)(Object*)>(getter);
+        return fn(obj);
+    }
+
+    // Value types: call with correct ABI return type, then box
+    // x64 ABI: integer types return in RAX, float/double return in XMM0
+    switch (prop_type->cor_element_type) {
+        case 0x02: { // Boolean
+            auto fn = reinterpret_cast<bool(*)(Object*)>(getter);
+            bool val = fn(obj);
+            return box(val, prop_type);
+        }
+        case 0x04: case 0x05: { // SByte, Byte
+            auto fn = reinterpret_cast<uint8_t(*)(Object*)>(getter);
+            uint8_t val = fn(obj);
+            return box_raw(&val, 1, prop_type);
+        }
+        case 0x03: case 0x06: case 0x07: { // Char, Int16, UInt16
+            auto fn = reinterpret_cast<uint16_t(*)(Object*)>(getter);
+            uint16_t val = fn(obj);
+            return box_raw(&val, 2, prop_type);
+        }
+        case 0x08: case 0x09: { // Int32, UInt32
+            auto fn = reinterpret_cast<int32_t(*)(Object*)>(getter);
+            int32_t val = fn(obj);
+            return box(val, prop_type);
+        }
+        case 0x0A: case 0x0B: { // Int64, UInt64
+            auto fn = reinterpret_cast<int64_t(*)(Object*)>(getter);
+            int64_t val = fn(obj);
+            return box(val, prop_type);
+        }
+        case 0x0C: { // Single (float)
+            auto fn = reinterpret_cast<float(*)(Object*)>(getter);
+            float val = fn(obj);
+            return box(val, prop_type);
+        }
+        case 0x0D: { // Double
+            auto fn = reinterpret_cast<double(*)(Object*)>(getter);
+            double val = fn(obj);
+            return box(val, prop_type);
+        }
+        default: {
+            // Enum or struct value type: use instance_size for value size
+            auto value_size = prop_type->instance_size > sizeof(Object)
+                ? prop_type->instance_size - sizeof(Object) : sizeof(int64_t);
+            if (value_size <= sizeof(int64_t)) {
+                auto fn = reinterpret_cast<int64_t(*)(Object*)>(getter);
+                int64_t val = fn(obj);
+                return box_raw(&val, value_size, prop_type);
+            }
+            // Large struct (>8 bytes): x64 returns via hidden pointer param
+            auto* result = static_cast<Object*>(gc::alloc(sizeof(Object) + value_size, prop_type));
+            auto fn = reinterpret_cast<void*(*)(void*, Object*)>(getter);
+            fn(reinterpret_cast<char*>(result) + sizeof(Object), obj);
+            return result;
+        }
+    }
 }
 
 void propertyinfo_set_value(ManagedPropertyInfo* pi, Object* obj, Object* value, Array* /*index*/) {
@@ -567,9 +792,72 @@ void propertyinfo_set_value(ManagedPropertyInfo* pi, Object* obj, Object* value,
     if (!pi->native_info->setter)
         throw_invalid_operation();
 
-    // Call the setter: instance method with (obj, value)
-    auto fn = reinterpret_cast<void(*)(Object*, Object*)>(pi->native_info->setter);
-    fn(obj, value);
+    auto* prop_type = pi->native_info->property_type;
+    auto setter = pi->native_info->setter;
+
+    // Reference types: pass directly
+    if (!prop_type || !(prop_type->flags & TypeFlags::ValueType)) {
+        auto fn = reinterpret_cast<void(*)(Object*, Object*)>(setter);
+        fn(obj, value);
+        return;
+    }
+
+    // Value types: unbox and pass with correct ABI
+    if (!value) throw_null_reference();
+    void* unboxed = reinterpret_cast<char*>(value) + sizeof(Object);
+    switch (prop_type->cor_element_type) {
+        case 0x02: { // Boolean
+            auto fn = reinterpret_cast<void(*)(Object*, bool)>(setter);
+            fn(obj, *reinterpret_cast<bool*>(unboxed));
+            return;
+        }
+        case 0x04: case 0x05: { // SByte, Byte
+            auto fn = reinterpret_cast<void(*)(Object*, uint8_t)>(setter);
+            fn(obj, *reinterpret_cast<uint8_t*>(unboxed));
+            return;
+        }
+        case 0x03: case 0x06: case 0x07: { // Char, Int16, UInt16
+            auto fn = reinterpret_cast<void(*)(Object*, uint16_t)>(setter);
+            fn(obj, *reinterpret_cast<uint16_t*>(unboxed));
+            return;
+        }
+        case 0x08: case 0x09: { // Int32, UInt32
+            auto fn = reinterpret_cast<void(*)(Object*, int32_t)>(setter);
+            fn(obj, *reinterpret_cast<int32_t*>(unboxed));
+            return;
+        }
+        case 0x0A: case 0x0B: { // Int64, UInt64
+            auto fn = reinterpret_cast<void(*)(Object*, int64_t)>(setter);
+            fn(obj, *reinterpret_cast<int64_t*>(unboxed));
+            return;
+        }
+        case 0x0C: { // Single (float)
+            auto fn = reinterpret_cast<void(*)(Object*, float)>(setter);
+            fn(obj, *reinterpret_cast<float*>(unboxed));
+            return;
+        }
+        case 0x0D: { // Double
+            auto fn = reinterpret_cast<void(*)(Object*, double)>(setter);
+            fn(obj, *reinterpret_cast<double*>(unboxed));
+            return;
+        }
+        default: {
+            // Struct value type: pass as int64_t for small structs
+            auto value_size = prop_type->instance_size > sizeof(Object)
+                ? prop_type->instance_size - sizeof(Object) : sizeof(int64_t);
+            if (value_size <= sizeof(int64_t)) {
+                int64_t raw = 0;
+                std::memcpy(&raw, unboxed, value_size);
+                auto fn = reinterpret_cast<void(*)(Object*, int64_t)>(setter);
+                fn(obj, raw);
+            } else {
+                // Large struct: passed by pointer on x64
+                auto fn = reinterpret_cast<void(*)(Object*, void*)>(setter);
+                fn(obj, unboxed);
+            }
+            return;
+        }
+    }
 }
 
 String* propertyinfo_to_string(ManagedPropertyInfo* pi) {
@@ -622,8 +910,9 @@ String* memberinfo_get_name(Object* obj) {
         return methodinfo_get_name(static_cast<ManagedMethodInfo*>(obj));
     if (is_field_info(ti))
         return fieldinfo_get_name(static_cast<ManagedFieldInfo*>(obj));
-    if (is_property_info(ti))
+    if (is_property_info(ti)) {
         return propertyinfo_get_name(static_cast<ManagedPropertyInfo*>(obj));
+    }
     // Fallback: return type name
     return string_literal(ti ? ti->name : "?");
 }

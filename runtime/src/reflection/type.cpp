@@ -59,15 +59,17 @@ static Int32 Type_GetHashCode_vtable(Object* obj) {
     auto* t = static_cast<Type*>(obj);
     return t->type_info ? static_cast<Int32>(reinterpret_cast<uintptr_t>(t->type_info) >> 3) : 0;
 }
+static void System_Object_Finalize_noop(Object*) {}
 static void* System_Type_vtable_methods[] = {
     reinterpret_cast<void*>(&Type_ToString_vtable),
     reinterpret_cast<void*>(&Type_Equals_vtable),
     reinterpret_cast<void*>(&Type_GetHashCode_vtable),
+    reinterpret_cast<void*>(&System_Object_Finalize_noop),
 };
 static VTable System_Type_VTable = {
     &System_Type_TypeInfo,
     System_Type_vtable_methods,
-    3,
+    4,
 };
 
 // TypeInfo for System.Type itself

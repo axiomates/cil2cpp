@@ -814,6 +814,16 @@ public partial class IRBuilder
                     // _typeCache for virtual dispatch resolution in EmitMethodCall.
                     EnsureBodyReferencedTypesExist(bodyMethod, typeParamMap);
 
+                    // Build VTables for types that haven't been processed yet.
+                    // Types created by earlier specializations may not have vtables yet
+                    // (e.g., Iterator<T> created by a previous method's EnsureBody scan).
+                    // Check _vtableBuilt.Count vs _module.Types.Count as a fast guard.
+                    if (_vtableBuilt.Count < _module.Types.Count)
+                    {
+                        foreach (var irType2 in _module.Types)
+                            BuildVTableRecursive(irType2, _vtableBuilt);
+                    }
+
                     var methodInfo = new IL.MethodInfo(bodyMethod);
                     ConvertMethodBodyWithGenerics(methodInfo, irMethod, typeParamMap);
                 }
@@ -2057,6 +2067,23 @@ public partial class IRBuilder
                 irType.EnumUnderlyingType = valueField?.FieldType.FullName ?? "System.Int32";
             }
 
+            // Propagate generic parameter variances from open type definition
+            // (same as CreateGenericSpecializations — needed for variance-based interface dispatch)
+            if (openType.HasGenericParameters)
+            {
+                irType.GenericDefinitionCppName = CppNameMapper.MangleTypeName(info.OpenTypeName);
+                foreach (var gp in openType.GenericParameters)
+                {
+                    var variance = (gp.Attributes & Mono.Cecil.GenericParameterAttributes.VarianceMask) switch
+                    {
+                        Mono.Cecil.GenericParameterAttributes.Covariant => GenericVariance.Covariant,
+                        Mono.Cecil.GenericParameterAttributes.Contravariant => GenericVariance.Contravariant,
+                        _ => GenericVariance.Invariant,
+                    };
+                    irType.GenericParameterVariances.Add(variance);
+                }
+            }
+
             if (openType.IsValueType)
             {
                 CppNameMapper.RegisterValueType(nestedKey);
@@ -2907,6 +2934,13 @@ public partial class IRBuilder
                 Dictionary<string, string> TypeParamMap)>(_deferredGenericBodies);
             _deferredGenericBodies.Clear();
 
+            // Ensure VTables are built for all types before compiling any bodies in this batch.
+            // Types created in previous iterations' CreateGenericSpecializations may not have had
+            // their vtables built yet (e.g., abstract types like Iterator<T> that don't add
+            // deferred bodies). Without this, callvirt on these types falls back to direct calls.
+            foreach (var irType in _module.Types)
+                BuildVTableRecursive(irType, _vtableBuilt);
+
             foreach (var (cecilMethod, irMethod, typeParamMap) in batch)
             {
                 if (!processed.Add(irMethod)) continue;
@@ -2955,6 +2989,7 @@ public partial class IRBuilder
             // (e.g., display classes, closures referenced in locals/instructions),
             // create their type shells and method shells now. This ensures
             // compiler-generated types get their methods compiled in subsequent batches.
+            var prevTypeCountForVtable = _module.Types.Count;
             if (_genericInstantiations.Count > _resolvedGenericTypeKeys.Count)
             {
                 CreateGenericSpecializations();
@@ -2973,9 +3008,11 @@ public partial class IRBuilder
             // their AwaitUnsafeOnCompleted specializations, causing undeclared function errors.
             CreateGenericMethodSpecializations();
 
-            // If new types were discovered during body compilation, build VTables
-            // and disambiguate before the next batch (needed for callvirt resolution)
-            if (_deferredGenericBodies.Count > 0)
+            // Build VTables for any newly created types. This must happen unconditionally
+            // when types were added — not just when deferred bodies exist. Types with only
+            // abstract virtual methods (e.g., Iterator<T>) don't add deferred bodies, but
+            // still need vtables built so callvirt in subsequent batches can resolve slots.
+            if (_module.Types.Count > prevTypeCountForVtable || _deferredGenericBodies.Count > 0)
             {
                 foreach (var irType in _module.Types)
                     BuildVTableRecursive(irType, _vtableBuilt);

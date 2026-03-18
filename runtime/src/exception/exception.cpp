@@ -60,33 +60,6 @@ extern TypeInfo TaskCanceledException_TypeInfo;
 extern TypeInfo KeyNotFoundException_TypeInfo;
 
 [[noreturn]] void throw_exception(Exception* ex) {
-#ifndef NDEBUG
-    // Debug-only: trace exception type and stack trace
-    if (ex) {
-        const char* typeName = "?";
-        auto* obj = reinterpret_cast<Object*>(ex);
-        if (obj->__type_info && obj->__type_info->name) typeName = obj->__type_info->name;
-        const char* msg = "(no msg)";
-        char* msgBuf = nullptr;
-        if (ex->f__message) {
-            msgBuf = string_to_utf8(ex->f__message);
-            if (msgBuf) msg = msgBuf;
-        }
-        fprintf(stderr, "DBG THROW: type=%s msg=%s\n", typeName, msg); fflush(stderr);
-        if (msgBuf) free(msgBuf);
-        auto* trace = capture_stack_trace();
-        if (trace) {
-            auto* traceStr = string_to_utf8(trace);
-            if (traceStr) {
-                fprintf(stderr, "  at:\n%s\n", traceStr); fflush(stderr);
-                free(traceStr);
-            }
-        }
-    } else {
-        fprintf(stderr, "DBG THROW: null exception\n"); fflush(stderr);
-    }
-#endif
-
     // Capture stack trace for user-thrown exceptions that don't have one yet.
     // Runtime throw_* functions already set this via create_exception(),
     // but user code (throw new Exception(...)) goes through newobj + .ctor

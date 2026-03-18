@@ -18,13 +18,16 @@
 #include <cil2cpp/gchandle.h>
 #include <cil2cpp/threadpool.h>
 #include <cil2cpp/iocp.h>
+#include <cil2cpp/delegate.h>
 
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 #include <string>
 #include <thread>
+#include <unordered_map>
 
 #if defined(_MSC_VER)
 #include <intrin.h>
@@ -45,6 +48,10 @@
 // Forward declaration: IThreadPoolWorkItem TypeInfo (defined in generated code at global scope)
 // Forward declaration for compiled BCL dispatch function (C++ linkage, matches generated code)
 void System_Threading_ThreadPoolWorkQueue_DispatchWorkItem(cil2cpp::Object* workItem, cil2cpp::ManagedThread* currentThread);
+
+// Forward declarations: TypeInfos defined in generated code at global scope
+extern cil2cpp::TypeInfo System_AttributeUsageAttribute_TypeInfo;
+extern cil2cpp::TypeInfo System_RuntimeType_TypeInfo;
 
 namespace cil2cpp {
 namespace icall {
@@ -583,20 +590,33 @@ Object* Enum_InternalBoxEnum(void* enumType, Int64 value) {
 }
 
 Int32 Enum_InternalGetCorElementType(void* methodTable) {
-    // Receives a MethodTable* which maps to TypeInfo* in our AOT runtime.
-    // Called from BCL IL: RuntimeHelpers.GetMethodTable(this) → InternalGetCorElementType(mt).
+    // Called from two contexts:
+    // 1. BCL IL: RuntimeHelpers.GetMethodTable(this) → InternalGetCorElementType(mt) — TypeInfo* directly
+    // 2. Compiled enum methods: Enum.GetNamesNoCopy(RuntimeType*) → InternalGetCorElementType(enumType) — Type*
+    // Detect which by checking if pointer looks like a Type object (has __type_info as first field).
+    if (!methodTable) return 0;
+
     auto* typeInfo = reinterpret_cast<TypeInfo*>(methodTable);
-    if (!typeInfo) return 0;
-    if (typeInfo && typeInfo->underlying_type && typeInfo->underlying_type->cor_element_type != 0) {
+
+    // If this is actually a RuntimeType (Type*) object, extract its type_info field.
+    // Heuristic: if the first field (which would be __type_info for a Type* object)
+    // points to the System_RuntimeType_TypeInfo or another known TypeInfo, then it's a Type*.
+    auto* asObj = reinterpret_cast<Object*>(methodTable);
+    if (asObj->__type_info == &::System_RuntimeType_TypeInfo) {
+        // It's a RuntimeType object — extract the represented type's TypeInfo
+        auto* typeObj = reinterpret_cast<Type*>(methodTable);
+        typeInfo = typeObj->type_info;
+        if (!typeInfo) return cor_element_type::I4;
+    }
+
+    if (typeInfo->underlying_type && typeInfo->underlying_type->cor_element_type != 0) {
         return static_cast<Int32>(typeInfo->underlying_type->cor_element_type);
     }
-    if (typeInfo) {
-        switch (typeInfo->element_size) {
-            case 1: return cor_element_type::I1;
-            case 2: return cor_element_type::I2;
-            case 4: return cor_element_type::I4;
-            case 8: return cor_element_type::I8;
-        }
+    switch (typeInfo->element_size) {
+        case 1: return cor_element_type::I1;
+        case 2: return cor_element_type::I2;
+        case 4: return cor_element_type::I4;
+        case 8: return cor_element_type::I8;
     }
     return cor_element_type::I4;
 }
@@ -919,6 +939,41 @@ Boolean MethodBase_get_IsAbstract(void* __this) {
     return ni && (ni->flags & 0x0400); // MethodAttributes.Abstract
 }
 
+Boolean MethodBase_get_IsFinal(void* __this) {
+    auto* ni = get_native_method_info(__this);
+    return ni && (ni->flags & 0x0020); // MethodAttributes.Final
+}
+
+Boolean FieldInfo_get_IsPublic(void* __this) {
+    auto* fi = static_cast<ManagedFieldInfo*>(static_cast<Object*>(__this));
+    if (!fi || !fi->native_info) return false;
+    return (fi->native_info->flags & 0x0007) == 0x0006; // Public
+}
+
+Boolean FieldInfo_get_IsPrivate(void* __this) {
+    auto* fi = static_cast<ManagedFieldInfo*>(static_cast<Object*>(__this));
+    if (!fi || !fi->native_info) return false;
+    return (fi->native_info->flags & 0x0007) == 0x0001; // Private
+}
+
+Boolean FieldInfo_get_IsInitOnly(void* __this) {
+    auto* fi = static_cast<ManagedFieldInfo*>(static_cast<Object*>(__this));
+    if (!fi || !fi->native_info) return false;
+    return (fi->native_info->flags & 0x0020) != 0; // InitOnly
+}
+
+Boolean FieldInfo_get_IsLiteral(void* __this) {
+    auto* fi = static_cast<ManagedFieldInfo*>(static_cast<Object*>(__this));
+    if (!fi || !fi->native_info) return false;
+    return (fi->native_info->flags & 0x0040) != 0; // Literal
+}
+
+Boolean FieldInfo_get_IsSpecialName(void* __this) {
+    auto* fi = static_cast<ManagedFieldInfo*>(static_cast<Object*>(__this));
+    if (!fi || !fi->native_info) return false;
+    return (fi->native_info->flags & 0x0200) != 0; // SpecialName
+}
+
 Boolean Type_get_IsNotPublic(void* __this) {
     auto* t = get_type_from_this(__this);
     if (!t || !t->type_info) return false;
@@ -1017,6 +1072,285 @@ void* StackFrameHelper_GetMethodBase(void* /*__this*/, Int32 /*index*/) {
 void* StackFrame_GetMethod(void* /*__this*/) {
     // AOT limitation: no JIT-style stack walking. Would need IP→MethodInfo mapping.
     return nullptr;
+}
+
+// ===== RuntimeTypeCache member list ICalls =====
+// RuntimeTypeCache has layout: [Object header] | RuntimeType* m_runtimeType | ...
+// We extract the TypeInfo* from the RuntimeType to call our reflection API.
+static TypeInfo* _get_typeinfo_from_cache(void* cache_this) {
+    if (!cache_this) return nullptr;
+    auto* base = reinterpret_cast<uint8_t*>(cache_this);
+    // f_m_runtimeType is the first field after Object header
+    auto* rt = *reinterpret_cast<Type**>(base + sizeof(Object));
+    return rt ? rt->type_info : nullptr;
+}
+
+void* RuntimeTypeCache_GetMethodList(void* __this, int32_t listType, void* name) {
+    auto* ti = _get_typeinfo_from_cache(__this);
+    if (!ti) return gc::alloc_array(&System_Object_TypeInfo, 0);
+    auto* rt = *reinterpret_cast<Type**>(reinterpret_cast<uint8_t*>(__this) + sizeof(Object));
+
+    if (listType == 0 || !name) {
+        return type_get_methods(rt);
+    }
+
+    auto* nameUtf8 = string_to_utf8(reinterpret_cast<String*>(name));
+    if (!nameUtf8) return gc::alloc_array(&System_Object_TypeInfo, 0);
+    auto* result = type_get_methods_by_name(rt, nameUtf8, listType);
+    free(nameUtf8);
+    return result;
+}
+
+void* RuntimeTypeCache_GetConstructorList(void* __this, int32_t /*listType*/, void* /*name*/) {
+    auto* ti = _get_typeinfo_from_cache(__this);
+    // Filter methods for .ctor entries
+    if (!ti) return gc::alloc_array(&System_Object_TypeInfo, 0);
+    auto* rt = *reinterpret_cast<Type**>(reinterpret_cast<uint8_t*>(__this) + sizeof(Object));
+    auto* allMethods = type_get_methods(rt);
+    if (!allMethods) return gc::alloc_array(&System_Object_TypeInfo, 0);
+    // Count constructors
+    auto len = array_length(allMethods);
+    auto** data = reinterpret_cast<ManagedMethodInfo**>(array_data(allMethods));
+    int32_t ctorCount = 0;
+    for (uint32_t i = 0; i < len; i++) {
+        if (data[i] && data[i]->native_info && data[i]->native_info->name) {
+            if (std::strcmp(data[i]->native_info->name, ".ctor") == 0)
+                ctorCount++;
+        }
+    }
+    auto* result = static_cast<Array*>(gc::alloc_array(&System_Object_TypeInfo, ctorCount));
+    auto** out = reinterpret_cast<ManagedMethodInfo**>(array_data(result));
+    int32_t idx = 0;
+    for (uint32_t i = 0; i < len; i++) {
+        if (data[i] && data[i]->native_info && data[i]->native_info->name) {
+            if (std::strcmp(data[i]->native_info->name, ".ctor") == 0)
+                out[idx++] = data[i];
+        }
+    }
+    return result;
+}
+
+void* RuntimeTypeCache_GetFieldList(void* __this, int32_t listType, void* name) {
+    auto* ti = _get_typeinfo_from_cache(__this);
+    if (!ti) return gc::alloc_array(&System_Object_TypeInfo, 0);
+    auto* rt = *reinterpret_cast<Type**>(reinterpret_cast<uint8_t*>(__this) + sizeof(Object));
+
+    if (listType == 0 || !name) {
+        return type_get_fields(rt);
+    }
+
+    auto* nameUtf8 = string_to_utf8(reinterpret_cast<String*>(name));
+    if (!nameUtf8) return gc::alloc_array(&System_Object_TypeInfo, 0);
+    auto* result = type_get_fields_by_name(rt, nameUtf8, listType);
+    free(nameUtf8);
+    return result;
+}
+
+void* RuntimeTypeCache_GetPropertyList(void* __this, int32_t listType, void* name) {
+    auto* ti = _get_typeinfo_from_cache(__this);
+    if (!ti) {
+        return gc::alloc_array(&System_Object_TypeInfo, 0);
+    }
+    auto* rt = *reinterpret_cast<Type**>(reinterpret_cast<uint8_t*>(__this) + sizeof(Object));
+
+    if (listType == 0 || !name) {
+        return type_get_properties(rt);
+    }
+
+    auto* nameUtf8 = string_to_utf8(reinterpret_cast<String*>(name));
+    if (!nameUtf8) return gc::alloc_array(&System_Object_TypeInfo, 0);
+    auto* result = type_get_properties_by_name(rt, nameUtf8, listType);
+    free(nameUtf8);
+    return result;
+}
+
+void* RuntimeTypeCache_GetEventList(void* __this, int32_t /*listType*/, void* /*name*/) {
+    // Events are not tracked in our reflection system — return empty array
+    return gc::alloc_array(&System_Object_TypeInfo, 0);
+}
+
+// ===== System.Reflection.CustomAttribute (AOT attribute handling) =====
+// In AOT, metadata tokens don't exist, so CLR's CustomAttribute methods that
+// depend on MetadataImport are replaced with sensible defaults.
+
+Object* CustomAttribute_GetAttributeUsage(void* /*decoratedAttribute*/) {
+    // Return a default AttributeUsageAttribute(AttributeTargets.All, Inherited=true, AllowMultiple=false).
+    // Generated struct layout:
+    //   __type_info (8), __sync_block (4), f__attributeTarget (int32, 4), f__allowMultiple (bool, 1), f__inherited (bool, 1)
+    // AttributeTargets.All = 0x7FFF (32767)
+    constexpr int32_t AttributeTargets_All = 0x7FFF;
+    // System_AttributeUsageAttribute_TypeInfo is in generated code (global scope)
+    auto* obj = static_cast<Object*>(gc::alloc(24, &::System_AttributeUsageAttribute_TypeInfo));
+    auto* data = reinterpret_cast<char*>(obj);
+    // f__attributeTarget at offset 12
+    *reinterpret_cast<int32_t*>(data + 12) = AttributeTargets_All;
+    // f__allowMultiple at offset 16
+    *reinterpret_cast<bool*>(data + 16) = false;
+    // f__inherited at offset 17
+    *reinterpret_cast<bool*>(data + 17) = true;
+    return obj;
+}
+
+
+// ===== RuntimeType.get_Cache =====
+// The compiled-from-IL get_Cache() accesses f_m_cache field on RuntimeType,
+// which overlaps with cil2cpp::Type::type_info pointer — corrupting the Type.
+// This ICall uses a separate cache map instead.
+
+} // namespace icall (temporarily close for extern)
+} // namespace cil2cpp
+
+// Forward declaration: RuntimeTypeCache TypeInfo (defined in generated code at global scope)
+extern cil2cpp::TypeInfo System_RuntimeType_RuntimeTypeCache_TypeInfo;
+
+namespace cil2cpp {
+namespace icall {
+
+// RuntimeTypeCache struct layout (from generated header):
+// offset 0:  __type_info (8)
+// offset 8:  __sync_block (4)
+// offset 12: f_m_runtimeType (8) — pointer to RuntimeType (our Type*)
+// offset 20: f_m_enclosingType (8)
+// offset 28: f_m_typeCode (4)
+// ... (rest is zeroed)
+
+static std::mutex g_type_cache_mutex;
+static std::unordered_map<TypeInfo*, Object*> g_type_cache_map;
+
+void* RuntimeType_get_Cache(void* __this) {
+    auto* type = reinterpret_cast<Type*>(__this);
+    if (!type || !type->type_info) return nullptr;
+
+    std::lock_guard lock(g_type_cache_mutex);
+    auto it = g_type_cache_map.find(type->type_info);
+    if (it != g_type_cache_map.end()) return it->second;
+
+    // Allocate a RuntimeTypeCache object (176 bytes should be enough)
+    // The exact size doesn't matter much — GC-allocated, zeroed
+    auto* cache = gc::alloc(176, &System_RuntimeType_RuntimeTypeCache_TypeInfo);
+    auto* data = reinterpret_cast<char*>(cache);
+    // Set f_m_runtimeType at offset sizeof(Object) — first field after Object header
+    *reinterpret_cast<void**>(data + sizeof(Object)) = __this;
+
+    g_type_cache_map[type->type_info] = static_cast<Object*>(cache);
+    return cache;
+}
+
+// ===== RuntimeType reflection impl =====
+// Bypass compiled-from-IL method/field/property resolution that depends on
+// CLR internal APIs (DefaultBinder.CompareMethodSig, MetadataImport).
+// Use our runtime reflection system instead.
+
+static Type* _get_type_from_runtime_type(void* __this) {
+    // __this is a RuntimeType*, which IS a Type* (inherits from it)
+    return reinterpret_cast<Type*>(__this);
+}
+
+void* RuntimeType_GetMethodImpl(void* __this, void* name, Int32 /*genericParamCount*/,
+    Int32 /*bindingAttr*/, void* /*binder*/, Int32 /*callConv*/, void* /*types*/, void* /*modifiers*/)
+{
+    auto* t = _get_type_from_runtime_type(__this);
+    if (!t || !name) return nullptr;
+    return type_get_method(t, reinterpret_cast<String*>(name));
+}
+
+void* RuntimeType_GetFieldImpl(void* __this, void* name, Int32 /*bindingAttr*/) {
+    auto* t = _get_type_from_runtime_type(__this);
+    if (!t || !name) return nullptr;
+    return type_get_field(t, reinterpret_cast<String*>(name));
+}
+
+void* RuntimeType_GetPropertyImpl(void* __this, void* name, Int32 /*bindingAttr*/,
+    void* /*binder*/, void* /*returnType*/, void* /*types*/, void* /*modifiers*/)
+{
+    auto* t = _get_type_from_runtime_type(__this);
+    if (!t || !name) return nullptr;
+    return type_get_property(t, reinterpret_cast<String*>(name));
+}
+
+} // namespace icall
+
+// ===== Newtonsoft.Json AOT delegate factories =====
+// ExpressionReflectionDelegateFactory uses Expression.Compile() (JIT-only).
+// These provide AOT-compatible alternatives by creating delegates that wrap
+// runtime reflection calls (PropertyInfo.GetValue, FieldInfo.GetValue, etc.).
+
+// Delegate_TypeInfo defined in System.Delegate.cpp
+extern TypeInfo Delegate_TypeInfo;
+
+namespace {
+
+// Trampoline: Func<object,object> for PropertyInfo.GetValue
+// Called as method_ptr(target=PropertyInfo, arg=targetObject)
+Object* _property_get_trampoline(Object* captured_pi, Object* target_obj) {
+    auto* pi = reinterpret_cast<ManagedPropertyInfo*>(captured_pi);
+    return propertyinfo_get_value(pi, target_obj, nullptr);
+}
+
+// Trampoline: Action<object,object> for PropertyInfo.SetValue
+// Called as method_ptr(target=PropertyInfo, arg1=targetObject, arg2=value)
+void _property_set_trampoline(Object* captured_pi, Object* target_obj, Object* value) {
+    auto* pi = reinterpret_cast<ManagedPropertyInfo*>(captured_pi);
+    propertyinfo_set_value(pi, target_obj, value, nullptr);
+}
+
+// Trampoline: Func<object,object> for FieldInfo.GetValue
+Object* _field_get_trampoline(Object* captured_fi, Object* target_obj) {
+    auto* fi = reinterpret_cast<ManagedFieldInfo*>(captured_fi);
+    return fieldinfo_get_value(fi, target_obj);
+}
+
+// Trampoline: Action<object,object> for FieldInfo.SetValue
+void _field_set_trampoline(Object* captured_fi, Object* target_obj, Object* value) {
+    auto* fi = reinterpret_cast<ManagedFieldInfo*>(captured_fi);
+    fieldinfo_set_value(fi, target_obj, value);
+}
+
+// Trampoline: Func<object> for default constructor
+// Called as method_ptr(target=Type)
+Object* _default_ctor_trampoline(Object* captured_type) {
+    auto* t = reinterpret_cast<Type*>(captured_type);
+    if (!t || !t->type_info) throw_null_reference();
+    auto* ti = t->type_info;
+    auto* obj = static_cast<Object*>(gc::alloc(ti->instance_size, ti));
+    if (ti->default_ctor) {
+        reinterpret_cast<void(*)(Object*)>(ti->default_ctor)(obj);
+    }
+    return obj;
+}
+
+} // anonymous namespace
+
+namespace icall {
+
+void* reflection_create_get_property(void* /*__this*/, void* propertyInfo) {
+    auto* pi = reinterpret_cast<Object*>(propertyInfo);
+    if (!pi) throw_null_reference();
+    return delegate_create(&Delegate_TypeInfo, pi, reinterpret_cast<void*>(&_property_get_trampoline));
+}
+
+void* reflection_create_set_property(void* /*__this*/, void* propertyInfo) {
+    auto* pi = reinterpret_cast<Object*>(propertyInfo);
+    if (!pi) throw_null_reference();
+    return delegate_create(&Delegate_TypeInfo, pi, reinterpret_cast<void*>(&_property_set_trampoline));
+}
+
+void* reflection_create_get_field(void* /*__this*/, void* fieldInfo) {
+    auto* fi = reinterpret_cast<Object*>(fieldInfo);
+    if (!fi) throw_null_reference();
+    return delegate_create(&Delegate_TypeInfo, fi, reinterpret_cast<void*>(&_field_get_trampoline));
+}
+
+void* reflection_create_set_field(void* /*__this*/, void* fieldInfo) {
+    auto* fi = reinterpret_cast<Object*>(fieldInfo);
+    if (!fi) throw_null_reference();
+    return delegate_create(&Delegate_TypeInfo, fi, reinterpret_cast<void*>(&_field_set_trampoline));
+}
+
+void* reflection_create_default_ctor(void* /*__this*/, void* type) {
+    auto* t = reinterpret_cast<Object*>(type);
+    if (!t) throw_null_reference();
+    return delegate_create(&Delegate_TypeInfo, t, reinterpret_cast<void*>(&_default_ctor_trampoline));
 }
 
 } // namespace icall

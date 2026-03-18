@@ -17,6 +17,7 @@ public partial class IRBuilder
         public const int ToStringSlot = 0;
         public const int EqualsSlot = 1;
         public const int GetHashCodeSlot = 2;
+        public const int FinalizeSlot = 3;
     }
 
     // Type classification is centralized in RuntimeTypeRegistry.
@@ -660,7 +661,14 @@ public partial class IRBuilder
         // Pass 3.5: Create specialized methods for each generic method instantiation
         CreateGenericMethodSpecializations();
 
-        // Pass 3.5b: Drain deferred generic bodies discovered during Pass 3.5.
+        // Pass 3.5a: Recover specialized methods whose keys were added during Pass 3.5.
+        // Generic method specializations (e.g., Enumerable.ToArray<Attribute>) call
+        // EnsureBodyReferencedTypesExist which resolves generic parameters and adds keys
+        // to _calledSpecializedMethods. Methods skipped in Pass 1.5 (not yet in the set)
+        // can now be recovered. This must run even if _deferredGenericBodies is empty.
+        RecoverSkippedSpecializedMethods();
+
+        // Pass 3.5b: Drain deferred generic bodies discovered during Pass 3.5/3.5a.
         // CreateGenericMethodSpecializations calls EnsureBodyReferencedTypesExist which may
         // discover new generic types (e.g., AsyncStateMachineBox<TResult,TStateMachine>)
         // and add their methods to _deferredGenericBodies. These weren't in the queue during
@@ -837,6 +845,29 @@ public partial class IRBuilder
     }
 
     /// <summary>
+    /// Recover specialized methods whose keys are now in _calledSpecializedMethods but were
+    /// skipped during CreateGenericSpecializations (Pass 1.5). This handles the timing gap
+    /// where generic method specializations (Pass 3.5) discover calls to methods on generic
+    /// type specializations via EnsureBodyReferencedTypesExist — resolving TSource→Attribute
+    /// in calls like Iterator&lt;TSource&gt;.ToArray() → Iterator&lt;Attribute&gt;.ToArray().
+    /// </summary>
+    private void RecoverSkippedSpecializedMethods()
+    {
+        for (int i = _skippedSpecializedMethods.Count - 1; i >= 0; i--)
+        {
+            var (specKey, cecilMethod, irMethod, typeParamMap) = _skippedSpecializedMethods[i];
+            if (_calledSpecializedMethods.Contains(specKey) && irMethod.BasicBlocks.Count == 0)
+            {
+                _skippedSpecializedMethods.RemoveAt(i);
+                if (HasClrInternalDependencies(cecilMethod))
+                    GenerateStubBody(irMethod);
+                else
+                    _deferredGenericBodies.Add((cecilMethod, irMethod, typeParamMap));
+            }
+        }
+    }
+
+    /// <summary>
     /// After Pass 5 builds interface vtable entries, compile method bodies that are needed
     /// for interface dispatch but were skipped during CreateGenericSpecializations
     /// (shouldCompile was false because the method wasn't in _calledSpecializedMethods).
@@ -908,7 +939,65 @@ public partial class IRBuilder
                 dimCompiled++;
         }
 
-        Console.Error.WriteLine($"[CIL2CPP] Pass 5.1: {recoveredCount} generic recovered, {dimCompiled}/{dimMethodsToCompile.Count} DIM compiled ({methodsToCompile.Count} concrete uncompiled)");
+        // Phase C: Compile inherited interface implementation methods from Cecil.
+        // When a constructed type's interface vtable entry points to a method on a non-generic
+        // BASE class (e.g., SZGenericArrayEnumeratorBase.MoveNext inherited by SZGenericArrayEnumerator<T>),
+        // the base method may not have been compiled in Pass 3 (reachability only saw interface dispatch).
+        // Only compile methods where the declaring type differs from the constructed type that needs it
+        // AND the declaring type is a non-generic type (has matching Cecil definition in _allTypes).
+        int nonGenericCompiled = 0;
+        // Collect inherited base-class methods from ALL types (not just constructed).
+        // Some types are instantiated at runtime without IL newobj (e.g., SZGenericArrayEnumerator<T>
+        // by array_iface_get_enumerator). Their interface vtable entries point to uncompiled
+        // base class methods that must be compiled for interface dispatch to work.
+        // Only collect methods whose declaring type differs from the scanned type (inherited).
+        var baseClassMethods = new HashSet<IRMethod>();
+        foreach (var type in _module.Types)
+        {
+            if (type.IsInterface) continue;
+            if (type.InterfaceImpls.Count == 0) continue;
+
+            foreach (var impl in type.InterfaceImpls)
+            {
+                foreach (var m in impl.MethodImpls)
+                {
+                    if (m == null || m.BasicBlocks.Count > 0) continue;
+                    if (m.IsAbstract || m.IsInternalCall || m.HasICallMapping) continue;
+                    if (m.DeclaringType != null && m.DeclaringType.IsInterface) continue; // DIM
+                    // Only recover inherited methods (declaring type != scanned type)
+                    if (m.DeclaringType != null && m.DeclaringType != type)
+                        baseClassMethods.Add(m);
+                }
+            }
+        }
+        foreach (var method in baseClassMethods)
+        {
+            if (skippedByMethod.ContainsKey(method)) continue; // Handled in Phase A
+            if (method.BasicBlocks.Count > 0) continue;
+            if (method.DeclaringType == null) continue;
+
+            var typeDef = _allTypes.FirstOrDefault(t => t.FullName == method.DeclaringType.ILFullName);
+            if (typeDef == null) continue;
+
+            // Match by name, parameter count, AND parameter types to avoid wrong overload
+            var irParamTypes = method.Parameters.Select(p => p.ILTypeName).ToList();
+            var cecilMethodInfo = typeDef.Methods.FirstOrDefault(m =>
+                m.Name == method.Name &&
+                m.Parameters.Count == method.Parameters.Count &&
+                m.HasBody && !m.IsAbstract && !m.IsInternalCall &&
+                m.Parameters.Select(p => p.TypeName).SequenceEqual(irParamTypes));
+            if (cecilMethodInfo == null) continue;
+
+            if (HasClrInternalDependencies(cecilMethodInfo.GetCecilMethod()))
+                GenerateStubBody(method);
+            else
+            {
+                ConvertMethodBody(cecilMethodInfo, method);
+                nonGenericCompiled++;
+            }
+        }
+
+        Console.Error.WriteLine($"[CIL2CPP] Pass 5.1: {recoveredCount} generic recovered, {dimCompiled}/{dimMethodsToCompile.Count} DIM compiled, {nonGenericCompiled} non-generic base compiled ({methodsToCompile.Count} concrete uncompiled)");
 
         // Process recovered methods through ConvertDeferredGenericBodies
         if (recoveredCount > 0 || dimCompiled > 0)

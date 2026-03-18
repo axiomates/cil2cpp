@@ -204,6 +204,7 @@ struct FieldInfo {
     UInt32 flags;
     CustomAttributeInfo* custom_attributes;
     UInt32 custom_attribute_count;
+    int64_t constant_value;     // For Literal fields (enum constants, const fields)
 };
 
 /**
