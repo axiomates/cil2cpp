@@ -195,9 +195,9 @@ cmake --build runtime/tests/build --config Debug
 ctest --test-dir runtime/tests/build -C Debug --output-on-failure
 ```
 
-### 端到端集成测试（87 个）
+### 端到端集成测试（93 个）
 
-完整编译流水线：C# `.csproj` → codegen → CMake configure → C++ build → run → 验证输出。覆盖 14 个测试项目，包括 NuGet 包验证（Newtonsoft.Json 13.0.3）。
+完整编译流水线：C# `.csproj` → codegen → CMake configure → C++ build → run → 验证输出。覆盖 15 个测试项目，包括 NuGet + DI 生态验证。
 
 ```bash
 python tools/dev.py integration

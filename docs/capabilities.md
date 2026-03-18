@@ -8,17 +8,17 @@
 
 ## Overview
 
-CIL2CPP is a C# → C++ AOT compiler (similar to Unity IL2CPP). Currently supports complete C# syntax (100% IL opcode coverage), BCL compiled from IL (Unity IL2CPP architecture), ~484 ICall entries. 1,291 C# + 576 C++ + 87 integration tests all passing. First NuGet package (Newtonsoft.Json 13.0.3) fully validated.
+CIL2CPP is a C# → C++ AOT compiler (similar to Unity IL2CPP). Currently supports complete C# syntax (100% IL opcode coverage), BCL compiled from IL (Unity IL2CPP architecture), ~490 ICall entries. 1,291 C# + 576 C++ + 93 integration tests all passing. NuGet packages validated: Newtonsoft.Json 13.0.3 + DI ecosystem (DITest with 3 NuGet packages).
 
 ## Key Metrics
 
 | Metric | Count |
 |--------|-------|
 | IL opcode coverage | **100%** (all ~230 ECMA-335 opcodes) |
-| ICallRegistry entries | **~484** (covering 30+ categories) |
+| ICallRegistry entries | **~490** (covering 30+ categories) |
 | C# compiler tests | **1,291** (xUnit) |
 | C++ runtime tests | **576** (Google Test, 17 test files) |
-| End-to-end integration tests | **87** (14 test projects) |
+| End-to-end integration tests | **93** (15 test projects) |
 | Runtime headers | **32** |
 
 ---
@@ -134,7 +134,7 @@ CIL2CPP is a C# → C++ AOT compiler (similar to Unity IL2CPP). Currently suppor
 
 ---
 
-## ICallRegistry Breakdown (~484 entries)
+## ICallRegistry Breakdown (~490 entries)
 
 | Category | Count | Description |
 |----------|-------|-------------|
@@ -319,6 +319,6 @@ FileStream / StreamReader / StreamWriter compile from BCL IL and work end-to-end
 | TypedReference | 11 |
 | **Total** | **576** |
 
-### End-to-End Integration Tests (87)
+### End-to-End Integration Tests (93)
 
-Full compilation pipeline: C# `.csproj` → codegen → CMake configure → C++ build → run → verify output. Covers 14 test projects: HelloWorld, ArrayTest, FeatureTest, ArglistTest, MultiAssemblyTest, SystemIOTest, FileStreamTest, SocketTest, HttpGetTest, HttpTest, HttpsGetTest, DirTest, JsonSGTest, NuGetSimpleTest (Newtonsoft.Json 13.0.3). Also includes Debug configuration and library project tests.
+Full compilation pipeline: C# `.csproj` → codegen → CMake configure → C++ build → run → verify output. Covers 15 test projects: HelloWorld, ArrayTest, FeatureTest, ArglistTest, MultiAssemblyTest, SystemIOTest, FileStreamTest, SocketTest, HttpGetTest, HttpTest, HttpsGetTest, DirTest, JsonSGTest, NuGetSimpleTest (Newtonsoft.Json 13.0.3), DITest (DI+Logging+Console). Also includes Debug configuration and library project tests.

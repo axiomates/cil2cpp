@@ -2,7 +2,7 @@
 
 An AOT compiler that compiles .NET/C# programs into native C++ code, similar to Unity IL2CPP.
 
-**Positioning**: General-purpose AOT compiler targeting .NET NativeAOT-level coverage. Uses Unity IL2CPP architecture — all BCL IL method bodies are compiled directly to C++, with only the lowest-level `[InternalCall]` C++ implementations (~484 icalls) retained.
+**Positioning**: General-purpose AOT compiler targeting .NET NativeAOT-level coverage. Uses Unity IL2CPP architecture — all BCL IL method bodies are compiled directly to C++, with only the lowest-level `[InternalCall]` C++ implementations (~490 icalls) retained.
 
 ```
 .csproj → dotnet build → .NET DLL (IL) → Mono.Cecil → IR (8 passes) → C++ source + CMakeLists.txt → native executable
@@ -111,10 +111,10 @@ void Program_Main() {
 | Metric | Count |
 |--------|-------|
 | IL opcode coverage | 100% (all ~230 ECMA-335 opcodes) |
-| ICallRegistry entries | ~484 |
+| ICallRegistry entries | ~490 |
 | C# compiler tests | 1,291 (xUnit) |
 | C++ runtime tests | 600 (Google Test) |
-| End-to-end integration tests | 69 |
+| End-to-end integration tests | 93 (15 test projects) |
 
 ## Documentation
 

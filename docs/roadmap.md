@@ -1,6 +1,6 @@
 # Development Roadmap
 
-> Last updated: 2026-03-18
+> Last updated: 2026-03-19
 >
 > [中文版 (Chinese)](roadmap.zh-CN.md)
 
@@ -37,7 +37,7 @@ These are required before CIL2CPP can claim "compiles .NET NativeAOT projects":
 | Compression | E.2 | zlib via System.IO.Compression.Native |
 | RenderedBodyError → 0 | H.2 | Fix remaining codegen bugs (17 RE stubs in HelloWorld baseline, not blocking NuGet) |
 | SIMD scalar completion | F.1 | Eliminate remaining SIMD stubs via complete scalar fallback paths |
-| 10 NuGet package validation | G.2 | Prove real-world packages compile and run (1/10: Newtonsoft.Json ✅) |
+| 10 NuGet package validation | G.2 | Prove real-world packages compile and run (2/10: Newtonsoft.Json ✅, DI+Logging+Console ✅) |
 
 #### Deferred (after Must-Implement is complete)
 
@@ -157,7 +157,7 @@ See "RuntimeProvided Type Classification" section above.
 **Unfixable or deferred**: SIMD dead-code branches are handled by FeatureSwitchResolver (IsSupported=false dead-branch elimination). CLR internal types (~96) are permanently retained.
 
 **IL translation rate**: ~95%+. History: Phase A: 2,777 → 1,478; Phase B: 1,478 → 1,537; Phase C: → 1,666; Phase X + demand-driven generics: → 1,280 (method count also reduced ~26k from ~31k via specialized method reachability).
-**Tests**: 1,291 C# + 576 C++ + 87 integration — all passing.
+**Tests**: 1,291 C# + 576 C++ + 93 integration (15 test projects) — all passing.
 
 ### Implemented Architecture Capabilities
 
@@ -177,23 +177,24 @@ See "RuntimeProvided Type Classification" section above.
 | Network apps (HTTPS) | ~85% | SChannel TLS working for basic HTTPS GET; edge cases pending |
 | JSON serialization | ~85% | System.Text.Json SG ✅ + Newtonsoft.Json 13.0.3 ✅ — both proven end-to-end |
 | REST client (HTTP+JSON) | ~80% | HTTP + JSON both working end-to-end; needs more validation |
-| NuGet packages (simple) | ~65% | Newtonsoft.Json proven (3.1M lines, 385s); needs 2+ more libraries for M4 |
-| Production-grade apps | ~15% | Needs DI + logging + config ecosystem |
-| Arbitrary NativeAOT .csproj | **~40%** | Large assembly scale proven (3.1M lines), stubs remain, `[MarshalAs]` partial |
+| NuGet packages (simple) | ~75% | Newtonsoft.Json ✅ + DI+Logging+Console ✅ (3 NuGet packages in one project). M4 achieved. |
+| Production-grade apps | ~40% | DI + logging ecosystem working (DITest). Config + compression pending |
+| Arbitrary NativeAOT .csproj | **~50%** | Large assembly scale proven (3.1M lines), DI ecosystem working, stubs remain, `[MarshalAs]` partial |
 
 > **Linux/macOS**: Deferred. All percentages above are Windows-only. Linux requires System.Native integration (Phase B.5, deferred) + OpenSSL (Phase E.linux, deferred). Current Linux support: ~5% (console-only, no file I/O or networking).
 
 **What moves the needle** (cumulative, Windows):
-- **40%→55%**: More NuGet packages (3+ for M4) + codegen performance optimization (385s → target <120s)
-- **55%→70%**: Stub reduction (4,572 in NuGetSimpleTest) + compression (zlib) + MarshalAs completion
-- **70%→85%**: DI/logging ecosystem + SIMD scalar completion + complex HTTP scenarios
+- **50%→60%**: Codegen performance optimization (385s → target <120s) + more NuGet packages (Serilog, Polly)
+- **60%→75%**: Stub reduction (4,572 in NuGetSimpleTest) + compression (zlib) + MarshalAs completion + SIMD scalar completion
+- **75%→85%**: Complex HTTP scenarios + config ecosystem + more reflection completeness
 - **85%→95%**: 10 NuGet package validation + comprehensive testing + edge case polish
 
 **Implementation gaps** (2026-03-18 audit):
 - `[DynamicallyAccessedMembers]` — **complete (validated)**: 13 DamFlags, field/method/parameter scanning, CLI `--rdxml` wired, 7 DAM reachability tests + 14 rd.xml parser tests
 - ILLink feature switches — **active**: FeatureSwitchResolver substitutes 10+ AOT defaults at compile time. SIMD IsSupported=false dead-branch elimination via brfalse pattern detection + 4-layer SIMD dead-code elimination.
 - `[MarshalAs]` attribute — **implemented** (C.7.1): Cecil parsing + 21 type mappings. Missing: `[Out]`/`[In]` copy-back (C.7.2), LPArray runtime marshaling (C.7.3)
-- NuGet PackageReference — **✅ fully validated** (Phase 14): NuGetSimpleTest (Newtonsoft.Json 13.0.3) compiles and runs end-to-end (3.1M lines, 385s, 29,098 structs, ~95,632 methods). OOM issue resolved via demand-driven generic discovery + specialized method reachability.
+- NuGet PackageReference — **✅ fully validated** (Phase 14+15): NuGetSimpleTest (Newtonsoft.Json 13.0.3) + DITest (DI+Logging+Console, 3 NuGet packages) both compile and run end-to-end. OOM issue resolved via demand-driven generic discovery + specialized method reachability.
+- DI ecosystem — **✅ validated** (Phase 15): DITest with Microsoft.Extensions.DependencyInjection — constructor injection, singleton/transient lifetimes, reflection-based service resolution. M4 milestone achieved.
 - Source generator output — **✅ fully validated** (D.5): JsonSGTest with `[JsonSerializable]` compiles and runs end-to-end through CIL2CPP.
 
 ---
@@ -357,7 +358,7 @@ See "RuntimeProvided Type Classification" section above.
 | C.6 | Full HTTP GET (plaintext) | High | ✅ | HttpGetTest: full `HttpClient.GetStringAsync("http://...")` async request/response chain working. HttpsGetTest: HTTPS via SChannel (secur32/sspicli) also working. Both pass as integration tests. |
 
 **Prerequisites**: Phase B ✅
-**Output**: Socket + DNS + HttpClient HTTP GET + HTTPS GET all working (Windows). 87/87 integration tests pass.
+**Output**: Socket + DNS + HttpClient HTTP GET + HTTPS GET all working (Windows). 93/93 integration tests pass.
 
 ### ThreadPool Architecture Assessment (2026-03-02)
 
@@ -369,7 +370,7 @@ See "RuntimeProvided Type Classification" section above.
 - All async/await, Task combinators, continuations work with true concurrency
 - BCL ThreadPool ICalls (9 entries) are intentional no-ops — CIL2CPP routes work through its own C++ pool
 
-**What works** (verified by 576 runtime tests + 87 integration tests):
+**What works** (verified by 576 runtime tests + 93 integration tests):
 - `queue_work()` executes on worker threads (100 concurrent items ✅)
 - Task.Run / task_delay / task_when_all / task_when_any ✅
 - Continuations: thread-safe linked list, 400 concurrent registrations ✅
@@ -412,8 +413,8 @@ See "RuntimeProvided Type Classification" section above.
 
 | # | Task | Estimate | Status | Description |
 |---|------|----------|--------|-------------|
-| D.0 | NuGet package integration tests | Medium | ✅ Complete | NuGetSimpleTest (Phase 14): Newtonsoft.Json 13.0.3 compiles and runs end-to-end (3.1M lines, 385s, 29,098 structs, ~95,632 methods). OOM resolved via demand-driven generics + specialized method reachability. JsonSGTest (Phase 13): System.Text.Json SG also compiles and runs. 87/87 integration tests. |
-| D.1 | `[DynamicallyAccessedMembers]` parsing | Medium | ✅ Complete (validated) | ReachabilityAnalyzer.cs:184-815 — full 13-flag DAM parsing + SeedDynamicallyAccessedMembers(). CLI wired via `--rdxml`. Unit tests: 7 DAM reachability tests + 14 rd.xml parser tests. |
+| D.0 | NuGet package integration tests | Medium | ✅ Complete | NuGetSimpleTest (Phase 14): Newtonsoft.Json 13.0.3 (3.1M lines, 385s). DITest (Phase 15): DI+Logging+Console (3 NuGet packages, constructor injection, singleton/transient). JsonSGTest (Phase 13): System.Text.Json SG. 93/93 integration tests. |
+| D.1 | `[DynamicallyAccessedMembers]` parsing | Medium | ✅ Complete (validated) | ReachabilityAnalyzer.cs — full 13-flag DAM parsing + SeedDynamicallyAccessedMembers(). Includes DAM on generic method/type parameters (critical for DI: `AddSingleton<TService, [DAM] TImpl>()` preserves TImpl constructors). CLI `--rdxml`. 7 DAM tests + 14 rd.xml tests. |
 | D.2 | rd.xml parser | Low | ✅ Complete (validated) | RdXmlParser.cs — full XML parsing + PreservationRule mapping. CLI `--rdxml` option wired in Program.cs (codegen + analyze commands). |
 | D.3 | ILLink feature switch substitution | Medium | ✅ Active | FeatureSwitchResolver.cs (10 AOT defaults) + IRBuilder.Methods.cs:1372-1386 (Ldsfld substitution). Automatically active in all builds. |
 | D.4 | AOT compatibility warnings | Low | Pending | Report `[RequiresUnreferencedCode]` call chains |
@@ -531,8 +532,8 @@ macOS support (Objective-C bridge)
 | **M2: File I/O** | FileStream/StreamReader compile from BCL IL and run | B | ✅ Windows |
 | **M3: Networked Apps** | HttpClient HTTP GET compiles from BCL IL and runs | C.6 | ✅ HTTP + HTTPS GET working |
 | **M3.5: REST Client** | HTTP GET + JSON serialization end-to-end | C.6+D | ✅ JsonSGTest + NuGetSimpleTest (Newtonsoft.Json) |
-| **M4: Library Ecosystem** | Project with 3+ NuGet PackageReferences compiles and runs | D+G.2 | ⬅ **Next target** — 1/3 done (Newtonsoft.Json). Need 2+ more packages. |
-| **M5: Production-Grade** | HTTPS + Compression + DI/logging ecosystem | E+F | Not started |
+| **M4: Library Ecosystem** | Project with 3+ NuGet PackageReferences compiles and runs | D+G.2 | ✅ DITest (DI+Logging+Console = 3 NuGet packages) |
+| **M5: Production-Grade** | HTTPS + Compression + DI/logging ecosystem | E+F | In progress (HTTPS ✅, DI/logging ✅, compression pending) |
 | **M6: Release** | CI/CD + 10 real NuGet package validation | G | Not started |
 
 ## Metric Definitions
@@ -544,7 +545,7 @@ macOS support (Objective-C bridge)
 | IL translation rate | (total_methods - stubs) / total_methods | **~95%+** (1,280 stubs / ~26k methods) | >92% ✅ | >95% |
 | RuntimeProvided count | RuntimeProvidedTypes entries | **32** (was 40, -8) | ~32 | ~25 (Phase F.2) |
 | CoreRuntime count | Methods fully provided by C++ | 22 | ~22 | ~10 (Phase F.4) |
-| ICall count | C++ internal calls | **~484** | ~400 | Stabilize (features come from BCL IL, not ICall) |
+| ICall count | C++ internal calls | **~490** | ~400 | Stabilize (features come from BCL IL, not ICall) |
 
 ### Metric Schema (for consistent reporting)
 

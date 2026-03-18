@@ -195,9 +195,9 @@ cmake --build runtime/tests/build --config Debug
 ctest --test-dir runtime/tests/build -C Debug --output-on-failure
 ```
 
-### End-to-End Integration Tests (87)
+### End-to-End Integration Tests (93)
 
-Full compilation pipeline: C# `.csproj` → codegen → CMake configure → C++ build → run → verify output. Covers 14 test projects including NuGet package validation (Newtonsoft.Json 13.0.3).
+Full compilation pipeline: C# `.csproj` → codegen → CMake configure → C++ build → run → verify output. Covers 15 test projects including NuGet + DI ecosystem validation.
 
 ```bash
 python tools/dev.py integration

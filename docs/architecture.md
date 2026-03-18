@@ -136,7 +136,7 @@ CIL2CPP adopts the same strategy as Unity IL2CPP: **all BCL methods with IL bodi
 ```
 Method call
   ↓
-ICallRegistry lookup (~484 mappings)
+ICallRegistry lookup (~490 mappings)
   ├─ Hit → [InternalCall] method, no IL body
   │         GC / Monitor / Interlocked / Buffer / Math / IO / Globalization etc.
   │         → Call C++ runtime implementation
@@ -196,7 +196,7 @@ A few JIT intrinsic methods are inlined by the compiler (not going through ICall
 │  are available                                           │
 ├─────────────────────────────────────────────────────────┤
 │  Layer 3: Runtime ICall                                  │
-│  ~484 [InternalCall] methods → C++ runtime               │
+│  ~490 [InternalCall] methods → C++ runtime               │
 │  implementation                                          │
 │  Limitation: unimplemented icall → feature unavailable   │
 │  This layer determines: GC, threading, string layout,    │

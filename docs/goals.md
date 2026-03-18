@@ -45,7 +45,7 @@ The goal is not limited to the BCL subset Unity supports, but rather covers the 
 
 ### 1. Unity IL2CPP Architecture: Full BCL IL Compilation
 
-All BCL methods with IL bodies are **compiled directly from IL to C++**, following the exact same compilation path as user code. Only the lowest-level `[InternalCall]` methods have hand-written C++ implementations (~484 icall mappings).
+All BCL methods with IL bodies are **compiled directly from IL to C++**, following the exact same compilation path as user code. Only the lowest-level `[InternalCall]` methods have hand-written C++ implementations (~490 icall mappings).
 
 ```
 Method call

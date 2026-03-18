@@ -135,7 +135,7 @@ CIL2CPP 采用与 Unity IL2CPP 相同的策略：**所有有 IL 方法体的 BCL
 ```
 方法调用
   ↓
-ICallRegistry 查找 (~484 个映射)
+ICallRegistry 查找 (~490 个映射)
   ├─ 命中 → [InternalCall] 方法，无 IL 方法体
   │         GC / Monitor / Interlocked / Buffer / Math / IO / Globalization 等
   │         → 调用 C++ 运行时实现
@@ -193,7 +193,7 @@ ICallRegistry 查找 (~484 个映射)
 │  这一层决定: 哪些标准库方法可用                           │
 ├─────────────────────────────────────────────────────────┤
 │  Layer 3: 运行时 icall                                  │
-│  ~484 个 [InternalCall] 方法 → C++ 运行时实现            │
+│  ~490 个 [InternalCall] 方法 → C++ 运行时实现            │
 │  限制: 未实现的 icall → 功能不可用                        │
 │  这一层决定: GC、线程、字符串布局、IO 等底层能力           │
 └─────────────────────────────────────────────────────────┘

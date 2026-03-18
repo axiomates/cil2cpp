@@ -1,6 +1,6 @@
 # 开发路线图
 
-> 最后更新：2026-03-18
+> 最后更新：2026-03-19
 >
 > [English Version](roadmap.md)
 
@@ -37,7 +37,7 @@ CIL2CPP 能声称"可编译 .NET NativeAOT 项目"之前必须完成：
 | 压缩 | E.2 | 通过 System.IO.Compression.Native 的 zlib |
 | RenderedBodyError → 0 | H.2 | 修复剩余 codegen bug（HelloWorld 基线 17 个 RE stubs，不影响 NuGet） |
 | SIMD 标量完善 | F.1 | 消除剩余 SIMD stubs（完整标量回退路径） |
-| 10 个 NuGet 包验证 | G.2 | 证明真实包可编译和运行（1/10：Newtonsoft.Json ✅） |
+| 10 个 NuGet 包验证 | G.2 | 证明真实包可编译和运行（2/10：Newtonsoft.Json ✅、DI+Logging+Console ✅） |
 
 #### 待定（必须实现完成后）
 
@@ -157,7 +157,7 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 **不可修复或暂缓**：SIMD 死代码分支由 FeatureSwitchResolver 处理（IsSupported=false 死分支消除）。CLR 内部类型（~96）永久保留。
 
 **IL 转译率**：~95%+。历程：Phase A: 2,777 → 1,478; Phase B: 1,478 → 1,537; Phase C: → 1,666; Phase X + 需求驱动泛型: → 1,280（方法总数也从 ~31k 降至 ~26k，得益于特化方法可达性分析）。
-**测试**：1,291 C# + 576 C++ + 87 集成 — 全部通过。
+**测试**：1,291 C# + 576 C++ + 93 集成（15 个测试项目）— 全部通过。
 
 ### 已实现的架构能力
 
@@ -177,23 +177,24 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 | 网络应用 (HTTPS) | ~85% | SChannel TLS 基本 HTTPS GET 已通过；边界情况待验证 |
 | JSON 序列化 | ~85% | System.Text.Json SG ✅ + Newtonsoft.Json 13.0.3 ✅ — 均已端到端验证 |
 | REST 客户端 (HTTP+JSON) | ~80% | HTTP + JSON 均已端到端通过；需更多验证 |
-| NuGet 包（简单） | ~65% | Newtonsoft.Json 已验证（3.1M 行，385s）；M4 目标需 2+ 更多库 |
-| 生产级应用 | ~15% | 需 DI + 日志 + 配置生态 |
-| 任意 NativeAOT .csproj | **~40%** | 大型程序集规模已验证（3.1M 行），stubs 仍存在，`[MarshalAs]` 部分完成 |
+| NuGet 包（简单） | ~75% | Newtonsoft.Json ✅ + DI+Logging+Console ✅（单项目 3 个 NuGet 包）。M4 已达成。 |
+| 生产级应用 | ~40% | DI + 日志生态已工作（DITest）。配置 + 压缩待完成 |
+| 任意 NativeAOT .csproj | **~50%** | 大型程序集规模已验证（3.1M 行），DI 生态已通过，stubs 仍存在，`[MarshalAs]` 部分完成 |
 
 > **Linux/macOS**：待定。以上百分比仅限 Windows。Linux 需要 System.Native 集成 (Phase B.5, 待定) + OpenSSL (Phase E.linux, 待定)。当前 Linux 支持：~5%（仅控制台，无文件 I/O 或网络）。
 
 **什么能提升百分比**（累积，Windows）：
-- **40%→55%**：更多 NuGet 包（3+ 达成 M4）+ codegen 性能优化（385s → 目标 <120s）
-- **55%→70%**：Stub 消减（NuGetSimpleTest 4,572 个）+ 压缩 (zlib) + MarshalAs 完善
-- **70%→85%**：DI/日志生态 + SIMD 标量完善 + 复杂 HTTP 场景
+- **50%→60%**：Codegen 性能优化（385s → 目标 <120s）+ 更多 NuGet 包（Serilog、Polly）
+- **60%→75%**：Stub 消减（NuGetSimpleTest 4,572 个）+ 压缩 (zlib) + MarshalAs 完善 + SIMD 标量完善
+- **75%→85%**：复杂 HTTP 场景 + 配置生态 + 更完善的反射支持
 - **85%→95%**：10 个 NuGet 包验证 + 综合测试 + 边界用例打磨
 
 **实现缺口**（2026-03-18 审计）：
 - `[DynamicallyAccessedMembers]` — **已完成并验证**：13 种 DamFlag，字段/方法/参数扫描，CLI `--rdxml` 已接入，7 个 DAM 可达性测试 + 14 个 rd.xml 解析器测试
 - ILLink feature switches — **已上线**：FeatureSwitchResolver 编译期替换 10+ AOT 默认开关。SIMD IsSupported=false 死分支消除通过 brfalse 模式检测 + 4 层 SIMD 死代码消除。
 - `[MarshalAs]` 属性 — **已实现**（C.7.1）：Cecil 解析 + 21 种类型映射。缺失：`[Out]`/`[In]` 回写（C.7.2）、LPArray 运行时编组（C.7.3）
-- NuGet PackageReference — **✅ 完整验证**（Phase 14）：NuGetSimpleTest（Newtonsoft.Json 13.0.3）端到端编译并运行（3.1M 行，385s，29,098 结构体，~95,632 方法）。OOM 问题通过按需泛型发现 + 特化方法可达性分析解决。
+- NuGet PackageReference — **✅ 完整验证**（Phase 14+15）：NuGetSimpleTest（Newtonsoft.Json 13.0.3）+ DITest（DI+Logging+Console，3 个 NuGet 包）均端到端编译并运行。OOM 问题通过按需泛型发现 + 特化方法可达性分析解决。
+- DI 生态 — **✅ 已验证**（Phase 15）：DITest 使用 Microsoft.Extensions.DependencyInjection — 构造函数注入、singleton/transient 生命周期、反射式服务解析。M4 里程碑达成。
 - Source generator 输出 — **✅ 完整验证**（D.5）：JsonSGTest 使用 `[JsonSerializable]` 通过 CIL2CPP 端到端编译并运行。
 
 ---
@@ -358,7 +359,7 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 | C.6 | 完整 HTTP GET（明文） | 高 | ✅ | HttpGetTest：完整 `HttpClient.GetStringAsync("http://...")` 异步请求/响应链已通过。HttpsGetTest：HTTPS 通过 SChannel (secur32/sspicli) 也已通过。两者均作为集成测试通过。 |
 
 **前置**：Phase B ✅
-**产出**：Socket + DNS + HttpClient HTTP GET + HTTPS GET 全部已通过（Windows）。87/87 集成测试通过。
+**产出**：Socket + DNS + HttpClient HTTP GET + HTTPS GET 全部已通过（Windows）。93/93 集成测试通过。
 
 ### ThreadPool 架构评估（2026-03-02）
 
@@ -370,7 +371,7 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 - 所有 async/await、Task 组合器、continuations 均以真正并发工作
 - BCL ThreadPool ICalls（9 个条目）均为有意的 no-op — CIL2CPP 通过自己的 C++ 线程池路由工作
 
-**已验证工作**（576 运行时测试 + 87 集成测试）：
+**已验证工作**（576 运行时测试 + 93 集成测试）：
 - `queue_work()` 在工作线程上执行（100 个并发项 ✅）
 - Task.Run / task_delay / task_when_all / task_when_any ✅
 - Continuations: 线程安全链表，400 个并发注册 ✅
@@ -411,8 +412,8 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 
 | # | 任务 | 预估 | 状态 | 说明 |
 |---|------|------|------|------|
-| D.0 | NuGet 包集成测试 | 中 | ✅ 已完成 | NuGetSimpleTest（Phase 14）：Newtonsoft.Json 13.0.3 端到端编译并运行（3.1M 行，385s，29,098 结构体，~95,632 方法）。OOM 通过按需泛型 + 特化方法可达性解决。JsonSGTest（Phase 13）也已端到端通过。87/87 集成测试。 |
-| D.1 | `[DynamicallyAccessedMembers]` 解析 | 中 | ✅ 已完成并验证 | ReachabilityAnalyzer.cs — 完整 13 种 DamFlag 解析 + SeedDynamicallyAccessedMembers()。CLI `--rdxml` 已接入。7 个 DAM 可达性测试 + 14 个 rd.xml 解析器测试。 |
+| D.0 | NuGet 包集成测试 | 中 | ✅ 已完成 | NuGetSimpleTest（Phase 14）：Newtonsoft.Json 13.0.3（3.1M 行，385s）。DITest（Phase 15）：DI+Logging+Console（3 个 NuGet 包，构造函数注入，singleton/transient）。JsonSGTest（Phase 13）：System.Text.Json SG。93/93 集成测试。 |
+| D.1 | `[DynamicallyAccessedMembers]` 解析 | 中 | ✅ 已完成并验证 | ReachabilityAnalyzer.cs — 完整 13 种 DamFlag 解析 + SeedDynamicallyAccessedMembers()。包含泛型方法/类型参数上的 DAM 支持（DI 关键：`AddSingleton<TService, [DAM] TImpl>()` 保留 TImpl 构造函数）。CLI `--rdxml`。7 个 DAM 测试 + 14 个 rd.xml 测试。 |
 | D.2 | rd.xml 解析器 | 低 | ✅ 已完成并验证 | RdXmlParser.cs — 完整 XML 解析 + PreservationRule 映射。CLI `--rdxml` 选项已在 Program.cs 中接入。 |
 | D.3 | ILLink feature switch 替换 | 中 | ✅ 已上线 | FeatureSwitchResolver.cs（10 个 AOT 默认开关）+ IRBuilder.Methods.cs:1372-1386（Ldsfld 编译期替换）。所有构建自动生效。 |
 | D.4 | AOT 兼容性警告 | 低 | 待定 | 报告 `[RequiresUnreferencedCode]` 调用链 |
@@ -530,8 +531,8 @@ macOS 支持 (Objective-C 桥接)
 | **M2: 文件 I/O** | FileStream/StreamReader 从 BCL IL 编译并运行 | B | ✅ Windows |
 | **M3: 联网应用** | HttpClient HTTP GET 从 BCL IL 编译并运行 | C.6 | ✅ HTTP + HTTPS GET 已通过 |
 | **M3.5: REST 客户端** | HTTP GET + JSON 序列化端到端 | C.6+D | ✅ JsonSGTest + NuGetSimpleTest（Newtonsoft.Json） |
-| **M4: 库生态** | 3+ NuGet PackageReference 项目编译并运行 | D+G.2 | ⬅ **下一目标** — 1/3 完成（Newtonsoft.Json）。需 2+ 更多包。 |
-| **M5: 生产级** | HTTPS + 压缩 + DI/日志生态 | E+F | 未开始 |
+| **M4: 库生态** | 3+ NuGet PackageReference 项目编译并运行 | D+G.2 | ✅ DITest（DI+Logging+Console = 3 个 NuGet 包） |
+| **M5: 生产级** | HTTPS + 压缩 + DI/日志生态 | E+F | 进行中（HTTPS ✅、DI/日志 ✅、压缩待完成） |
 | **M6: 发布** | CI/CD + 10 真实 NuGet 包验证 | G | 未开始 |
 
 ## 指标定义
@@ -541,7 +542,7 @@ macOS 支持 (Objective-C 桥接)
 | IL 转译率 | (total_methods - stubs) / total_methods | **~95%+**（1,280 stubs / ~26k 方法） | >92% ✅ | >95% |
 | RuntimeProvided 数 | RuntimeProvidedTypes 条目 | **32**（was 40, -8） | ~32 | ~25（Phase F.2） |
 | CoreRuntime 数 | 方法完全由 C++ 提供 | 22 | ~22 | ~10（Phase F.4） |
-| ICall 数 | C++ 内部调用 | **~484** | ~400 | 趋稳（功能来自 BCL IL，非 ICall） |
+| ICall 数 | C++ 内部调用 | **~490** | ~400 | 趋稳（功能来自 BCL IL，非 ICall） |
 
 ### 指标口径规范（确保一致性报告）
 
