@@ -172,7 +172,7 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 |---------|-----------|-----------|
 | 简单控制台应用 | ~95% | 反射 stub 可能导致运行时意外 |
 | 类库项目 | ~85% | NuGet PackageReference 已完整验证（Newtonsoft.Json）；DAM 解析完成 |
-| 文件 I/O 应用 | ~90% | FileStream/StreamReader 已工作；File.ReadAllBytes 挂起 (B.6) |
+| 文件 I/O 应用 | ~95% | FileStream/StreamReader/File.* 全部从 BCL IL 编译并通过（SystemIOTest + FileStreamTest） |
 | 网络应用 (HTTP) | ~90% | HTTP GET ✅、HTTPS GET ✅（Windows）。复杂场景（重定向、认证）尚未验证 |
 | 网络应用 (HTTPS) | ~85% | SChannel TLS 基本 HTTPS GET 已通过；边界情况待验证 |
 | JSON 序列化 | ~85% | System.Text.Json SG ✅ + Newtonsoft.Json 13.0.3 ✅ — 均已端到端验证 |
@@ -192,7 +192,7 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 **实现缺口**（2026-03-18 审计）：
 - `[DynamicallyAccessedMembers]` — **已完成并验证**：13 种 DamFlag，字段/方法/参数扫描，CLI `--rdxml` 已接入，7 个 DAM 可达性测试 + 14 个 rd.xml 解析器测试
 - ILLink feature switches — **已上线**：FeatureSwitchResolver 编译期替换 10+ AOT 默认开关。SIMD IsSupported=false 死分支消除通过 brfalse 模式检测 + 4 层 SIMD 死代码消除。
-- `[MarshalAs]` 属性 — **已实现**（C.7.1）：Cecil 解析 + 21 种类型映射。缺失：`[Out]`/`[In]` 回写（C.7.2）、LPArray 运行时编组（C.7.3）
+- `[MarshalAs]` 属性 — **已实现**（C.7.1）：Cecil 解析 + 21 种类型映射。C.7.2 进行中：bool* copy-back 已实现（bool=1B, BOOL=4B），blittable 指针类型 native 直接写入无需 copy-back。C.7.3：基础 LPArray 已工作，ByValTStr 推迟。
 - NuGet PackageReference — **✅ 完整验证**（Phase 14+15）：NuGetSimpleTest（Newtonsoft.Json 13.0.3）+ DITest（DI+Logging+Console，3 个 NuGet 包）均端到端编译并运行。OOM 问题通过按需泛型发现 + 特化方法可达性分析解决。
 - DI 生态 — **✅ 已验证**（Phase 15）：DITest 使用 Microsoft.Extensions.DependencyInjection — 构造函数注入、singleton/transient 生命周期、反射式服务解析。M4 里程碑达成。
 - Source generator 输出 — **✅ 完整验证**（D.5）：JsonSGTest 使用 `[JsonSerializable]` 通过 CIL2CPP 端到端编译并运行。
@@ -336,7 +336,7 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 | B.3 | SpanHelpers 标量搜索拦截 | 中 | ✅ | BCL SIMD 分支 → AOT 标量模板（IndexOfAny/IndexOf/LastIndexOf/IndexOfAnyExcept） |
 | B.4 | 端到端 FileStreamTest | 低 | ✅ | FileStream Write/Read、StreamWriter、StreamReader.ReadLine — 全部通过（Windows） |
 | B.5 | System.Native 原生库集成（Linux） | 中 | **待定** | 类似 BoehmGC/ICU：从 dotnet/runtime 提取 ~30 .c 文件，FetchContent 编译。*推迟到必须实现目标完成后。* |
-| B.6 | 移除 File.ReadAllText/WriteAllText ICall 绕过 | 低 | 阻塞 | HACK 清理：File.ReadAllText 可通过 BCL IL 工作，但 File.ReadAllBytes 挂起（FileStream.Read(byte[]) 代码路径有 bug）。需修复后再移除。 |
+| B.6 | 移除 File.ReadAllText/WriteAllText ICall 绕过 | 低 | ✅ | File ICall 已全部移除。File/Path/Directory 全部从 BCL IL 编译。SystemIOTest + FileStreamTest 端到端通过（105/105 集成测试）。 |
 | B.7 | 集成测试套件 + baselines | 低 | ✅ | FileStreamTest 加入集成测试（Phase 9，39/39 通过）+ UF/RE stub 减少（-94） |
 
 **前置**：Phase A ✅
@@ -397,7 +397,7 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 |---|------|--------|------|------|
 | H.1 | TypeCode ICall 修复 | 高 | ✅ | TypeInfo 名称映射到 TypeCode 枚举（17 种原始类型）。修复 `Convert.*`、`String.Format`、序列化器类型判断 |
 | H.2 | RenderedBodyError 消减 | 高 | ~85% 完成 | 116 → 17 RE stubs。剩余 17 个为真实 codegen 边界情况。目标：0。 |
-| H.3 | 移除 File ICall 绕过（B.6） | 高 | 阻塞 | 调试 `FileStream.Read(byte[])` 挂起问题，然后删除 12 个 File ICall。BCL IL 通过 StreamReader 正确处理所有编码 |
+| H.3 | 移除 File ICall 绕过（B.6） | 高 | ✅ | File ICall 绕过已移除。FileStream.Read 挂起已修复。BCL IL 通过 StreamReader 正确处理编码。105/105 集成测试通过。 |
 | H.4 | 平台兼容性文档 | 中 | ✅ | 支持矩阵 + 承诺等级：完整 / 功能性 / 占位 / 未实现 |
 | H.5 | 反射状态文档 | 中 | ✅ | 全部 23 个反射 ICall 的"期望行为 vs 实际行为"表 + 完整修复的前置阶段 |
 | H.6 | Codegen bug 最小复现测试 | 低 | 待定 | 每个 FIXME gate pattern 对应一个最小 C# 测试用例（回归锚点） |
@@ -432,7 +432,7 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 | # | 任务 | 预估 | 状态 | 说明 |
 |---|------|------|------|------|
 | C.7.1 | `[MarshalAs]` 属性解析 | 中 | ✅ 完成 | Cecil MarshalInfo 解析（IRBuilder.Methods.cs:123-143），21 种 MarshalAsType 枚举（PInvokeEnums.cs），完整类型映射 GetPInvokeNativeType()（Source.cs:3024-3094）。LPStr/LPWStr/Bool/整数类型均可用。 |
-| C.7.2 | `[Out]`/`[In]` 参数方向 | 低 | 待定 | 区分参数方向，实现正确的回写语义 |
+| C.7.2 | `[Out]`/`[In]` 参数方向 | 低 | 进行中 | IR 层已完整解析 PInvokeDirection（In/Out/InOut）。bool* copy-back 已实现（bool=1B, BOOL=4B 不可 reinterpret_cast）。blittable 指针类型 (int*, struct*) native 直接写入，无需 copy-back。 |
 | C.7.3 | 数组编组 | 中 | 进行中 | SizeParamIndex 已解析（IRMethod.cs:136），codegen 待完善。struct 固定大小数组 + `[MarshalAs(UnmanagedType.LPArray)]` 运行时编组待做。 |
 
 **前置**：Phase C ✅
@@ -570,7 +570,7 @@ macOS 支持 (Objective-C 桥接)
 | ThreadPool | 保持自定义 C++ 实现（短期） | 固定大小线程池 + 全局 FIFO 队列在当前范围内正确。BCL ThreadPool ICalls 为有意 no-op。缺少 hill climbing、work stealing、每线程队列 — 仅性能优化。重构推迟到 Phase F.2。 |
 | WaitHandle | 目标 IL + ICall（Phase 4） | struct 简单，BCL IL 可编译，需注册 8 个 OS 原语 ICall |
 | SIMD | 标量回退 struct + IsSupported=false | BCL 有非 SIMD 回退路径 |
-| File I/O ICall | HACK — Phase B 完成后移除 | File.ReadAllText 等 12 个 ICall 绕过了 FileStream IL 链，违反 IL-first |
+| File I/O ICall | ✅ 已移除 | File ICall 已移除。完整 BCL IL 链：File.* → StreamReader → FileStream → SafeFileHandle → P/Invoke kernel32 |
 | 网络层 | BCL IL 自然编译 | BCL 内置跨平台分支 |
 | Regex | 解释器模式 + source generator | Compiled 模式用 Reflection.Emit → AOT 不兼容 |
 | IL2CPP 对标 | 参考但不盲目照搬 | IL2CPP 基于 Mono BCL，.NET 8 依赖链差异大 |

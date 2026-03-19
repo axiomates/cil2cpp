@@ -172,7 +172,7 @@ See "RuntimeProvided Type Classification" section above.
 |-------------|----------------|-------------|
 | Simple console apps | ~95% | Reflection stubs may cause runtime surprises |
 | Library projects | ~85% | NuGet PackageReference fully validated (Newtonsoft.Json); DAM parsing complete |
-| File I/O apps | ~90% | FileStream/StreamReader working; File.ReadAllBytes hangs (B.6) |
+| File I/O apps | ~95% | FileStream/StreamReader/File.* all compile from BCL IL and pass (SystemIOTest + FileStreamTest) |
 | Network apps (HTTP) | ~90% | HTTP GET ✅, HTTPS GET ✅ (Windows). Complex scenarios (redirects, auth) not yet validated |
 | Network apps (HTTPS) | ~85% | SChannel TLS working for basic HTTPS GET; edge cases pending |
 | JSON serialization | ~85% | System.Text.Json SG ✅ + Newtonsoft.Json 13.0.3 ✅ — both proven end-to-end |
@@ -192,7 +192,7 @@ See "RuntimeProvided Type Classification" section above.
 **Implementation gaps** (2026-03-18 audit):
 - `[DynamicallyAccessedMembers]` — **complete (validated)**: 13 DamFlags, field/method/parameter scanning, CLI `--rdxml` wired, 7 DAM reachability tests + 14 rd.xml parser tests
 - ILLink feature switches — **active**: FeatureSwitchResolver substitutes 10+ AOT defaults at compile time. SIMD IsSupported=false dead-branch elimination via brfalse pattern detection + 4-layer SIMD dead-code elimination.
-- `[MarshalAs]` attribute — **implemented** (C.7.1): Cecil parsing + 21 type mappings. Missing: `[Out]`/`[In]` copy-back (C.7.2), LPArray runtime marshaling (C.7.3)
+- `[MarshalAs]` attribute — **implemented** (C.7.1): Cecil parsing + 21 type mappings. C.7.2 in progress: bool* copy-back implemented (bool=1B, BOOL=4B), blittable pointer types write directly — no copy-back needed. C.7.3: basic LPArray working, ByValTStr deferred.
 - NuGet PackageReference — **✅ fully validated** (Phase 14+15): NuGetSimpleTest (Newtonsoft.Json 13.0.3) + DITest (DI+Logging+Console, 3 NuGet packages) both compile and run end-to-end. OOM issue resolved via demand-driven generic discovery + specialized method reachability.
 - DI ecosystem — **✅ validated** (Phase 15): DITest with Microsoft.Extensions.DependencyInjection — constructor injection, singleton/transient lifetimes, reflection-based service resolution. M4 milestone achieved.
 - Source generator output — **✅ fully validated** (D.5): JsonSGTest with `[JsonSerializable]` compiles and runs end-to-end through CIL2CPP.
@@ -335,7 +335,7 @@ See "RuntimeProvided Type Classification" section above.
 | B.3 | SpanHelpers scalar search interception | Medium | ✅ | BCL SIMD branches → AOT scalar templates (IndexOfAny/IndexOf/LastIndexOf/IndexOfAnyExcept) |
 | B.4 | End-to-end FileStreamTest | Low | ✅ | FileStream Write/Read, StreamWriter, StreamReader.ReadLine — all pass (Windows) |
 | B.5 | System.Native native library integration (Linux) | Medium | **Deferred** | Like BoehmGC/ICU: extract ~30 .c files from dotnet/runtime, FetchContent compile. *Deferred until must-implement goals are complete.* |
-| B.6 | Remove File.ReadAllText/WriteAllText ICall bypass | Low | Blocked | HACK cleanup: File.ReadAllText works via BCL IL, but File.ReadAllBytes hangs (FileStream.Read(byte[]) code path bug). Need to fix before full removal. |
+| B.6 | Remove File.ReadAllText/WriteAllText ICall bypass | Low | ✅ | All File ICalls removed. File/Path/Directory compile entirely from BCL IL. SystemIOTest + FileStreamTest pass end-to-end (105/105 integration tests). |
 | B.7 | Integration test suite + baselines | Low | ✅ | FileStreamTest added as Phase 9 (39/39 integration tests pass) + UF/RE stub reduction (-94 stubs) |
 
 **Prerequisites**: Phase A ✅
@@ -398,7 +398,7 @@ See "RuntimeProvided Type Classification" section above.
 |---|------|----------|--------|-------------|
 | H.1 | TypeCode ICall fix + IsPublic/IsNestedPublic | High | ✅ | Map TypeInfo name → TypeCode enum (17 primitives) + TypeFlags::Public/NestedPublic from Cecil metadata. Fixes `Convert.*`, `String.Format`, serializer type switches, `Type.IsPublic` |
 | H.2 | RenderedBodyError reduction | High | ~85% done | 116 → 17 RE stubs. Remaining 17 are real codegen edge cases. Target: 0. |
-| H.3 | Remove File ICall bypass (B.6) | High | Blocked | Debug `FileStream.Read(byte[])` hang, then delete 12 File ICalls. BCL IL handles all encoding correctly via StreamReader |
+| H.3 | Remove File ICall bypass (B.6) | High | ✅ | File ICall bypass removed. FileStream.Read hang fixed. BCL IL handles all encoding correctly via StreamReader. 105/105 integration tests pass. |
 | H.4 | Platform compatibility docs | Medium | ✅ | Support matrix with promise levels: Full / Functional / Stub / Not implemented |
 | H.5 | Reflection status docs | Medium | ✅ | Expected-vs-actual table for all 23 reflection icalls + prerequisite phase for full fix |
 | H.6 | Codegen bug reproduction tests | Low | Pending | Minimal C# test cases for each FIXME gate pattern (regression anchors) |
@@ -433,7 +433,7 @@ See "RuntimeProvided Type Classification" section above.
 | # | Task | Estimate | Status | Description |
 |---|------|----------|--------|-------------|
 | C.7.1 | `[MarshalAs]` attribute parsing | Medium | ✅ Done | Cecil MarshalInfo parsing (IRBuilder.Methods.cs:123-143), 21-type MarshalAsType enum (PInvokeEnums.cs), full type mapping in GetPInvokeNativeType() (Source.cs:3024-3094). LPStr/LPWStr/Bool/integers all working. |
-| C.7.2 | `[Out]`/`[In]` parameter direction | Low | Pending | Distinguish parameter direction for correct copy-back semantics |
+| C.7.2 | `[Out]`/`[In]` parameter direction | Low | In progress | IR layer fully parses PInvokeDirection (In/Out/InOut). bool* copy-back implemented (bool=1B, BOOL=4B — cannot reinterpret_cast). Blittable pointer types (int*, struct*) write directly through pointer — no copy-back needed. |
 | C.7.3 | Array marshaling | Medium | In progress | SizeParamIndex parsed (IRMethod.cs:136) but codegen incomplete. Fixed-size arrays in structs, `[MarshalAs(UnmanagedType.LPArray)]` runtime marshaling pending. |
 
 **Prerequisites**: Phase C ✅
@@ -573,7 +573,7 @@ macOS support (Objective-C bridge)
 | ThreadPool | Keep custom C++ impl (short-term) | Fixed-size pool + global FIFO queue is correct for current scope. BCL ThreadPool ICalls are intentional no-ops (config/metrics/injection). Missing: hill climbing, work stealing, per-thread queues — performance optimization only, not correctness. Restructure deferred to Phase F.2 alongside Task refactoring. |
 | WaitHandle | Target IL + ICall (Phase 4) | Simple struct, BCL IL compilable, needs 8 OS primitive ICall registrations |
 | SIMD | Scalar fallback struct + IsSupported=false | BCL has non-SIMD fallback paths |
-| File I/O ICall | HACK — remove after Phase B | File.ReadAllText etc. 12 ICalls bypass FileStream IL chain, violates IL-first |
+| File I/O ICall | ✅ Removed | File ICalls removed. Full BCL IL chain: File.* → StreamReader → FileStream → SafeFileHandle → P/Invoke kernel32 |
 | Network layer | BCL IL natural compilation | BCL has built-in cross-platform branching |
 | Regex | Interpreter mode + source generator | Compiled mode uses Reflection.Emit → AOT incompatible |
 | IL2CPP reference | Reference but don't blindly copy | IL2CPP based on Mono BCL, .NET 8 dependency chains differ significantly |

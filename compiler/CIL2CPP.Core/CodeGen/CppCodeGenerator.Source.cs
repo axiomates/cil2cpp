@@ -2982,6 +2982,7 @@ public partial class CppCodeGenerator
 
             // Marshal arguments per ECMA-335 II.15.5.4
             var callArgs = new List<string>();
+            var boolPtrCopyBack = new List<(int index, string paramName)>();
             for (int i = 0; i < method.Parameters.Count; i++)
             {
                 var param = method.Parameters[i];
@@ -3032,6 +3033,24 @@ public partial class CppCodeGenerator
                         callArgs.Add(param.CppName);
                     }
                 }
+                else if (param.CppTypeName == "bool*")
+                {
+                    // C.7.2: bool* → int32_t* requires temp variable (size mismatch: bool=1B, BOOL=4B).
+                    // Cannot reinterpret_cast — native writes 4 bytes but managed bool is 1 byte.
+                    if (param.PInvokeDirection == IR.PInvokeParameterDirection.InOut)
+                        sb.AppendLine($"    int32_t __bp{i} = {param.CppName} ? (*{param.CppName} ? 1 : 0) : 0;");
+                    else if (param.PInvokeDirection == IR.PInvokeParameterDirection.Out)
+                        sb.AppendLine($"    int32_t __bp{i} = 0;");
+                    else // In — pass current value to native
+                        sb.AppendLine($"    int32_t __bp{i} = {param.CppName} ? (*{param.CppName} ? 1 : 0) : 0;");
+                    callArgs.Add($"{param.CppName} ? &__bp{i} : nullptr");
+                    // Track for post-call copy-back
+                    if (param.PInvokeDirection is IR.PInvokeParameterDirection.Out
+                        or IR.PInvokeParameterDirection.InOut)
+                    {
+                        boolPtrCopyBack.Add((i, param.CppName));
+                    }
+                }
                 else if (param.CppTypeName.EndsWith("*") && externParamTypes != null
                          && i < externParamTypes.Count && externParamTypes[i].EndsWith("*")
                          && param.CppTypeName != externParamTypes[i])
@@ -3076,65 +3095,55 @@ public partial class CppCodeGenerator
             if (method.PInvokeSetLastError)
                 sb.AppendLine("    cil2cpp::set_last_pinvoke_error(0);");
 
+            // Execute native call — always capture return in __native_ret for non-void
+            // so copy-back can be inserted between call and return.
+            if (retType == "void")
+                sb.AppendLine($"    {entryPoint}({argStr});");
+            else
+                sb.AppendLine($"    auto __native_ret = {entryPoint}({argStr});");
+
+            if (method.PInvokeSetLastError)
+                sb.AppendLine("    cil2cpp::capture_last_pinvoke_error();");
+
+            // C.7.2: [Out]/[InOut] parameter copy-back after native call.
+            // For pointer-typed params (int*, struct*), native writes directly — no copy-back needed.
+            // For bool* params, a temp int32_t was used (size mismatch) — copy back to managed bool.
+            foreach (var (idx, paramName) in boolPtrCopyBack)
+                sb.AppendLine($"    if ({paramName}) *{paramName} = __bp{idx} != 0;");
+
+            // Return value conversion
             if (retType == "void")
             {
-                sb.AppendLine($"    {entryPoint}({argStr});");
-                if (method.PInvokeSetLastError)
-                    sb.AppendLine("    cil2cpp::capture_last_pinvoke_error();");
+                // no return needed
             }
             else if (IsStringType(retType))
             {
-                sb.AppendLine($"    auto __ret = {entryPoint}({argStr});");
-                if (method.PInvokeSetLastError)
-                    sb.AppendLine("    cil2cpp::capture_last_pinvoke_error();");
                 if (wrapperCharSet == IR.PInvokeCharSet.Unicode
                     || wrapperCharSet == IR.PInvokeCharSet.Auto)
                 {
                     // Unicode return: null-terminated wchar_t*/char16_t* → managed String
-                    sb.AppendLine("    if (!__ret) return nullptr;");
+                    sb.AppendLine("    if (!__native_ret) return nullptr;");
                     sb.AppendLine("    int32_t __retlen = 0;");
-                    sb.AppendLine("    while (reinterpret_cast<const char16_t*>(__ret)[__retlen]) ++__retlen;");
-                    sb.AppendLine("    return cil2cpp::string_create_utf16(reinterpret_cast<const cil2cpp::Char*>(__ret), __retlen);");
+                    sb.AppendLine("    while (reinterpret_cast<const char16_t*>(__native_ret)[__retlen]) ++__retlen;");
+                    sb.AppendLine("    return cil2cpp::string_create_utf16(reinterpret_cast<const cil2cpp::Char*>(__native_ret), __retlen);");
                 }
                 else
                 {
-                    sb.AppendLine("    return cil2cpp::string_literal(__ret);");
+                    sb.AppendLine("    return cil2cpp::string_literal(__native_ret);");
                 }
             }
             else if (retType is "intptr_t" or "uintptr_t")
             {
-                // void* from native → intptr_t/uintptr_t in managed
-                sb.AppendLine($"    auto __ret = {entryPoint}({argStr});");
-                if (method.PInvokeSetLastError)
-                    sb.AppendLine("    cil2cpp::capture_last_pinvoke_error();");
-                sb.AppendLine($"    return reinterpret_cast<{retType}>(__ret);");
+                sb.AppendLine($"    return reinterpret_cast<{retType}>(__native_ret);");
             }
             else if (retType == "bool")
             {
-                // Win32 BOOL (int32_t) → C++ bool
-                sb.AppendLine($"    auto __ret = {entryPoint}({argStr});");
-                if (method.PInvokeSetLastError)
-                    sb.AppendLine("    cil2cpp::capture_last_pinvoke_error();");
-                sb.AppendLine("    return __ret != 0;");
+                sb.AppendLine("    return __native_ret != 0;");
             }
             else
             {
-                if (method.PInvokeSetLastError)
-                {
-                    sb.AppendLine($"    auto __ret = {entryPoint}({argStr});");
-                    sb.AppendLine("    cil2cpp::capture_last_pinvoke_error();");
-                    sb.AppendLine("    return __ret;");
-                }
-                else
-                {
-                    sb.AppendLine($"    return {entryPoint}({argStr});");
-                }
+                sb.AppendLine("    return __native_ret;");
             }
-
-            // C.7.2: [Out] parameter copy-back for struct-by-ref parameters
-            // For pointer-typed params ([Out] int* / ref struct), the native function writes
-            // through the pointer directly — no explicit copy-back needed.
-            // For managed arrays with [Out], copy-back is handled in C.7.3 (LPArray marshaling).
 
             sb.AppendLine("}");
             sb.AppendLine();
@@ -3201,6 +3210,8 @@ public partial class CppCodeGenerator
 
         // ECMA-335: System.Boolean marshals as Win32 BOOL (4-byte int)
         if (cppType == "bool") return "int32_t";
+        // C.7.2: bool pointer → int32_t pointer (bool=1B, BOOL=4B — cannot reinterpret_cast)
+        if (cppType == "bool*") return "int32_t*";
 
         // Enum types are aliased to their underlying integer type (using X = int32_t;)
         // For P/Invoke extern "C" declarations, use the underlying type directly.
