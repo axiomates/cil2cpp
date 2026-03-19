@@ -1524,6 +1524,61 @@ def cmd_integration(args):
     runner.step(f"CMake build ({config})", di_cmake_build)
     runner.step("Run and compare C++ vs .NET output", di_run_verify)
 
+    # ===== Phase 16: HumanizerTest (Humanizer NuGet package) =====
+    header("Phase 16: HumanizerTest (Humanizer 2.14.1)")
+
+    hm_sample = TESTPROJECTS_DIR / "HumanizerTest" / "HumanizerTest.csproj"
+    hm_output = temp_dir / "hm_output"
+    hm_build = temp_dir / "hm_build"
+
+    dotnet_hm_output = None
+
+    def hm_dotnet_run():
+        nonlocal dotnet_hm_output
+        dotnet_hm_output = _get_dotnet_output(hm_sample)
+        print(f"    .NET output: {repr(dotnet_hm_output[:200])}")
+
+    def hm_codegen():
+        run(["dotnet", "run", "--project", str(CLI_PROJECT), "--",
+             "codegen", "-i", str(hm_sample), "-o", str(hm_output), "-c", "Debug"],
+            capture=True)
+
+    def hm_files_exist():
+        for f in ["HumanizerTest.h", "HumanizerTest_data.cpp", "HumanizerTest_stubs.cpp",
+                   "main.cpp", "CMakeLists.txt"]:
+            if not (hm_output / f).exists():
+                raise RuntimeError(f"Missing: {f}")
+
+    def hm_cmake_configure():
+        run(["cmake", "-B", str(hm_build), "-S", str(hm_output),
+             "-G", generator, *cmake_arch,
+             f"-DCMAKE_PREFIX_PATH={runtime_prefix}"],
+            capture=True)
+
+    def hm_cmake_build():
+        return _cmake_build_with_diagnostics(hm_build, config)
+
+    def hm_run_verify():
+        exe = _exe_path(hm_build, config, "HumanizerTest")
+        if not exe.exists():
+            raise RuntimeError(f"Executable not found: {exe}")
+        r = subprocess.run([str(exe)], capture_output=True, text=True, check=False,
+                           encoding="utf-8", errors="replace")
+        if r.returncode != 0:
+            raise RuntimeError(f"HumanizerTest exited with code {r.returncode}\nstderr: {r.stderr}")
+        got = r.stdout.strip()
+        expected = dotnet_hm_output.strip()
+        if got != expected:
+            raise RuntimeError(
+                f"Output mismatch!\n  Got:      {repr(got[:200])}\n  Expected: {repr(expected[:200])}")
+
+    runner.step("Get .NET reference output", hm_dotnet_run)
+    runner.step("Codegen HumanizerTest", hm_codegen)
+    runner.step("Generated files exist", hm_files_exist)
+    runner.step("CMake configure", hm_cmake_configure)
+    runner.step(f"CMake build ({config})", hm_cmake_build)
+    runner.step("Run and compare C++ vs .NET output", hm_run_verify)
+
     # ===== Cleanup =====
     header("Cleanup")
 

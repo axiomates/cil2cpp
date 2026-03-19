@@ -214,6 +214,10 @@ void RuntimeHelpers_EnsureSufficientExecutionStack();
 void* RuntimeHelpers_GetObjectMethodTablePointer(Object* obj);
 Boolean RuntimeHelpers_ObjectHasComponentSize(Object* obj);
 
+// System.Runtime.CompilerServices.RuntimeFeature (AOT: no dynamic code)
+Boolean RuntimeFeature_get_IsDynamicCodeSupported();
+Boolean RuntimeFeature_get_IsDynamicCodeCompiled();
+
 // System.Runtime.InteropServices.GCHandle
 intptr_t GCHandle_InternalAlloc(void* obj, Int32 type);
 void GCHandle_InternalFree(intptr_t handle);

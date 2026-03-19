@@ -542,6 +542,10 @@ void* RuntimeHelpers_GetObjectMethodTablePointer(Object* obj) {
     return const_cast<TypeInfo*>(obj->__type_info);
 }
 
+// AOT: dynamic code generation is not supported
+Boolean RuntimeFeature_get_IsDynamicCodeSupported() { return 0; }
+Boolean RuntimeFeature_get_IsDynamicCodeCompiled() { return 0; }
+
 Boolean RuntimeHelpers_ObjectHasComponentSize(Object* obj) {
     // In CLR, arrays and strings have "component size" > 0 in MethodTable.
     // We don't have MethodTable — detect arrays and strings structurally.

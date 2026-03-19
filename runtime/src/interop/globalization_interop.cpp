@@ -195,16 +195,16 @@ enum CalendarDataType : int32_t {
 // =====================================================================
 
 int32_t interop_globalization_get_sort_handle(String* sortName, intptr_t* sortHandle) {
-    if (!sortHandle) return 0;
+    if (!sortHandle) return 1; // error: null output pointer
 
     std::string locale = locale_to_icu(sortName);
     UCollator* collator = get_or_create_collator(locale);
     if (!collator) {
         *sortHandle = 0;
-        return 0;
+        return 1; // error: could not create collator
     }
     *sortHandle = reinterpret_cast<intptr_t>(collator);
-    return 1;
+    return 0; // ResultCode.Success
 }
 
 void interop_globalization_close_sort_handle(intptr_t /*sortHandle*/) {

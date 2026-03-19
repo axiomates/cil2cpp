@@ -379,6 +379,16 @@ public static class ICallRegistry
         RegisterICall("System.Runtime.CompilerServices.RuntimeHelpers", "ObjectHasComponentSize", 1,
             "cil2cpp::icall::RuntimeHelpers_ObjectHasComponentSize");
 
+        // ===== System.Runtime.CompilerServices.RuntimeFeature =====
+        // AOT-critical: IsDynamicCodeSupported/Compiled must return false.
+        // The BCL _cctor defaults to true (when AppContext switch is missing), which
+        // causes Regex to take the JIT-compiled path (RegexCompiler → Type.MakeGenericType → crash).
+        // NativeAOT replaces these at compile time; we use ICalls for the same effect.
+        RegisterICall("System.Runtime.CompilerServices.RuntimeFeature", "get_IsDynamicCodeSupported", 0,
+            "cil2cpp::icall::RuntimeFeature_get_IsDynamicCodeSupported");
+        RegisterICall("System.Runtime.CompilerServices.RuntimeFeature", "get_IsDynamicCodeCompiled", 0,
+            "cil2cpp::icall::RuntimeFeature_get_IsDynamicCodeCompiled");
+
         // ===== System.Text.Unicode.Utf8Utility =====
         // These BCL methods use SIMD intrinsics (SSE2/AVX2) which our codegen can't compile.
         // Scalar C++ implementations provided in runtime/src/icall/unicode_utility.cpp.

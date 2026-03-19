@@ -2470,5 +2470,8 @@ extern "C" cil2cpp::Object* System_Array_GetValue__System_Int32__(cil2cpp::Array
 // Reflection.MethodBase.GetParametersAsSpan — return empty span (no parameter metadata via this path)
 extern "C" void* System_Reflection_MethodBase_GetParametersAsSpan(void* /*__this*/) { return {}; }
 
+// Reflection.TypeInfo.GetDeclaredField — field lookup not implemented via this path
+extern "C" void* System_Reflection_TypeInfo_GetDeclaredField(void* /*__this*/, void* /*name*/) { cil2cpp::throw_not_supported(); }
+
 // Reflection.TypeInfo.GetDeclaredProperty — property lookup not implemented via this path
 extern "C" void* System_Reflection_TypeInfo_GetDeclaredProperty(void* /*__this*/, void* /*name*/) { cil2cpp::throw_not_supported(); }

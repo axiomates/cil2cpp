@@ -94,6 +94,15 @@ public partial class IRBuilder
     private readonly HashSet<string> _calledSpecializedMethods = new();
 
     /// <summary>
+    /// Cross-assembly method definitions: Cecil MethodDefinitions for methods on generic types
+    /// that are defined in a different assembly than the type's primary definition.
+    /// Key format: "{OpenTypeName}::{MethodName}/{ParamCount}"
+    /// E.g., ValueListBuilder&lt;T&gt;.Pop() exists in System.Text.RegularExpressions.dll
+    /// but not in System.Private.CoreLib.dll where the primary definition lives.
+    /// </summary>
+    private readonly Dictionary<string, MethodDefinition> _crossAssemblyMethodDefs = new();
+
+    /// <summary>
     /// Methods that were skipped during CreateGenericSpecializations because their specKey
     /// wasn't in _calledSpecializedMethods at that time. If body compilation later adds
     /// the key, these methods can be recovered and compiled.
@@ -281,6 +290,22 @@ public partial class IRBuilder
                             {
                                 _calledSpecializedMethods.Add(
                                     GetSpecializedMethodKey(calledGit, methodRef));
+                                // Record cross-assembly method definitions: when a method is defined in
+                                // a different assembly than the type's primary definition (e.g.,
+                                // ValueListBuilder<T>.Pop() in System.Text.RegularExpressions.dll vs
+                                // System.Private.CoreLib.dll), save the resolved definition so we can
+                                // compile it during CreateGenericSpecializations.
+                                try
+                                {
+                                    var resolvedMethod = methodRef.Resolve();
+                                    if (resolvedMethod != null)
+                                    {
+                                        var openTypeName = calledGit.ElementType.FullName;
+                                        var crossKey = $"{openTypeName}::{methodRef.Name}/{methodRef.Parameters.Count}";
+                                        _crossAssemblyMethodDefs.TryAdd(crossKey, resolvedMethod);
+                                    }
+                                }
+                                catch { /* Resolution may fail for some edge cases */ }
                             }
                             if (methodRef.ReturnType is GenericInstanceType)
                                 CollectGenericType(methodRef.ReturnType);
@@ -1897,11 +1922,16 @@ public partial class IRBuilder
         _module.Types.Add(irType);
         _typeCache[key] = irType;
 
-        // Create method specializations from Cecil definition — skip unreachable non-virtual, non-ctor
+        // Create method specializations from Cecil definition.
+        // Non-reachable SIMD methods are skipped entirely (dead code from eliminated branches).
+        // Non-reachable non-SIMD methods still get shells so the fixpoint recovery in
+        // ConvertDeferredGenericBodies can compile them when their callers (e.g., Append calling
+        // AddWithResize) are compiled and demand-driven tracking discovers the call.
         foreach (var methodDef in openType.Methods)
         {
             if (!methodDef.IsVirtual && !methodDef.IsConstructor
-                && !_reachability.IsReachable(methodDef))
+                && !_reachability.IsReachable(methodDef)
+                && ReferencesSimdTypes(methodDef))
                 continue;
             if (methodDef.HasGenericParameters)
                 continue;
@@ -1979,7 +2009,13 @@ public partial class IRBuilder
                 bool shouldCompile;
                 if (!_reachability.IsReachable(methodDef))
                 {
-                    shouldCompile = false;
+                    // Private methods (e.g., AddWithResize) may not be in the RTA reachability set
+                    // because they're only called from within the generic type's own method bodies.
+                    // Demand-driven tracking in EnsureBodyReferencedTypesExist can discover these
+                    // calls, so check _calledSpecializedMethods as a fallback.
+                    var specKey = GetSpecializedMethodKey(
+                        info.OpenTypeName, info.TypeArguments, methodDef);
+                    shouldCompile = _calledSpecializedMethods.Contains(specKey);
                 }
                 else if (methodDef.IsConstructor)
                 {
@@ -2023,15 +2059,145 @@ public partial class IRBuilder
                             new Dictionary<string, string>(typeParamMap)));
                     }
                 }
-                else if (_reachability.IsReachable(methodDef)
-                         && !methodDef.IsConstructor && !methodDef.IsAbstract
+                else if (!methodDef.IsConstructor && !methodDef.IsAbstract
                          && !HasClrInternalDependencies(methodDef))
                 {
+                    // Include both reachable and non-reachable methods for recovery.
+                    // Non-reachable private methods (e.g., AddWithResize, Grow) may be
+                    // discovered as needed by EnsureBodyReferencedTypesExist during the
+                    // fixpoint loop in ConvertDeferredGenericBodies.
                     var skipKey = GetSpecializedMethodKey(
                         info.OpenTypeName, info.TypeArguments, methodDef);
                     _skippedSpecializedMethods.Add((skipKey, methodDef, irMethod,
                         new Dictionary<string, string>(typeParamMap)));
                 }
+            }
+
+            // Cross-assembly method compilation: some internal types (e.g., ValueListBuilder<T>)
+            // are independently defined in multiple assemblies with different method sets.
+            // The primary open type definition may lack methods that callers reference.
+            // Check _crossAssemblyMethodDefs for methods tracked in Pass 0 that weren't found above.
+            CompileCrossAssemblyMethods(info, irType, typeParamMap);
+        }
+    }
+
+    /// <summary>
+    /// Compile methods from cross-assembly definitions that don't exist in the primary open type.
+    /// Some internal BCL types (e.g., ValueListBuilder&lt;T&gt;) are independently defined in multiple
+    /// assemblies with different method sets. The primary definition may lack methods that callers
+    /// in other assemblies reference. This method finds such methods from _crossAssemblyMethodDefs
+    /// and creates IRMethods + deferred bodies for them.
+    /// </summary>
+    /// <summary>
+    /// Pre-built index: open type name → set of "MethodName/ParamCount" strings from _calledSpecializedMethods.
+    /// Built once before CreateGenericSpecializations to avoid O(n*m) iteration per type.
+    /// </summary>
+    private Dictionary<string, HashSet<string>>? _calledMethodsByOpenType;
+
+    private void EnsureCalledMethodsByOpenTypeIndex()
+    {
+        if (_calledMethodsByOpenType != null) return;
+        _calledMethodsByOpenType = new();
+        foreach (var specKey in _calledSpecializedMethods)
+        {
+            // Key format: "OpenType<Args>::Method/Count"
+            var colonIdx = specKey.IndexOf("::");
+            if (colonIdx < 0) continue;
+            // Extract open type name (before the <)
+            var angleBracket = specKey.IndexOf('<');
+            if (angleBracket < 0 || angleBracket > colonIdx) continue;
+            var openTypeName = specKey.Substring(0, angleBracket);
+            var methodPart = specKey.Substring(colonIdx + 2);
+            if (!_calledMethodsByOpenType.TryGetValue(openTypeName, out var set))
+            {
+                set = new HashSet<string>();
+                _calledMethodsByOpenType[openTypeName] = set;
+            }
+            set.Add(methodPart);
+        }
+    }
+
+    private void CompileCrossAssemblyMethods(
+        GenericInstantiationInfo info, IRType irType, Dictionary<string, string> typeParamMap)
+    {
+        if (_crossAssemblyMethodDefs.Count == 0) return;
+        EnsureCalledMethodsByOpenTypeIndex();
+
+        // Quick check: are there any called methods for this open type?
+        if (!_calledMethodsByOpenType!.TryGetValue(info.OpenTypeName, out var calledMethods))
+            return;
+
+        // Collect method names already on the IRType
+        var existingMethods = new HashSet<string>();
+        foreach (var m in irType.Methods)
+            existingMethods.Add($"{m.Name}/{m.Parameters.Count}");
+
+        // Check for tracked methods that don't exist in the primary definition
+        foreach (var methodPart in calledMethods)
+        {
+            if (existingMethods.Contains(methodPart)) continue; // Already has this method
+
+            // Look up cross-assembly definition
+            var crossKey = $"{info.OpenTypeName}::{methodPart}";
+            if (!_crossAssemblyMethodDefs.TryGetValue(crossKey, out var crossMethodDef)) continue;
+            if (crossMethodDef.HasGenericParameters) continue;
+            if (!crossMethodDef.HasBody || crossMethodDef.IsAbstract) continue;
+
+            // Create IRMethod from the cross-assembly definition
+            var returnTypeName = ResolveGenericTypeName(crossMethodDef.ReturnType, typeParamMap);
+            var resolvedName = ResolveMethodNameGenericParams(crossMethodDef.Name, typeParamMap);
+            var methodCppName = CppNameMapper.MangleMethodName(info.MangledName, resolvedName);
+
+            var irMethod = new IRMethod
+            {
+                Name = resolvedName,
+                CppName = methodCppName,
+                DeclaringType = irType,
+                ReturnTypeCpp = ResolveTypeForDecl(returnTypeName),
+                IsStatic = crossMethodDef.IsStatic,
+                IsVirtual = crossMethodDef.IsVirtual,
+                IsAbstract = crossMethodDef.IsAbstract,
+                IsConstructor = crossMethodDef.IsConstructor,
+                IsStaticConstructor = crossMethodDef.IsConstructor && crossMethodDef.IsStatic,
+            };
+
+            foreach (var paramDef in crossMethodDef.Parameters)
+            {
+                var paramTypeName = ResolveGenericTypeName(paramDef.ParameterType, typeParamMap);
+                var rawParamName = paramDef.Name.Length > 0 ? paramDef.Name : $"p{paramDef.Index}";
+                irMethod.Parameters.Add(new IRParameter
+                {
+                    Name = rawParamName,
+                    CppName = CppNameMapper.MangleIdentifier(rawParamName),
+                    CppTypeName = ResolveTypeForDecl(paramTypeName),
+                    ILTypeName = paramTypeName,
+                    Index = paramDef.Index,
+                });
+            }
+
+            // Populate locals
+            if (crossMethodDef.HasBody)
+            {
+                var localParamMap = BuildMethodLevelGenericParamMap(crossMethodDef, typeParamMap);
+                foreach (var localDef in crossMethodDef.Body.Variables)
+                {
+                    var localTypeName = ResolveGenericTypeName(localDef.VariableType, localParamMap);
+                    irMethod.Locals.Add(new IRLocal
+                    {
+                        Index = localDef.Index,
+                        CppName = $"loc_{localDef.Index}",
+                        CppTypeName = ResolveTypeForDecl(localTypeName),
+                    });
+                }
+            }
+
+            irType.Methods.Add(irMethod);
+            existingMethods.Add(methodPart);
+
+            if (!HasClrInternalDependencies(crossMethodDef))
+            {
+                _deferredGenericBodies.Add((crossMethodDef, irMethod,
+                    new Dictionary<string, string>(typeParamMap)));
             }
         }
     }

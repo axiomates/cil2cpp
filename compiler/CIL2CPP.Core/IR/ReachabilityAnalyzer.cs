@@ -1047,11 +1047,14 @@ public class ReachabilityAnalyzer
         // ResourceReader/ResourceManager. Was excluded because CIL2CPP uses SR icall
         // for resource strings, but the types themselves compile fine from IL.
 
-        // Regex symbolic engine — internal BCL implementation (BDD, DerivativeEffect, SymbolicRegexNode).
-        // Tree-shaking optimization: these types are transitively reachable but not needed by AOT consumers.
-        // (Recursive generic growth is separately handled by IsRecursiveGenericInstantiation in IRBuilder.)
-        if (typeFullName.StartsWith("System.Text.RegularExpressions.Symbolic."))
-            return true;
+        // REMOVED: System.Text.RegularExpressions.Symbolic — not AOT-incompatible.
+        // NativeAOT fully supports RegexOptions.NonBacktracking (symbolic engine).
+        // Was excluded as "tree-shaking optimization" but this caused the 4-param
+        // Regex ctor body to reference SymbolicRegexRunnerFactory without it being
+        // in the module — FindFirstUndeclaredCall then blocked the ctor from emission,
+        // producing a stub that crashed at runtime (NullReferenceException in CreateRunner).
+        // Recursive generic types in this namespace are safely bounded by
+        // IsRecursiveGenericInstantiation in IRBuilder.
 
         // LINQ Expression trees — require JIT compilation (Expression.Compile()).
         // Full namespace excluded (not just .Interpreter) because expression tree
