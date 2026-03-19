@@ -179,13 +179,13 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 | REST 客户端 (HTTP+JSON) | ~80% | HTTP + JSON 均已端到端通过；需更多验证 |
 | NuGet 包（简单） | ~75% | Newtonsoft.Json ✅ + DI+Logging+Console ✅（单项目 3 个 NuGet 包）。M4 已达成。 |
 | 生产级应用 | ~40% | DI + 日志生态已工作（DITest）。配置 + 压缩待完成 |
-| 任意 NativeAOT .csproj | **~50%** | 大型程序集规模已验证（3.1M 行），DI 生态已通过，stubs 仍存在，`[MarshalAs]` 部分完成 |
+| 任意 NativeAOT .csproj | **~55%** | 大型程序集规模已验证（3.1M 行，103s codegen），DI 生态已通过，stubs 仍存在，`[MarshalAs]` 部分完成 |
 
 > **Linux/macOS**：待定。以上百分比仅限 Windows。Linux 需要 System.Native 集成 (Phase B.5, 待定) + OpenSSL (Phase E.linux, 待定)。当前 Linux 支持：~5%（仅控制台，无文件 I/O 或网络）。
 
 **什么能提升百分比**（累积，Windows）：
-- **50%→60%**：Codegen 性能优化（385s → 目标 <120s）+ 更多 NuGet 包（Serilog、Polly）
-- **60%→75%**：Stub 消减（NuGetSimpleTest 4,572 个）+ 压缩 (zlib) + MarshalAs 完善 + SIMD 标量完善
+- **50%→60%**：✅ Codegen 性能优化（361s→103s，-72%）+ 更多 NuGet 包（目标：10）
+- **60%→75%**：NuGet 包验证循环（Serilog、Polly 等）+ stub 消减 + 压缩 (zlib) + MarshalAs 完善
 - **75%→85%**：复杂 HTTP 场景 + 配置生态 + 更完善的反射支持
 - **85%→95%**：10 个 NuGet 包验证 + 综合测试 + 边界用例打磨
 
@@ -196,6 +196,7 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 - NuGet PackageReference — **✅ 完整验证**（Phase 14+15）：NuGetSimpleTest（Newtonsoft.Json 13.0.3）+ DITest（DI+Logging+Console，3 个 NuGet 包）均端到端编译并运行。OOM 问题通过按需泛型发现 + 特化方法可达性分析解决。
 - DI 生态 — **✅ 已验证**（Phase 15）：DITest 使用 Microsoft.Extensions.DependencyInjection — 构造函数注入、singleton/transient 生命周期、反射式服务解析。M4 里程碑达成。
 - Source generator 输出 — **✅ 完整验证**（D.5）：JsonSGTest 使用 `[JsonSerializable]` 通过 CIL2CPP 端到端编译并运行。
+- Codegen 性能 — **✅ 已优化**（2026-03-19）：NuGetSimpleTest 361s→103s（-72%）。四项优化：CppNameMapper 缓存、增量 CreateGenericSpecializations、Parallel.For 方法生成、O(n^2) BuildTypeInfoExprLookup 消除。发现并修复两个正确性 bug（定点终止 + 重复 pending key）。
 
 ---
 
@@ -412,7 +413,7 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 
 | # | 任务 | 预估 | 状态 | 说明 |
 |---|------|------|------|------|
-| D.0 | NuGet 包集成测试 | 中 | ✅ 已完成 | NuGetSimpleTest（Phase 14）：Newtonsoft.Json 13.0.3（3.1M 行，385s）。DITest（Phase 15）：DI+Logging+Console（3 个 NuGet 包，构造函数注入，singleton/transient）。JsonSGTest（Phase 13）：System.Text.Json SG。93/93 集成测试。 |
+| D.0 | NuGet 包集成测试 | 中 | ✅ 已完成 | NuGetSimpleTest（Phase 14）：Newtonsoft.Json 13.0.3（3.1M 行，优化后 103s）。DITest（Phase 15）：DI+Logging+Console（3 个 NuGet 包，构造函数注入，singleton/transient）。JsonSGTest（Phase 13）：System.Text.Json SG。93/93 集成测试。 |
 | D.1 | `[DynamicallyAccessedMembers]` 解析 | 中 | ✅ 已完成并验证 | ReachabilityAnalyzer.cs — 完整 13 种 DamFlag 解析 + SeedDynamicallyAccessedMembers()。包含泛型方法/类型参数上的 DAM 支持（DI 关键：`AddSingleton<TService, [DAM] TImpl>()` 保留 TImpl 构造函数）。CLI `--rdxml`。7 个 DAM 测试 + 14 个 rd.xml 测试。 |
 | D.2 | rd.xml 解析器 | 低 | ✅ 已完成并验证 | RdXmlParser.cs — 完整 XML 解析 + PreservationRule 映射。CLI `--rdxml` 选项已在 Program.cs 中接入。 |
 | D.3 | ILLink feature switch 替换 | 中 | ✅ 已上线 | FeatureSwitchResolver.cs（10 个 AOT 默认开关）+ IRBuilder.Methods.cs:1372-1386（Ldsfld 编译期替换）。所有构建自动生效。 |
@@ -465,8 +466,8 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 
 | # | 任务 | 预估 | 说明 |
 |---|------|------|------|
-| F.1 | SIMD 标量回退路径完善 | 高 | **必须实现。**SIMD 死分支消除（FeatureSwitchResolver）处理了大部分情况；KBP 类别中的剩余 SIMD stubs 需要标量回退路径 |
-| F.2 | Task struct 重构（原 Phase 5.2-5.5） | 高 | **待定。**降低 RuntimeProvided 32→25（内部质量，无用户可感知影响） |
+| F.1 | SIMD 标量回退路径完善 | 高 | ✅ 大幅完成。4 层死代码消除（FeatureSwitchResolver + IR 常量传播 + 容器类型泄漏修复 + 渲染时替换）。HttpsGetTest SIMD 错误 303→0。剩余 SIMD stubs 为 KBP 死分支残余，不阻塞。 |
+| F.2 | Task struct 重构（原 Phase 5.2-5.5） | 高 | **技术债务。**降低 RuntimeProvided 32→25。异步功能正确工作，但 7 个类型（Task + 6 异步依赖）仍为 C++ runtime struct。当前测试覆盖可能未涉及所有边界用例——扩展 NuGet 验证可能暴露问题。待测试覆盖足够广泛后处理。 |
 | F.3 | 增量编译 | 中 | **待定。**IR/codegen 缓存（性能优化） |
 | F.4 | 反射模型评估（原 Phase 6） | 中 | **待定。**评估 QCall 替代方案 |
 
@@ -496,17 +497,18 @@ Phase 1-4 ✅  →  Phase A ✅  →  Phase B ✅ (Windows)
    ┌── Phase C.6 ✅ (完整 HTTP GET) ────────────┐
    │   Phase E.win ✅ (SChannel TLS)             │ ← 并行
    │      ↓                                     │
-   │   Phase C.7 (MarshalAs P/Invoke)          Phase D (NativeAOT 元数据 + NuGet 生态)
-   │      ↓                                     │    D.0 NuGet 验证
-   │   Phase E.2 (zlib 压缩)                    │    D.1 [DynamicallyAccessedMembers]
-   │      ↓                                     │    D.3 ILLink feature switch
-   │                                            │    D.5 Source generator 验证
+   │   Phase C.7.2/C.7.3 ([Out]/[In] + 数组)   Phase D ✅ (NativeAOT 元数据 + NuGet)
+   │      ↓                                     │    D.4 AOT 警告（低优先级）
+   │   Phase E.2 (zlib 压缩)                    │
+   │      ↓                                     │
    └──────┴─────── 汇合 ───────────────────────┘
                         ↓
               Phase H.2 (RenderedBodyError → 0) — 持续进行
-              Phase F.1 (SIMD 标量完善)
+              Phase F.1 ✅ (SIMD: 4 层消除完成)
                         ↓
-              Phase G (产品化: CI/CD + 10 NuGet 包验证)
+              Phase G.2 (10 NuGet 包 — 主要推动力)
+                        ↓
+              Phase G (产品化: CI/CD + 部署)
 ```
 
 ### 待定（必须实现完成后）
@@ -532,7 +534,7 @@ macOS 支持 (Objective-C 桥接)
 | **M3: 联网应用** | HttpClient HTTP GET 从 BCL IL 编译并运行 | C.6 | ✅ HTTP + HTTPS GET 已通过 |
 | **M3.5: REST 客户端** | HTTP GET + JSON 序列化端到端 | C.6+D | ✅ JsonSGTest + NuGetSimpleTest（Newtonsoft.Json） |
 | **M4: 库生态** | 3+ NuGet PackageReference 项目编译并运行 | D+G.2 | ✅ DITest（DI+Logging+Console = 3 个 NuGet 包） |
-| **M5: 生产级** | HTTPS + 压缩 + DI/日志生态 | E+F | 进行中（HTTPS ✅、DI/日志 ✅、压缩待完成） |
+| **M5: 生产级** | HTTPS + 压缩 + DI/日志生态 | E+F | 进行中（HTTPS ✅、DI/日志 ✅、SIMD ✅、codegen 性能 ✅、压缩待完成） |
 | **M6: 发布** | CI/CD + 10 真实 NuGet 包验证 | G | 未开始 |
 
 ## 指标定义
