@@ -344,6 +344,8 @@ public partial class IRBuilder
 
     // Generic type instantiation tracking
     private readonly Dictionary<string, GenericInstantiationInfo> _genericInstantiations = new();
+    // Pending keys for incremental CreateGenericSpecializations processing
+    private readonly HashSet<string> _pendingGenericKeys = new();
 
     private record GenericInstantiationInfo(
         string OpenTypeName,
@@ -358,9 +360,17 @@ public partial class IRBuilder
     private readonly HashSet<string> _processedMethodSpecKeys = new();
     // Keys already processed by the second pass of CreateGenericSpecializations (base types, interfaces)
     private readonly HashSet<string> _resolvedGenericTypeKeys = new();
+    // Types whose base type or interfaces were not yet available when first resolved.
+    // Re-checked each CreateGenericSpecializations call until resolved.
+    private readonly HashSet<string> _unresolvedBaseTypeKeys = new();
+    // Types whose base type is not yet resolved — defer vtable building until resolved.
+    // Prevents building an incomplete vtable that would cause method index mismatches.
+    private readonly HashSet<IRType> _deferredVtableTypes = new();
     // Types already processed by DisambiguateOverloadedMethods — prevents re-disambiguation
     private readonly HashSet<IRType> _disambiguatedTypes = new();
     private readonly HashSet<IRType> _vtableBuilt = new();
+    // Set to true by BuildVTableRecursive when a type is un-deferred — drives fixpoint loop
+    private bool _vtableDeferralProgress;
 
     private record GenericMethodInstantiationInfo(
         string DeclaringTypeName,
@@ -448,6 +458,7 @@ public partial class IRBuilder
     private IRModule BuildInternal()
     {
         CppNameMapper.ClearValueTypes();
+        CppNameMapper.ClearCaches();
 
         // Pre-register value types from ALL loaded assemblies (not just reachable types).
         // BCL enums/structs (e.g. System.Number.ParsingStatus) may be used as locals/params
@@ -650,10 +661,7 @@ public partial class IRBuilder
         // BuildVTable is idempotent (skips if already built), so Pass 4 safely handles
         // any new types created in Pass 3.6.
         var pass34sw = System.Diagnostics.Stopwatch.StartNew();
-        foreach (var irType in _module.Types)
-        {
-            BuildVTableRecursive(irType, _vtableBuilt);
-        }
+        BuildVTablesFixpoint();
 
         // Pass 3.4: Convert deferred generic specialization bodies.
         // Must happen AFTER disambiguation (Pass 3.3) so that call sites in generic method
@@ -696,8 +704,7 @@ public partial class IRBuilder
         // Pass 3.4 because they're only referenced from generic method bodies compiled in Pass 3.5.
         if (_deferredGenericBodies.Count > 0)
         {
-            foreach (var irType in _module.Types)
-                BuildVTableRecursive(irType, _vtableBuilt);
+            BuildVTablesFixpoint();
             DisambiguateOverloadedMethods();
             ConvertDeferredGenericBodies();
         }
@@ -732,10 +739,7 @@ public partial class IRBuilder
         // Pass 4: Build vtables for new types from Pass 3.6 (re-discovery).
         // Types from Pass 3.3b already have VTables (BuildVTable is idempotent).
         var pass45sw = System.Diagnostics.Stopwatch.StartNew();
-        foreach (var irType in _module.Types)
-        {
-            BuildVTableRecursive(irType, _vtableBuilt);
-        }
+        BuildVTablesFixpoint();
 
         // Pass 4.5: Re-resolve interfaces for non-generic types.
         // Pass 2.4 only adds interfaces already in _typeCache at that point.
@@ -809,8 +813,7 @@ public partial class IRBuilder
         // Pass 6.1b: Drain deferred generic bodies discovered during Pass 6.1.
         if (_deferredGenericBodies.Count > 0)
         {
-            foreach (var irType in _module.Types)
-                BuildVTableRecursive(irType, _vtableBuilt);
+            BuildVTablesFixpoint();
             DisambiguateOverloadedMethods();
             ConvertDeferredGenericBodies();
         }
@@ -1038,8 +1041,7 @@ public partial class IRBuilder
         if (recoveredCount > 0 || dimCompiled > 0)
         {
             // Rebuild vtables for newly-typed methods
-            foreach (var irType in _module.Types)
-                BuildVTableRecursive(irType, _vtableBuilt);
+            BuildVTablesFixpoint();
             DisambiguateOverloadedMethods();
             ConvertDeferredGenericBodies();
         }

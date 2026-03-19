@@ -394,37 +394,56 @@ public partial class CppCodeGenerator
 
     /// <summary>
     /// Generate method implementation files, partitioned for parallel compilation.
+    /// Two-phase approach:
+    ///   Phase 1 (sequential): Filter methods per partition — handles signature dedup,
+    ///           undeclared-call checks, and diagnostic counters (shared mutable state).
+    ///   Phase 2 (parallel): Generate C++ code per partition — pure string construction,
+    ///           no shared mutable state (deadCodeReplacements collected per-partition and merged).
     /// </summary>
     private List<GeneratedFile> GenerateMethodFiles()
     {
-        var files = new List<GeneratedFile>();
         var partitions = PartitionTypes(_userTypes);
 
+        // Phase 1: Sequential filtering — collect methods to emit per partition.
+        var partitionMethods = new List<IRMethod>[partitions.Count];
         for (int i = 0; i < partitions.Count; i++)
         {
+            partitionMethods[i] = new List<IRMethod>();
+            foreach (var type in partitions[i])
+                FilterMethodsForType(type, partitionMethods[i]);
+        }
+
+        // Phase 2: Parallel code generation — each partition builds its own StringBuilder.
+        var results = new (string FileName, string Content, List<(string, string, string)> DeadCode)[partitions.Count];
+        Parallel.For(0, partitions.Count, i =>
+        {
+            var localDeadCode = new List<(string Category, string FunctionName, string InMethod)>();
             var sb = new StringBuilder();
             EmitSourceFileHeader(sb, $"Methods (part {i + 1} of {partitions.Count})");
 
             sb.AppendLine("// ===== Method Implementations =====");
-            foreach (var type in partitions[i])
-            {
-                EmitMethodsForType(sb, type);
-            }
+            foreach (var method in partitionMethods[i])
+                GenerateMethodImpl(sb, method, localDeadCode);
 
-            files.Add(new GeneratedFile
-            {
-                FileName = $"{_module.Name}_methods_{i}.cpp",
-                Content = sb.ToString()
-            });
+            results[i] = ($"{_module.Name}_methods_{i}.cpp", sb.ToString(), localDeadCode);
+        });
+
+        // Merge per-partition dead-code diagnostics into the shared list.
+        var files = new List<GeneratedFile>(partitions.Count);
+        for (int i = 0; i < results.Length; i++)
+        {
+            files.Add(new GeneratedFile { FileName = results[i].FileName, Content = results[i].Content });
+            _deadCodeReplacements.AddRange(results[i].DeadCode);
         }
 
         return files;
     }
 
     /// <summary>
-    /// Emit method implementations for a single type.
+    /// Filter methods from a type that should be emitted. Sequential — writes to shared
+    /// _emittedMethodSignatures and _skippedBy* diagnostic lists.
     /// </summary>
-    private void EmitMethodsForType(StringBuilder sb, IRType type)
+    private void FilterMethodsForType(IRType type, List<IRMethod> output)
     {
         if (type.IsDelegate) return;
 
@@ -436,7 +455,7 @@ public partial class CppCodeGenerator
                 if (method.IsAbstract || method.BasicBlocks.Count == 0) continue;
                 if (HasInvalidCppSignature(method)) continue;
                 if (!_emittedMethodSignatures.Add(method.GetCppSignature())) continue;
-                GenerateMethodImpl(sb, method);
+                output.Add(method);
             }
             return;
         }
@@ -484,7 +503,7 @@ public partial class CppCodeGenerator
             }
             if (!_emittedMethodSignatures.Add(method.GetCppSignature())) continue;
             // Direct render — compile from IL
-            GenerateMethodImpl(sb, method);
+            output.Add(method);
         }
     }
 
@@ -1177,7 +1196,8 @@ public partial class CppCodeGenerator
         sb.AppendLine("};");
     }
 
-    private void GenerateMethodImpl(StringBuilder sb, IRMethod method)
+    private void GenerateMethodImpl(StringBuilder sb, IRMethod method,
+        List<(string Category, string FunctionName, string InMethod)>? localDeadCode = null)
     {
         sb.AppendLine($"// {method.DeclaringType?.ILFullName}::{method.Name}");
         sb.AppendLine($"{method.GetCppSignature()} {{");
@@ -1372,7 +1392,7 @@ public partial class CppCodeGenerator
                             DeadCodeCategory.AotIncompatible => "AOT-incompatible",
                             _ => "dead"
                         };
-                        _deadCodeReplacements.Add((label, deadCall.FunctionName, method.CppName));
+                        (localDeadCode ?? _deadCodeReplacements).Add((label, deadCall.FunctionName, method.CppName));
                         if (deadCall.ResultVar != null)
                         {
                             var type = deadCall.ResultTypeCpp ?? "int";
@@ -2477,8 +2497,13 @@ public partial class CppCodeGenerator
         return type.IsValueType ? (byte)0x11 : (byte)0x12; // VALUETYPE or CLASS
     }
 
+    private Dictionary<string, string>? _typeInfoExprLookupCache;
+
     private Dictionary<string, string> BuildTypeInfoExprLookup()
     {
+        if (_typeInfoExprLookupCache != null)
+            return _typeInfoExprLookupCache;
+
         var lookup = new Dictionary<string, string>();
 
         // All types (including runtime-provided) — their TypeInfo symbols exist in generated code
@@ -2498,6 +2523,7 @@ public partial class CppCodeGenerator
             lookup[entry.ILFullName] = $"&{entry.CppMangledName}_TypeInfo";
         }
 
+        _typeInfoExprLookupCache = lookup;
         return lookup;
     }
 

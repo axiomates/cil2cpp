@@ -3188,9 +3188,22 @@ public partial class IRBuilder
         {
             // Re-entry: if the type was previously processed but its VTable is still empty
             // (e.g., it was added to the built set before its methods were populated during
-            // CreateGenericSpecializations), rebuild it now.
-            if (irType.VTable.Count == 0 && irType.Methods.Any(m => m.IsVirtual))
-                BuildVTable(irType);
+            // CreateGenericSpecializations, or it was transitively deferred), rebuild it now.
+            if (irType.VTable.Count == 0)
+            {
+                // If transitively deferred (base was deferred), check if base is now ready
+                if (_deferredVtableTypes.Contains(irType) && irType.BaseType != null
+                    && !_deferredVtableTypes.Contains(irType.BaseType))
+                {
+                    _deferredVtableTypes.Remove(irType);
+                    _vtableDeferralProgress = true;
+                    // Ensure base vtable is built first
+                    if (irType.BaseType.VTable.Count == 0)
+                        BuildVTableRecursive(irType.BaseType, built);
+                }
+                if (irType.Methods.Any(m => m.IsVirtual) || (irType.BaseType?.VTable.Count > 0))
+                    BuildVTable(irType);
+            }
             return;
         }
         if (irType.BaseType != null)
@@ -3204,9 +3217,21 @@ public partial class IRBuilder
         // across multiple passes — first in Pass 3.3b for early types, then Pass 4 for late types)
         if (irType.VTable.Count > 0) return;
 
+        // Defer vtable building for types whose base type is not yet resolved.
+        // Building now would create an incomplete vtable, causing method index mismatches
+        // when the base type is later resolved and the correct inherited methods are added.
+        if (_deferredVtableTypes.Contains(irType)) return;
+
         // Start with base type's vtable
         if (irType.BaseType != null)
         {
+            // If base type's vtable is deferred or empty (base chain not yet resolved),
+            // defer this type too — building now would produce an incomplete vtable.
+            if (irType.BaseType.VTable.Count == 0 && _deferredVtableTypes.Contains(irType.BaseType))
+            {
+                _deferredVtableTypes.Add(irType);
+                return;
+            }
             foreach (var entry in irType.BaseType.VTable)
             {
                 irType.VTable.Add(new IRVTableEntry

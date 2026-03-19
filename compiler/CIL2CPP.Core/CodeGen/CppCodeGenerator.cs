@@ -294,13 +294,16 @@ public partial class CppCodeGenerator
         // Generate split source files
         var sourceSw = System.Diagnostics.Stopwatch.StartNew();
         output.DataFile = GenerateDataFile();
+        var dataMs = sourceSw.ElapsedMilliseconds;
         output.MethodFiles = GenerateMethodFiles();
+        var methodsMs = sourceSw.ElapsedMilliseconds - dataMs;
         // CoreRuntimeTypes method bodies are provided by the runtime library (core_methods.cpp).
         // No runtime_glue.cpp is generated — the compiler only generates stubs for
         // non-CoreRuntimeTypes methods that couldn't be compiled from IL.
         output.StubFile = GenerateStubFile();
         sourceSw.Stop();
-        Console.Error.WriteLine($"[perf] CodeGen Data+Methods+Stubs: {sourceSw.ElapsedMilliseconds}ms, " +
+        Console.Error.WriteLine($"[perf] CodeGen Data+Methods+Stubs: {sourceSw.ElapsedMilliseconds}ms " +
+            $"(data={dataMs}ms, methods={methodsMs}ms, stubs={sourceSw.ElapsedMilliseconds - dataMs - methodsMs}ms), " +
             $"methodFiles={output.MethodFiles.Count}");
 
         // Generate main entry point only for executable projects (with entry point)

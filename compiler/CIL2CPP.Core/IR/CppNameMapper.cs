@@ -6,24 +6,41 @@ namespace CIL2CPP.Core.IR;
 public static class CppNameMapper
 {
     // User-defined value types (structs and enums) registered during IR build.
-    // Guarded by _vtLock because IRBuilder.Build() writes (Add/Clear) while
-    // CppCodeGenerator.Generate() may read (Contains) from a different thread.
-    private static readonly HashSet<string> _userValueTypes = new();
-    private static readonly object _vtLock = new();
+    // Copy-on-write: reads are lock-free via volatile reference; writes copy + swap.
+    private static volatile HashSet<string> _userValueTypes = new();
+    private static readonly object _vtWriteLock = new();
+
+    // Caches for pure string transformations (no external state dependencies).
+    private static readonly Dictionary<string, string> _mangleCache = new();
+    private static readonly Dictionary<string, string> _mangleCleanCache = new();
 
     public static void RegisterValueType(string ilTypeName)
     {
-        lock (_vtLock) _userValueTypes.Add(ilTypeName);
+        lock (_vtWriteLock)
+        {
+            if (_userValueTypes.Contains(ilTypeName)) return;
+            var newSet = new HashSet<string>(_userValueTypes) { ilTypeName };
+            _userValueTypes = newSet;
+        }
     }
 
     public static void ClearValueTypes()
     {
-        lock (_vtLock) _userValueTypes.Clear();
+        lock (_vtWriteLock) _userValueTypes = new();
+    }
+
+    /// <summary>
+    /// Clear all internal caches. Call at the start of each Build() to reset state.
+    /// </summary>
+    public static void ClearCaches()
+    {
+        _mangleCache.Clear();
+        _mangleCleanCache.Clear();
     }
 
     internal static bool IsRegisteredValueType(string typeName)
     {
-        lock (_vtLock) return _userValueTypes.Contains(typeName);
+        return _userValueTypes.Contains(typeName);
     }
 
     /// <summary>
@@ -125,21 +142,20 @@ public static class CppNameMapper
             "System.Int64" or "System.UInt64" or "System.Single" or "System.Double" or
             "System.Char" or "System.IntPtr" or "System.UIntPtr")
             return true;
-        lock (_vtLock)
+        // Lock-free read via volatile reference (copy-on-write pattern)
+        var vt = _userValueTypes;
+        if (vt.Contains(ilTypeName))
+            return true;
+        // For generic instantiations (e.g. "System.Span`1<System.Byte>"),
+        // check if the open generic type is a registered value type.
+        // Find the '<' after the backtick to avoid matching '<' in type names
+        // like "<PrivateImplementationDetails>/__y__InlineArray2`1<System.String>".
+        var backtick = ilTypeName.IndexOf('`');
+        if (backtick > 0)
         {
-            if (_userValueTypes.Contains(ilTypeName))
+            var angleBracket = ilTypeName.IndexOf('<', backtick);
+            if (angleBracket > 0 && vt.Contains(ilTypeName[..angleBracket]))
                 return true;
-            // For generic instantiations (e.g. "System.Span`1<System.Byte>"),
-            // check if the open generic type is a registered value type.
-            // Find the '<' after the backtick to avoid matching '<' in type names
-            // like "<PrivateImplementationDetails>/__y__InlineArray2`1<System.String>".
-            var backtick = ilTypeName.IndexOf('`');
-            if (backtick > 0)
-            {
-                var angleBracket = ilTypeName.IndexOf('<', backtick);
-                if (angleBracket > 0 && _userValueTypes.Contains(ilTypeName[..angleBracket]))
-                    return true;
-            }
         }
         return false;
     }
@@ -262,6 +278,15 @@ public static class CppNameMapper
     /// </summary>
     public static string MangleTypeName(string ilFullName)
     {
+        if (_mangleCache.TryGetValue(ilFullName, out var cached))
+            return cached;
+        var result = MangleTypeNameUncached(ilFullName);
+        _mangleCache[ilFullName] = result;
+        return result;
+    }
+
+    private static string MangleTypeNameUncached(string ilFullName)
+    {
         // IL function pointer types → void_ptr (opaque handle)
         if (ilFullName.StartsWith("method ") || ilFullName.StartsWith("method("))
             return "void_ptr";
@@ -312,6 +337,15 @@ public static class CppNameMapper
     /// to produce the correct name. Use this for template arguments (box/unbox) and TypeInfo references.
     /// </summary>
     public static string MangleTypeNameClean(string ilFullName)
+    {
+        if (_mangleCleanCache.TryGetValue(ilFullName, out var cached))
+            return cached;
+        var result = MangleTypeNameCleanUncached(ilFullName);
+        _mangleCleanCache[ilFullName] = result;
+        return result;
+    }
+
+    private static string MangleTypeNameCleanUncached(string ilFullName)
     {
         // Generic instance: Foo`N<Arg1,Arg2,...> — parse and use MangleGenericInstanceTypeName
         var backtickIdx = ilFullName.IndexOf('`');

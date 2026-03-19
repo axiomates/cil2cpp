@@ -457,8 +457,8 @@ public partial class IRBuilder
         var mangledName = CppNameMapper.MangleGenericInstanceTypeName(openTypeName, typeArgs);
         var cecilOpenType = git.ElementType.Resolve();
 
-        _genericInstantiations[key] = new GenericInstantiationInfo(
-            openTypeName, typeArgs, mangledName, cecilOpenType);
+        RegisterGenericInstantiation(key, new GenericInstantiationInfo(
+            openTypeName, typeArgs, mangledName, cecilOpenType));
 
         // AOT companion types: EqualityComparer<T> needs ObjectEqualityComparer<T>,
         // Comparer<T> needs ObjectComparer<T>. The BCL creates these via MakeGenericType
@@ -533,8 +533,8 @@ public partial class IRBuilder
         if (companionCecil == null) return;
 
         var companionMangled = CppNameMapper.MangleGenericInstanceTypeName(companionOpenName, typeArgs);
-        _genericInstantiations[companionKey] = new GenericInstantiationInfo(
-            companionOpenName, typeArgs, companionMangled, companionCecil);
+        RegisterGenericInstantiation(companionKey, new GenericInstantiationInfo(
+            companionOpenName, typeArgs, companionMangled, companionCecil));
     }
 
     /// <summary>
@@ -983,22 +983,10 @@ public partial class IRBuilder
         // because !!T is unresolved during open-method analysis.
         EnsureConstrainedMethodBodiesExist(cecilMethod, typeParamMap);
 
-        // Fixpoint: create types → base chain/interface auto-discovery may find more → iterate
-        if (_genericInstantiations.Count > prevCount)
-        {
-            int fixpointCount;
-            do
-            {
-                fixpointCount = _genericInstantiations.Count;
-                CreateGenericSpecializations();
-                int prevNested;
-                do
-                {
-                    prevNested = _genericInstantiations.Count;
-                    CreateNestedGenericSpecializations();
-                } while (_genericInstantiations.Count > prevNested);
-            } while (_genericInstantiations.Count > fixpointCount);
-        }
+        // Create types for newly discovered generic instantiations.
+        // CreateGenericSpecializations handles nested specialization fixpoint internally.
+        if (_pendingGenericKeys.Count > 0)
+            CreateGenericSpecializations();
     }
 
     /// <summary>
@@ -1561,343 +1549,69 @@ public partial class IRBuilder
     /// </summary>
     private void CreateGenericSpecializations()
     {
-        // Pre-scan: ensure ObjectEqualityComparer<T>/ObjectComparer<T> companions exist
-        // for all EqualityComparer<T>/Comparer<T> discovered so far. This catches types
-        // discovered via transitive generic resolution (Pass 0.5) and re-discovery (Pass 3.6).
-        var snapshot = _genericInstantiations.ToList();
-        foreach (var (_, info) in snapshot)
-            EnsureComparerCompanionType(info.OpenTypeName, info.TypeArguments);
+        if (_pendingGenericKeys.Count == 0) return;
 
-        // Use snapshot — base chain / interface auto-discovery may add to _genericInstantiations
-        foreach (var (key, info) in snapshot)
+        // Collect all keys processed in this call (for second pass)
+        var allProcessed = new List<string>();
+
+        // Drain loop: process pending keys; companions and nested types may add more
+        while (_pendingGenericKeys.Count > 0)
         {
-            // Skip types already created (e.g., by BCL proxy system or reachability)
-            if (_typeCache.ContainsKey(key))
+            var batch = new List<string>(_pendingGenericKeys);
+            _pendingGenericKeys.Clear();
+
+            // Pre-scan: ensure companion types for this batch
+            foreach (var key in batch)
             {
-                continue;
+                if (_genericInstantiations.TryGetValue(key, out var info))
+                    EnsureComparerCompanionType(info.OpenTypeName, info.TypeArguments);
+            }
+            // Drain any companion keys added during pre-scan
+            if (_pendingGenericKeys.Count > 0)
+            {
+                batch.AddRange(_pendingGenericKeys);
+                _pendingGenericKeys.Clear();
             }
 
-            // Skip types we can't resolve (no Cecil definition available)
-            if (info.CecilOpenType == null) continue;
-
-            // Safety net: skip SIMD container types even if they leaked into _genericInstantiations
-            if (IsSimdContainerType(info.OpenTypeName)) continue;
-
-            var openType = info.CecilOpenType;
-
-            // Build type parameter map
-            var typeParamMap = BuildTypeParamMap(openType, info.TypeArguments);
-
-            // Validate generic constraints
-            if (openType.HasGenericParameters)
-                ValidateGenericConstraints(openType.GenericParameters, info.TypeArguments, key);
-
-            var isDelegate = openType.BaseType?.FullName is "System.MulticastDelegate" or "System.Delegate";
-
-            var irType = new IRType
+            // First pass: create types for pending entries only
+            foreach (var key in batch)
             {
-                ILFullName = key,
-                CppName = info.MangledName,
-                Name = info.MangledName,
-                Namespace = openType.Namespace,
-                IsValueType = openType.IsValueType,
-                IsInterface = openType.IsInterface,
-                IsAbstract = openType.IsAbstract,
-                IsSealed = openType.IsSealed,
-                IsEnum = openType.IsEnum,
-                IsGenericInstance = true,
-                IsDelegate = isDelegate,
-                IsPublic = openType.IsPublic,
-                IsNestedPublic = openType.IsNestedPublic,
-                IsByRefLike = openType.CustomAttributes.Any(
-                    a => a.AttributeType.FullName == "System.Runtime.CompilerServices.IsByRefLikeAttribute"),
-                MetadataToken = openType.MetadataToken.ToUInt32(),
-                GenericArguments = info.TypeArguments,
-                IsRuntimeProvided = RuntimeProvidedTypes.Contains(info.OpenTypeName),
-                SourceKind = _assemblySet.ClassifyAssembly(openType.Module.Assembly.Name.Name),
-            };
+                // Skip types already created (e.g., by BCL proxy system or reachability)
+                if (_typeCache.ContainsKey(key)) continue;
 
-            // Propagate enum underlying type from Cecil definition
-            if (openType.IsEnum)
-            {
-                var valueField = openType.Fields.FirstOrDefault(f => f.Name == "value__");
-                irType.EnumUnderlyingType = valueField?.FieldType.FullName ?? "System.Int32";
+                if (!_genericInstantiations.TryGetValue(key, out var info)) continue;
+
+                // Skip types we can't resolve (no Cecil definition available)
+                if (info.CecilOpenType == null) continue;
+
+                // Safety net: skip SIMD container types even if they leaked into _genericInstantiations
+                if (IsSimdContainerType(info.OpenTypeName)) continue;
+
+                CreateGenericTypeFromInfo(key, info);
             }
 
-            // Propagate generic parameter variances from open type definition
-            if (openType.HasGenericParameters)
+            allProcessed.AddRange(batch);
+
+            // Auto-create nested type specializations (Entry, Enumerator, etc.)
+            // Iterate until fixpoint to handle nested-nested types (e.g., KeyCollection.Enumerator).
+            int prevNested;
+            do
             {
-                irType.GenericDefinitionCppName = CppNameMapper.MangleTypeName(info.OpenTypeName);
-                foreach (var gp in openType.GenericParameters)
-                {
-                    var variance = (gp.Attributes & Mono.Cecil.GenericParameterAttributes.VarianceMask) switch
-                    {
-                        Mono.Cecil.GenericParameterAttributes.Covariant => GenericVariance.Covariant,
-                        Mono.Cecil.GenericParameterAttributes.Contravariant => GenericVariance.Contravariant,
-                        _ => GenericVariance.Invariant,
-                    };
-                    irType.GenericParameterVariances.Add(variance);
-                }
-            }
-            else if (_typeCache.TryGetValue(info.OpenTypeName, out var openIrType)
-                     && openIrType.GenericParameterVariances.Count > 0)
-            {
-                irType.GenericDefinitionCppName = openIrType.CppName;
-                irType.GenericParameterVariances.AddRange(openIrType.GenericParameterVariances);
-            }
-
-            // Register value types
-            if (openType.IsValueType)
-            {
-                CppNameMapper.RegisterValueType(key);
-                CppNameMapper.RegisterValueType(info.MangledName);
-            }
-
-            // Fields from Cecil definition
-            // Collect inherited field names to detect C# field hiding (derived `new` backing fields)
-            var inheritedFieldCppNames = CollectInheritedFieldCppNames(openType);
-            foreach (var fieldDef in openType.Fields)
-            {
-                // Skip value__ backing field for enums (same as IRBuilder.Types.cs)
-                if (irType.IsEnum && fieldDef.Name == "value__") continue;
-
-                var fieldTypeName = ResolveGenericTypeName(fieldDef.FieldType, typeParamMap);
-                var cppName = CppNameMapper.MangleFieldName(fieldDef.Name);
-                var irField = new IRField
-                {
-                    Name = fieldDef.Name,
-                    CppName = cppName,
-                    FieldTypeName = fieldTypeName,
-                    IsStatic = fieldDef.IsStatic,
-                    IsPublic = fieldDef.IsPublic,
-                    DeclaringType = irType,
-                };
-
-                // C# field hiding: derived class declares a field with the same name as a base field
-                // (e.g. auto-property backing field with `new` keyword). Both fields coexist at
-                // different offsets in the CLR layout. Disambiguate the derived field's CppName.
-                if (!fieldDef.IsStatic && inheritedFieldCppNames.Contains(cppName))
-                {
-                    irField.HidesBaseField = true;
-                    irField.CppName = cppName + "__own";
-                }
-
-                // For enum constant fields, extract the constant value
-                if (irType.IsEnum && fieldDef.IsStatic && fieldDef.HasConstant)
-                    irField.ConstantValue = fieldDef.Constant?.ToString();
-
-                if (fieldDef.IsStatic)
-                    irType.StaticFields.Add(irField);
-                else
-                    irType.Fields.Add(irField);
-            }
-
-            // Propagate ExplicitSize from Cecil metadata (ECMA-335 II.10.1.2).
-            // Critical for Vector128<T> (ClassSize=16), Vector256<T> (ClassSize=32), etc.
-            if (irType.IsValueType && openType.HasLayoutInfo && openType.ClassSize > 0)
-                irType.ExplicitSize = openType.ClassSize;
-
-            // Calculate instance size
-            CalculateInstanceSize(irType);
-
-            // Register type early so self-referencing static field accesses work
-            _module.Types.Add(irType);
-            _typeCache[key] = irType;
-
-            // Create method specializations from Cecil definition — skip unreachable non-virtual, non-ctor
-            if (openType != null)
-            {
-                foreach (var methodDef in openType.Methods)
-                {
-                    // Skip unreachable methods that aren't needed for vtable or construction.
-                    // Their empty shells would only add overhead (forward declarations, stub candidates).
-                    if (!methodDef.IsVirtual && !methodDef.IsConstructor
-                        && !_reachability.IsReachable(methodDef))
-                        continue;
-                    // Skip methods with their own generic parameters (method-level generics).
-                    // These can't be compiled in the type specialization because the method-level
-                    // params (TResult, TKey, etc.) are unresolved. They'll be compiled via
-                    // _genericMethodInstantiations with concrete type args at each call site.
-                    // CLR guarantees: generic methods cannot be virtual, so no vtable impact.
-                    if (methodDef.HasGenericParameters)
-                        continue;
-                    var returnTypeName = ResolveGenericTypeName(methodDef.ReturnType, typeParamMap);
-                    var resolvedMethodName = ResolveMethodNameGenericParams(methodDef.Name, typeParamMap);
-                    var cppName = CppNameMapper.MangleMethodName(info.MangledName, resolvedMethodName);
-                    // op_Explicit/op_Implicit: disambiguate by return type (C++ can't overload by return type)
-                    if (methodDef.Name is "op_Explicit" or "op_Implicit" or "op_CheckedExplicit" or "op_CheckedImplicit")
-                        cppName = $"{cppName}_{CppNameMapper.MangleTypeName(returnTypeName)}";
-
-                    var irMethod = new IRMethod
-                    {
-                        Name = resolvedMethodName,
-                        CppName = cppName,
-                        DeclaringType = irType,
-                        ReturnTypeCpp = ResolveTypeForDecl(returnTypeName),
-                        IsStatic = methodDef.IsStatic,
-                        IsVirtual = methodDef.IsVirtual,
-                        IsAbstract = methodDef.IsAbstract,
-                        IsConstructor = methodDef.IsConstructor,
-                        IsStaticConstructor = methodDef.IsConstructor && methodDef.IsStatic,
-                    };
-
-                    // Propagate explicit interface overrides (.override directive)
-                    // Needed for BuildInterfaceImpls (Pass 5) to match interface methods
-                    if (methodDef.HasOverrides)
-                    {
-                        foreach (var ovr in methodDef.Overrides)
-                        {
-                            var resolvedTypeName = ResolveGenericTypeName(ovr.DeclaringType, typeParamMap);
-                            irMethod.ExplicitOverrides.Add((resolvedTypeName, ovr.Name));
-                        }
-                    }
-
-                    // Propagate HasICallMapping for methods with icall mappings
-                    if (ICallRegistry.Lookup(openType.FullName, methodDef.Name, methodDef.Parameters.Count) != null)
-                        irMethod.HasICallMapping = true;
-
-                    // Parameters
-                    foreach (var paramDef in methodDef.Parameters)
-                    {
-                        var paramTypeName = ResolveGenericTypeName(paramDef.ParameterType, typeParamMap);
-                        var rawParamName = paramDef.Name.Length > 0 ? paramDef.Name : $"p{paramDef.Index}";
-                        irMethod.Parameters.Add(new IRParameter
-                        {
-                            Name = rawParamName,
-                            CppName = CppNameMapper.MangleIdentifier(rawParamName),
-                            CppTypeName = ResolveTypeForDecl(paramTypeName),
-                            ILTypeName = paramTypeName,
-                            Index = paramDef.Index,
-                        });
-                    }
-
-                    // Local variables
-                    if (methodDef.HasBody)
-                    {
-                        // Build supplementary map for method-level generic params that leak into
-                        // local types via Cecil. E.g., MemoryMarshal.Cast<TFrom, TResult> — the
-                        // return type uses TResult, which appears in locals of calling methods.
-                        var localParamMap = BuildMethodLevelGenericParamMap(methodDef, typeParamMap);
-                        foreach (var localDef in methodDef.Body.Variables)
-                        {
-                            var localTypeName = ResolveGenericTypeName(localDef.VariableType, localParamMap);
-                            irMethod.Locals.Add(new IRLocal
-                            {
-                                Index = localDef.Index,
-                                CppName = $"loc_{localDef.Index}",
-                                CppTypeName = ResolveTypeForDecl(localTypeName),
-                            });
-                        }
-                    }
-
-                    irType.Methods.Add(irMethod);
-
-                    // Skip body conversion for ICall-mapped methods — dead code
-                    if (irMethod.HasICallMapping) continue;
-
-                    // Defer method body conversion to after DisambiguateOverloadedMethods (Pass 3.3).
-                    // Converting bodies before disambiguation causes call sites to use
-                    // pre-disambiguation names, leading to undeclared/mismatched function calls.
-                    // Only convert reachable methods — same check as Pass 3.
-                    // Unreachable methods keep BasicBlocks empty → not declared in header.
-                    if (methodDef.HasBody && !methodDef.IsAbstract)
-                    {
-                        bool shouldCompile;
-                        if (!_reachability.IsReachable(methodDef))
-                        {
-                            shouldCompile = false; // open method not reachable at all
-                        }
-                        else if (methodDef.IsConstructor)
-                        {
-                            shouldCompile = true; // constructors always compiled
-                        }
-                        else if (IsCompilerGeneratedClosureType(info.CecilOpenType))
-                        {
-                            // Compiler-generated display class / closure types (<>c, __DisplayClass)
-                            // have methods invoked through delegates, not direct callvirt/call.
-                            // _calledSpecializedMethods won't track them, so always compile.
-                            shouldCompile = true;
-                        }
-                        else if (methodDef.IsVirtual)
-                        {
-                            // Virtual methods on constructed types must be compiled (vtable dispatch).
-                            // For non-constructed types with no constructed subtypes, virtual methods
-                            // can never be dispatched — apply specialized method tracking.
-                            if (_module.ConstructedTypes.Contains(info.OpenTypeName)
-                                || _module.ConstructedTypes.Contains(key)
-                                || HasConstructedSubtype(info.OpenTypeName, info.TypeArguments))
-                            {
-                                shouldCompile = true;
-                            }
-                            else
-                            {
-                                var specKey = GetSpecializedMethodKey(
-                                    info.OpenTypeName, info.TypeArguments, methodDef);
-                                shouldCompile = _calledSpecializedMethods.Contains(specKey);
-                            }
-                        }
-                        else
-                        {
-                            // Non-virtual, non-constructor, reachable open method:
-                            // only compile if THIS specific specialization has the method called
-                            var specKey = GetSpecializedMethodKey(
-                                info.OpenTypeName, info.TypeArguments, methodDef);
-                            shouldCompile = _calledSpecializedMethods.Contains(specKey);
-                        }
-
-                        if (shouldCompile)
-                        {
-                            // Skip methods with CLR-internal dependencies — generate stub instead
-                            if (HasClrInternalDependencies(methodDef))
-                            {
-                                GenerateStubBody(irMethod);
-                            }
-                            else
-                            {
-                                // Clone typeParamMap since the outer loop reuses it
-                                _deferredGenericBodies.Add((methodDef, irMethod,
-                                    new Dictionary<string, string>(typeParamMap)));
-                            }
-                        }
-                        else if (_reachability.IsReachable(methodDef)
-                                 && !methodDef.IsConstructor && !methodDef.IsAbstract
-                                 && !HasClrInternalDependencies(methodDef))
-                        {
-                            // Store skipped methods so they can be recovered if body compilation
-                            // later adds their key to _calledSpecializedMethods.
-                            var skipKey = GetSpecializedMethodKey(
-                                info.OpenTypeName, info.TypeArguments, methodDef);
-                            _skippedSpecializedMethods.Add((skipKey, methodDef, irMethod,
-                                new Dictionary<string, string>(typeParamMap)));
-                        }
-                    }
-                }
-            }
+                prevNested = _genericInstantiations.Count;
+                CreateNestedGenericSpecializations();
+            } while (_genericInstantiations.Count > prevNested);
+            // New entries from nested specializations are in _pendingGenericKeys → next while iteration
         }
 
-        // Pass 1.5: Auto-create nested type specializations (Entry, Enumerator, etc.)
-        // When Dictionary<String,Object> is created, also create Dictionary<String,Object>.Entry,
-        // Dictionary<String,Object>.Enumerator, etc. with the same type arguments.
-        // Iterate until fixpoint to handle nested-nested types (e.g., KeyCollection.Enumerator).
-        int prevCount;
-        do
-        {
-            prevCount = _genericInstantiations.Count;
-            CreateNestedGenericSpecializations();
-        } while (_genericInstantiations.Count > prevCount);
-
-        // Second pass: resolve base types, interfaces, HasCctor for generic specializations.
+        // Second pass: resolve base types, interfaces, HasCctor for processed entries.
         // Done after all specializations are in the cache so cross-references work
         // (e.g., SpecialWrapper<int> : Wrapper<int> needs Wrapper<int> already cached).
-        // Uses _resolvedGenericTypeKeys to skip already-resolved types on re-invocation
-        // (e.g., from demand-driven re-creation), preventing duplicate interface entries.
-        // Use snapshot — base chain / interface auto-discovery may add to _genericInstantiations.
-        var secondPassSnapshot = _genericInstantiations.ToList();
-        foreach (var (key, info) in secondPassSnapshot)
+        foreach (var key in allProcessed)
         {
             bool alreadyResolved = _resolvedGenericTypeKeys.Contains(key);
             if (!alreadyResolved)
                 _resolvedGenericTypeKeys.Add(key);
+            if (!_genericInstantiations.TryGetValue(key, out var info)) continue;
             if (info.CecilOpenType == null) continue;
             if (!_typeCache.TryGetValue(key, out var irType)) continue;
 
@@ -1913,6 +1627,11 @@ public partial class IRBuilder
                     {
                         irType.BaseType = baseType2;
                         CalculateInstanceSize(irType);
+                        // If vtable was deferred (never built), allow the first build.
+                        // If vtable was already built, do NOT allow rebuild (method bodies
+                        // may reference the existing vtable indices).
+                        if (_deferredVtableTypes.Remove(irType))
+                            _vtableBuilt.Remove(irType);
                     }
                 }
                 // Re-check interfaces — some may have been created after initial resolution
@@ -1937,11 +1656,25 @@ public partial class IRBuilder
                     irType.BaseType = baseType;
                 else if (openType.BaseType is GenericInstanceType)
                     TryCollectResolvedGenericType(openType.BaseType, typeParamMap);
+
+                // Track types whose base is still missing for re-check in future calls.
+                if (irType.BaseType == null)
+                {
+                    _unresolvedBaseTypeKeys.Add(key);
+                    // Only defer vtable building for generic base types that we expect to
+                    // resolve later through _typeCache. Non-generic base types (e.g.,
+                    // DynamicMetaObject, Instrument) won't be resolved through the generic
+                    // specialization system — build their vtable immediately (with BaseType=null,
+                    // matching baseline behavior).
+                    if (openType.BaseType is GenericInstanceType)
+                        _deferredVtableTypes.Add(irType);
+                }
             }
 
             // Interfaces — resolve and add all interfaces from Cecil metadata.
             // If the interface type already exists in cache, always add it (type correctness).
             // Only use dispatch filtering to gate *creation* of new interface types.
+            bool hasMissingInterface = false;
             foreach (var iface in openType.Interfaces)
             {
                 var ifaceName = ResolveGenericTypeName(iface.InterfaceType, typeParamMap);
@@ -1949,14 +1682,23 @@ public partial class IRBuilder
                 {
                     irType.Interfaces.Add(ifaceType);
                 }
-                else if (iface.InterfaceType is GenericInstanceType ifaceGit)
+                else
                 {
-                    // Only auto-discover new generic interface types if dispatched on
-                    var openName = ifaceGit.ElementType.FullName;
-                    if (_dispatchedInterfaces.Contains(openName))
-                        TryCollectResolvedGenericType(iface.InterfaceType, typeParamMap);
+                    // Track ANY missing interface (not just dispatched ones) — the interface
+                    // may be created later through nested types, companions, or other paths.
+                    hasMissingInterface = true;
+                    if (iface.InterfaceType is GenericInstanceType ifaceGit)
+                    {
+                        // Only auto-discover new generic interface types if dispatched on
+                        var openName = ifaceGit.ElementType.FullName;
+                        if (_dispatchedInterfaces.Contains(openName))
+                            TryCollectResolvedGenericType(iface.InterfaceType, typeParamMap);
+                    }
                 }
             }
+            // Track types with missing interfaces for re-check in future calls
+            if (hasMissingInterface)
+                _unresolvedBaseTypeKeys.Add(key);
 
             // Static constructor flag — set if cctor body was converted OR is deferred.
             // Bodies may be deferred to after disambiguation (Pass 3.4), so check both
@@ -1974,6 +1716,323 @@ public partial class IRBuilder
 
             // Recalculate instance size (BaseType may contribute inherited fields)
             CalculateInstanceSize(irType);
+        }
+
+        // Re-check types whose base types or interfaces were unresolved in previous calls.
+        // New types created in this call may satisfy previously missing base/interface references.
+        if (_unresolvedBaseTypeKeys.Count > 0)
+        {
+            var resolved = new List<string>();
+            foreach (var prevKey in _unresolvedBaseTypeKeys)
+            {
+                if (!_genericInstantiations.TryGetValue(prevKey, out var prevInfo)) continue;
+                if (prevInfo.CecilOpenType == null) continue;
+                if (!_typeCache.TryGetValue(prevKey, out var prevIrType)) continue;
+
+                var prevTypeParamMap = BuildTypeParamMap(prevInfo.CecilOpenType, prevInfo.TypeArguments);
+                bool stillUnresolved = false;
+
+                // Re-check missing base type
+                if (prevIrType.BaseType == null && prevInfo.CecilOpenType.BaseType != null && !prevIrType.IsValueType)
+                {
+                    var baseName = ResolveGenericTypeName(prevInfo.CecilOpenType.BaseType, prevTypeParamMap);
+                    if (_typeCache.TryGetValue(baseName, out var baseType))
+                    {
+                        prevIrType.BaseType = baseType;
+                        CalculateInstanceSize(prevIrType);
+                        // If vtable was deferred (never built), allow the first build.
+                        // If vtable was already built, do NOT allow rebuild.
+                        if (_deferredVtableTypes.Remove(prevIrType))
+                            _vtableBuilt.Remove(prevIrType);
+                    }
+                    else
+                    {
+                        stillUnresolved = true;
+                    }
+                }
+
+                // Re-check interfaces — add any that are now in cache
+                var existingIfaceNames = new HashSet<string>(prevIrType.Interfaces.Select(i => i.ILFullName));
+                foreach (var iface in prevInfo.CecilOpenType.Interfaces)
+                {
+                    var ifaceName = ResolveGenericTypeName(iface.InterfaceType, prevTypeParamMap);
+                    if (!existingIfaceNames.Contains(ifaceName))
+                    {
+                        if (_typeCache.TryGetValue(ifaceName, out var ifaceType))
+                            prevIrType.Interfaces.Add(ifaceType);
+                        else if (iface.InterfaceType is GenericInstanceType)
+                            stillUnresolved = true;
+                    }
+                }
+
+                if (!stillUnresolved)
+                    resolved.Add(prevKey);
+            }
+            foreach (var key in resolved)
+                _unresolvedBaseTypeKeys.Remove(key);
+        }
+    }
+
+    /// <summary>
+    /// Create a single generic specialization IRType from its GenericInstantiationInfo.
+    /// Extracted from CreateGenericSpecializations for clarity.
+    /// </summary>
+    private void CreateGenericTypeFromInfo(string key, GenericInstantiationInfo info)
+    {
+        var openType = info.CecilOpenType!;
+
+        // Build type parameter map
+        var typeParamMap = BuildTypeParamMap(openType, info.TypeArguments);
+
+        // Validate generic constraints
+        if (openType.HasGenericParameters)
+            ValidateGenericConstraints(openType.GenericParameters, info.TypeArguments, key);
+
+        var isDelegate = openType.BaseType?.FullName is "System.MulticastDelegate" or "System.Delegate";
+
+        var irType = new IRType
+        {
+            ILFullName = key,
+            CppName = info.MangledName,
+            Name = info.MangledName,
+            Namespace = openType.Namespace,
+            IsValueType = openType.IsValueType,
+            IsInterface = openType.IsInterface,
+            IsAbstract = openType.IsAbstract,
+            IsSealed = openType.IsSealed,
+            IsEnum = openType.IsEnum,
+            IsGenericInstance = true,
+            IsDelegate = isDelegate,
+            IsPublic = openType.IsPublic,
+            IsNestedPublic = openType.IsNestedPublic,
+            IsByRefLike = openType.CustomAttributes.Any(
+                a => a.AttributeType.FullName == "System.Runtime.CompilerServices.IsByRefLikeAttribute"),
+            MetadataToken = openType.MetadataToken.ToUInt32(),
+            GenericArguments = info.TypeArguments,
+            IsRuntimeProvided = RuntimeProvidedTypes.Contains(info.OpenTypeName),
+            SourceKind = _assemblySet.ClassifyAssembly(openType.Module.Assembly.Name.Name),
+        };
+
+        // Propagate enum underlying type from Cecil definition
+        if (openType.IsEnum)
+        {
+            var valueField = openType.Fields.FirstOrDefault(f => f.Name == "value__");
+            irType.EnumUnderlyingType = valueField?.FieldType.FullName ?? "System.Int32";
+        }
+
+        // Propagate generic parameter variances from open type definition
+        if (openType.HasGenericParameters)
+        {
+            irType.GenericDefinitionCppName = CppNameMapper.MangleTypeName(info.OpenTypeName);
+            foreach (var gp in openType.GenericParameters)
+            {
+                var variance = (gp.Attributes & Mono.Cecil.GenericParameterAttributes.VarianceMask) switch
+                {
+                    Mono.Cecil.GenericParameterAttributes.Covariant => GenericVariance.Covariant,
+                    Mono.Cecil.GenericParameterAttributes.Contravariant => GenericVariance.Contravariant,
+                    _ => GenericVariance.Invariant,
+                };
+                irType.GenericParameterVariances.Add(variance);
+            }
+        }
+        else if (_typeCache.TryGetValue(info.OpenTypeName, out var openIrType)
+                 && openIrType.GenericParameterVariances.Count > 0)
+        {
+            irType.GenericDefinitionCppName = openIrType.CppName;
+            irType.GenericParameterVariances.AddRange(openIrType.GenericParameterVariances);
+        }
+
+        // Register value types
+        if (openType.IsValueType)
+        {
+            CppNameMapper.RegisterValueType(key);
+            CppNameMapper.RegisterValueType(info.MangledName);
+        }
+
+        // Fields from Cecil definition
+        // Collect inherited field names to detect C# field hiding (derived `new` backing fields)
+        var inheritedFieldCppNames = CollectInheritedFieldCppNames(openType);
+        foreach (var fieldDef in openType.Fields)
+        {
+            // Skip value__ backing field for enums (same as IRBuilder.Types.cs)
+            if (irType.IsEnum && fieldDef.Name == "value__") continue;
+
+            var fieldTypeName = ResolveGenericTypeName(fieldDef.FieldType, typeParamMap);
+            var cppName = CppNameMapper.MangleFieldName(fieldDef.Name);
+            var irField = new IRField
+            {
+                Name = fieldDef.Name,
+                CppName = cppName,
+                FieldTypeName = fieldTypeName,
+                IsStatic = fieldDef.IsStatic,
+                IsPublic = fieldDef.IsPublic,
+                DeclaringType = irType,
+            };
+
+            // C# field hiding: derived class declares a field with the same name as a base field
+            if (!fieldDef.IsStatic && inheritedFieldCppNames.Contains(cppName))
+            {
+                irField.HidesBaseField = true;
+                irField.CppName = cppName + "__own";
+            }
+
+            // For enum constant fields, extract the constant value
+            if (irType.IsEnum && fieldDef.IsStatic && fieldDef.HasConstant)
+                irField.ConstantValue = fieldDef.Constant?.ToString();
+
+            if (fieldDef.IsStatic)
+                irType.StaticFields.Add(irField);
+            else
+                irType.Fields.Add(irField);
+        }
+
+        // Propagate ExplicitSize from Cecil metadata (ECMA-335 II.10.1.2).
+        if (irType.IsValueType && openType.HasLayoutInfo && openType.ClassSize > 0)
+            irType.ExplicitSize = openType.ClassSize;
+
+        // Calculate instance size
+        CalculateInstanceSize(irType);
+
+        // Register type early so self-referencing static field accesses work
+        _module.Types.Add(irType);
+        _typeCache[key] = irType;
+
+        // Create method specializations from Cecil definition — skip unreachable non-virtual, non-ctor
+        foreach (var methodDef in openType.Methods)
+        {
+            if (!methodDef.IsVirtual && !methodDef.IsConstructor
+                && !_reachability.IsReachable(methodDef))
+                continue;
+            if (methodDef.HasGenericParameters)
+                continue;
+            var returnTypeName = ResolveGenericTypeName(methodDef.ReturnType, typeParamMap);
+            var resolvedMethodName = ResolveMethodNameGenericParams(methodDef.Name, typeParamMap);
+            var methodCppName = CppNameMapper.MangleMethodName(info.MangledName, resolvedMethodName);
+            if (methodDef.Name is "op_Explicit" or "op_Implicit" or "op_CheckedExplicit" or "op_CheckedImplicit")
+                methodCppName = $"{methodCppName}_{CppNameMapper.MangleTypeName(returnTypeName)}";
+
+            var irMethod = new IRMethod
+            {
+                Name = resolvedMethodName,
+                CppName = methodCppName,
+                DeclaringType = irType,
+                ReturnTypeCpp = ResolveTypeForDecl(returnTypeName),
+                IsStatic = methodDef.IsStatic,
+                IsVirtual = methodDef.IsVirtual,
+                IsAbstract = methodDef.IsAbstract,
+                IsConstructor = methodDef.IsConstructor,
+                IsStaticConstructor = methodDef.IsConstructor && methodDef.IsStatic,
+            };
+
+            // Propagate explicit interface overrides (.override directive)
+            if (methodDef.HasOverrides)
+            {
+                foreach (var ovr in methodDef.Overrides)
+                {
+                    var resolvedTypeName = ResolveGenericTypeName(ovr.DeclaringType, typeParamMap);
+                    irMethod.ExplicitOverrides.Add((resolvedTypeName, ovr.Name));
+                }
+            }
+
+            // Propagate HasICallMapping for methods with icall mappings
+            if (ICallRegistry.Lookup(openType.FullName, methodDef.Name, methodDef.Parameters.Count) != null)
+                irMethod.HasICallMapping = true;
+
+            // Parameters
+            foreach (var paramDef in methodDef.Parameters)
+            {
+                var paramTypeName = ResolveGenericTypeName(paramDef.ParameterType, typeParamMap);
+                var rawParamName = paramDef.Name.Length > 0 ? paramDef.Name : $"p{paramDef.Index}";
+                irMethod.Parameters.Add(new IRParameter
+                {
+                    Name = rawParamName,
+                    CppName = CppNameMapper.MangleIdentifier(rawParamName),
+                    CppTypeName = ResolveTypeForDecl(paramTypeName),
+                    ILTypeName = paramTypeName,
+                    Index = paramDef.Index,
+                });
+            }
+
+            // Local variables
+            if (methodDef.HasBody)
+            {
+                var localParamMap = BuildMethodLevelGenericParamMap(methodDef, typeParamMap);
+                foreach (var localDef in methodDef.Body.Variables)
+                {
+                    var localTypeName = ResolveGenericTypeName(localDef.VariableType, localParamMap);
+                    irMethod.Locals.Add(new IRLocal
+                    {
+                        Index = localDef.Index,
+                        CppName = $"loc_{localDef.Index}",
+                        CppTypeName = ResolveTypeForDecl(localTypeName),
+                    });
+                }
+            }
+
+            irType.Methods.Add(irMethod);
+
+            // Skip body conversion for ICall-mapped methods — dead code
+            if (irMethod.HasICallMapping) continue;
+
+            if (methodDef.HasBody && !methodDef.IsAbstract)
+            {
+                bool shouldCompile;
+                if (!_reachability.IsReachable(methodDef))
+                {
+                    shouldCompile = false;
+                }
+                else if (methodDef.IsConstructor)
+                {
+                    shouldCompile = true;
+                }
+                else if (IsCompilerGeneratedClosureType(info.CecilOpenType))
+                {
+                    shouldCompile = true;
+                }
+                else if (methodDef.IsVirtual)
+                {
+                    if (_module.ConstructedTypes.Contains(info.OpenTypeName)
+                        || _module.ConstructedTypes.Contains(key)
+                        || HasConstructedSubtype(info.OpenTypeName, info.TypeArguments))
+                    {
+                        shouldCompile = true;
+                    }
+                    else
+                    {
+                        var specKey = GetSpecializedMethodKey(
+                            info.OpenTypeName, info.TypeArguments, methodDef);
+                        shouldCompile = _calledSpecializedMethods.Contains(specKey);
+                    }
+                }
+                else
+                {
+                    var specKey = GetSpecializedMethodKey(
+                        info.OpenTypeName, info.TypeArguments, methodDef);
+                    shouldCompile = _calledSpecializedMethods.Contains(specKey);
+                }
+
+                if (shouldCompile)
+                {
+                    if (HasClrInternalDependencies(methodDef))
+                    {
+                        GenerateStubBody(irMethod);
+                    }
+                    else
+                    {
+                        _deferredGenericBodies.Add((methodDef, irMethod,
+                            new Dictionary<string, string>(typeParamMap)));
+                    }
+                }
+                else if (_reachability.IsReachable(methodDef)
+                         && !methodDef.IsConstructor && !methodDef.IsAbstract
+                         && !HasClrInternalDependencies(methodDef))
+                {
+                    var skipKey = GetSpecializedMethodKey(
+                        info.OpenTypeName, info.TypeArguments, methodDef);
+                    _skippedSpecializedMethods.Add((skipKey, methodDef, irMethod,
+                        new Dictionary<string, string>(typeParamMap)));
+                }
+            }
         }
     }
 
@@ -2029,7 +2088,7 @@ public partial class IRBuilder
         foreach (var (nestedKey, info) in nestedToAdd)
         {
             if (_genericInstantiations.ContainsKey(nestedKey)) continue;
-            _genericInstantiations[nestedKey] = info;
+            RegisterGenericInstantiation(nestedKey, info);
             EnsureComparerCompanionType(info.OpenTypeName, info.TypeArguments);
 
             var openType = info.CecilOpenType;
@@ -2276,6 +2335,15 @@ public partial class IRBuilder
     // replaces their functionality — types are discovered when method bodies are compiled.
 
     /// <summary>
+    /// Register a new generic instantiation and track it as pending for CreateGenericSpecializations.
+    /// </summary>
+    private void RegisterGenericInstantiation(string key, GenericInstantiationInfo info)
+    {
+        _genericInstantiations[key] = info;
+        _pendingGenericKeys.Add(key);
+    }
+
+    /// <summary>
     /// Attempt to resolve a GenericInstanceType's generic parameters using a name map
     /// and register the fully resolved type as a generic instantiation.
     /// </summary>
@@ -2350,8 +2418,8 @@ public partial class IRBuilder
         var mangledName = CppNameMapper.MangleGenericInstanceTypeName(openTypeName, resolvedArgs);
         var cecilOpenType = git.ElementType.Resolve();
 
-        _genericInstantiations[instKey] = new GenericInstantiationInfo(
-            openTypeName, resolvedArgs, mangledName, cecilOpenType);
+        RegisterGenericInstantiation(instKey, new GenericInstantiationInfo(
+            openTypeName, resolvedArgs, mangledName, cecilOpenType));
 
         EnsureComparerCompanionType(openTypeName, resolvedArgs);
     }
@@ -2431,8 +2499,8 @@ public partial class IRBuilder
         }
 
         var mangledName = CppNameMapper.MangleGenericInstanceTypeName(openTypeName, args);
-        _genericInstantiations[instKey] = new GenericInstantiationInfo(
-            openTypeName, args, mangledName, cecilOpenType);
+        RegisterGenericInstantiation(instKey, new GenericInstantiationInfo(
+            openTypeName, args, mangledName, cecilOpenType));
 
         EnsureComparerCompanionType(openTypeName, args);
     }
@@ -2935,11 +3003,9 @@ public partial class IRBuilder
             _deferredGenericBodies.Clear();
 
             // Ensure VTables are built for all types before compiling any bodies in this batch.
-            // Types created in previous iterations' CreateGenericSpecializations may not have had
-            // their vtables built yet (e.g., abstract types like Iterator<T> that don't add
-            // deferred bodies). Without this, callvirt on these types falls back to direct calls.
-            foreach (var irType in _module.Types)
-                BuildVTableRecursive(irType, _vtableBuilt);
+            // Fixpoint loop: each sweep resolves one level of deferred chains (A→B→C).
+            // Chains are bounded by inheritance depth (~5-6 max in BCL), so this converges quickly.
+            BuildVTablesFixpoint();
 
             foreach (var (cecilMethod, irMethod, typeParamMap) in batch)
             {
@@ -2953,19 +3019,12 @@ public partial class IRBuilder
                 if (irMethod.HasICallMapping) continue;
 
                 // Demand-driven: discover types referenced in this body BEFORE compiling.
-                // Without Pass 0.5, transitive generic types are only found here.
                 var prevTypeCount = _module.Types.Count;
                 EnsureBodyReferencedTypesExist(cecilMethod, typeParamMap);
 
                 // If new types were discovered, build their VTables before compiling the body.
-                // Without this, callvirt on abstract methods of newly-discovered types
-                // (e.g., Comparer<double>.Compare) can't resolve vtable slots and falls back
-                // to direct calls, producing incorrect code.
                 if (_module.Types.Count > prevTypeCount)
-                {
-                    foreach (var irType in _module.Types)
-                        BuildVTableRecursive(irType, _vtableBuilt);
-                }
+                    BuildVTablesFixpoint();
 
                 var methodInfo = new IL.MethodInfo(cecilMethod);
                 ConvertMethodBodyWithGenerics(methodInfo, irMethod, typeParamMap);
@@ -2986,39 +3045,42 @@ public partial class IRBuilder
             }
 
             // If new generic types were discovered during body compilation
-            // (e.g., display classes, closures referenced in locals/instructions),
-            // create their type shells and method shells now. This ensures
-            // compiler-generated types get their methods compiled in subsequent batches.
             var prevTypeCountForVtable = _module.Types.Count;
-            if (_genericInstantiations.Count > _resolvedGenericTypeKeys.Count)
-            {
-                CreateGenericSpecializations();
-                int prevNested;
-                do
-                {
-                    prevNested = _genericInstantiations.Count;
-                    CreateNestedGenericSpecializations();
-                } while (_genericInstantiations.Count > prevNested);
-            }
-
-            // If new generic METHOD instantiations were discovered during body compilation
-            // (e.g., AwaitUnsafeOnCompleted<Awaiter, TStateMachine> where TStateMachine is
-            // a state machine type discovered in this fixpoint), create their specialized
-            // IRMethods now. Without this, late-discovered async state machine types miss
-            // their AwaitUnsafeOnCompleted specializations, causing undeclared function errors.
+            CreateGenericSpecializations();
             CreateGenericMethodSpecializations();
 
-            // Build VTables for any newly created types. This must happen unconditionally
-            // when types were added — not just when deferred bodies exist. Types with only
-            // abstract virtual methods (e.g., Iterator<T>) don't add deferred bodies, but
-            // still need vtables built so callvirt in subsequent batches can resolve slots.
+            // Build VTables for any newly created types.
             if (_module.Types.Count > prevTypeCountForVtable || _deferredGenericBodies.Count > 0)
             {
-                foreach (var irType in _module.Types)
-                    BuildVTableRecursive(irType, _vtableBuilt);
+                BuildVTablesFixpoint();
                 DisambiguateOverloadedMethods();
             }
         }
+
+        // Post-condition: all deferred vtables must have been resolved.
+        // If any remain, it indicates a bug in the deferral/resolution logic.
+        if (_deferredVtableTypes.Count > 0)
+        {
+            var unresolvedNames = string.Join(", ", _deferredVtableTypes.Take(10).Select(t => t.ILFullName));
+            throw new InvalidOperationException(
+                $"ConvertDeferredGenericBodies completed with {_deferredVtableTypes.Count} unresolved deferred vtable types: {unresolvedNames}");
+        }
+    }
+
+    /// <summary>
+    /// Build VTables for all types, repeating until no more deferred types are resolved.
+    /// Uses a progress flag (set by BuildVTableRecursive on un-deferral) instead of count
+    /// comparison, because new transitive deferrals added during a sweep can offset resolved
+    /// types, making count-based termination unreliable.
+    /// </summary>
+    private void BuildVTablesFixpoint()
+    {
+        do
+        {
+            _vtableDeferralProgress = false;
+            foreach (var irType in _module.Types)
+                BuildVTableRecursive(irType, _vtableBuilt);
+        } while (_vtableDeferralProgress);
     }
 
     /// <summary>
