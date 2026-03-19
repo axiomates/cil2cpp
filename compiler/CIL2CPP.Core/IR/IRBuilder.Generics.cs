@@ -820,6 +820,11 @@ public partial class IRBuilder
                 }
             }
 
+            // Validate: reject methods with unresolved generic parameters in signature.
+            // These leak from incomplete typeParamMaps (e.g., method-level params not in map).
+            if (HasUnresolvedSignature(irMethod))
+                return;
+
             declaringIrType.Methods.Add(irMethod);
 
             // Skip body conversion for ICall-mapped methods — dead code
@@ -883,6 +888,14 @@ public partial class IRBuilder
 
                     var methodInfo = new IL.MethodInfo(bodyMethod);
                     ConvertMethodBodyWithGenerics(methodInfo, irMethod, typeParamMap);
+
+                    // Detect MemberInfo body type conflicts after compilation
+                    if (DetectGenericBodyTypeConflict(irMethod, declaringIrType))
+                    {
+                        irMethod.IrStubReason = "GenericBodyTypeConflict";
+                        irMethod.BasicBlocks.Clear();
+                        GenerateStubBody(irMethod);
+                    }
                 }
             }
     }
@@ -1514,6 +1527,111 @@ public partial class IRBuilder
     }
 
     /// <summary>
+    /// Check if an IRMethod has unresolved generic parameters in its signature
+    /// (CppName, return type, parameter types, or local types). Such methods are
+    /// open generics that leaked through the specialization pipeline due to incomplete
+    /// typeParamMaps and should not be added to the IR module.
+    /// </summary>
+    private static bool HasUnresolvedSignature(IRMethod irMethod)
+    {
+        if (CppNameMapper.ContainsUnresolvedGenericParam(irMethod.CppName))
+            return true;
+        if (!string.IsNullOrEmpty(irMethod.ReturnTypeCpp))
+        {
+            var retBase = irMethod.ReturnTypeCpp.TrimEnd('*').Trim();
+            if (CppNameMapper.ContainsUnresolvedGenericParam(retBase))
+                return true;
+        }
+        foreach (var param in irMethod.Parameters)
+        {
+            if (!string.IsNullOrEmpty(param.CppTypeName))
+            {
+                var paramBase = param.CppTypeName.TrimEnd('*').Trim();
+                if (CppNameMapper.ContainsUnresolvedGenericParam(paramBase))
+                    return true;
+            }
+        }
+        foreach (var local in irMethod.Locals)
+        {
+            if (!string.IsNullOrEmpty(local.CppTypeName))
+            {
+                var localBase = local.CppTypeName.TrimEnd('*').Trim();
+                if (CppNameMapper.ContainsUnresolvedGenericParam(localBase))
+                    return true;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Known MemberInfo subtype C++ names — used for generic body type conflict detection.
+    /// </summary>
+    private static readonly string[] MemberInfoSubtypeNames =
+    {
+        "System_Reflection_RuntimeMethodInfo",
+        "System_Reflection_RuntimeConstructorInfo",
+        "System_Reflection_RuntimeFieldInfo",
+        "System_Reflection_RuntimePropertyInfo",
+        "System_Reflection_RuntimeEventInfo",
+        "System_RuntimeType",
+    };
+
+    private static bool IsMemberInfoSubtype(string cppTypeName)
+        => cppTypeName.StartsWith("System_Reflection_Runtime") || cppTypeName == "System_RuntimeType";
+
+    /// <summary>
+    /// Detect methods on generic type specializations where the method body uses
+    /// a different MemberInfo subtype than the parent type's generic argument.
+    /// E.g., MemberInfoCache&lt;RuntimePropertyInfo&gt;.PopulateMethods() creates
+    /// RuntimeMethodInfo objects — the body is inherently non-homomorphic with T.
+    /// Returns true if the method should be stubbed.
+    /// </summary>
+    private static bool DetectGenericBodyTypeConflict(IRMethod irMethod, IRType declaringType)
+    {
+        if (!declaringType.IsGenericInstance) return false;
+        if (irMethod.BasicBlocks.Count == 0) return false;
+
+        // Extract generic args from the declaring type's IL name
+        var typeIlName = declaringType.ILFullName;
+        var angleBracket = typeIlName.IndexOf('<');
+        if (angleBracket <= 0 || !typeIlName.EndsWith(">")) return false;
+        var argsStr = typeIlName[(angleBracket + 1)..^1];
+        var typeArgs = CppNameMapper.ParseGenericArgs(argsStr);
+        if (typeArgs.Count == 0) return false;
+
+        var typeArgCppNames = typeArgs.Select(CppNameMapper.MangleTypeName).ToHashSet();
+
+        // Collect MemberInfo subtypes referenced in method body
+        var bodyMemberInfoTypes = new HashSet<string>();
+        foreach (var block in irMethod.BasicBlocks)
+        {
+            foreach (var instr in block.Instructions)
+            {
+                if (instr is IRNewObj newObj && IsMemberInfoSubtype(newObj.TypeCppName))
+                    bodyMemberInfoTypes.Add(newObj.TypeCppName);
+                else if (instr is IRCall call && !string.IsNullOrEmpty(call.FunctionName))
+                {
+                    foreach (var memberType in MemberInfoSubtypeNames)
+                    {
+                        if (call.FunctionName.Contains(memberType))
+                            bodyMemberInfoTypes.Add(memberType);
+                    }
+                }
+            }
+        }
+
+        foreach (var bodyType in bodyMemberInfoTypes)
+        {
+            foreach (var argCpp in typeArgCppNames)
+            {
+                if (IsMemberInfoSubtype(argCpp) && argCpp != bodyType)
+                    return true;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>
     /// Ensure a non-generic type exists in the IR when referenced from a generic method body.
     /// Generic method bodies compiled during demand-driven specialization may reference static
     /// fields on non-generic companion types (e.g., ValueTaskAwaiter&lt;T&gt;.UnsafeOnCompleted
@@ -1685,6 +1803,8 @@ public partial class IRBuilder
                 });
             }
 
+            if (HasUnresolvedSignature(irMethod))
+                continue;
             irType.Methods.Add(irMethod);
         }
 
@@ -2221,6 +2341,8 @@ public partial class IRBuilder
                 }
             }
 
+            if (HasUnresolvedSignature(irMethod))
+                continue;
             irType.Methods.Add(irMethod);
 
             // Skip body conversion for ICall-mapped methods — dead code
@@ -2413,6 +2535,8 @@ public partial class IRBuilder
                 }
             }
 
+            if (HasUnresolvedSignature(irMethod))
+                continue;
             irType.Methods.Add(irMethod);
             existingMethods.Add(methodPart);
 
@@ -2662,6 +2786,8 @@ public partial class IRBuilder
                     }
                 }
 
+                if (HasUnresolvedSignature(irMethod))
+                    continue;
                 irType.Methods.Add(irMethod);
 
                 // Skip body conversion for ICall-mapped methods — dead code
@@ -3416,6 +3542,14 @@ public partial class IRBuilder
 
                 var methodInfo = new IL.MethodInfo(cecilMethod);
                 ConvertMethodBodyWithGenerics(methodInfo, irMethod, typeParamMap);
+
+                // Detect MemberInfo body type conflicts after compilation
+                if (irMethod.DeclaringType != null && DetectGenericBodyTypeConflict(irMethod, irMethod.DeclaringType))
+                {
+                    irMethod.IrStubReason = "GenericBodyTypeConflict";
+                    irMethod.BasicBlocks.Clear();
+                    GenerateStubBody(irMethod);
+                }
             }
 
             // Recover skipped methods whose keys are now in _calledSpecializedMethods.

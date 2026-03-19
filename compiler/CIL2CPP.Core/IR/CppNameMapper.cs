@@ -525,4 +525,52 @@ public static class CppNameMapper
             _ => IsRegisteredValueType(typeName) ? "{}" : "nullptr"
         };
     }
+
+    /// <summary>
+    /// Check if a type name looks like an unresolved generic parameter.
+    /// Pattern: T + uppercase letter + optional alphanumeric/digits, NO underscores.
+    /// Examples: TOther, TArg1, TKey, TNegator, TContinuationResult
+    /// </summary>
+    public static bool IsUnresolvedGenericParam(string typeName)
+    {
+        if (typeName == "T") return true;
+        if (typeName.Length < 2) return false;
+        if (typeName[0] != 'T' || !char.IsUpper(typeName[1])) return false;
+        if (typeName.Contains('_')) return false;
+        // Generic params follow PascalCase: T + one uppercase + immediately lowercase.
+        // Reject acronym-prefixed segments like TOKENRef (T + multiple uppercase = acronym).
+        if (typeName.Length >= 3 && char.IsUpper(typeName[2]))
+            return false;
+        // All chars must be letters or digits, and must contain at least one lowercase letter.
+        bool hasLower = false;
+        for (int i = 2; i < typeName.Length; i++)
+        {
+            if (!char.IsLetterOrDigit(typeName[i])) return false;
+            if (char.IsLower(typeName[i])) hasLower = true;
+        }
+        return hasLower;
+    }
+
+    /// <summary>
+    /// Check if a mangled type name contains an unresolved generic parameter segment.
+    /// E.g., "AsyncStateMachineBox_1_System_IO_Stream_TStateMachine" contains "TStateMachine".
+    /// </summary>
+    public static bool ContainsUnresolvedGenericParam(string mangledName)
+    {
+        int start = 0;
+        for (int i = 0; i <= mangledName.Length; i++)
+        {
+            if (i == mangledName.Length || mangledName[i] == '_')
+            {
+                if (i > start)
+                {
+                    var segment = mangledName[start..i];
+                    if (IsUnresolvedGenericParam(segment))
+                        return true;
+                }
+                start = i + 1;
+            }
+        }
+        return false;
+    }
 }

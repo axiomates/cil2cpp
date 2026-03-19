@@ -1072,7 +1072,6 @@ public partial class CppCodeGenerator
                 }
                 else if (method.IrStubReason != null) continue;
                 if (HasInvalidCppSignature(method)) continue;
-                if (HasGenericBodyTypeConflict(type, method)) continue;
 
                 foreach (var block in method.BasicBlocks)
                 {
@@ -1136,7 +1135,6 @@ public partial class CppCodeGenerator
                     }
                     else if (method.IrStubReason != null) continue;
                     if (HasInvalidCppSignature(method)) continue;
-                    if (HasGenericBodyTypeConflict(type, method)) continue;
                     // If this method WON'T be skipped, its callees are needed
                     if (!CallsUndeclaredFunction(method))
                     {

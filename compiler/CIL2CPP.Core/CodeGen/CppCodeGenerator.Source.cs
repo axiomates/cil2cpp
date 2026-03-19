@@ -483,11 +483,6 @@ public partial class CppCodeGenerator
                 _skippedByInvalidSignature.Add((type.ILFullName, method.CppName));
                 continue;
             }
-            if (HasGenericBodyTypeConflict(type, method))
-            {
-                _skippedByGenericBodyConflict.Add((type.ILFullName, method.CppName));
-                continue;
-            }
             // Skip methods that are themselves SIMD dead code.
             // Their callers have been replaced with default values at render time;
             // emitting the method body would reference SIMD opaque struct fields.
@@ -526,6 +521,8 @@ public partial class CppCodeGenerator
         // Both partitions get stub bodies — CoreRuntimeTypes methods can't compile from IL
         // (struct layout mismatch) but callers in other BCL code still reference them.
         var (glue, stubs) = PartitionMissingMethods(_emittedMethodSignatures);
+        _stubCountGlue = glue.Count;
+        _stubCountUnreachable = stubs.Count;
 
         // Diagnostic: report stub counts to stderr for auditing
         if (glue.Count > 0 || stubs.Count > 0)

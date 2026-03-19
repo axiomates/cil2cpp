@@ -57,59 +57,12 @@ public partial class CppCodeGenerator
         return false;
     }
 
-    /// <summary>
-    /// Check if a type name looks like an unresolved generic parameter.
-    /// Pattern: T + uppercase letter + optional alphanumeric/digits, NO underscores.
-    /// Examples: TOther, TArg1, TKey, TNegator, TContinuationResult
-    /// </summary>
+    // Delegate to CppNameMapper for generic parameter detection (shared with IR layer)
     private static bool IsUnresolvedGenericParam(string typeName)
-    {
-        // Single-letter "T" is a valid generic parameter name
-        if (typeName == "T") return true;
-        if (typeName.Length < 2) return false;
-        if (typeName[0] != 'T' || !char.IsUpper(typeName[1])) return false;
-        if (typeName.Contains('_')) return false;
-        // Generic params follow PascalCase: T + one uppercase + immediately lowercase.
-        // E.g., TResult, TKey, TValue, TChar, TTo, TNegator.
-        // Reject acronym-prefixed segments like TOKENRef (T + multiple uppercase = acronym).
-        if (typeName.Length >= 3 && char.IsUpper(typeName[2]))
-            return false;
-        // All chars must be letters or digits, and must contain at least one lowercase letter.
-        // Real generic params are PascalCase (TResult, TKey, TValue) — all-caps words like
-        // TIME, ZONE, INFORMATION (from Interop struct names) are not generic params.
-        bool hasLower = false;
-        for (int i = 2; i < typeName.Length; i++)
-        {
-            if (!char.IsLetterOrDigit(typeName[i])) return false;
-            if (char.IsLower(typeName[i])) hasLower = true;
-        }
-        return hasLower;
-    }
+        => CppNameMapper.IsUnresolvedGenericParam(typeName);
 
-    /// <summary>
-    /// Check if a mangled type name contains an unresolved generic parameter segment.
-    /// E.g., "AsyncStateMachineBox_1_System_IO_Stream_TStateMachine" contains "TStateMachine".
-    /// These types are forward-declared but never get struct definitions, causing C2027.
-    /// </summary>
     private static bool MangledNameContainsUnresolvedGenericParam(string mangledName)
-    {
-        // Split by underscore and check each segment
-        int start = 0;
-        for (int i = 0; i <= mangledName.Length; i++)
-        {
-            if (i == mangledName.Length || mangledName[i] == '_')
-            {
-                if (i > start)
-                {
-                    var segment = mangledName[start..i];
-                    if (IsUnresolvedGenericParam(segment))
-                        return true;
-                }
-                start = i + 1;
-            }
-        }
-        return false;
-    }
+        => CppNameMapper.ContainsUnresolvedGenericParam(mangledName);
 
     /// <summary>
     /// Check if a name is a valid C++ identifier (no brackets, ampersands, parens, etc.).
@@ -154,8 +107,9 @@ public partial class CppCodeGenerator
     // ── Diagnostic counters: track methods skipped by each render-time filter ──
     private readonly List<(string TypeIL, string MethodCpp, string UndeclaredCall)> _skippedByUndeclaredFunction = new();
     private readonly List<(string TypeIL, string MethodCpp)> _skippedByInvalidSignature = new();
-    private readonly List<(string TypeIL, string MethodCpp)> _skippedByGenericBodyConflict = new();
     private readonly List<(string Category, string FunctionName, string InMethod)> _deadCodeReplacements = new();
+    private int _stubCountGlue;
+    private int _stubCountUnreachable;
 
     /// <summary>
     /// Map of function name → set of declared parameter counts (populated during header generation).
@@ -325,7 +279,7 @@ public partial class CppCodeGenerator
         }
 
         // ── Diagnostic summary: render-time filter skips ──
-        if (_skippedByUndeclaredFunction.Count > 0 || _skippedByInvalidSignature.Count > 0 || _skippedByGenericBodyConflict.Count > 0)
+        if (_skippedByUndeclaredFunction.Count > 0 || _skippedByInvalidSignature.Count > 0)
         {
             Console.Error.WriteLine($"[CIL2CPP] Render-time filter summary for {_module.Name}:");
             if (_skippedByUndeclaredFunction.Count > 0)
@@ -345,13 +299,10 @@ public partial class CppCodeGenerator
                 foreach (var (typeIL, methodCpp) in _skippedByInvalidSignature.Take(20))
                     Console.Error.WriteLine($"    {typeIL}::{methodCpp}");
             }
-            if (_skippedByGenericBodyConflict.Count > 0)
-            {
-                Console.Error.WriteLine($"  HasGenericBodyTypeConflict: {_skippedByGenericBodyConflict.Count} methods skipped");
-                foreach (var (typeIL, methodCpp) in _skippedByGenericBodyConflict.Take(20))
-                    Console.Error.WriteLine($"    {typeIL}::{methodCpp}");
-            }
         }
+
+        // Structured stub count line — machine-parseable for CI tracking
+        Console.Error.WriteLine($"[CIL2CPP] STUB_COUNT: unreachable={_stubCountUnreachable} glue={_stubCountGlue} undeclared={_skippedByUndeclaredFunction.Count} invalid_sig={_skippedByInvalidSignature.Count}");
 
         codegenSw.Stop();
         Console.Error.WriteLine($"[perf] CodeGen total: {codegenSw.ElapsedMilliseconds}ms");
@@ -651,100 +602,8 @@ public partial class CppCodeGenerator
     }
 
 
-    /// <summary>
-    /// Detect methods on generic type specializations where the method body uses
-    /// a different specialization's functions/types than what the parent type's
-    /// generic parameter would suggest.
-    /// E.g., MemberInfoCache&lt;RuntimePropertyInfo&gt;.PopulateMethods() creates
-    /// RuntimeMethodInfo objects and calls ListBuilder&lt;RuntimeMethodInfo&gt;.Add(),
-    /// but the casts use RuntimePropertyInfo (from generic substitution) — causing C2664.
-    /// </summary>
-    private static bool HasGenericBodyTypeConflict(IR.IRType type, IR.IRMethod method)
-    {
-        // Only check generic types (CppName contains arity marker like _1_)
-        if (!type.IsGenericInstance) return false;
-        if (method.BasicBlocks.Count == 0) return false;
-
-        // Extract the generic arg(s) from the type's CppName
-        // E.g., "MemberInfoCache_1_System_Reflection_RuntimePropertyInfo" → "RuntimePropertyInfo"
-        var typeCppName = type.CppName;
-        var typeIlName = type.ILFullName;
-
-        // Get the generic args from ILFullName (e.g., from angle brackets)
-        var typeArgs = new List<string>();
-        var angleBracket = typeIlName.IndexOf('<');
-        if (angleBracket > 0 && typeIlName.EndsWith(">"))
-        {
-            var argsStr = typeIlName[(angleBracket + 1)..^1];
-            typeArgs = CppNameMapper.ParseGenericArgs(argsStr);
-        }
-        if (typeArgs.Count == 0) return false;
-
-        // For each IRCall/IRNewObj in the body, check if a different specialization
-        // of the same generic base type is used, creating type conflicts
-        var typeArgCppNames = typeArgs.Select(CppNameMapper.MangleTypeName).ToHashSet();
-
-        // Collect all MemberInfo subtypes referenced in method body (newobj, call targets)
-        var bodyMemberInfoTypes = new HashSet<string>();
-        foreach (var block in method.BasicBlocks)
-        {
-            foreach (var instr in block.Instructions)
-            {
-                if (instr is IR.IRNewObj newObj && IsMemberInfoSubtype(newObj.TypeCppName))
-                {
-                    bodyMemberInfoTypes.Add(newObj.TypeCppName);
-                }
-                else if (instr is IR.IRCall call && !string.IsNullOrEmpty(call.FunctionName))
-                {
-                    // Check if the call target uses a specific MemberInfo specialization
-                    // E.g., "ListBuilder_1_RuntimeMethodInfo_Add" → uses RuntimeMethodInfo
-                    foreach (var memberType in MemberInfoSubtypeNames)
-                    {
-                        if (call.FunctionName.Contains(memberType))
-                        {
-                            bodyMemberInfoTypes.Add(memberType);
-                        }
-                    }
-                }
-            }
-        }
-
-        // If the body references MemberInfo subtypes that differ from the generic arg,
-        // this method has type conflicts from generic substitution
-        foreach (var bodyType in bodyMemberInfoTypes)
-        {
-            foreach (var argCpp in typeArgCppNames)
-            {
-                if (IsMemberInfoSubtype(argCpp) && argCpp != bodyType)
-                    return true;
-            }
-        }
-
-        return false;
-    }
-
-    /// <summary>
-    /// Known MemberInfo subtype C++ names — used for generic body conflict detection.
-    /// </summary>
-    private static readonly string[] MemberInfoSubtypeNames =
-    {
-        "System_Reflection_RuntimeMethodInfo",
-        "System_Reflection_RuntimeConstructorInfo",
-        "System_Reflection_RuntimeFieldInfo",
-        "System_Reflection_RuntimePropertyInfo",
-        "System_Reflection_RuntimeEventInfo",
-        "System_RuntimeType",
-    };
-
-    /// <summary>
-    /// Check if a C++ type name is a System.Reflection MemberInfo subtype.
-    /// Used for generic body conflict detection.
-    /// </summary>
-    private static bool IsMemberInfoSubtype(string cppTypeName)
-    {
-        return cppTypeName.StartsWith("System_Reflection_Runtime") ||
-               cppTypeName == "System_RuntimeType";
-    }
+    // GenericBodyTypeConflict detection moved to IR layer (IRBuilder.Generics.cs:DetectGenericBodyTypeConflict).
+    // Methods with conflicts now have IrStubReason set at IR build time, so CodeGen never sees them.
 
     /// <summary>
     /// Check if a method body calls any function that is NOT_IN_MODULE or INVALID_SIGNATURE.
