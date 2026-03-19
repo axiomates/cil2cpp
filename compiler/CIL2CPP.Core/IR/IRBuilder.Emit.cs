@@ -2328,6 +2328,13 @@ public partial class IRBuilder
                         ResolveGenericTypeRef(methodRef.ReturnType, methodRef.DeclaringType));
                     irCall.VTableParamTypes = BuildVTableParamTypes(methodRef);
                 }
+                else if (methodRef is GenericInstanceMethod gvmRef
+                    && gvmRef.ElementMethod.Resolve() is { IsVirtual: true, HasGenericParameters: true })
+                {
+                    // Generic virtual method dispatch: the vtable can't hold per-specialization
+                    // function pointers, so emit a type-check dispatch chain instead.
+                    TrySetupGenericVirtualDispatch(irCall, gvmRef, resolved);
+                }
             }
             else if (resolved == null && declaringTypeName == "System.Object")
             {
@@ -3901,10 +3908,13 @@ public partial class IRBuilder
             for (int j = 0; j < git.GenericArguments.Count; j++)
             {
                 var arg = git.GenericArguments[j];
-                if (arg is GenericParameter gp2 && gp2.Type == GenericParameterType.Method
-                    && gp2.Position < gim.GenericArguments.Count)
+                // Recursively substitute — handles nested GenericInstanceType args
+                // (e.g., Func<Ctx, TState, Outcome<TResult>> where Outcome<TResult>
+                // is a GenericInstanceType containing a method-level generic param)
+                var substituted = SubstituteMethodGenericParams(arg, gim);
+                if (substituted != arg)
                 {
-                    newArgs[j] = gim.GenericArguments[gp2.Position];
+                    newArgs[j] = substituted;
                     anySubstituted = true;
                 }
                 else
@@ -4213,6 +4223,144 @@ public partial class IRBuilder
         if (lastDot >= 0 && implName.AsSpan(lastDot + 1).SequenceEqual(interfaceMethodName))
             return true;
         return false;
+    }
+
+    /// <summary>
+    /// Set up generic virtual dispatch for a callvirt on a method-level generic virtual method.
+    /// Standard vtable dispatch can't handle this because each vtable slot holds one function pointer
+    /// while the method has multiple generic specializations. Instead, emit a type-check chain:
+    /// if (this->type_info == &TypeA) TypeA_Method_Args(...);
+    /// else if (this->type_info == &TypeB) TypeB_Method_Args(...);
+    /// </summary>
+    private void TrySetupGenericVirtualDispatch(IRCall irCall, GenericInstanceMethod gvmRef, IRType baseType)
+    {
+        var elemMethod = gvmRef.ElementMethod.Resolve();
+        if (elemMethod == null) return;
+
+        // Resolve method-level generic type arguments
+        var typeArgs = gvmRef.GenericArguments
+            .Select(a => ResolveTypeRefOperand(a)).ToList();
+
+        // Guard against recursive generic growth — e.g., ExecuteCore<T, ValueTuple<X, Func<..., TState>>>
+        // where each compiled body creates a new callsite with deeper nesting.
+        // Same principle as IsRecursiveGenericInstantiation but for resolved string names.
+        if (HasRecursiveTypeArgs(typeArgs))
+            return;
+
+        var baseTypeName = baseType.ILFullName;
+        var methodName = elemMethod.Name;
+        var targets = new List<(string TypeInfoName, string FunctionName)>();
+
+        // Find all constructed subtypes (including the base type itself) that override this method
+        foreach (var (ilName, irType) in _typeCache)
+        {
+            if (!_module.ConstructedTypes.Contains(ilName)) continue;
+            if (irType.IsInterface || irType.IsAbstract) continue;
+
+            // Check if this type is a subtype of the base type
+            if (!IsSubtypeOf(irType, baseTypeName)) continue;
+
+            // Find the override method: walk Cecil type hierarchy (generic methods
+            // are skipped in Pass 3 so they're not in IRType.Methods)
+            var (overrideDeclType, overrideCecil) = FindGenericVirtualOverride(
+                irType, methodName, elemMethod.Parameters.Count);
+            if (overrideDeclType == null || overrideCecil == null) continue;
+            // Don't dispatch to abstract methods (they have no body)
+            if (overrideCecil.IsAbstract) continue;
+
+            var typeInfoName = irType.CppName + "_TypeInfo";
+            var mangledName = MangleGenericMethodName(overrideDeclType.ILFullName, methodName, typeArgs);
+
+            // Ensure the specialization is registered for compilation
+            var paramSig = string.Join(",", elemMethod.Parameters.Select(p =>
+                _activeTypeParamMap != null
+                    ? ResolveGenericTypeName(p.ParameterType, _activeTypeParamMap)
+                    : p.ParameterType.FullName));
+            var key = MakeGenericMethodKey(overrideDeclType.ILFullName, methodName, typeArgs, paramSig);
+            if (!_genericMethodInstantiations.ContainsKey(key))
+            {
+                _genericMethodInstantiations[key] = new GenericMethodInstantiationInfo(
+                    overrideDeclType.ILFullName, methodName, typeArgs, mangledName, overrideCecil);
+            }
+
+            targets.Add((typeInfoName, mangledName));
+        }
+
+        if (targets.Count > 0)
+            irCall.GenericVirtualTargets = targets;
+    }
+
+    /// <summary>
+    /// Detect recursive growth in resolved generic type argument strings.
+    /// Counts generic nesting depth (number of '&lt;' brackets) in each arg —
+    /// nesting deeper than 4 levels indicates unbounded recursive instantiation
+    /// (e.g., ValueTuple&lt;X, Func&lt;Y, ValueTuple&lt;X, Func&lt;Y, ...&gt;&gt;&gt;&gt;).
+    /// </summary>
+    private static bool HasRecursiveTypeArgs(List<string> typeArgs)
+    {
+        foreach (var arg in typeArgs)
+        {
+            int depth = 0, maxDepth = 0;
+            for (int i = 0; i < arg.Length; i++)
+            {
+                if (arg[i] == '<') { depth++; if (depth > maxDepth) maxDepth = depth; }
+                else if (arg[i] == '>') depth--;
+            }
+            if (maxDepth > 4) return true;
+        }
+        return false;
+    }
+
+    /// <summary>Check if irType is a subtype of the type with the given IL full name.</summary>
+    private bool IsSubtypeOf(IRType irType, string ancestorILName)
+    {
+        if (irType.ILFullName == ancestorILName) return true;
+        var current = irType.BaseType;
+        while (current != null)
+        {
+            if (current.ILFullName == ancestorILName) return true;
+            current = current.BaseType;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Find the nearest type in the hierarchy that declares a generic virtual method override.
+    /// Method-level generic methods are NOT in IRType.Methods (skipped in Pass 3), so we
+    /// walk the Cecil type hierarchy to find the override.
+    /// Returns (IRType of the override's declaring type, Cecil MethodDefinition of the override).
+    /// </summary>
+    private (IRType? DeclType, Mono.Cecil.MethodDefinition? CecilMethod) FindGenericVirtualOverride(
+        IRType concreteType, string methodName, int paramCount)
+    {
+        var current = concreteType;
+        while (current != null)
+        {
+            // Find the Cecil type definition
+            var cecilMethod = FindCecilGenericMethod(current.ILFullName, methodName, paramCount);
+            if (cecilMethod != null)
+                return (current, cecilMethod);
+            current = current.BaseType;
+        }
+        return (null, null);
+    }
+
+    /// <summary>
+    /// Find a Cecil MethodDefinition for a generic virtual method on a type by IL full name.
+    /// </summary>
+    private Mono.Cecil.MethodDefinition? FindCecilGenericMethod(string ilTypeName, string methodName, int paramCount)
+    {
+        foreach (var typeDef in _allTypes)
+        {
+            if (typeDef.FullName != ilTypeName) continue;
+            var cecilType = typeDef.GetCecilType();
+            var method = cecilType.Methods.FirstOrDefault(m =>
+                m.IsVirtual && m.Name == methodName && m.Parameters.Count == paramCount
+                && m.HasGenericParameters);
+            if (method != null) return method;
+            return null;
+        }
+        return null;
     }
 
     private bool ParameterTypesMatchRef(IRMethod irMethod, MethodReference methodRef)

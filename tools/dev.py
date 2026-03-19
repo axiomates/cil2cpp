@@ -1579,6 +1579,61 @@ def cmd_integration(args):
     runner.step(f"CMake build ({config})", hm_cmake_build)
     runner.step("Run and compare C++ vs .NET output", hm_run_verify)
 
+    # ===== Phase 17: PollyTest (Polly NuGet package — resilience framework) =====
+    header("Phase 17: PollyTest (Polly 8.5.2)")
+
+    py_sample = TESTPROJECTS_DIR / "PollyTest" / "PollyTest.csproj"
+    py_output = temp_dir / "py_output"
+    py_build = temp_dir / "py_build"
+
+    dotnet_py_output = None
+
+    def py_dotnet_run():
+        nonlocal dotnet_py_output
+        dotnet_py_output = _get_dotnet_output(py_sample)
+        print(f"    .NET output: {repr(dotnet_py_output[:200])}")
+
+    def py_codegen():
+        run(["dotnet", "run", "--project", str(CLI_PROJECT), "--",
+             "codegen", "-i", str(py_sample), "-o", str(py_output), "-c", "Debug"],
+            capture=True)
+
+    def py_files_exist():
+        for f in ["PollyTest.h", "PollyTest_data.cpp", "PollyTest_stubs.cpp",
+                   "main.cpp", "CMakeLists.txt"]:
+            if not (py_output / f).exists():
+                raise RuntimeError(f"Missing: {f}")
+
+    def py_cmake_configure():
+        run(["cmake", "-B", str(py_build), "-S", str(py_output),
+             "-G", generator, *cmake_arch,
+             f"-DCMAKE_PREFIX_PATH={runtime_prefix}"],
+            capture=True)
+
+    def py_cmake_build():
+        return _cmake_build_with_diagnostics(py_build, config)
+
+    def py_run_verify():
+        exe = _exe_path(py_build, config, "PollyTest")
+        if not exe.exists():
+            raise RuntimeError(f"Executable not found: {exe}")
+        r = subprocess.run([str(exe)], capture_output=True, text=True, check=False,
+                           encoding="utf-8", errors="replace")
+        if r.returncode != 0:
+            raise RuntimeError(f"PollyTest exited with code {r.returncode}\nstderr: {r.stderr}")
+        got = r.stdout.strip()
+        expected = dotnet_py_output.strip()
+        if got != expected:
+            raise RuntimeError(
+                f"Output mismatch!\n  Got:      {repr(got[:200])}\n  Expected: {repr(expected[:200])}")
+
+    runner.step("Get .NET reference output", py_dotnet_run)
+    runner.step("Codegen PollyTest", py_codegen)
+    runner.step("Generated files exist", py_files_exist)
+    runner.step("CMake configure", py_cmake_configure)
+    runner.step(f"CMake build ({config})", py_cmake_build)
+    runner.step("Run and compare C++ vs .NET output", py_run_verify)
+
     # ===== Cleanup =====
     header("Cleanup")
 

@@ -2029,6 +2029,10 @@ public class ReachabilityAnalyzer
 
     private static string GetMethodKey(MethodDefinition method)
     {
-        return $"{method.DeclaringType.FullName}::{method.FullName}";
+        // Include generic parameter count to distinguish non-generic from generic overloads
+        // (Cecil's FullName may not include generic markers for open generic methods when
+        // the generic parameter doesn't appear in the signature)
+        var genArity = method.HasGenericParameters ? $"`{method.GenericParameters.Count}" : "";
+        return $"{method.DeclaringType.FullName}::{method.FullName}{genArity}";
     }
 }

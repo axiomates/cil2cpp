@@ -943,6 +943,11 @@ Boolean MethodBase_get_IsAbstract(void* __this) {
     return ni && (ni->flags & 0x0400); // MethodAttributes.Abstract
 }
 
+Boolean MethodBase_get_IsAssembly(void* __this) {
+    auto* ni = get_native_method_info(__this);
+    return ni && (ni->flags & 0x0007) == 0x0003; // MemberAccessMask == Assembly
+}
+
 Boolean MethodBase_get_IsFinal(void* __this) {
     auto* ni = get_native_method_info(__this);
     return ni && (ni->flags & 0x0020); // MethodAttributes.Final

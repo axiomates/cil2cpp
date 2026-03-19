@@ -89,6 +89,7 @@ Boolean MethodBase_get_IsVirtual(void* __this);
 Boolean MethodBase_get_IsPublic(void* __this);
 Boolean MethodBase_get_IsStatic(void* __this);
 Boolean MethodBase_get_IsAbstract(void* __this);
+Boolean MethodBase_get_IsAssembly(void* __this);
 Boolean MethodBase_get_IsFinal(void* __this);
 Boolean FieldInfo_get_IsPublic(void* __this);
 Boolean FieldInfo_get_IsPrivate(void* __this);

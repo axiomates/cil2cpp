@@ -1286,6 +1286,43 @@ public partial class CppCodeGenerator
         var tiIdx = 0;
         while ((tiIdx = code.IndexOf("_TypeInfo", tiIdx)) >= 0)
         {
+            var afterTi = tiIdx + 9; // position after "_TypeInfo"
+
+            // Skip if _TypeInfo is NOT at a word boundary — it's in the middle of a longer
+            // identifier (e.g., System_Reflection_TypeInfo_get_IsClass). Also skip if followed
+            // by '(' — it's a function call, not a TypeInfo reference. This prevents false
+            // matches on generic methods specialized with System.Reflection.TypeInfo (e.g.,
+            // Enumerable.Where<TypeInfo>(...) → System_Linq_Enumerable_Where_System_Reflection_TypeInfo(...)).
+            if (afterTi < code.Length)
+            {
+                var nextChar = code[afterTi];
+                if (nextChar == '(')
+                {
+                    // Function call — not a TypeInfo reference
+                    tiIdx = afterTi;
+                    continue;
+                }
+                // Check for double _TypeInfo pattern (type name ends with TypeInfo)
+                if (afterTi + 9 <= code.Length && code.Substring(afterTi, 9) == "_TypeInfo")
+                {
+                    // Could be Type_TypeInfo_TypeInfo — the type name includes _TypeInfo.
+                    // But if the double _TypeInfo is followed by '(' it's a function call
+                    // on a TypeInfo-named type, not a TypeInfo reference.
+                    var afterDouble = afterTi + 9;
+                    if (afterDouble < code.Length && code[afterDouble] == '(')
+                    {
+                        tiIdx = afterDouble;
+                        continue;
+                    }
+                }
+                else if (char.IsLetterOrDigit(nextChar) || nextChar == '_')
+                {
+                    // _TypeInfo is in the middle of a longer identifier
+                    tiIdx = afterTi;
+                    continue;
+                }
+            }
+
             int start = tiIdx - 1;
             while (start >= 0 && (char.IsLetterOrDigit(code[start]) || code[start] == '_'))
                 start--;
@@ -1305,7 +1342,6 @@ public partial class CppCodeGenerator
                     // The reference is System_Reflection_TypeInfo_TypeInfo — the first _TypeInfo is
                     // part of the type name. Check the char after "_TypeInfo" — if it's also "_TypeInfo",
                     // then the real type name includes the first "_TypeInfo".
-                    var afterTi = tiIdx + 9; // position after first "_TypeInfo"
                     if (afterTi + 9 <= code.Length && code.Substring(afterTi, 9) == "_TypeInfo")
                     {
                         // The real type name is typeName + "_TypeInfo"

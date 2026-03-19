@@ -605,6 +605,7 @@ public partial class IRBuilder
                             methodBodies.Add((methodDef, irMethod));
                     }
 
+
                 }
 
                 // Detect record types:
@@ -925,14 +926,16 @@ public partial class IRBuilder
             skippedByMethod.TryAdd(irMethod, (specKey, cecilMethod, typeParamMap));
         }
 
-        // Collect all uncompiled methods referenced by interface vtable entries on constructed types
+        // Collect all uncompiled methods referenced by interface vtable entries.
+        // Must scan ALL types (not just ConstructedTypes) because the codegen emits
+        // interface vtable entries for every type with InterfaceImpls — derived instances
+        // use base type interface vtables via type_get_interface_vtable's base_type chain walk.
         var methodsToCompile = new HashSet<IRMethod>();
         var dimMethodsToCompile = new HashSet<IRMethod>();
 
         foreach (var type in _module.Types)
         {
             if (type.IsInterface) continue;
-            if (!_module.ConstructedTypes.Contains(type.ILFullName)) continue;
 
             foreach (var impl in type.InterfaceImpls)
             {
@@ -952,6 +955,7 @@ public partial class IRBuilder
 
         // Phase A: Recover concrete-type methods from _skippedSpecializedMethods (generic types)
         int recoveredCount = 0;
+        var unresolvedMethods = new List<IRMethod>();
         foreach (var method in methodsToCompile)
         {
             if (skippedByMethod.TryGetValue(method, out var entry))
@@ -965,6 +969,39 @@ public partial class IRBuilder
                     _deferredGenericBodies.Add((entry.CecilMethod, method, entry.TypeParamMap));
                     recoveredCount++;
                 }
+            }
+            else
+            {
+                unresolvedMethods.Add(method);
+            }
+        }
+
+        // Phase A2: Resolve methods not in _skippedSpecializedMethods via _genericInstantiations.
+        // These are interface impl methods on generic specializations whose declaring type has a
+        // known GenericInstantiationInfo. We resolve the Cecil MethodDefinition from the open type
+        // and compile the body with the type parameter map.
+        int resolvedFromGenericCount = 0;
+        foreach (var method in unresolvedMethods)
+        {
+            if (method.DeclaringType == null) continue;
+            if (!_genericInstantiations.TryGetValue(method.DeclaringType.ILFullName, out var info)) continue;
+            if (info.CecilOpenType == null) continue;
+
+            // Find matching Cecil method definition
+            var cecilMethod = info.CecilOpenType.Methods.FirstOrDefault(m =>
+                m.Name == method.Name && m.Parameters.Count == method.Parameters.Count
+                && m.HasBody && !m.IsAbstract && !m.IsInternalCall);
+            if (cecilMethod == null) continue;
+
+            if (HasClrInternalDependencies(cecilMethod))
+            {
+                GenerateStubBody(method);
+            }
+            else
+            {
+                var typeParamMap = BuildTypeParamMap(info.CecilOpenType, info.TypeArguments);
+                _deferredGenericBodies.Add((cecilMethod, method, typeParamMap));
+                resolvedFromGenericCount++;
             }
         }
 
@@ -1035,10 +1072,10 @@ public partial class IRBuilder
             }
         }
 
-        Console.Error.WriteLine($"[CIL2CPP] Pass 5.1: {recoveredCount} generic recovered, {dimCompiled}/{dimMethodsToCompile.Count} DIM compiled, {nonGenericCompiled} non-generic base compiled ({methodsToCompile.Count} concrete uncompiled)");
+        Console.Error.WriteLine($"[CIL2CPP] Pass 5.1: {recoveredCount} generic recovered, {resolvedFromGenericCount} resolved from generic, {dimCompiled}/{dimMethodsToCompile.Count} DIM compiled, {nonGenericCompiled} non-generic base compiled ({methodsToCompile.Count} concrete uncompiled)");
 
         // Process recovered methods through ConvertDeferredGenericBodies
-        if (recoveredCount > 0 || dimCompiled > 0)
+        if (recoveredCount > 0 || resolvedFromGenericCount > 0 || dimCompiled > 0)
         {
             // Rebuild vtables for newly-typed methods
             BuildVTablesFixpoint();

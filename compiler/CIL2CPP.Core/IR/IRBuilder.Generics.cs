@@ -354,11 +354,43 @@ public partial class IRBuilder
     /// </summary>
     private static bool IsRecursiveGenericInstantiation(GenericInstanceType git)
     {
+        // Check 1: Self-referential recursion (same open type nested ≥2 times in its own args)
         var openTypeName = git.ElementType.FullName;
         int selfRefs = 0;
         foreach (var arg in git.GenericArguments)
             selfRefs += CountOpenTypeOccurrences(arg, openTypeName);
-        return selfRefs >= 2;
+        if (selfRefs >= 2) return true;
+
+        // Check 2: Mutual recursion — total generic nesting depth exceeds threshold.
+        // Catches patterns like ValueTuple<X, Func<Y, ValueTuple<X, Func<Y, ...>>>>
+        // where no single open type is self-referential but the overall depth grows unbounded.
+        if (GetGenericNestingDepth(git) > 5) return true;
+
+        return false;
+    }
+
+    /// <summary>
+    /// Compute the maximum generic nesting depth of a type reference.
+    /// E.g., List&lt;int&gt; = 1, Dictionary&lt;string, List&lt;int&gt;&gt; = 2,
+    /// ValueTuple&lt;X, Func&lt;Y, ValueTuple&lt;Z, W&gt;&gt;&gt; = 3.
+    /// </summary>
+    private static int GetGenericNestingDepth(TypeReference typeRef)
+    {
+        if (typeRef is GenericInstanceType git)
+        {
+            int maxArgDepth = 0;
+            foreach (var arg in git.GenericArguments)
+            {
+                var d = GetGenericNestingDepth(arg);
+                if (d > maxArgDepth) maxArgDepth = d;
+            }
+            return 1 + maxArgDepth;
+        }
+        if (typeRef is ArrayType arr)
+            return GetGenericNestingDepth(arr.ElementType);
+        if (typeRef is ByReferenceType byRef)
+            return GetGenericNestingDepth(byRef.ElementType);
+        return 0;
     }
 
     private static int CountOpenTypeOccurrences(TypeReference typeRef, string openTypeName)
@@ -877,17 +909,95 @@ public partial class IRBuilder
 
         foreach (var candidateName in candidateTypeNames)
         {
-            // Resolve the candidate type to a Cecil TypeDefinition
-            Mono.Cecil.TypeDefinition? candidateTypeDef = null;
+            var result = FindExplicitInterfaceImpl(candidateName, interfaceTypeDef, interfaceMethod);
+            if (result != null) return result;
+        }
+
+        // For non-generic interfaces with instance GVM (e.g., ICollectionFormatter.Humanize<T>),
+        // do NOT resolve to a concrete body — the __this parameter would be typed as the
+        // interface (incomplete type) but the body accesses concrete fields. Instance GVM
+        // dispatch goes through the interface vtable at runtime, so the specialization
+        // should remain abstract here. The concrete method is compiled on the implementing type.
+
+        return null;
+    }
+
+    /// <summary>
+    /// Find explicit interface method implementation on a candidate type.
+    /// </summary>
+    private Mono.Cecil.MethodDefinition? FindExplicitInterfaceImpl(
+        string candidateName,
+        Mono.Cecil.TypeDefinition interfaceTypeDef,
+        Mono.Cecil.MethodDefinition interfaceMethod)
+    {
+        Mono.Cecil.TypeDefinition? candidateTypeDef = null;
+        foreach (var asm in _assemblySet.LoadedAssemblies.Values)
+        {
+            candidateTypeDef = asm.MainModule.GetType(candidateName);
+            if (candidateTypeDef != null) break;
+        }
+        if (candidateTypeDef == null) return null;
+
+        // Search for explicit interface method implementations (overrides)
+        foreach (var method in candidateTypeDef.Methods)
+        {
+            if (!method.HasOverrides) continue;
+            foreach (var ovr in method.Overrides)
+            {
+                var ovrDeclaring = ovr.DeclaringType;
+                if (ovrDeclaring is GenericInstanceType ovrGit)
+                    ovrDeclaring = ovrGit.ElementType;
+
+                if (ovrDeclaring.FullName == interfaceTypeDef.FullName
+                    && ovr.Name == interfaceMethod.Name
+                    && ovr.Parameters.Count == interfaceMethod.Parameters.Count)
+                {
+                    return method;
+                }
+            }
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Resolve a generic virtual method (GVM) instance call on a non-generic interface.
+    /// Searches constructed types that implement the interface for a matching method.
+    /// E.g., ISender.Send&lt;string&gt;() → Mediator.Send&lt;string&gt;().
+    /// For monomorphic dispatch (single implementing type), uses that type's body directly.
+    /// </summary>
+    private Mono.Cecil.MethodDefinition? ResolveGvmInstanceImplementation(
+        Mono.Cecil.TypeDefinition interfaceTypeDef,
+        Mono.Cecil.MethodDefinition interfaceMethod)
+    {
+        // Search all constructed types for implementations of this interface method
+        foreach (var typeName in _module.ConstructedTypes)
+        {
+            // Resolve to Cecil TypeDefinition
+            Mono.Cecil.TypeDefinition? typeDef = null;
             foreach (var asm in _assemblySet.LoadedAssemblies.Values)
             {
-                candidateTypeDef = asm.MainModule.GetType(candidateName);
-                if (candidateTypeDef != null) break;
+                typeDef = asm.MainModule.GetType(typeName);
+                if (typeDef != null) break;
             }
-            if (candidateTypeDef == null) continue;
+            if (typeDef == null || typeDef.IsInterface || typeDef.IsAbstract) continue;
 
-            // Search for explicit interface method implementations (overrides)
-            foreach (var method in candidateTypeDef.Methods)
+            // Check if this type implements the target interface
+            bool implementsInterface = false;
+            foreach (var iface in typeDef.Interfaces)
+            {
+                var ifaceType = iface.InterfaceType;
+                if (ifaceType is GenericInstanceType git)
+                    ifaceType = git.ElementType;
+                if (ifaceType.FullName == interfaceTypeDef.FullName)
+                {
+                    implementsInterface = true;
+                    break;
+                }
+            }
+            if (!implementsInterface) continue;
+
+            // First try explicit interface implementation (method overrides)
+            foreach (var method in typeDef.Methods)
             {
                 if (!method.HasOverrides) continue;
                 foreach (var ovr in method.Overrides)
@@ -895,13 +1005,25 @@ public partial class IRBuilder
                     var ovrDeclaring = ovr.DeclaringType;
                     if (ovrDeclaring is GenericInstanceType ovrGit)
                         ovrDeclaring = ovrGit.ElementType;
-
                     if (ovrDeclaring.FullName == interfaceTypeDef.FullName
                         && ovr.Name == interfaceMethod.Name
-                        && ovr.Parameters.Count == interfaceMethod.Parameters.Count)
+                        && ovr.Parameters.Count == interfaceMethod.Parameters.Count
+                        && method.HasBody)
                     {
                         return method;
                     }
+                }
+            }
+
+            // Then try implicit implementation (same name + signature)
+            foreach (var method in typeDef.Methods)
+            {
+                if (method.Name == interfaceMethod.Name
+                    && method.GenericParameters.Count == interfaceMethod.GenericParameters.Count
+                    && method.Parameters.Count == interfaceMethod.Parameters.Count
+                    && method.HasBody && !method.IsStatic)
+                {
+                    return method;
                 }
             }
         }
@@ -990,6 +1112,12 @@ public partial class IRBuilder
                 case FieldReference fieldRef:
                     TryCollectResolvedGenericType(fieldRef.DeclaringType, typeParamMap);
                     TryCollectResolvedGenericType(fieldRef.FieldType, typeParamMap);
+                    // Static field access on non-generic companion types (e.g., ValueTaskAwaiter)
+                    // referenced from generic method bodies may be missed by the RA when the
+                    // method is only reachable through constrained generic dispatch.
+                    // Only handle ldsfld/stsfld/ldsflda — instance fields don't need this.
+                    if (instr.OpCode.Code is Code.Ldsfld or Code.Stsfld or Code.Ldsflda)
+                        EnsureDemandDrivenNonGenericTypeExists(fieldRef.DeclaringType);
                     break;
                 case TypeReference typeRef:
                     TryCollectResolvedGenericType(typeRef, typeParamMap);
@@ -1383,6 +1511,100 @@ public partial class IRBuilder
         if (methodName == targetName) return true;
         var lastDot = methodName.LastIndexOf('.');
         return lastDot >= 0 && methodName.AsSpan(lastDot + 1).SequenceEqual(targetName);
+    }
+
+    /// <summary>
+    /// Ensure a non-generic type exists in the IR when referenced from a generic method body.
+    /// Generic method bodies compiled during demand-driven specialization may reference static
+    /// fields on non-generic companion types (e.g., ValueTaskAwaiter&lt;T&gt;.UnsafeOnCompleted
+    /// references ValueTaskAwaiter.s_invokeActionDelegate via ldsfld). The RA misses these
+    /// because the method is only reachable through constrained generic dispatch where the
+    /// constrained type parameter (!!TAwaiter) can't be resolved during open-method analysis.
+    /// </summary>
+    private void EnsureDemandDrivenNonGenericTypeExists(TypeReference declaringTypeRef)
+    {
+        // Only handle non-generic types — generic types are handled by TryCollectResolvedGenericType
+        if (declaringTypeRef is GenericInstanceType) return;
+        if (declaringTypeRef is Mono.Cecil.GenericParameter) return;
+        if (declaringTypeRef is ArrayType || declaringTypeRef is ByReferenceType || declaringTypeRef is PointerType) return;
+
+        var typeName = declaringTypeRef.FullName;
+
+        // Already exists — nothing to do
+        if (_typeCache.ContainsKey(typeName)) return;
+
+        // Don't create core runtime types (Object, String, etc.) on demand — they have
+        // runtime-defined layouts and method ownership that can't be replicated here.
+        if (RuntimeTypeRegistry.IsCoreRuntime(typeName)) return;
+
+        // Resolve the Cecil TypeDefinition
+        TypeDefinition? cecilTypeDef;
+        try { cecilTypeDef = declaringTypeRef.Resolve(); }
+        catch { return; }
+        if (cecilTypeDef == null) return;
+
+        // Skip open generic type definitions — they have unresolved parameters
+        if (cecilTypeDef.HasGenericParameters) return;
+
+        // Skip compiler-internal types
+        if (cecilTypeDef.FullName == "<Module>") return;
+        if (cecilTypeDef.FullName.StartsWith("<PrivateImplementationDetails>")) return;
+
+        var mangledName = CppNameMapper.MangleTypeName(typeName);
+
+        var irType = new IRType
+        {
+            ILFullName = typeName,
+            CppName = mangledName,
+            Name = cecilTypeDef.Name,
+            Namespace = cecilTypeDef.Namespace,
+            IsValueType = cecilTypeDef.IsValueType && typeName is not "System.Enum" and not "System.ValueType",
+            IsInterface = cecilTypeDef.IsInterface,
+            IsAbstract = cecilTypeDef.IsAbstract,
+            IsSealed = cecilTypeDef.IsSealed,
+            IsEnum = cecilTypeDef.IsEnum,
+            MetadataToken = cecilTypeDef.MetadataToken.ToUInt32(),
+            SourceKind = _assemblySet.ClassifyAssembly(cecilTypeDef.Module.Assembly.Name.Name),
+            // RuntimeProvided types still need statics — their struct layout comes from
+            // runtime headers but static fields need a _Statics struct in generated code.
+            IsRuntimeProvided = RuntimeTypeRegistry.IsRuntimeProvided(typeName),
+        };
+
+        if (irType.IsValueType)
+        {
+            CppNameMapper.RegisterValueType(typeName);
+            CppNameMapper.RegisterValueType(mangledName);
+        }
+
+        // Populate both instance and static fields
+        foreach (var fieldDef in cecilTypeDef.Fields)
+        {
+            var irField = new IRField
+            {
+                Name = fieldDef.Name,
+                CppName = CppNameMapper.MangleFieldName(fieldDef.Name),
+                FieldTypeName = fieldDef.FieldType.FullName,
+                IsStatic = fieldDef.IsStatic,
+                IsPublic = fieldDef.IsPublic,
+                DeclaringType = irType,
+            };
+            if (_typeCache.TryGetValue(fieldDef.FieldType.FullName, out var fieldType))
+                irField.FieldType = fieldType;
+
+            if (fieldDef.IsStatic)
+                irType.StaticFields.Add(irField);
+            else
+                irType.Fields.Add(irField);
+        }
+
+        // Flag cctor if present
+        irType.HasCctor = cecilTypeDef.Methods.Any(m => m.IsConstructor && m.IsStatic && m.HasBody);
+
+        CalculateInstanceSize(irType);
+        _module.Types.Add(irType);
+        _typeCache[typeName] = irType;
+
+        Console.Error.WriteLine($"[demand-driven] Created non-generic type: {typeName}");
     }
 
     /// <summary>

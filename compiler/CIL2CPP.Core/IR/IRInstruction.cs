@@ -65,12 +65,26 @@ public class IRCall : IRInstruction
     /// </summary>
     public string? DeferredDisambigKey { get; set; }
 
+    /// <summary>
+    /// Generic virtual method dispatch targets. Used when callvirt targets a method-level
+    /// generic virtual method (e.g., ExecuteCore&lt;TResult, TState&gt;). Standard vtable dispatch
+    /// cannot handle method-level generics because each vtable slot holds only one function pointer
+    /// while generic methods have multiple specializations.
+    /// Each entry maps a concrete type's TypeInfo name to the monomorphized override function name.
+    /// </summary>
+    public List<(string TypeInfoName, string FunctionName)>? GenericVirtualTargets { get; set; }
+
     public override string ToCpp()
     {
         var args = string.Join(", ", Arguments);
         string call;
 
-        if (IsVirtual && IsInterfaceCall && VTableSlot >= 0 && Arguments.Count > 0)
+        // Generic virtual method dispatch — type-check chain
+        if (GenericVirtualTargets != null && GenericVirtualTargets.Count > 0 && Arguments.Count > 0)
+        {
+            return EmitGenericVirtualDispatch();
+        }
+        else if (IsVirtual && IsInterfaceCall && VTableSlot >= 0 && Arguments.Count > 0)
         {
             var paramTypesStr = VTableParamTypes != null
                 ? string.Join(", ", VTableParamTypes) : "void*";
@@ -104,6 +118,60 @@ public class IRCall : IRInstruction
         }
 
         return ResultVar != null ? $"{ResultVar} = {call};" : $"{call};";
+    }
+
+    /// <summary>
+    /// Emit type-check dispatch chain for generic virtual method calls.
+    /// Each constructed subtype gets a branch checking __type_info, calling its
+    /// monomorphized override. Falls back to the direct function name (stub) if no match.
+    /// </summary>
+    private string EmitGenericVirtualDispatch()
+    {
+        var thisExpr = Arguments[0];
+        var otherArgs = Arguments.Count > 1
+            ? string.Join(", ", Arguments.Skip(1)) : "";
+        var nullCheck = $"cil2cpp::null_check((void*){thisExpr}); ";
+
+        var sb = new System.Text.StringBuilder();
+        sb.Append(nullCheck);
+
+        // Pre-declare result variable before if-else chain (AddAutoDeclarations can't
+        // handle variable assignments inside branches of a GVM dispatch chain)
+        if (ResultVar != null && ResultTypeCpp != null)
+            sb.Append($"{ResultTypeCpp} {ResultVar}{{}}; ");
+        else if (ResultVar != null)
+            sb.Append($"auto {ResultVar} = decltype({ResultVar}){{}}; ");
+
+        // Emit: if/else chain checking __type_info.
+        // Each branch casts `this` to the concrete target type (flat struct model — no C++ inheritance).
+        for (int i = 0; i < GenericVirtualTargets!.Count; i++)
+        {
+            var (typeInfo, funcName) = GenericVirtualTargets[i];
+            var prefix = i == 0 ? "if" : "else if";
+            sb.Append($"{prefix} (((cil2cpp::Object*){thisExpr})->__type_info == &{typeInfo}) ");
+
+            // Derive the concrete type name from the TypeInfo name (strip _TypeInfo suffix)
+            var concreteType = typeInfo.EndsWith("_TypeInfo")
+                ? typeInfo[..^"_TypeInfo".Length] + "*"
+                : $"void*";
+            var castThis = $"({concreteType}){thisExpr}";
+            var branchArgs = otherArgs.Length > 0 ? $"{castThis}, {otherArgs}" : castThis;
+            var callExpr = $"{funcName}({branchArgs})";
+            if (ResultVar != null)
+                sb.Append($"{{ {ResultVar} = {callExpr}; }} ");
+            else
+                sb.Append($"{{ {callExpr}; }} ");
+        }
+
+        // Fallback: direct call with original args (may be a stub, but ensures linkability)
+        var fallbackArgs = string.Join(", ", Arguments);
+        var fallbackCall = $"{FunctionName}({fallbackArgs})";
+        if (ResultVar != null)
+            sb.Append($"else {{ {ResultVar} = {fallbackCall}; }}");
+        else
+            sb.Append($"else {{ {fallbackCall}; }}");
+
+        return sb.ToString();
     }
 
     /// <summary>

@@ -780,6 +780,8 @@ public static class ICallRegistry
         // ===== System.Reflection.MethodBase / System.Type (additional) =====
         RegisterICall("System.Reflection.MethodBase", "get_IsAbstract", 0,
             "cil2cpp::icall::MethodBase_get_IsAbstract");
+        RegisterICall("System.Reflection.MethodBase", "get_IsAssembly", 0,
+            "cil2cpp::icall::MethodBase_get_IsAssembly");
         RegisterICall("System.Type", "get_IsNestedAssembly", 0,
             "cil2cpp::icall::Type_get_IsNestedAssembly");
         RegisterICall("System.Type", "get_IsNotPublic", 0,
