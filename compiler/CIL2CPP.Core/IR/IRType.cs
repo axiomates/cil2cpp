@@ -85,6 +85,12 @@ public class IRType
     public bool IsNestedAssembly { get; set; }
     public bool IsByRefLike { get; set; }
 
+    /// <summary>
+    /// Character set from [StructLayout(CharSet=...)] for P/Invoke struct marshaling.
+    /// Determines ByValTStr char type: Unicode → char16_t, Ansi → char.
+    /// </summary>
+    public PInvokeCharSet StructCharSet { get; set; } = PInvokeCharSet.Ansi;
+
     /// <summary>For array types: the C++ mangled name of the element type (e.g., "System_Int32")</summary>
     public string? ArrayElementTypeCppName { get; set; }
 
@@ -121,6 +127,12 @@ public class IRType
     /// Zero means no explicit size (normal layout).
     /// </summary>
     public int ExplicitSize { get; set; }
+
+    /// <summary>
+    /// True if this type uses LayoutKind.Explicit (ECMA-335 II.10.1.2).
+    /// Fields have explicit byte offsets and may overlap (unions).
+    /// </summary>
+    public bool IsExplicitLayout { get; set; }
 
     /// <summary>Custom attributes applied to this type</summary>
     public List<IRCustomAttribute> CustomAttributes { get; } = new();
@@ -165,6 +177,21 @@ public class IRField
     /// The CppName is disambiguated with a "__own" suffix to avoid name collisions in C++ structs.
     /// </summary>
     public bool HidesBaseField { get; set; }
+
+    /// <summary>
+    /// Explicit field offset in bytes from [FieldOffset(N)] for LayoutKind.Explicit types.
+    /// Null means sequential layout (offset auto-computed).
+    /// </summary>
+    public int? ExplicitOffset { get; set; }
+
+    /// <summary>[MarshalAs] unmanaged type for P/Invoke struct field marshaling (ByValTStr, ByValArray)</summary>
+    public MarshalAsType? MarshalAs { get; set; }
+
+    /// <summary>SizeConst from [MarshalAs] — element count for ByValArray or char count for ByValTStr</summary>
+    public int MarshalSizeConst { get; set; }
+
+    /// <summary>Element type IL name for ByValArray (from Cecil FixedArrayMarshalInfo.ElementType)</summary>
+    public string? MarshalElementTypeName { get; set; }
 }
 
 /// <summary>

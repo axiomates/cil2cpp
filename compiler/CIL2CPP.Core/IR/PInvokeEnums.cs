@@ -88,6 +88,8 @@ public enum MarshalAsType
     LPStruct = 43,
     /// <summary>UTF-8 string (char*)</summary>
     LPUtf8Str = 48,
+    /// <summary>Fixed-size array of elements in struct (ECMA-335 NativeType.FixedArray = 0x1E)</summary>
+    ByValArray = 30,
 }
 
 /// <summary>

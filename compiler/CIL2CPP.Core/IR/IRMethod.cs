@@ -192,6 +192,12 @@ public class IRParameter
     public int MarshalAsSizeParamIndex { get; set; } = -1;
 
     /// <summary>
+    /// For MarshalAs.LPArray: IL element type name (e.g., "System.Byte" for byte[]).
+    /// Used to generate typed native pointers (uint8_t* instead of void*).
+    /// </summary>
+    public string? MarshalArrayElementILType { get; set; }
+
+    /// <summary>
     /// C.7.2: P/Invoke parameter direction ([In]/[Out] attributes).
     /// Controls copy-back semantics after native call.
     /// </summary>

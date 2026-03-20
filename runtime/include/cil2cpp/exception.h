@@ -133,6 +133,7 @@ struct DirectoryNotFoundException : IOException {};
 
 // --- Reflection ---
 struct MissingMethodException : Exception {};
+struct DllNotFoundException : Exception {};
 
 // --- Collections ---
 struct KeyNotFoundException : Exception {};
@@ -208,6 +209,7 @@ extern thread_local ExceptionContext* g_exception_context;
 [[noreturn]] void throw_file_not_found(const char* path);
 [[noreturn]] void throw_directory_not_found(const char* path);
 [[noreturn]] void throw_missing_method();
+[[noreturn]] void throw_dll_not_found(String* libraryName);
 
 /**
  * Get current exception (in catch block).

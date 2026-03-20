@@ -2780,7 +2780,7 @@ public partial class CppCodeGenerator
                 int structPointerCount = 0;
                 foreach (var p in method.Parameters)
                 {
-                    var nt = GetPInvokeNativeType(p.CppTypeName, p.ParameterType, charSet, p.MarshalAs);
+                    var nt = GetPInvokeNativeType(p.CppTypeName, p.ParameterType, charSet, p.MarshalAs, p.MarshalArrayElementILType);
                     if (!IsValidExternCType(nt)) { hasInvalidType = true; break; }
                     // Count struct pointers (pointer to non-primitive type)
                     if (nt.EndsWith("*"))
@@ -2807,7 +2807,7 @@ public partial class CppCodeGenerator
                 var retType = GetPInvokeNativeType(method.ReturnTypeCpp, null, cs, method.ReturnMarshalAs);
                 var nativeParamTypes = new List<string>();
                 foreach (var p in method.Parameters)
-                    nativeParamTypes.Add(GetPInvokeNativeType(p.CppTypeName, p.ParameterType, cs, p.MarshalAs));
+                    nativeParamTypes.Add(GetPInvokeNativeType(p.CppTypeName, p.ParameterType, cs, p.MarshalAs, p.MarshalArrayElementILType));
 
                 var paramParts = new List<string>();
                 for (int i = 0; i < method.Parameters.Count; i++)
@@ -2854,7 +2854,8 @@ public partial class CppCodeGenerator
                 for (int i = 0; i < method.Parameters.Count; i++)
                 {
                     var methodType = GetPInvokeNativeType(method.Parameters[i].CppTypeName,
-                        method.Parameters[i].ParameterType, wrapperCharSet, method.Parameters[i].MarshalAs);
+                        method.Parameters[i].ParameterType, wrapperCharSet, method.Parameters[i].MarshalAs,
+                        method.Parameters[i].MarshalArrayElementILType);
                     if (methodType != externParamTypes[i])
                     {
                         // Allow any pointer ↔ pointer mismatch — same DLL entry point,
@@ -2878,6 +2879,7 @@ public partial class CppCodeGenerator
             // Marshal arguments per ECMA-335 II.15.5.4
             var callArgs = new List<string>();
             var boolPtrCopyBack = new List<(int index, string paramName)>();
+            var ansiStringTemps = new List<int>(); // Track ANSI string temps for post-call free
             for (int i = 0; i < method.Parameters.Count; i++)
             {
                 var param = method.Parameters[i];
@@ -2901,8 +2903,9 @@ public partial class CppCodeGenerator
                     }
                     else
                     {
-                        // Ansi/UTF-8: convert to narrow string
+                        // Ansi/UTF-8: convert to narrow string (malloc'd — must free after call)
                         sb.AppendLine($"    auto __p{i} = cil2cpp::string_to_utf8({param.CppName});");
+                        ansiStringTemps.Add(i);
                     }
                     callArgs.Add($"__p{i}");
                 }
@@ -2964,14 +2967,19 @@ public partial class CppCodeGenerator
                 else if (param.MarshalAs == IR.MarshalAsType.LPArray
                          && param.CppTypeName.Contains("Array"))
                 {
-                    // C.7.3: [MarshalAs(UnmanagedType.LPArray)] — pass raw data pointer from managed array
-                    // cil2cpp::array_data() returns void* to the contiguous element buffer
-                    sb.AppendLine($"    auto __p{i} = {param.CppName} ? cil2cpp::array_data(reinterpret_cast<cil2cpp::Array*>({param.CppName})) : nullptr;");
+                    // C.7.3: [MarshalAs(UnmanagedType.LPArray)] — pass typed data pointer from managed array
+                    var elemCppType = param.MarshalArrayElementILType != null
+                        ? CppNameMapper.GetCppTypeForDecl(param.MarshalArrayElementILType).TrimEnd('*')
+                        : null;
+                    var castExpr = elemCppType != null
+                        ? $"static_cast<{elemCppType}*>(cil2cpp::array_data(reinterpret_cast<cil2cpp::Array*>({param.CppName})))"
+                        : $"cil2cpp::array_data(reinterpret_cast<cil2cpp::Array*>({param.CppName}))";
+                    sb.AppendLine($"    auto __p{i} = {param.CppName} ? {castExpr} : nullptr;");
                     callArgs.Add($"__p{i}");
                 }
                 else if (externParamTypes != null && i < externParamTypes.Count
                          && param.CppTypeName != externParamTypes[i]
-                         && IsCppPrimitiveType(GetPInvokeNativeType(param.CppTypeName, param.ParameterType, wrapperCharSet, param.MarshalAs))
+                         && IsCppPrimitiveType(GetPInvokeNativeType(param.CppTypeName, param.ParameterType, wrapperCharSet, param.MarshalAs, param.MarshalArrayElementILType))
                          && IsCppPrimitiveType(externParamTypes[i]))
                 {
                     // Integer type mismatch (e.g., uint32_t vs int32_t for WSASocketW overloads)
@@ -3006,6 +3014,10 @@ public partial class CppCodeGenerator
             foreach (var (idx, paramName) in boolPtrCopyBack)
                 sb.AppendLine($"    if ({paramName}) *{paramName} = __bp{idx} != 0;");
 
+            // Free ANSI string temps allocated by string_to_utf8 (std::malloc)
+            foreach (var idx in ansiStringTemps)
+                sb.AppendLine($"    std::free(__p{idx});");
+
             // Return value conversion
             if (retType == "void")
             {
@@ -3024,7 +3036,9 @@ public partial class CppCodeGenerator
                 }
                 else
                 {
-                    sb.AppendLine("    return cil2cpp::string_literal(__native_ret);");
+                    // ANSI return: const char* → managed String (dynamic allocation, not interned)
+                    sb.AppendLine("    if (!__native_ret) return nullptr;");
+                    sb.AppendLine("    return cil2cpp::string_create_utf8(__native_ret);");
                 }
             }
             else if (retType is "intptr_t" or "uintptr_t")
@@ -3050,7 +3064,8 @@ public partial class CppCodeGenerator
     /// </summary>
     private string GetPInvokeNativeType(string cppType, IRType? paramType,
         IR.PInvokeCharSet charSet = IR.PInvokeCharSet.Ansi,
-        IR.MarshalAsType? marshalAs = null)
+        IR.MarshalAsType? marshalAs = null,
+        string? arrayElementILType = null)
     {
         // C.7: [MarshalAs] overrides all default marshaling behavior
         if (marshalAs != null)
@@ -3075,9 +3090,10 @@ public partial class CppCodeGenerator
                 IR.MarshalAsType.SysInt => "intptr_t",
                 IR.MarshalAsType.SysUInt => "uintptr_t",
                 IR.MarshalAsType.FunctionPtr => "void*",
-                // C.7.3: LPArray → pointer to element type. For managed arrays (e.g. MdArray_1_int32_t*),
-                // the extern declaration uses a pointer to the element type (e.g. int32_t*)
-                IR.MarshalAsType.LPArray => "void*",
+                // C.7.3: LPArray → typed pointer when element type is known
+                IR.MarshalAsType.LPArray => arrayElementILType != null
+                    ? CppNameMapper.GetCppTypeForDecl(arrayElementILType).TrimEnd('*') + "*"
+                    : "void*",
                 IR.MarshalAsType.LPStruct => cppType.TrimEnd('*') + "*",
                 IR.MarshalAsType.IUnknown or IR.MarshalAsType.IDispatch => "void*",
                 _ => cppType, // Fallback to default
@@ -3142,6 +3158,20 @@ public partial class CppCodeGenerator
         type is { IsDelegate: true };
 
     /// <summary>
+    /// Map a managed C++ type to the corresponding native C type for extern "C" signatures.
+    /// Used by both P/Invoke delegate function pointer generation and direct marshaling.
+    /// </summary>
+    private static string MapManagedToNativeCType(string cppType) => cppType switch
+    {
+        "void" => "void",
+        "cil2cpp::String*" => "const char*",
+        "bool" => "int32_t",              // Win32 BOOL = 4 bytes
+        "intptr_t" => "void*",
+        "uintptr_t" => "void*",
+        _ => cppType,
+    };
+
+    /// <summary>
     /// Get the C function pointer type for a delegate type.
     /// Looks up the delegate's Invoke method to determine the signature.
     /// Returns "RetType(*)(ParamTypes...)" syntax.
@@ -3153,11 +3183,9 @@ public partial class CppCodeGenerator
         var invoke = delegateType.Methods.FirstOrDefault(m => m.Name == "Invoke");
         if (invoke == null) return "void(*)()";
 
-        var retType = invoke.ReturnTypeCpp == "void" ? "void"
-            : invoke.ReturnTypeCpp == "cil2cpp::String*" ? "const char*"
-            : invoke.ReturnTypeCpp;
+        var retType = MapManagedToNativeCType(invoke.ReturnTypeCpp);
         var paramTypes = invoke.Parameters
-            .Select(p => p.CppTypeName == "cil2cpp::String*" ? "const char*" : p.CppTypeName)
+            .Select(p => MapManagedToNativeCType(p.CppTypeName))
             .ToList();
 
         return $"{retType}(*)({string.Join(", ", paramTypes)})";

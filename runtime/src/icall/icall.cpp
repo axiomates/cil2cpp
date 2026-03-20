@@ -207,14 +207,17 @@ Boolean Marshal_TryGetStructMarshalStub(void* /*structureTypeHandle*/, void* mar
 }
 
 void Marshal_StructureToPtr(void* structure, intptr_t ptr, Boolean /*fDeleteOld*/) {
-    // In compiled C++ code, value types are passed directly (not boxed).
-    // We don't know the size at this level — but the caller passes struct by value,
-    // so this ICall is only reached from IL that was compiled with the struct type known.
-    // For AOT, this is a no-op stub — the actual P/Invoke marshaling is handled by
-    // the compiled IL that copies fields to native memory before the P/Invoke call.
-    // The struct data has already been written to the target pointer by the caller's IL.
-    (void)structure;
-    (void)ptr;
+    // Marshal.StructureToPtr copies a boxed struct to unmanaged memory.
+    // The 'structure' parameter is a boxed object (Object* with header + struct data).
+    // Read the TypeInfo to determine the struct's value-type size, then memcpy.
+    if (!structure || !ptr) return;
+    auto* obj = reinterpret_cast<cil2cpp::Object*>(structure);
+    auto* ti = obj->__type_info;
+    if (!ti || ti->instance_size <= 0) return;
+    // Boxed value type layout: [TypeInfo* (8)] [sync_block (4)] [pad (4)] [struct data...]
+    // TypeInfo.instance_size = sizeof(ValueType) (no header)
+    auto* src = reinterpret_cast<uint8_t*>(structure) + 16; // skip object header
+    std::memcpy(reinterpret_cast<void*>(ptr), src, static_cast<size_t>(ti->instance_size));
 }
 
 // ===== System.HashCode / System.Marvin (RNG seed) =====
@@ -257,7 +260,9 @@ intptr_t NativeLibrary_GetSymbol(intptr_t handle, Object* name, bool throwOnErro
     for (int32_t i = 0; i < len; i++)
         narrow.push_back(static_cast<char>(reinterpret_cast<const char16_t*>(chars)[i]));
     auto* result = GetProcAddress(reinterpret_cast<HMODULE>(handle), narrow.c_str());
-    (void)throwOnError;
+    if (!result && throwOnError) {
+        cil2cpp::throw_missing_method();
+    }
     return reinterpret_cast<intptr_t>(result);
 #else
     // TODO: dlsym on Linux
@@ -268,13 +273,20 @@ intptr_t NativeLibrary_GetSymbol(intptr_t handle, Object* name, bool throwOnErro
 
 intptr_t NativeLibrary_LoadFromPath(Object* libraryName, int32_t throwOnError) {
 #ifdef _WIN32
-    if (!libraryName) return 0;
+    if (!libraryName) {
+        if (throwOnError) cil2cpp::throw_dll_not_found(nullptr);
+        return 0;
+    }
     auto* s = reinterpret_cast<String*>(libraryName);
     auto* chars = string_get_raw_data(s);
     auto* handle = LoadLibraryW(reinterpret_cast<const wchar_t*>(chars));
+    if (!handle && throwOnError) cil2cpp::throw_dll_not_found(s);
     return reinterpret_cast<intptr_t>(handle);
 #else
-    if (!libraryName) return 0;
+    if (!libraryName) {
+        if (throwOnError) cil2cpp::throw_dll_not_found(nullptr);
+        return 0;
+    }
     auto* s = reinterpret_cast<String*>(libraryName);
     auto len = string_length(s);
     auto* chars = string_get_raw_data(s);
@@ -282,8 +294,9 @@ intptr_t NativeLibrary_LoadFromPath(Object* libraryName, int32_t throwOnError) {
     narrow.reserve(static_cast<size_t>(len));
     for (int32_t i = 0; i < len; i++)
         narrow.push_back(static_cast<char>(reinterpret_cast<const char16_t*>(chars)[i]));
-    (void)throwOnError;
-    return reinterpret_cast<intptr_t>(dlopen(narrow.c_str(), RTLD_LAZY));
+    auto* handle = dlopen(narrow.c_str(), RTLD_LAZY);
+    if (!handle && throwOnError) cil2cpp::throw_dll_not_found(s);
+    return reinterpret_cast<intptr_t>(handle);
 #endif
 }
 

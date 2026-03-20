@@ -644,15 +644,17 @@ public partial class CppCodeGenerator
                             emittedFieldNames.Add(extraName);
                         }
                     }
-                    var cppType = SanitizeFieldType(field.FieldTypeName, definedTypes);
+                    var fieldDecl = GetFieldDeclaration(field, fromType, definedTypes);
                     var fieldName = field.CppName;
                     if (!emittedFieldNames.Add(fieldName))
                     {
                         // Name collision — C# field hiding. Suffix with declaring type
                         var suffix = "_" + CppNameMapper.MangleTypeName(fromType.Name);
                         fieldName = field.CppName + suffix;
+                        // Re-generate declaration with renamed field
+                        fieldDecl = fieldDecl.Replace(field.CppName, fieldName);
                     }
-                    sb.AppendLine($"    {cppType} {fieldName}; // from {fromType.ILFullName}");
+                    sb.AppendLine($"    {fieldDecl}; // from {fromType.ILFullName}");
                     inheritedFieldNames.Add(field.CppName);
                 }
             }
@@ -661,8 +663,7 @@ public partial class CppCodeGenerator
             foreach (var field in type.Fields)
             {
                 if (inheritedFieldNames.Contains(field.CppName)) continue;
-                var cppType = SanitizeFieldType(field.FieldTypeName, definedTypes);
-                sb.AppendLine($"    {cppType} {field.CppName};");
+                sb.AppendLine($"    {GetFieldDeclaration(field, type, definedTypes)};");
             }
 
             sb.AppendLine("};");
@@ -670,7 +671,30 @@ public partial class CppCodeGenerator
             return;
         }
 
-        if (type.ExplicitSize > 0)
+        if (type.IsExplicitLayout && type.Fields.Count > 0)
+        {
+            // LayoutKind.Explicit: fields have explicit byte offsets, may overlap (unions).
+            // Emit as anonymous union of offset-padded anonymous structs.
+            sb.AppendLine("    union {");
+            foreach (var field in type.Fields)
+            {
+                int offset = field.ExplicitOffset ?? 0;
+                var decl = GetFieldDeclaration(field, type, definedTypes);
+                if (offset > 0)
+                {
+                    sb.AppendLine("        struct {");
+                    sb.AppendLine($"            uint8_t __pad_{field.CppName}[{offset}];");
+                    sb.AppendLine($"            {decl};");
+                    sb.AppendLine("        };");
+                }
+                else
+                {
+                    sb.AppendLine($"        struct {{ {decl}; }};");
+                }
+            }
+            sb.AppendLine("    };");
+        }
+        else if (type.ExplicitSize > 0)
         {
             // Types with explicit ClassSize metadata (ECMA-335 II.10.1.2).
             // Three sub-cases:
@@ -705,8 +729,7 @@ public partial class CppCodeGenerator
                 // Case 3: Regular struct with explicit size — emit fields + tail padding
                 foreach (var field in type.Fields)
                 {
-                    var cppType = SanitizeFieldType(field.FieldTypeName, definedTypes);
-                    sb.AppendLine($"    {cppType} {field.CppName};");
+                    sb.AppendLine($"    {GetFieldDeclaration(field, type, definedTypes)};");
                 }
             }
         }
@@ -715,8 +738,7 @@ public partial class CppCodeGenerator
             // Normal value type: emit fields as-is
             foreach (var field in type.Fields)
             {
-                var cppType = SanitizeFieldType(field.FieldTypeName, definedTypes);
-                sb.AppendLine($"    {cppType} {field.CppName};");
+                sb.AppendLine($"    {GetFieldDeclaration(field, type, definedTypes)};");
             }
         }
 
@@ -1016,6 +1038,29 @@ public partial class CppCodeGenerator
             "intptr_t" or "uintptr_t" => 8, // 64-bit assumption
             _ => 0,
         };
+    }
+
+    /// <summary>
+    /// C.7.3: Emit a struct field declaration, handling ByValTStr/ByValArray marshal attributes.
+    /// </summary>
+    private static string GetFieldDeclaration(IRField field, IRType type, HashSet<string> definedTypes)
+    {
+        if (field.MarshalAs == IR.MarshalAsType.ByValTStr && field.MarshalSizeConst > 0)
+        {
+            // ByValTStr: fixed-size character buffer
+            var charType = (type.StructCharSet == IR.PInvokeCharSet.Unicode
+                || type.StructCharSet == IR.PInvokeCharSet.Auto) ? "char16_t" : "char";
+            return $"{charType} {field.CppName}[{field.MarshalSizeConst}]";
+        }
+        if (field.MarshalAs == IR.MarshalAsType.ByValArray && field.MarshalSizeConst > 0)
+        {
+            // ByValArray: fixed-size array of elements
+            var elemIL = field.MarshalElementTypeName;
+            var elemCpp = elemIL != null ? CppNameMapper.GetCppTypeForDecl(elemIL).TrimEnd('*') : "uint8_t";
+            return $"{elemCpp} {field.CppName}[{field.MarshalSizeConst}]";
+        }
+        var cppType = SanitizeFieldType(field.FieldTypeName, definedTypes);
+        return $"{cppType} {field.CppName}";
     }
 
     // GetRuntimeProvidedTypeAliases() → moved to RuntimeTypeRegistry.GetTypeAliases()

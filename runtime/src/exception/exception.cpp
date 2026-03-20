@@ -4,6 +4,7 @@
 
 #include <cil2cpp/exception.h>
 #include <cil2cpp/gc.h>
+#include <cil2cpp/string.h>
 #include <cil2cpp/type_info.h>
 
 #include <cstdio>
@@ -598,6 +599,7 @@ EXCEPTION_TYPEINFO(IOException,                    "System.IO", "System.IO.IOExc
 EXCEPTION_TYPEINFO(FileNotFoundException,          "System.IO", "System.IO.FileNotFoundException",          IOException)
 EXCEPTION_TYPEINFO(DirectoryNotFoundException,     "System.IO", "System.IO.DirectoryNotFoundException",     IOException)
 EXCEPTION_TYPEINFO(MissingMethodException,         "System", "System.MissingMethodException",               Exception)
+EXCEPTION_TYPEINFO(DllNotFoundException,           "System", "System.DllNotFoundException",                 Exception)
 
 #undef EXCEPTION_TYPEINFO
 
@@ -623,6 +625,19 @@ EXCEPTION_TYPEINFO(MissingMethodException,         "System", "System.MissingMeth
 [[noreturn]] void throw_missing_method() {
     Exception* ex = create_exception(&MissingMethodException_TypeInfo,
                                       "No parameterless constructor defined for type.");
+    throw_exception(ex);
+}
+
+[[noreturn]] void throw_dll_not_found(String* libraryName) {
+    char buf[512];
+    if (libraryName) {
+        auto* utf8 = string_to_utf8(libraryName);
+        snprintf(buf, sizeof(buf), "Unable to load DLL '%s'.", utf8);
+        std::free(utf8);
+    } else {
+        snprintf(buf, sizeof(buf), "Unable to load DLL.");
+    }
+    Exception* ex = create_exception(&DllNotFoundException_TypeInfo, buf);
     throw_exception(ex);
 }
 

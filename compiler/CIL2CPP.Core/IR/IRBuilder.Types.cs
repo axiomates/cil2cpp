@@ -108,14 +108,38 @@ public partial class IRBuilder
                 DeclaringType = irType,
             };
 
+            // LayoutKind.Explicit: read per-field byte offset from Cecil
+            if (!fieldDef.IsStatic && typeDef.GetCecilType().IsExplicitLayout)
+            {
+                var cf = fieldDef.GetCecilField();
+                irField.ExplicitOffset = cf.Offset;
+            }
+
             if (_typeCache.TryGetValue(fieldDef.TypeName, out var fieldType))
             {
                 irField.FieldType = fieldType;
             }
 
             irField.ConstantValue = fieldDef.ConstantValue;
-            irField.Attributes = (uint)fieldDef.GetCecilField().Attributes;
+            var cecilField = fieldDef.GetCecilField();
+            irField.Attributes = (uint)cecilField.Attributes;
 
+            // C.7.3: Parse field-level [MarshalAs] for P/Invoke struct marshaling
+            if (cecilField.HasMarshalInfo && cecilField.MarshalInfo != null)
+            {
+                irField.MarshalAs = (MarshalAsType)(int)cecilField.MarshalInfo.NativeType;
+                if (cecilField.MarshalInfo is Mono.Cecil.FixedSysStringMarshalInfo fixedStrInfo)
+                {
+                    // ByValTStr: [MarshalAs(UnmanagedType.ByValTStr, SizeConst=N)]
+                    irField.MarshalSizeConst = fixedStrInfo.Size;
+                }
+                else if (cecilField.MarshalInfo is Mono.Cecil.FixedArrayMarshalInfo fixedArrayInfo)
+                {
+                    // ByValArray: [MarshalAs(UnmanagedType.ByValArray, SizeConst=N)]
+                    irField.MarshalSizeConst = fixedArrayInfo.Size;
+                    irField.MarshalElementTypeName = MapNativeTypeToIL(fixedArrayInfo.ElementType);
+                }
+            }
 
             targetList.Add(irField);
         }
@@ -125,6 +149,18 @@ public partial class IRBuilder
         // where ClassSize > sum of declared fields (e.g., fixed byte[12] has one
         // FixedElementField:byte but ClassSize=12).
         var cecilType = typeDef.GetCecilType();
+
+        // C.7.3: Parse StructCharSet from TypeAttributes.StringFormatMask
+        var typeAttrs = cecilType.Attributes;
+        if ((typeAttrs & Mono.Cecil.TypeAttributes.UnicodeClass) != 0)
+            irType.StructCharSet = PInvokeCharSet.Unicode;
+        else if ((typeAttrs & Mono.Cecil.TypeAttributes.AutoClass) != 0)
+            irType.StructCharSet = PInvokeCharSet.Auto;
+
+        // LayoutKind.Explicit: fields have explicit byte offsets, may overlap (unions)
+        if (cecilType.IsExplicitLayout)
+            irType.IsExplicitLayout = true;
+
         if (irType.IsValueType && cecilType.HasLayoutInfo && cecilType.ClassSize > 0)
         {
             irType.ExplicitSize = cecilType.ClassSize;
@@ -153,14 +189,32 @@ public partial class IRBuilder
         }
 
         // Add own fields
-        foreach (var field in irType.Fields)
+        if (irType.IsExplicitLayout)
         {
-            int fieldSize = GetFieldSize(field.FieldTypeName);
-            int alignment = GetFieldAlignment(field.FieldTypeName);
+            // LayoutKind.Explicit: fields have explicit byte offsets from [FieldOffset(N)]
+            // Size = max(field.Offset + fieldSize) across all fields
+            int baseOffset = size; // object header for reference types
+            foreach (var field in irType.Fields)
+            {
+                int fieldSize = GetMarshaledFieldSize(field, irType);
+                int fieldOffset = baseOffset + (field.ExplicitOffset ?? 0);
+                field.Offset = fieldOffset;
+                int end = fieldOffset + fieldSize;
+                if (end > size) size = end;
+            }
+        }
+        else
+        {
+            // LayoutKind.Sequential: auto-computed offsets
+            foreach (var field in irType.Fields)
+            {
+                int fieldSize = GetMarshaledFieldSize(field, irType);
+                int alignment = GetMarshaledFieldAlignment(field, irType);
 
-            size = Align(size, alignment);
-            field.Offset = size;
-            size += fieldSize;
+                size = Align(size, alignment);
+                field.Offset = size;
+                size += fieldSize;
+            }
         }
 
         // For types with explicit size (fixed-size buffers / InlineArray),
@@ -189,6 +243,43 @@ public partial class IRBuilder
             size = Align(size, PointerAlignment);
         }
         irType.InstanceSize = size;
+    }
+
+    /// <summary>
+    /// Get the size of a field, accounting for [MarshalAs] overrides (ByValTStr, ByValArray).
+    /// </summary>
+    private int GetMarshaledFieldSize(IRField field, IRType irType)
+    {
+        if (field.MarshalAs == MarshalAsType.ByValTStr && field.MarshalSizeConst > 0)
+        {
+            int charSize = (irType.StructCharSet == PInvokeCharSet.Unicode
+                || irType.StructCharSet == PInvokeCharSet.Auto) ? 2 : 1;
+            return field.MarshalSizeConst * charSize;
+        }
+        if (field.MarshalAs == MarshalAsType.ByValArray && field.MarshalSizeConst > 0)
+        {
+            var elemTypeName = field.MarshalElementTypeName ?? "System.Byte";
+            return field.MarshalSizeConst * GetFieldSize(elemTypeName);
+        }
+        return GetFieldSize(field.FieldTypeName);
+    }
+
+    /// <summary>
+    /// Get the alignment of a field, accounting for [MarshalAs] overrides.
+    /// </summary>
+    private int GetMarshaledFieldAlignment(IRField field, IRType irType)
+    {
+        if (field.MarshalAs == MarshalAsType.ByValTStr && field.MarshalSizeConst > 0)
+        {
+            return (irType.StructCharSet == PInvokeCharSet.Unicode
+                || irType.StructCharSet == PInvokeCharSet.Auto) ? 2 : 1;
+        }
+        if (field.MarshalAs == MarshalAsType.ByValArray && field.MarshalSizeConst > 0)
+        {
+            var elemTypeName = field.MarshalElementTypeName ?? "System.Byte";
+            return Math.Min(GetFieldSize(elemTypeName), 8);
+        }
+        return GetFieldAlignment(field.FieldTypeName);
     }
 
     // Field sizes per ECMA-335 §I.8.2.1 (Built-in Value Types)
@@ -246,6 +337,25 @@ public partial class IRBuilder
         }
         return Math.Min(GetFieldSize(typeName), 8);
     }
+
+    /// <summary>
+    /// Map Cecil NativeType enum to IL type name for ByValArray element type.
+    /// </summary>
+    private static string? MapNativeTypeToIL(Mono.Cecil.NativeType nativeType) => nativeType switch
+    {
+        Mono.Cecil.NativeType.Boolean => "System.Boolean",
+        Mono.Cecil.NativeType.I1 => "System.SByte",
+        Mono.Cecil.NativeType.U1 => "System.Byte",
+        Mono.Cecil.NativeType.I2 => "System.Int16",
+        Mono.Cecil.NativeType.U2 => "System.UInt16",
+        Mono.Cecil.NativeType.I4 => "System.Int32",
+        Mono.Cecil.NativeType.U4 => "System.UInt32",
+        Mono.Cecil.NativeType.I8 => "System.Int64",
+        Mono.Cecil.NativeType.U8 => "System.UInt64",
+        Mono.Cecil.NativeType.R4 => "System.Single",
+        Mono.Cecil.NativeType.R8 => "System.Double",
+        _ => null,
+    };
 
     /// <summary>
     /// Scan all method signatures for types not in the IR module.

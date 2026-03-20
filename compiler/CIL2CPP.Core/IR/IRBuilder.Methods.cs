@@ -204,7 +204,12 @@ public partial class IRBuilder
                 {
                     irParam.MarshalAs = (MarshalAsType)(int)cecilParam.MarshalInfo.NativeType;
                     if (cecilParam.MarshalInfo is Mono.Cecil.ArrayMarshalInfo arrayInfo)
+                    {
                         irParam.MarshalAsSizeParamIndex = arrayInfo.SizeParameterIndex;
+                        // C.7.3: Extract array element type from IL type name
+                        if (irParam.ILTypeName.EndsWith("[]"))
+                            irParam.MarshalArrayElementILType = irParam.ILTypeName[..^2];
+                    }
                 }
 
                 // [Out] + [In] → InOut; [Out] only → Out; default → In
