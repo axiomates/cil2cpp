@@ -1,6 +1,6 @@
 # 开发路线图
 
-> 最后更新：2026-03-19
+> 最后更新：2026-03-21
 >
 > [English Version](roadmap.md)
 
@@ -32,12 +32,12 @@ CIL2CPP 能声称"可编译 .NET NativeAOT 项目"之前必须完成：
 | 完整 HTTP GET | C.6 ✅ | `HttpClient.GetStringAsync("http://...")` 异步请求/响应链 — **已完成** |
 | NativeAOT 元数据 | D | `[DynamicallyAccessedMembers]`、ILLink feature switch、NuGet 包验证 |
 | JSON 序列化 (SG) | D.5 ✅ | System.Text.Json source generator + Newtonsoft.Json 13.0.3 (NuGet) — **两者均已端到端验证** |
-| MarshalAs P/Invoke | C.7 | `[MarshalAs]`、`[Out]`/`[In]`、数组编组 — NuGet 生态需要 |
+| MarshalAs P/Invoke | C.7 ✅ | `[MarshalAs]` ✅、`[Out]`/`[In]` ✅、数组编组（ByValTStr/ByValArray/LPArray ✅、[Out]数组待做）— PInvokeTest 8 项全部通过 |
 | SChannel TLS (Windows) | E.win ✅ | 通过 `secur32.dll`/`schannel.dll` P/Invoke 实现 HTTPS — **已完成**（HttpsGetTest 通过） |
 | 压缩 | E.2 | 通过 System.IO.Compression.Native 的 zlib |
 | RenderedBodyError → 0 | H.2 | 修复剩余 codegen bug（HelloWorld 基线 17 个 RE stubs，不影响 NuGet） |
 | SIMD 标量完善 | F.1 | 消除剩余 SIMD stubs（完整标量回退路径） |
-| 10 个 NuGet 包验证 | G.2 | 证明真实包可编译和运行（2/10：Newtonsoft.Json ✅、DI+Logging+Console ✅） |
+| 10 个 NuGet 包验证 | G.2 | 证明真实包可编译和运行（10/10 冒烟测试通过，但覆盖极浅 — 见成熟度评估） |
 
 #### 待定（必须实现完成后）
 
@@ -157,7 +157,7 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 **不可修复或暂缓**：SIMD 死代码分支由 FeatureSwitchResolver 处理（IsSupported=false 死分支消除）。CLR 内部类型（~96）永久保留。
 
 **IL 转译率**：~95%+。历程：Phase A: 2,777 → 1,478; Phase B: 1,478 → 1,537; Phase C: → 1,666; Phase X + 需求驱动泛型: → 1,280（方法总数也从 ~31k 降至 ~26k，得益于特化方法可达性分析）。
-**测试**：1,291 C# + 576 C++ + 93 集成（15 个测试项目）— 全部通过。
+**测试**：1,291 C# + 576 C++ + 123 集成（20 个测试项目）— 全部通过。
 
 ### 已实现的架构能力
 
@@ -166,37 +166,97 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 - **P/Invoke 完整**：声明生成 + 调用约定 + CharSet 编组，kernel32/user32 等 OS API 可直接调用
 - **100% IL 操作码覆盖**：所有 ~230 ECMA-335 操作码已实现
 
-### 距离最终目标（Windows x64）
+### 成熟度评估
 
-| 项目类型 | 预估完成度 | 关键阻塞项 |
-|---------|-----------|-----------|
-| 简单控制台应用 | ~95% | 反射 stub 可能导致运行时意外 |
-| 类库项目 | ~85% | NuGet PackageReference 已完整验证（Newtonsoft.Json）；DAM 解析完成 |
-| 文件 I/O 应用 | ~95% | FileStream/StreamReader/File.* 全部从 BCL IL 编译并通过（SystemIOTest + FileStreamTest） |
-| 网络应用 (HTTP) | ~90% | HTTP GET ✅、HTTPS GET ✅（Windows）。复杂场景（重定向、认证）尚未验证 |
-| 网络应用 (HTTPS) | ~85% | SChannel TLS 基本 HTTPS GET 已通过；边界情况待验证 |
-| JSON 序列化 | ~85% | System.Text.Json SG ✅ + Newtonsoft.Json 13.0.3 ✅ — 均已端到端验证 |
-| REST 客户端 (HTTP+JSON) | ~80% | HTTP + JSON 均已端到端通过；需更多验证 |
-| NuGet 包（简单） | ~75% | Newtonsoft.Json ✅ + DI+Logging+Console ✅（单项目 3 个 NuGet 包）。M4 已达成。 |
-| 生产级应用 | ~40% | DI + 日志生态已工作（DITest）。配置 + 压缩待完成 |
-| 任意 NativeAOT .csproj | **~55%** | 大型程序集规模已验证（3.1M 行，103s codegen），DI 生态已通过，stubs 仍存在，`[MarshalAs]` 部分完成 |
+#### 为什么"功能清单完成度"会高估真实成熟度
+
+CIL2CPP 的 "IL 优先" 架构在**广度**上极其高效：修复一个编译器 bug 就能解锁成千上万个 BCL 方法（因为它们全部从 IL 编译）。这给人快速进步的错觉——功能很快"亮灯"。但是：
+
+- **每个功能仅经过冒烟测试**（30-100 行的测试程序）
+- **每引入一个新 NuGet 包都需要修复编译器问题** — 编译器还不够健壮，无法处理任意 .NET 代码
+- **没有任何真实的大型复杂 .NET NativeAOT 项目被编译通过** — 全部 20 个测试项目都是玩具级别的示例
+- **零编译器优化** — 没有内联、没有去虚拟化、没有逃逸分析
+
+对比参考：一个真正成熟的 C 编译器（如 chibicc）起码要编译通过 Linux 内核才能证明自己的健壮性。CIL2CPP 尚无类似的真实世界验证。
+
+#### 代码规模对比
+
+| 项目 | 代码行数 | 说明 |
+|------|---------|------|
+| **CIL2CPP** | **~50K** | 编译器 ~30K + 运行时 ~12K + 测试/工具 ~8K |
+| Unity IL2CPP（估计） | ~300K-700K | 闭源，含编译器 + libil2cpp + 多平台支持 + 优化器 |
+| .NET NativeAOT | 数百万行 | Microsoft 数百名工程师 10+ 年开发 |
+| 最小可用级 AOT 编译器（估计） | ~200K-300K | 含优化、跨平台、完善测试 |
+
+CIL2CPP 的 50K 行约为最小可用级的 **17-25%**，约为 IL2CPP 的 **7-17%**。
+
+#### 剩余工作量分布
+
+| 领域 | 当前行数 | 估计需要 | 倍数 | 说明 |
+|------|---------|---------|------|------|
+| **编译器核心**（IR/CodeGen） | ~22K | ~80-120K | 4-5x | 优化器、高级 IL 模式、健壮性 |
+| **运行时**（C++） | ~12K | ~30-50K | 3-4x | 压缩、加密、高级线程、反射、调试 |
+| **测试** | ~12K | ~50-80K | 4-7x | 按库详尽测试、压力测试、模糊测试 |
+| **平台支持** | 0 (Linux/macOS) | ~20-40K | ∞ | System.Native、OpenSSL、POSIX 层、ARM |
+| **工具/开发者体验** | ~3K | ~15-25K | 5-8x | 错误信息、诊断、增量编译、IDE 集成 |
+| **合计** | **~50K** | **~200-300K** | **4-6x** | 生产级 Windows+Linux 工具 |
+
+#### 多维度成熟度评估
+
+| 维度 | 评估 | 说明 |
+|------|------|------|
+| **功能广度**（什么能编译） | ~60-70% | 很多 BCL 领域在冒烟测试级别可用 |
+| **功能深度**（什么能可靠工作） | ~15-25% | 大多数功能只用单个简单示例测试过 |
+| **生产就绪度**（真实应用） | ~10-15% | 没有复杂项目编译通过，每个包都需要修复 |
+| **编译器优化** | ~10% | 零优化 pass vs NativeAOT 12+ 种优化 |
+| **平台覆盖** | ~25% | 仅 Windows x64 |
+| **综合成熟度** | **~20-30%** | 加权平均 |
+
+> **关键区别**：功能清单上的"XX% 完成"衡量的是"冒烟测试通过"，不是"生产环境可靠"。一个功能在 30 行测试中工作，不代表它在真实应用的边界情况下也能工作。
+
+#### 冒烟测试覆盖度（Windows x64）
+
+> ⚠️ 以下百分比仅代表"在最小冒烟测试中通过"的覆盖度，不代表生产可靠性。
+> 每个测试项目通常只有 30-100 行代码，只测试了对应库 API 的极小子集。
+
+| 项目类型 | 冒烟测试覆盖 | 验证深度 | 关键说明 |
+|---------|------------|---------|---------|
+| 简单控制台应用 | ~95% | 低 | 仅 HelloWorld/FeatureTest 验证 |
+| 文件 I/O 应用 | ~95% | 低 | 基本 FileStream/StreamReader 通过；复杂场景未验证 |
+| 网络应用 (HTTP/HTTPS) | ~85% | 低 | 单次 GET 请求通过；重定向/认证/流式传输未验证 |
+| JSON 序列化 | ~85% | 低 | 简单对象序列化通过；嵌套/多态/自定义转换器未验证 |
+| NuGet 包 | ~70% | 极低 | 9 个包的最小示例通过；各库仅调用 2-5 个 API |
+| 生产级应用 | ~15% | 无 | 无任何真实应用编译通过 |
+| 任意 NativeAOT .csproj | **~20-30%** | 无 | 综合考虑广度和深度 |
 
 > **Linux/macOS**：待定。以上百分比仅限 Windows。Linux 需要 System.Native 集成 (Phase B.5, 待定) + OpenSSL (Phase E.linux, 待定)。当前 Linux 支持：~5%（仅控制台，无文件 I/O 或网络）。
 
-**什么能提升百分比**（累积，Windows）：
-- **50%→60%**：✅ Codegen 性能优化（361s→103s，-72%）+ 更多 NuGet 包（目标：10）
-- **60%→75%**：NuGet 包验证循环（Serilog、Polly 等）+ stub 消减 + 压缩 (zlib) + MarshalAs 完善
-- **75%→85%**：复杂 HTTP 场景 + 配置生态 + 更完善的反射支持
-- **85%→95%**：10 个 NuGet 包验证 + 综合测试 + 边界用例打磨
+#### 已验证的 NuGet 包（2026-03-21）
 
-**实现缺口**（2026-03-18 审计）：
-- `[DynamicallyAccessedMembers]` — **已完成并验证**：13 种 DamFlag，字段/方法/参数扫描，CLI `--rdxml` 已接入，7 个 DAM 可达性测试 + 14 个 rd.xml 解析器测试
-- ILLink feature switches — **已上线**：FeatureSwitchResolver 编译期替换 10+ AOT 默认开关。SIMD IsSupported=false 死分支消除通过 brfalse 模式检测 + 4 层 SIMD 死代码消除。
-- `[MarshalAs]` 属性 — **C.7.1 ✅ + C.7.2 ✅**：Cecil 解析 + 21 种类型映射 + [Out]/[In] 参数方向完整支持。PInvokeTest 集成测试验证（GetSystemInfo [Out] struct、QueryPerformanceCounter [Out] int64、GetDiskFreeSpaceExW 多 [Out] + SetLastError）。C.7.3：基础 LPArray 已工作，ByValTStr/SizeParamIndex 推迟到 System.Native。
-- NuGet PackageReference — **✅ 完整验证**（Phase 14+15）：NuGetSimpleTest（Newtonsoft.Json 13.0.3）+ DITest（DI+Logging+Console，3 个 NuGet 包）均端到端编译并运行。OOM 问题通过按需泛型发现 + 特化方法可达性分析解决。
-- DI 生态 — **✅ 已验证**（Phase 15）：DITest 使用 Microsoft.Extensions.DependencyInjection — 构造函数注入、singleton/transient 生命周期、反射式服务解析。M4 里程碑达成。
-- Source generator 输出 — **✅ 完整验证**（D.5）：JsonSGTest 使用 `[JsonSerializable]` 通过 CIL2CPP 端到端编译并运行。
-- Codegen 性能 — **✅ 已优化**（2026-03-19）：NuGetSimpleTest 361s→103s（-72%）。四项优化：CppNameMapper 缓存、增量 CreateGenericSpecializations、Parallel.For 方法生成、O(n^2) BuildTypeInfoExprLookup 消除。发现并修复两个正确性 bug（定点终止 + 重复 pending key）。
+| # | 包名 | 版本 | 测试行数 | 测试内容 |
+|---|------|------|---------|---------|
+| 1 | Newtonsoft.Json | 13.0.3 | 35 行 | 简单对象序列化/反序列化 |
+| 2 | Microsoft.Extensions.DependencyInjection | 9.0.x | 88 行 | AddSingleton/AddTransient，构造函数注入 |
+| 3 | Microsoft.Extensions.Logging | 9.0.x | (同上) | ILogger 基本日志 |
+| 4 | Microsoft.Extensions.Logging.Console | 9.0.x | (同上) | Console sink |
+| 5 | Humanizer | 2.14.1 | 31 行 | Humanize/Dehumanize、数字转英文 |
+| 6 | Polly | 8.5.2 | 33 行 | 空管道、基本 Execute |
+| 7 | Serilog | 4.2.0 | 44 行 | 模板解析、日志级别 |
+| 8 | Serilog.Sinks.Console | 7.0.x | (同上) | Console 输出 |
+| 9 | Microsoft.Extensions.Configuration | 9.0.x | 44 行 | AddInMemoryCollection、GetValue |
+| 10 | Microsoft.Extensions.Configuration.Binder | 9.0.x | (同上) | 配置绑定 |
+
+> **注意**：每个包仅用最小示例验证，覆盖了各库 API 的极小子集（<5%）。每引入一个新包都需要修复编译器 bug。这不等同于"该库可在生产中使用"。
+
+#### 实现缺口（2026-03-21 审计）
+
+- `[DynamicallyAccessedMembers]` — **已完成并验证**：13 种 DamFlag，字段/方法/参数扫描，CLI `--rdxml` 已接入
+- ILLink feature switches — **已上线**：FeatureSwitchResolver 编译期替换 10+ AOT 默认开关
+- `[MarshalAs]` 属性 — **C.7.1 ✅ + C.7.2 ✅**：Cecil 解析 + 21 种类型映射 + [Out]/[In] 支持。C.7.3 数组编组进行中
+- NuGet PackageReference — 10 个包冒烟测试通过，但覆盖极浅
+- Codegen 性能 — NuGetSimpleTest 196s→89s（2026-03-21 两次优化后）。仍有优化空间
+- **编译器优化** — ❌ 零优化 pass（无内联、去虚拟化、逃逸分析）。生成的 C++ 是朴素 IL 翻译
+- **真实项目验证** — ❌ 无任何超过 100 行的真实应用编译通过
 
 ---
 
@@ -413,7 +473,7 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 
 | # | 任务 | 预估 | 状态 | 说明 |
 |---|------|------|------|------|
-| D.0 | NuGet 包集成测试 | 中 | ✅ 已完成 | NuGetSimpleTest（Phase 14）：Newtonsoft.Json 13.0.3（3.1M 行，优化后 103s）。DITest（Phase 15）：DI+Logging+Console（3 个 NuGet 包，构造函数注入，singleton/transient）。JsonSGTest（Phase 13）：System.Text.Json SG。93/93 集成测试。 |
+| D.0 | NuGet 包集成测试 | 中 | ✅ 已完成 | 10 个 NuGet 包冒烟测试通过（Newtonsoft.Json、DI+Logging+Console、Humanizer、Polly、Serilog+Console、Configuration+Binder）。每个包使用 30-88 行最小示例验证，覆盖极浅。123/123 集成测试。 |
 | D.1 | `[DynamicallyAccessedMembers]` 解析 | 中 | ✅ 已完成并验证 | ReachabilityAnalyzer.cs — 完整 13 种 DamFlag 解析 + SeedDynamicallyAccessedMembers()。包含泛型方法/类型参数上的 DAM 支持（DI 关键：`AddSingleton<TService, [DAM] TImpl>()` 保留 TImpl 构造函数）。CLI `--rdxml`。7 个 DAM 测试 + 14 个 rd.xml 测试。 |
 | D.2 | rd.xml 解析器 | 低 | ✅ 已完成并验证 | RdXmlParser.cs — 完整 XML 解析 + PreservationRule 映射。CLI `--rdxml` 选项已在 Program.cs 中接入。 |
 | D.3 | ILLink feature switch 替换 | 中 | ✅ 已上线 | FeatureSwitchResolver.cs（10 个 AOT 默认开关）+ IRBuilder.Methods.cs:1372-1386（Ldsfld 编译期替换）。所有构建自动生效。 |
@@ -433,7 +493,7 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 |---|------|------|------|------|
 | C.7.1 | `[MarshalAs]` 属性解析 | 中 | ✅ 完成 | Cecil MarshalInfo 解析（IRBuilder.Methods.cs:123-143），21 种 MarshalAsType 枚举（PInvokeEnums.cs），完整类型映射 GetPInvokeNativeType()（Source.cs:3024-3094）。LPStr/LPWStr/Bool/整数类型均可用。 |
 | C.7.2 | `[Out]`/`[In]` 参数方向 | 低 | ✅ 完成 | IR 层完整解析 PInvokeDirection（In/Out/InOut）。bool* copy-back 已实现（bool=1B, BOOL=4B 不可 reinterpret_cast）。blittable 指针类型 native 直接写入无需 copy-back（IL2CPP 架构：managed 即 C++ 类型，无 managed/native 内存边界）。PInvokeTest 集成测试验证：GetSystemInfo [Out] struct、QueryPerformanceCounter [Out] int64、GetDiskFreeSpaceExW 多 [Out] + SetLastError。 |
-| C.7.3 | 数组编组 | 中 | 进行中 | SizeParamIndex 已解析（IRMethod.cs:136），codegen 待完善。struct 固定大小数组 + `[MarshalAs(UnmanagedType.LPArray)]` 运行时编组待做。 |
+| C.7.3 | 数组编组 | 中 | ✅ 大部分完成 | ByValTStr ✅（Header.cs 内联 char16_t 数组）、ByValArray ✅（Header.cs 内联固定大小数组）、LPArray ✅（Source.cs 管理数组→原生指针，PInvokeTest Test 6 验证）、ExplicitLayout ✅（PInvokeTest Test 8 验证）。SizeParamIndex 已解析（IRBuilder.Methods.cs:208）但 codegen 未使用（IL2CPP 架构下管理内存即原生内存，基本场景无需大小验证）。剩余：[Out] 数组方向预分配（System.Native 需要时实现）。 |
 
 **前置**：Phase C ✅
 **产出**：P/Invoke 兼容 System.Native 声明和 NuGet 原生互操作包
@@ -476,20 +536,22 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 
 ### Phase G: 产品化
 
-**目标**：可发布的工具
+**目标**：从冒烟测试级别提升到真实项目可用
 
-| # | 任务 | 预估 |
-|---|------|------|
-| G.1 | CI/CD (GitHub Actions: Win + Linux) | 中 |
-| G.2 | 10+ 真实 NuGet 包编译验证 | 高 |
-| G.3 | 自包含部署模式 + RID 检测 | 中 |
-| G.4 | 文档完善 | 中 |
+| # | 任务 | 预估 | 状态 | 说明 |
+|---|------|------|------|------|
+| G.1 | CI/CD (GitHub Actions: Win + Linux) | 中 | 未开始 | |
+| G.2 | 10 NuGet 包冒烟测试 | 高 | ✅ 完成 | 10 个包通过最小示例测试（见成熟度评估中的详细列表）。注意：每个包只验证了极小 API 子集（<5%） |
+| G.3 | 自包含部署模式 + RID 检测 | 中 | 未开始 | |
+| G.4 | 文档完善 | 中 | 未开始 | |
+| G.5 | 50+ NuGet 包无需手动修复编译通过 | 极高 | 未开始 | 真正的编译器健壮性验证 — 当前每个新包都需要修复编译器 bug |
+| G.6 | 真实应用验证 | 极高 | 未开始 | 编译 3+ 个超过 1000 行的真实 .NET NativeAOT 项目（如 CLI 工具、Web API） |
 
 ---
 
 ## 依赖关系图
 
-### 必须实现（Windows x64）
+### 当前阶段 → M5（生态广度）
 
 ```
 Phase 1-4 ✅  →  Phase A ✅  →  Phase B ✅ (Windows)
@@ -497,27 +559,43 @@ Phase 1-4 ✅  →  Phase A ✅  →  Phase B ✅ (Windows)
    ┌── Phase C.6 ✅ (完整 HTTP GET) ────────────┐
    │   Phase E.win ✅ (SChannel TLS)             │ ← 并行
    │      ↓                                     │
-   │   Phase C.7.2/C.7.3 ([Out]/[In] + 数组)   Phase D ✅ (NativeAOT 元数据 + NuGet)
-   │      ↓                                     │    D.4 AOT 警告（低优先级）
+   │   Phase C.7.2 ✅ ([Out]/[In])              Phase D ✅ (NativeAOT 元数据 + NuGet)
+   │   Phase C.7.3 (数组编组)                   │
+   │      ↓                                     │
    │   Phase E.2 (zlib 压缩)                    │
    │      ↓                                     │
    └──────┴─────── 汇合 ───────────────────────┘
                         ↓
               Phase H.2 (RenderedBodyError → 0) — 持续进行
               Phase F.1 ✅ (SIMD: 4 层消除完成)
+              Phase G.2 ✅ (10 NuGet 包冒烟测试)
                         ↓
-              Phase G.2 (10 NuGet 包 — 主要推动力)
-                        ↓
-              Phase G (产品化: CI/CD + 部署)
+                   ═══ M5 完成 ═══
 ```
 
-### 待定（必须实现完成后）
+### M5 之后 → M6-M9（深度、优化、跨平台、生产级）
 
 ```
-Phase B.5  (System.Native — Linux/macOS I/O + 网络)
-Phase E.linux (OpenSSL TLS — Linux HTTPS)
-Phase F.2  (Task struct 重构 — 内部质量)
+M5 ✅ (生态广度)
+  ↓
+Phase G.5  (50+ NuGet 包无需手动修复) ─── M6 (生态深度)
+Phase G.6  (真实应用验证: 3+ 项目)   ──┘
+  ↓
+Phase F.5  (内联、去虚拟化)        ─── M7 (编译器优化)
+Phase F.6  (逃逸分析)              ──┘
+  ↓
+Phase B.5  (System.Native — Linux I/O + 网络) ─── M8 (跨平台)
+Phase E.linux (OpenSSL TLS — Linux HTTPS)     ──┘
+  ↓
+Phase G.1  (CI/CD)                          ─── M9 (生产候选)
+Phase G.4  (文档)                           ──┘
 Phase F.3  (增量编译 — 性能)
+```
+
+### 远期
+
+```
+Phase F.2  (Task struct 重构 — 内部质量)
 Phase F.4  (完整反射模型 — QCall 替代)
 32 位目标 (ARM/x86 指针大小)
 macOS 支持 (Objective-C 桥接)
@@ -527,6 +605,9 @@ macOS 支持 (Objective-C 桥接)
 
 ## 里程碑
 
+> **重要说明**：M1-M4 的达成标准是"功能在冒烟测试中通过"，不代表生产环境可靠性。
+> 见上方"成熟度评估"章节了解真实成熟度。
+
 | 里程碑 | 达成条件 | 对应阶段 | 状态 |
 |--------|---------|---------|------|
 | **M1: 编译器成熟** | stubs < 2,000，翻译率 > 92% | A | ✅（1,280 stubs, ~95%+） |
@@ -534,8 +615,11 @@ macOS 支持 (Objective-C 桥接)
 | **M3: 联网应用** | HttpClient HTTP GET 从 BCL IL 编译并运行 | C.6 | ✅ HTTP + HTTPS GET 已通过 |
 | **M3.5: REST 客户端** | HTTP GET + JSON 序列化端到端 | C.6+D | ✅ JsonSGTest + NuGetSimpleTest（Newtonsoft.Json） |
 | **M4: 库生态** | 3+ NuGet PackageReference 项目编译并运行 | D+G.2 | ✅ DITest（DI+Logging+Console = 3 个 NuGet 包） |
-| **M5: 生产级** | HTTPS + 压缩 + DI/日志生态 | E+F | 进行中（HTTPS ✅、DI/日志 ✅、SIMD ✅、codegen 性能 ✅、压缩待完成） |
-| **M6: 发布** | CI/CD + 10 真实 NuGet 包验证 | G | 未开始 |
+| **M5: 生态广度** | HTTPS + 压缩 + DI/日志/配置 + 10 NuGet 包冒烟测试 | E+G.2 | 进行中（HTTPS ✅、DI/日志/配置 ✅、SIMD ✅、10 NuGet 包 ✅、压缩待完成） |
+| **M6: 生态深度** | 50+ NuGet 包无需手动修复即可编译 + 3 个真实应用验证 | G | 未开始 |
+| **M7: 编译器优化** | 内联、去虚拟化、基本逃逸分析 | F+ | 未开始 |
+| **M8: 跨平台** | Linux x64 支持（System.Native + OpenSSL） | B.5+E.linux | 未开始 |
+| **M9: 生产候选** | 综合测试 + CI/CD + 文档 + 调试支持 | G+ | 未开始 |
 
 ## 指标定义
 
