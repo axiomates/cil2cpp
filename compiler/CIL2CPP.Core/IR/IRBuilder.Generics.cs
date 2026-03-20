@@ -779,6 +779,7 @@ public partial class IRBuilder
                 IsConstructor = cecilMethod.IsConstructor,
                 IsStaticConstructor = cecilMethod.IsConstructor && cecilMethod.IsStatic,
                 IsGenericInstance = true,
+                DeadCodeCategory = ClassifyMethodDeadCode(cecilMethod),
             };
 
             // Propagate HasICallMapping from base method
@@ -1322,6 +1323,7 @@ public partial class IRBuilder
                     DeclaringType = irType,
                     ReturnTypeCpp = ResolveTypeForDecl(returnTypeName),
                     IsStatic = cecilTargetMethod.IsStatic,
+                    DeadCodeCategory = ClassifyMethodDeadCode(cecilTargetMethod),
                 };
                 foreach (var paramDef in cecilTargetMethod.Parameters)
                 {
@@ -1789,6 +1791,7 @@ public partial class IRBuilder
                 DeclaringType = irType,
                 ReturnTypeCpp = ResolveTypeForDecl(returnTypeName),
                 IsStatic = true,
+                DeadCodeCategory = ClassifyMethodDeadCode(methodDef),
             };
 
             foreach (var paramDef in methodDef.Parameters)
@@ -2295,6 +2298,7 @@ public partial class IRBuilder
                 IsAbstract = methodDef.IsAbstract,
                 IsConstructor = methodDef.IsConstructor,
                 IsStaticConstructor = methodDef.IsConstructor && methodDef.IsStatic,
+                DeadCodeCategory = ClassifyMethodDeadCode(methodDef),
             };
 
             // Propagate explicit interface overrides (.override directive)
@@ -2504,6 +2508,7 @@ public partial class IRBuilder
                 IsAbstract = crossMethodDef.IsAbstract,
                 IsConstructor = crossMethodDef.IsConstructor,
                 IsStaticConstructor = crossMethodDef.IsConstructor && crossMethodDef.IsStatic,
+                DeadCodeCategory = ClassifyMethodDeadCode(crossMethodDef),
             };
 
             foreach (var paramDef in crossMethodDef.Parameters)
@@ -2738,6 +2743,7 @@ public partial class IRBuilder
                     IsAbstract = methodDef.IsAbstract,
                     IsConstructor = methodDef.IsConstructor,
                     IsStaticConstructor = methodDef.IsConstructor && methodDef.IsStatic,
+                    DeadCodeCategory = ClassifyMethodDeadCode(methodDef),
                 };
 
                 // Propagate explicit interface overrides (.override directive)

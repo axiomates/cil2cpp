@@ -45,6 +45,8 @@ public partial class IRBuilder
                     SynthesizeRecordEqualityContract(method, type);
                     break;
             }
+            // Collect type references from synthesized body
+            method.ComputeTypeReferences();
         }
     }
 

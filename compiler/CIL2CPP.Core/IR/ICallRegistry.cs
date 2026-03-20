@@ -682,8 +682,14 @@ public static class ICallRegistry
             "cil2cpp::icall::Marshal_StringToCoTaskMemUni");
 
         // ===== System.Runtime.InteropServices.NativeLibrary =====
-        RegisterICall("System.Runtime.InteropServices.NativeLibrary", "GetSymbol", 2,
+        // BCL internal methods: GetSymbol(IntPtr,string,bool)=3, LoadFromPath(string,bool)=2, FreeLib(IntPtr)=1
+        // LoadByName(string,QCallAssembly,bool,uint32,bool)=5 — NOT ICall-able (QCallAssembly struct param)
+        RegisterICall("System.Runtime.InteropServices.NativeLibrary", "GetSymbol", 3,
             "cil2cpp::icall::NativeLibrary_GetSymbol");
+        RegisterICall("System.Runtime.InteropServices.NativeLibrary", "LoadFromPath", 2,
+            "cil2cpp::icall::NativeLibrary_LoadFromPath");
+        RegisterICall("System.Runtime.InteropServices.NativeLibrary", "FreeLib", 1,
+            "cil2cpp::icall::NativeLibrary_FreeLib");
 
         // ===== System.Threading.ThreadPool (CIL2CPP has its own thread pool) =====
         // BCL ThreadPool methods are [InternalCall] — map to our runtime thread pool.

@@ -101,10 +101,10 @@ public partial class IRBuilder
             IsAbstract = methodDef.IsAbstract,
             IsConstructor = methodDef.IsConstructor,
             IsStaticConstructor = methodDef.IsConstructor && methodDef.IsStatic,
+            DeadCodeCategory = ClassifyMethodDeadCode(cecilMethod),
         };
 
         // Store raw ECMA-335 MethodAttributes
-        irMethod.Attributes = (uint)cecilMethod.Attributes;
         irMethod.Attributes = (uint)cecilMethod.Attributes;
 
         // Detect newslot (C# 'new virtual')
@@ -1063,6 +1063,9 @@ public partial class IRBuilder
                 }
             }
         }
+
+        // Collect type references from compiled instructions (replaces post-render string scanning)
+        irMethod.ComputeTypeReferences();
     }
 
     /// <summary>
@@ -3595,5 +3598,96 @@ public partial class IRBuilder
             BaseTypeCppName: baseTypeCppName,
             NamespaceName: resolved.Namespace
         );
+    }
+
+    /// <summary>
+    /// Classify a method as known dead code based on Cecil metadata (namespace, declaring type, method name).
+    /// This replaces the fragile CppCodeGenerator.ClassifyDeadCode which matched on rendered C++ function names.
+    /// </summary>
+    internal static DeadCodeCategory ClassifyMethodDeadCode(Mono.Cecil.MethodDefinition cecilMethod)
+    {
+        var declType = cecilMethod.DeclaringType;
+        var ns = declType.Namespace ?? "";
+        var typeName = declType.FullName;
+        var methodName = cecilMethod.Name;
+
+        // ── SIMD: hardware intrinsics (X86/Arm/Wasm) + Vector types + Scalar<T> ──
+        if (ns.StartsWith("System.Runtime.Intrinsics"))
+            return DeadCodeCategory.Simd;
+
+        // ── SIMD: System.Numerics.Vector<T> generic container ──
+        if (typeName.StartsWith("System.Numerics.Vector`"))
+            return DeadCodeCategory.Simd;
+
+        // ── SIMD: BCL helper classes behind SIMD guards ──
+        // IndexOfAnyAsciiSearcher has both SIMD-only and scalar fallback methods.
+        // Only SIMD-only inner helpers are classified — scalar-interface methods compile from IL
+        // with SIMD branches eliminated by compile-time constant branch elimination.
+        if (typeName == "System.Buffers.IndexOfAnyAsciiSearcher")
+        {
+            if (methodName.StartsWith("AsciiState") || methodName.StartsWith("ComputeAsciiState")
+                || methodName.StartsWith("IndexOfAnyLookup") // covers IndexOfAnyLookup and IndexOfAnyLookupCore
+                || methodName.StartsWith("TryIndexOfAny"))
+                return DeadCodeCategory.Simd;
+            // Nested interface dispatch stubs on SIMD code path
+            if (methodName.Contains("INegator") || methodName.Contains("IResultMapper"))
+                return DeadCodeCategory.Simd;
+            // IndexOfAnyCore with AsciiState: no internal SIMD guard, dead code.
+            // AnyByteState variants have internal guards and are safe.
+            if (methodName.StartsWith("IndexOfAnyCore"))
+            {
+                // Check if any parameter type contains "AnyByteState" — if so, it's safe
+                bool hasAnyByteState = false;
+                foreach (var p in cecilMethod.Parameters)
+                {
+                    if (p.ParameterType.Name.Contains("AnyByteState"))
+                    {
+                        hasAnyByteState = true;
+                        break;
+                    }
+                }
+                if (!hasAnyByteState)
+                    return DeadCodeCategory.Simd;
+            }
+        }
+
+        // Nested types within IndexOfAnyAsciiSearcher (INegator, IResultMapper implementations)
+        if (declType.DeclaringType != null
+            && declType.DeclaringType.FullName == "System.Buffers.IndexOfAnyAsciiSearcher")
+        {
+            var nestedName = declType.Name;
+            if (nestedName.Contains("INegator") || nestedName.Contains("IResultMapper"))
+                return DeadCodeCategory.Simd;
+        }
+
+        if (typeName == "System.PackedSpanHelpers")
+            return DeadCodeCategory.Simd;
+
+        if (typeName == "System.SpanHelpers"
+            && (methodName.StartsWith("ComputeFirstIndex") || methodName.StartsWith("ComputeLastIndex")))
+            return DeadCodeCategory.Simd;
+
+        if (typeName == "System.Text.Ascii"
+            && (methodName.StartsWith("AllCharsInVectorAreAscii")
+                || methodName.StartsWith("ChangeWidthAndWriteTo")
+                || methodName.StartsWith("SignedLessThan")
+                || methodName.StartsWith("VectorContainsNonAsciiChar")))
+            return DeadCodeCategory.Simd;
+
+        if (typeName == "System.ThrowHelper"
+            && methodName == "ThrowForUnsupportedNumericsVectorBaseType")
+            return DeadCodeCategory.Simd;
+
+        // ── EventSource: diagnostic logging, always behind IsEnabled()=false ──
+        if (typeName == "System.Diagnostics.Tracing.NativeRuntimeEventSource"
+            || typeName == "System.Net.NetEventSource"
+            || typeName == "System.Net.Sockets.NetEventSource")
+            return DeadCodeCategory.EventSource;
+
+        // ── AOT-incompatible: no runtime assembly loading ──
+        if (typeName == "System.Runtime.Loader.AssemblyLoadContext")
+            return DeadCodeCategory.AotIncompatible;
+
+        return DeadCodeCategory.None;
     }
 }

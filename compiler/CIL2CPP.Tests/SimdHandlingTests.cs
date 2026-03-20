@@ -146,7 +146,7 @@ public class SimdHandlingTests
         // are in feature-switch-guarded dead branches (IsSupported=false on AOT).
         // They're exempted by IsSimdDeadCodeFunction and rendered with default-value
         // replacement at emit time — not blocked by CallsUndeclaredFunction.
-        var module = CreateModuleWithSimdCall(functionName);
+        var module = CreateModuleWithSimdCall(functionName, addSimdMethod: true);
         var gen = new CppCodeGenerator(module);
         var output = gen.Generate();
 
@@ -156,9 +156,35 @@ public class SimdHandlingTests
         Assert.Contains("TestClass_Test()", source!.Content);
     }
 
-    private static IRModule CreateModuleWithSimdCall(string functionName)
+    private static IRModule CreateModuleWithSimdCall(string functionName, bool addSimdMethod = false)
     {
         var module = new IRModule { Name = "TestApp" };
+
+        // Optionally add SIMD type + method so that DeadCodeCategory is registered in the lookup.
+        // In real codegen, these methods exist as IRMethod objects with DeadCodeCategory.Simd.
+        if (addSimdMethod)
+        {
+            var simdType = new IRType
+            {
+                ILFullName = "SimdType",
+                CppName = "SimdType",
+                Name = "SimdType",
+                Namespace = "",
+                IsValueType = false,
+            };
+            var simdMethod = new IRMethod
+            {
+                Name = functionName,
+                CppName = functionName,
+                DeclaringType = simdType,
+                IsStatic = true,
+                ReturnTypeCpp = "int32_t",
+                DeadCodeCategory = DeadCodeCategory.Simd,
+            };
+            simdType.Methods.Add(simdMethod);
+            module.Types.Add(simdType);
+        }
+
         var type = new IRType
         {
             ILFullName = "TestClass",

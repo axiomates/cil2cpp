@@ -139,7 +139,12 @@ void* StackFrame_GetMethod(void* __this);
 inline void* AssemblyLoadContext_OnTypeResolve(void*) { return nullptr; }
 
 // System.Runtime.InteropServices.NativeLibrary
-intptr_t NativeLibrary_GetSymbol(intptr_t handle, Object* name);
+// BCL internal: GetSymbol(IntPtr handle, string name, bool throwOnError)
+intptr_t NativeLibrary_GetSymbol(intptr_t handle, Object* name, bool throwOnError);
+// BCL internal: LoadFromPath(string libraryName, bool throwOnError)
+intptr_t NativeLibrary_LoadFromPath(Object* libraryName, int32_t throwOnError);
+// BCL internal: FreeLib(IntPtr handle)
+void NativeLibrary_FreeLib(intptr_t handle);
 
 // System.IntPtr / System.UIntPtr
 // IntPtr/UIntPtr are aliased to intptr_t/uintptr_t (scalars).

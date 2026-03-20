@@ -10,6 +10,35 @@ public abstract class IRInstruction
 
     /// <summary>Source location for debug mapping. Null in Release mode.</summary>
     public SourceLocation? DebugInfo { get; set; }
+
+    /// <summary>
+    /// Collect type references from this instruction into the provided sets.
+    /// Called by IRMethod.ComputeTypeReferences() after body compilation.
+    /// Replaces the fragile post-render string scanning in CollectTypeInfoRefs/CollectBodyPointerTypeRefs.
+    /// </summary>
+    public virtual void CollectTypeReferences(HashSet<string> typeInfoNames, HashSet<string> pointerTypeNames) { }
+
+    /// <summary>Helper: add a type name to the pointer type set if it looks like a mangled C++ type name.</summary>
+    protected static void TryAddPointerType(string? typeName, HashSet<string> pointerTypeNames)
+    {
+        if (string.IsNullOrEmpty(typeName)) return;
+        var name = typeName.TrimEnd('*').Trim();
+        if (name.Length <= 3) return;
+        if (!name.Contains('_')) return;
+        if (!char.IsUpper(name[0])) return;
+        if (name.StartsWith("cil2cpp::")) return;
+        pointerTypeNames.Add(name);
+    }
+
+    /// <summary>Helper: add a type name to the TypeInfo set if it's not a runtime type.</summary>
+    protected static void TryAddTypeInfo(string? typeName, HashSet<string> typeInfoNames)
+    {
+        if (string.IsNullOrEmpty(typeName)) return;
+        var name = typeName.TrimEnd('*').Trim();
+        if (name.StartsWith("cil2cpp::")) return;
+        if (name.Length == 0) return;
+        typeInfoNames.Add(name);
+    }
 }
 
 // ============ Concrete IR Instructions ============
@@ -32,6 +61,12 @@ public class IRDeclareLocal : IRInstruction
     public string TypeName { get; set; } = "";
     public string VarName { get; set; } = "";
     public string? InitValue { get; set; }
+
+    public override void CollectTypeReferences(HashSet<string> typeInfoNames, HashSet<string> pointerTypeNames)
+    {
+        TryAddPointerType(TypeName, pointerTypeNames);
+    }
+
     public override string ToCpp() =>
         InitValue != null
             ? $"{TypeName} {VarName} = {InitValue};"
@@ -58,6 +93,42 @@ public class IRCall : IRInstruction
     public List<string>? VTableParamTypes { get; set; }
     public bool IsInterfaceCall { get; set; }
     public string? InterfaceTypeCppName { get; set; }
+
+    public override void CollectTypeReferences(HashSet<string> typeInfoNames, HashSet<string> pointerTypeNames)
+    {
+        // Interface dispatch references the interface TypeInfo
+        TryAddTypeInfo(InterfaceTypeCppName, typeInfoNames);
+        // GVM dispatch references TypeInfos for each target type
+        if (GenericVirtualTargets != null)
+            foreach (var (typeInfo, _) in GenericVirtualTargets)
+            {
+                // Strip _TypeInfo suffix to get the type name
+                var name = typeInfo.EndsWith("_TypeInfo") ? typeInfo[..^"_TypeInfo".Length] : typeInfo;
+                TryAddTypeInfo(name, typeInfoNames);
+            }
+        // VTable param/return types may reference pointer types
+        if (VTableReturnType != null) TryAddPointerType(VTableReturnType, pointerTypeNames);
+        if (VTableParamTypes != null)
+            foreach (var pt in VTableParamTypes)
+                TryAddPointerType(pt, pointerTypeNames);
+        // Arguments may contain &XXX_TypeInfo references (from ldtoken, constrained boxing, etc.)
+        foreach (var arg in Arguments)
+        {
+            var idx = arg.IndexOf("_TypeInfo");
+            if (idx <= 0) continue;
+            // Extract the type name before _TypeInfo — walk backwards from idx
+            // Skip leading '&' or '(' chars
+            int start = idx - 1;
+            while (start >= 0 && (char.IsLetterOrDigit(arg[start]) || arg[start] == '_')) start--;
+            start++;
+            if (start < idx)
+            {
+                var typeName = arg[start..idx];
+                if (!string.IsNullOrEmpty(typeName) && !typeName.StartsWith("cil2cpp"))
+                    TryAddTypeInfo(typeName, typeInfoNames);
+            }
+        }
+    }
     /// <summary>
     /// IL parameter key for deferred disambiguation fixup. Set when the disambiguation
     /// lookup fails at emit time (e.g., type created after body compilation in Pass 3.6).
@@ -207,6 +278,12 @@ public class IRNewObj : IRInstruction
     /// </summary>
     public string? DeferredDisambigKey { get; set; }
 
+    public override void CollectTypeReferences(HashSet<string> typeInfoNames, HashSet<string> pointerTypeNames)
+    {
+        TryAddTypeInfo(TypeCppName, typeInfoNames);
+        TryAddPointerType(TypeCppName, pointerTypeNames);
+    }
+
     public override string ToCpp()
     {
         var lines = new List<string>
@@ -346,6 +423,12 @@ public class IRFieldAccess : IRInstruction
     /// <summary>C++ type of the field being accessed (used for cross-scope variable pre-declarations).</summary>
     public string? ResultTypeCpp { get; set; }
 
+    public override void CollectTypeReferences(HashSet<string> typeInfoNames, HashSet<string> pointerTypeNames)
+    {
+        TryAddPointerType(CastToType, pointerTypeNames);
+        TryAddPointerType(ResultTypeCpp, pointerTypeNames);
+    }
+
     public override string ToCpp()
     {
         var obj = ObjectExpr;
@@ -412,6 +495,11 @@ public class IRArrayAccess : IRInstruction
     public bool IsStore { get; set; }
     public string? StoreValue { get; set; }
 
+    public override void CollectTypeReferences(HashSet<string> typeInfoNames, HashSet<string> pointerTypeNames)
+    {
+        TryAddPointerType(ElementType, pointerTypeNames);
+    }
+
     public override string ToCpp()
     {
         // Ensure the array expression is cast to Array* for array_get/array_set.
@@ -433,6 +521,13 @@ public class IRCast : IRInstruction
     public bool IsSafe { get; set; } // 'as' vs cast
     /// <summary>TypeInfo name for the cast (without _TypeInfo suffix). Defaults to TargetTypeCpp sans pointer.</summary>
     public string? TypeInfoCppName { get; set; }
+
+    public override void CollectTypeReferences(HashSet<string> typeInfoNames, HashSet<string> pointerTypeNames)
+    {
+        var typeInfo = TypeInfoCppName ?? TargetTypeCpp.TrimEnd('*');
+        TryAddTypeInfo(typeInfo, typeInfoNames);
+        TryAddPointerType(TargetTypeCpp, pointerTypeNames);
+    }
 
     public override string ToCpp()
     {
@@ -499,6 +594,12 @@ public class IRInitObj : IRInstruction
     /// For value types, it zeroes the memory.
     /// </summary>
     public bool IsReferenceType { get; set; }
+
+    public override void CollectTypeReferences(HashSet<string> typeInfoNames, HashSet<string> pointerTypeNames)
+    {
+        TryAddPointerType(TypeCppName, pointerTypeNames);
+    }
+
     public override string ToCpp() =>
         IsReferenceType
             ? $"*({TypeCppName}**)({AddressExpr}) = nullptr;"
@@ -512,6 +613,13 @@ public class IRBox : IRInstruction
     /// <summary>TypeInfo reference name (mangled IL name). Falls back to ValueTypeCppName if null.</summary>
     public string? TypeInfoCppName { get; set; }
     public string ResultVar { get; set; } = "";
+
+    public override void CollectTypeReferences(HashSet<string> typeInfoNames, HashSet<string> pointerTypeNames)
+    {
+        var typeInfoName = TypeInfoCppName ?? ValueTypeCppName;
+        TryAddTypeInfo(typeInfoName, typeInfoNames);
+    }
+
     public override string ToCpp()
     {
         var typeInfoName = TypeInfoCppName ?? ValueTypeCppName;
@@ -527,6 +635,11 @@ public class IRUnbox : IRInstruction
     public bool IsUnboxAny { get; set; }
     /// <summary>C++ result type for cross-scope variable pre-declarations.</summary>
     public string? ResultTypeCpp { get; set; }
+    public override void CollectTypeReferences(HashSet<string> typeInfoNames, HashSet<string> pointerTypeNames)
+    {
+        TryAddPointerType(ValueTypeCppName, pointerTypeNames);
+    }
+
     // Always cast to Object* — generated flat structs don't inherit from cil2cpp::Object,
     // but have the same memory layout (type_info + sync_block + fields).
     public override string ToCpp() => IsUnboxAny
@@ -553,6 +666,12 @@ public class IRCatchBegin : IRInstruction
     /// <summary>True when this catch follows a filter handler in the same try block.
     /// Uses inline if(!__exc_caught) instead of the } else if (...) macro chain.</summary>
     public bool AfterFilter { get; set; }
+
+    public override void CollectTypeReferences(HashSet<string> typeInfoNames, HashSet<string> pointerTypeNames)
+    {
+        TryAddTypeInfo(ExceptionTypeCppName, typeInfoNames);
+    }
+
     public override string ToCpp()
     {
         if (!AfterFilter)
@@ -623,6 +742,86 @@ public class IRRawCpp : IRInstruction
     public string? ResultVar { get; set; }
     /// <summary>Optional: the C++ type of the result (for cross-scope variable pre-declarations).</summary>
     public string? ResultTypeCpp { get; set; }
+
+    /// <summary>
+    /// IRRawCpp is the escape hatch for arbitrary C++ code without structured type properties.
+    /// Fall back to string scanning on the Code property to capture _TypeInfo and pointer type refs.
+    /// </summary>
+    public override void CollectTypeReferences(HashSet<string> typeInfoNames, HashSet<string> pointerTypeNames)
+    {
+        ScanCodeForTypeInfoRefs(Code, typeInfoNames);
+        ScanCodeForPointerTypeRefs(Code, pointerTypeNames);
+    }
+
+    /// <summary>Scan raw C++ code for _TypeInfo references (same logic as the deleted CollectTypeInfoRefs).</summary>
+    private static void ScanCodeForTypeInfoRefs(string code, HashSet<string> result)
+    {
+        var tiIdx = 0;
+        while ((tiIdx = code.IndexOf("_TypeInfo", tiIdx)) >= 0)
+        {
+            var afterTi = tiIdx + 9;
+            if (afterTi < code.Length)
+            {
+                var nextChar = code[afterTi];
+                if (nextChar == '(') { tiIdx = afterTi; continue; }
+                if (afterTi + 9 <= code.Length && code.Substring(afterTi, 9) == "_TypeInfo")
+                {
+                    var afterDouble = afterTi + 9;
+                    if (afterDouble < code.Length && code[afterDouble] == '(') { tiIdx = afterDouble; continue; }
+                }
+                else if (char.IsLetterOrDigit(nextChar) || nextChar == '_')
+                {
+                    tiIdx = afterTi; continue;
+                }
+            }
+            int start = tiIdx - 1;
+            while (start >= 0 && (char.IsLetterOrDigit(code[start]) || code[start] == '_')) start--;
+            start++;
+            if (start < tiIdx)
+            {
+                var typeName = code[start..tiIdx];
+                if (start >= 2 && code[(start - 2)..start] == "::") { tiIdx += 9; continue; }
+                if (!string.IsNullOrEmpty(typeName) && !typeName.StartsWith("cil2cpp"))
+                {
+                    if (afterTi + 9 <= code.Length && code.Substring(afterTi, 9) == "_TypeInfo")
+                    {
+                        result.Add(typeName + "_TypeInfo");
+                        tiIdx = afterTi + 9;
+                        continue;
+                    }
+                    result.Add(typeName);
+                }
+            }
+            tiIdx += 9;
+        }
+    }
+
+    /// <summary>Scan raw C++ code for pointer type references (same logic as deleted CollectBodyPointerTypeRefs).</summary>
+    private static void ScanCodeForPointerTypeRefs(string code, HashSet<string> result)
+    {
+        int i = 0;
+        while (i < code.Length)
+        {
+            int starIdx = code.IndexOf('*', i);
+            if (starIdx < 0) break;
+            int end = starIdx;
+            while (end > 0 && code[end - 1] == '*') end--;
+            int start = end - 1;
+            while (start >= 0 && (char.IsLetterOrDigit(code[start]) || code[start] == '_')) start--;
+            start++;
+            if (start < end)
+            {
+                var typeName = code[start..end];
+                if (typeName.Length > 3 && typeName.Contains('_') && char.IsUpper(typeName[0]))
+                {
+                    if (!(start >= 2 && code[(start - 2)..start] == "::"))
+                        result.Add(typeName);
+                }
+            }
+            i = starIdx + 1;
+        }
+    }
+
     public override string ToCpp() => Code;
 }
 
@@ -650,6 +849,11 @@ public class IRDelegateCreate : IRInstruction
     public string TargetExpr { get; set; } = "";
     public string FunctionPtrExpr { get; set; } = "";
     public string ResultVar { get; set; } = "";
+
+    public override void CollectTypeReferences(HashSet<string> typeInfoNames, HashSet<string> pointerTypeNames)
+    {
+        TryAddTypeInfo(DelegateTypeCppName, typeInfoNames);
+    }
 
     public override string ToCpp() =>
         $"{ResultVar} = cil2cpp::delegate_create(&{DelegateTypeCppName}_TypeInfo, (cil2cpp::Object*){TargetExpr}, {FunctionPtrExpr});";

@@ -143,10 +143,28 @@ public partial class CppCodeGenerator
     /// </summary>
     private HashSet<string> _emittedStructDefs = new();
 
+    /// <summary>
+    /// Dead code classification lookup by C++ function name.
+    /// Built from IRMethod.DeadCodeCategory (tagged during IR compilation based on Cecil metadata).
+    /// Replaces the old string-prefix-matching ClassifyDeadCode method.
+    /// </summary>
+    private readonly Dictionary<string, DeadCodeCategory> _deadCodeByFunctionName = new();
+    /// <summary>All CppNames in the module — used to distinguish in-module from tree-shaken functions.</summary>
+    private readonly HashSet<string> _moduleFunctionNames = new();
+
     public CppCodeGenerator(IRModule module, BuildConfiguration? config = null)
     {
         _module = module;
         _config = config ?? BuildConfiguration.Release;
+
+        // Build dead code classification lookup from IR-level tags + module function set
+        foreach (var type in _module.Types)
+            foreach (var method in type.Methods)
+            {
+                _moduleFunctionNames.Add(method.CppName);
+                if (method.DeadCodeCategory != DeadCodeCategory.None)
+                    _deadCodeByFunctionName.TryAdd(method.CppName, method.DeadCodeCategory);
+            }
     }
 
     /// <summary>
@@ -178,9 +196,9 @@ public partial class CppCodeGenerator
     private HashSet<string> _autoTypeInfoDecls = new();
 
     /// <summary>
-    /// All TypeInfo CppNames referenced from method bodies (via _TypeInfo pattern scan).
+    /// All TypeInfo CppNames referenced from method bodies.
     /// Used for TypeInfo tiering: types whose _TypeInfo is never referenced get minimal TypeInfo.
-    /// Populated during header generation by CollectTypeInfoRefs().
+    /// Populated during header generation from IRMethod.ReferencedTypeInfoNames.
     /// </summary>
     private HashSet<string> _referencedTypeInfoNames = new();
 
@@ -651,105 +669,60 @@ public partial class CppCodeGenerator
     }
 
     /// <summary>
-    /// Categories of known dead code in AOT compilation.
-    /// These functions exist in compiled IL but are unreachable at runtime.
+    /// Classify a function as known dead code. Primary source: IR-level tags
+    /// (IRMethod.DeadCodeCategory, tagged during method shell creation based on Cecil metadata).
+    /// Fallback: namespace-based heuristic for functions not in the module (tree-shaken away).
     /// </summary>
-    private enum DeadCodeCategory
+    private DeadCodeCategory ClassifyDeadCode(string functionName)
     {
-        None,
-        /// <summary>SIMD intrinsics + vector methods + helpers — guarded by IsSupported/IsHardwareAccelerated = false</summary>
-        Simd,
-        /// <summary>EventSource diagnostics — guarded by IsEnabled() = false in AOT</summary>
-        EventSource,
-        /// <summary>AOT-incompatible operations (AssemblyLoadContext) — no runtime equivalent</summary>
-        AotIncompatible,
+        if (_deadCodeByFunctionName.TryGetValue(functionName, out var cat))
+            return cat;
+        // In-module methods with no IR-level dead code tag are NOT dead code.
+        // Only fall back to namespace heuristic for tree-shaken functions not in the module.
+        if (_moduleFunctionNames.Contains(functionName))
+            return DeadCodeCategory.None;
+        return ClassifyDeadCodeByName(functionName);
     }
 
+    /// <summary>Returns true if the function is known dead code (any category).</summary>
+    private bool IsKnownDeadCode(string functionName)
+        => ClassifyDeadCode(functionName) != DeadCodeCategory.None;
+
+    /// <summary>Returns true for SIMD dead code specifically.</summary>
+    private bool IsSimdDeadCodeFunction(string functionName)
+        => ClassifyDeadCode(functionName) == DeadCodeCategory.Simd;
+
     /// <summary>
-    /// Classify a function as known dead code, or None if it's not a recognized pattern.
-    /// All patterns in one place for maintainability.
+    /// Namespace-based heuristic for dead code classification of functions not in the IR module.
+    /// Only used as fallback for tree-shaken functions whose IRMethod was never created.
     /// </summary>
-    private static DeadCodeCategory ClassifyDeadCode(string functionName)
+    private static DeadCodeCategory ClassifyDeadCodeByName(string functionName)
     {
-        // ── SIMD: hardware intrinsics (X86/Arm/Wasm) ──
-        if (functionName.StartsWith("System_Runtime_Intrinsics_X86_")
-            || functionName.StartsWith("System_Runtime_Intrinsics_Arm_")
-            || functionName.StartsWith("System_Runtime_Intrinsics_Wasm_"))
+        // SIMD: hardware intrinsics namespaces
+        if (functionName.StartsWith("System_Runtime_Intrinsics_"))
             return DeadCodeCategory.Simd;
-
-        // ── SIMD: generic container methods (Vector128<T>, Vector256<T>, etc.) ──
-        if (functionName.StartsWith("System_Runtime_Intrinsics_Vector64_1_")
-            || functionName.StartsWith("System_Runtime_Intrinsics_Vector128_1_")
-            || functionName.StartsWith("System_Runtime_Intrinsics_Vector256_1_")
-            || functionName.StartsWith("System_Runtime_Intrinsics_Vector512_1_")
-            || functionName.StartsWith("System_Numerics_Vector_1_"))
+        // SIMD: System.Numerics.Vector<T>
+        if (functionName.StartsWith("System_Numerics_Vector_1_"))
             return DeadCodeCategory.Simd;
-
-        // ── SIMD: non-generic statics (Vector128.Create, etc.) + Scalar<T> ──
-        if (functionName.StartsWith("System_Runtime_Intrinsics_Vector64_")
-            || functionName.StartsWith("System_Runtime_Intrinsics_Vector128_")
-            || functionName.StartsWith("System_Runtime_Intrinsics_Vector256_")
-            || functionName.StartsWith("System_Runtime_Intrinsics_Vector512_")
-            || functionName.StartsWith("System_Runtime_Intrinsics_Scalar_1_"))
-            return DeadCodeCategory.Simd;
-
-        // ── SIMD: BCL helper classes behind SIMD guards ──
-        // IndexOfAnyAsciiSearcher has both SIMD-only and scalar fallback methods.
-        // We filter only the SIMD-only inner helpers (AsciiState contains Vector256,
-        // LookupCore/TryIndexOfAny are pure SIMD dispatch).  The scalar-interface methods
-        // (IndexOfAny<DontNegate>, IndexOfAnyScalar, ComputeAnyByteState,
-        // AnyByteState, BitVector256, DontNegate, Negate, ResultMapper) compile from IL
-        // with SIMD branches eliminated by compile-time constant branch elimination.
-        // IndexOfAnyCore with AnyByteState has internal IsHardwareAccelerated guard → compiles from IL.
-        // IndexOfAnyCore with AsciiState lacks guard (caller checks IsVectorizationSupported) → dead code.
-        if (functionName.StartsWith("System_Buffers_IndexOfAnyAsciiSearcher_AsciiState")
-            || functionName.StartsWith("System_Buffers_IndexOfAnyAsciiSearcher_ComputeAsciiState")
-            || functionName.StartsWith("System_Buffers_IndexOfAnyAsciiSearcher_IndexOfAnyLookup") // covers both IndexOfAnyLookup and IndexOfAnyLookupCore
-            || functionName.StartsWith("System_Buffers_IndexOfAnyAsciiSearcher_TryIndexOfAny")
-            || functionName.StartsWith("System_Buffers_IndexOfAnyAsciiSearcher_INegator_NegateIfNeeded")
-            || functionName.StartsWith("System_Buffers_IndexOfAnyAsciiSearcher_IResultMapper_2_")) // constrained interface dispatch on SIMD code path
-            return DeadCodeCategory.Simd;
-        // IndexOfAnyCore with AsciiState parameter: no internal SIMD guard, SIMD code paths
-        // produce UB with default values. Only called when IsVectorizationSupported=true.
-        // AnyByteState variants (contain "AnyByteState" in name) have internal guards and are safe.
-        if (functionName.StartsWith("System_Buffers_IndexOfAnyAsciiSearcher_IndexOfAnyCore_")
-            && !functionName.Contains("AnyByteState"))
-            return DeadCodeCategory.Simd;
-
-        if (functionName.StartsWith("System_PackedSpanHelpers_")
+        // SIMD: BCL helpers behind SIMD guards
+        if (functionName.StartsWith("System_Buffers_IndexOfAnyAsciiSearcher_")
+            || functionName.StartsWith("System_PackedSpanHelpers_")
             || functionName.StartsWith("System_SpanHelpers_ComputeFirstIndex_")
-            || functionName.StartsWith("System_SpanHelpers_ComputeLastIndex_")
-            || functionName.StartsWith("System_Text_Ascii_AllCharsInVectorAreAscii_")
-            || functionName.StartsWith("System_Text_Ascii_ChangeWidthAndWriteTo_")
-            || functionName.StartsWith("System_Text_Ascii_SignedLessThan_")
-            || functionName.StartsWith("System_Text_Ascii_VectorContainsNonAsciiChar_")
+            || functionName.StartsWith("System_SpanHelpers_ComputeLastIndex_"))
+            return DeadCodeCategory.Simd;
+        if (functionName.StartsWith("System_Text_Ascii_")
             || functionName.StartsWith("System_ThrowHelper_ThrowForUnsupportedNumericsVectorBaseType_"))
             return DeadCodeCategory.Simd;
-
-        // ── EventSource: diagnostic logging, always behind IsEnabled()=false ──
+        // EventSource diagnostics
         if (functionName.StartsWith("System_Diagnostics_Tracing_NativeRuntimeEventSource_")
             || functionName.StartsWith("System_Net_NetEventSource_")
             || functionName.StartsWith("System_Net_Sockets_NetEventSource_"))
             return DeadCodeCategory.EventSource;
-
-        // ── AOT-incompatible: no runtime assembly loading ──
+        // AOT-incompatible
         if (functionName.StartsWith("System_Runtime_Loader_AssemblyLoadContext_"))
             return DeadCodeCategory.AotIncompatible;
-
         return DeadCodeCategory.None;
     }
-
-    /// <summary>Returns true if the function is known dead code (any category).</summary>
-    private static bool IsKnownDeadCode(string functionName)
-        => ClassifyDeadCode(functionName) != DeadCodeCategory.None;
-
-    /// <summary>Backward-compat: returns true for SIMD dead code specifically.</summary>
-    private static bool IsSimdDeadCodeFunction(string functionName)
-        => ClassifyDeadCode(functionName) == DeadCodeCategory.Simd;
-
-    /// <summary>Backward-compat: returns true for EventSource dead code specifically.</summary>
-    private static bool IsEventSourceDiagnosticFunction(string functionName)
-        => ClassifyDeadCode(functionName) == DeadCodeCategory.EventSource;
 
     /// <summary>
     /// Check if a C++ type name is invalid — either an unresolved generic param or a function pointer type.

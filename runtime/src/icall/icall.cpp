@@ -43,6 +43,7 @@
 #elif defined(__linux__)
 #include <sys/syscall.h>
 #include <unistd.h>
+#include <dlfcn.h>
 #endif
 
 // Forward declaration: IThreadPoolWorkItem TypeInfo (defined in generated code at global scope)
@@ -244,7 +245,7 @@ uint64_t Marvin_GenerateSeed() {
 
 // ===== System.Runtime.InteropServices.NativeLibrary =====
 
-intptr_t NativeLibrary_GetSymbol(intptr_t handle, Object* name) {
+intptr_t NativeLibrary_GetSymbol(intptr_t handle, Object* name, bool throwOnError) {
 #ifdef _WIN32
     if (!name) return 0;
     auto* s = reinterpret_cast<String*>(name);
@@ -256,11 +257,41 @@ intptr_t NativeLibrary_GetSymbol(intptr_t handle, Object* name) {
     for (int32_t i = 0; i < len; i++)
         narrow.push_back(static_cast<char>(reinterpret_cast<const char16_t*>(chars)[i]));
     auto* result = GetProcAddress(reinterpret_cast<HMODULE>(handle), narrow.c_str());
+    (void)throwOnError;
     return reinterpret_cast<intptr_t>(result);
 #else
     // TODO: dlsym on Linux
-    (void)handle; (void)name;
+    (void)handle; (void)name; (void)throwOnError;
     return 0;
+#endif
+}
+
+intptr_t NativeLibrary_LoadFromPath(Object* libraryName, int32_t throwOnError) {
+#ifdef _WIN32
+    if (!libraryName) return 0;
+    auto* s = reinterpret_cast<String*>(libraryName);
+    auto* chars = string_get_raw_data(s);
+    auto* handle = LoadLibraryW(reinterpret_cast<const wchar_t*>(chars));
+    return reinterpret_cast<intptr_t>(handle);
+#else
+    if (!libraryName) return 0;
+    auto* s = reinterpret_cast<String*>(libraryName);
+    auto len = string_length(s);
+    auto* chars = string_get_raw_data(s);
+    std::string narrow;
+    narrow.reserve(static_cast<size_t>(len));
+    for (int32_t i = 0; i < len; i++)
+        narrow.push_back(static_cast<char>(reinterpret_cast<const char16_t*>(chars)[i]));
+    (void)throwOnError;
+    return reinterpret_cast<intptr_t>(dlopen(narrow.c_str(), RTLD_LAZY));
+#endif
+}
+
+void NativeLibrary_FreeLib(intptr_t handle) {
+#ifdef _WIN32
+    FreeLibrary(reinterpret_cast<HMODULE>(handle));
+#else
+    dlclose(reinterpret_cast<void*>(handle));
 #endif
 }
 

@@ -96,23 +96,23 @@ public partial class CppCodeGenerator
             foreach (var field in type.StaticFields)
                 TryForwardDeclare(sb, CppNameMapper.GetCppTypeForDecl(field.FieldTypeName), forwardDeclared, aliasedTypes, enumTypes);
         }
-        // Scan method body instructions for type names used as pointer targets.
-        // This catches interface types used as generic type arguments (e.g., IAsyncStateMachine)
+        // Collect pointer type references from IR methods (replaces string scanning of rendered C++).
+        // Catches interface types used as generic type arguments (e.g., IAsyncStateMachine)
         // that don't appear in method signatures but are referenced in casts and vtable lookups.
+        // Recompute type references for all methods — instruction properties (e.g., IRNewObj.TypeCppName)
+        // may have been updated after the initial ComputeTypeReferences() call during body compilation
+        // (e.g., generic specialization resolves T → concrete type after body is compiled).
+        foreach (var type in userTypes)
+            foreach (var method in type.Methods)
+                if (method.BasicBlocks.Count > 0)
+                    method.ComputeTypeReferences();
         var bodyTypeRefs = new HashSet<string>();
         foreach (var type in userTypes)
         {
             if (type.IsDelegate) continue;
             foreach (var method in type.Methods)
-            {
-                foreach (var block in method.BasicBlocks)
-                {
-                    foreach (var instr in block.Instructions)
-                    {
-                        CollectBodyPointerTypeRefs(instr.ToCpp(), bodyTypeRefs);
-                    }
-                }
-            }
+                foreach (var name in method.ReferencedPointerTypeNames)
+                    bodyTypeRefs.Add(name);
         }
         foreach (var typeName in bodyTypeRefs)
         {
@@ -202,22 +202,12 @@ public partial class CppCodeGenerator
         foreach (var (m, _) in RuntimeTypeRegistry.GetExceptionTypeInfoAliases()) declaredTypeInfoNames.Add(m);
         // Also skip runtime-declared
         foreach (var n in runtimeDeclaredTypeInfos) declaredTypeInfoNames.Add(n);
-        // Scan IR method instructions for _TypeInfo references
+        // Collect TypeInfo references from IR methods (replaces string scanning of rendered C++)
         var neededTypeInfos = new HashSet<string>();
         foreach (var type in userTypes)
-        {
             foreach (var method in type.Methods)
-            {
-                foreach (var block in method.BasicBlocks)
-                {
-                    foreach (var instr in block.Instructions)
-                    {
-                        var code = instr.ToCpp();
-                        CollectTypeInfoRefs(code, neededTypeInfos);
-                    }
-                }
-            }
-        }
+                foreach (var name in method.ReferencedTypeInfoNames)
+                    neededTypeInfos.Add(name);
         // Store all TypeInfo names referenced from method bodies for TypeInfo tiering
         _referencedTypeInfoNames = neededTypeInfos;
 
@@ -570,6 +560,41 @@ public partial class CppCodeGenerator
             sb.AppendLine("    \"RuntimeModule fields exceed runtime's kRuntimeModuleFieldsSize (48 bytes)\");");
             sb.AppendLine();
         }
+
+        // Compile-time validation: RuntimeOnlyFields must match runtime Task struct layout
+        if (userTypes.Any(t => t.ILFullName == "System.Threading.Tasks.Task"))
+        {
+            sb.AppendLine("// Safety: RuntimeOnlyFields must match cil2cpp::Task field offsets");
+            sb.AppendLine("static_assert(offsetof(cil2cpp::Task, f_status) == sizeof(cil2cpp::TypeInfo*) + sizeof(uint32_t),");
+            sb.AppendLine("    \"Task.f_status offset mismatch between runtime and codegen\");");
+            sb.AppendLine("static_assert(offsetof(cil2cpp::Task, f_exception) == offsetof(cil2cpp::Task, f_status) + sizeof(int32_t),");
+            sb.AppendLine("    \"Task.f_exception offset mismatch\");");
+            sb.AppendLine("static_assert(offsetof(cil2cpp::Task, f_continuations) == offsetof(cil2cpp::Task, f_exception) + sizeof(void*),");
+            sb.AppendLine("    \"Task.f_continuations offset mismatch\");");
+            sb.AppendLine("static_assert(offsetof(cil2cpp::Task, f_lock) == offsetof(cil2cpp::Task, f_continuations) + sizeof(void*),");
+            sb.AppendLine("    \"Task.f_lock offset mismatch\");");
+            sb.AppendLine();
+        }
+
+        // Compile-time validation: opaque Span/ReadOnlySpan stubs match expected layout
+        foreach (var spanStub in opaqueSpanStubs)
+        {
+            sb.AppendLine($"static_assert(offsetof({spanStub}, f__reference) == 0,");
+            sb.AppendLine($"    \"{spanStub}.f__reference must be at offset 0\");");
+            sb.AppendLine($"static_assert(offsetof({spanStub}, f__length) == sizeof(void*),");
+            sb.AppendLine($"    \"{spanStub}.f__length offset mismatch\");");
+        }
+        if (opaqueSpanStubs.Count > 0) sb.AppendLine();
+
+        // Compile-time validation: SafeHandleMarshaller stubs match expected layout
+        foreach (var shmStub in opaqueSafeHandleMarshallerStubs)
+        {
+            sb.AppendLine($"static_assert(offsetof({shmStub}, f__addRefd) == 0,");
+            sb.AppendLine($"    \"{shmStub}.f__addRefd must be at offset 0\");");
+            sb.AppendLine($"static_assert(offsetof({shmStub}, f__handle) == sizeof(void*),");
+            sb.AppendLine($"    \"{shmStub}.f__handle offset mismatch\");");
+        }
+        if (opaqueSafeHandleMarshallerStubs.Count > 0) sb.AppendLine();
 
         return new GeneratedFile
         {
@@ -1279,92 +1304,11 @@ public partial class CppCodeGenerator
         return names;
     }
 
-    /// <summary>
-
     // REMOVED: CallsUndeclaredOrMismatchedFunctions, HasKnownBrokenPatterns,
-    // InstructionHasBrokenPattern, HasUndeclaredTypeInfoRef, CollectBodyPointerTypeRefs
+    // InstructionHasBrokenPattern, HasUndeclaredTypeInfoRef
     // These were pre/post-render gates that masked tree-shaking and IR issues.
-
-    /// Collect all type names referenced as _TypeInfo in a C++ code string.
-    /// Used to auto-generate TypeInfo declarations for types referenced in method bodies.
-    /// </summary>
-    private static void CollectTypeInfoRefs(string code, HashSet<string> result)
-    {
-        var tiIdx = 0;
-        while ((tiIdx = code.IndexOf("_TypeInfo", tiIdx)) >= 0)
-        {
-            var afterTi = tiIdx + 9; // position after "_TypeInfo"
-
-            // Skip if _TypeInfo is NOT at a word boundary — it's in the middle of a longer
-            // identifier (e.g., System_Reflection_TypeInfo_get_IsClass). Also skip if followed
-            // by '(' — it's a function call, not a TypeInfo reference. This prevents false
-            // matches on generic methods specialized with System.Reflection.TypeInfo (e.g.,
-            // Enumerable.Where<TypeInfo>(...) → System_Linq_Enumerable_Where_System_Reflection_TypeInfo(...)).
-            if (afterTi < code.Length)
-            {
-                var nextChar = code[afterTi];
-                if (nextChar == '(')
-                {
-                    // Function call — not a TypeInfo reference
-                    tiIdx = afterTi;
-                    continue;
-                }
-                // Check for double _TypeInfo pattern (type name ends with TypeInfo)
-                if (afterTi + 9 <= code.Length && code.Substring(afterTi, 9) == "_TypeInfo")
-                {
-                    // Could be Type_TypeInfo_TypeInfo — the type name includes _TypeInfo.
-                    // But if the double _TypeInfo is followed by '(' it's a function call
-                    // on a TypeInfo-named type, not a TypeInfo reference.
-                    var afterDouble = afterTi + 9;
-                    if (afterDouble < code.Length && code[afterDouble] == '(')
-                    {
-                        tiIdx = afterDouble;
-                        continue;
-                    }
-                }
-                else if (char.IsLetterOrDigit(nextChar) || nextChar == '_')
-                {
-                    // _TypeInfo is in the middle of a longer identifier
-                    tiIdx = afterTi;
-                    continue;
-                }
-            }
-
-            int start = tiIdx - 1;
-            while (start >= 0 && (char.IsLetterOrDigit(code[start]) || code[start] == '_'))
-                start--;
-            start++;
-            if (start < tiIdx)
-            {
-                var typeName = code[start..tiIdx];
-                // Skip cil2cpp:: prefixed refs (runtime-defined)
-                if (start >= 2 && code[(start - 2)..start] == "::")
-                {
-                    tiIdx += 9;
-                    continue;
-                }
-                if (!string.IsNullOrEmpty(typeName) && !typeName.StartsWith("cil2cpp"))
-                {
-                    // Handle types whose name ENDS with "TypeInfo" (e.g., System.Reflection.TypeInfo).
-                    // The reference is System_Reflection_TypeInfo_TypeInfo — the first _TypeInfo is
-                    // part of the type name. Check the char after "_TypeInfo" — if it's also "_TypeInfo",
-                    // then the real type name includes the first "_TypeInfo".
-                    if (afterTi + 9 <= code.Length && code.Substring(afterTi, 9) == "_TypeInfo")
-                    {
-                        // The real type name is typeName + "_TypeInfo"
-                        result.Add(typeName + "_TypeInfo");
-                        tiIdx = afterTi + 9;
-                        continue;
-                    }
-                    result.Add(typeName);
-                }
-            }
-            tiIdx += 9;
-        }
-    }
-
-    /// <summary>
-
+    // REMOVED: CollectTypeInfoRefs, CollectBodyPointerTypeRefs
+    // Replaced by IRInstruction.CollectTypeReferences() + IRMethod.ComputeTypeReferences() (F2+F3).
 
     /// <summary>
     /// Extract function name → set of valid parameter counts from C++ signatures.
@@ -1415,44 +1359,4 @@ public partial class CppCodeGenerator
         return result;
     }
 
-    /// <summary>
-    /// Scan rendered C++ code for type names used as pointer types (e.g., "TypeName*")
-    /// so they can be forward-declared in the header. This is needed for correct C++ compilation.
-    /// </summary>
-    private static void CollectBodyPointerTypeRefs(string code, HashSet<string> result)
-    {
-        int i = 0;
-        while (i < code.Length)
-        {
-            int starIdx = code.IndexOf('*', i);
-            if (starIdx < 0) break;
-
-            // Walk backwards past any extra '*' (double pointers)
-            int end = starIdx;
-            while (end > 0 && code[end - 1] == '*') end--;
-            // Walk backwards to find the start of the identifier
-            int start = end - 1;
-            while (start >= 0 && (char.IsLetterOrDigit(code[start]) || code[start] == '_'))
-                start--;
-            start++;
-
-            if (start < end)
-            {
-                var typeName = code[start..end];
-                // Only consider mangled .NET type names (contain underscore, start with uppercase)
-                if (typeName.Length > 3 && typeName.Contains('_') && char.IsUpper(typeName[0]))
-                {
-                    // Skip if preceded by "::" (cil2cpp:: namespace)
-                    if (start >= 2 && code[(start - 2)..start] == "::")
-                    {
-                        i = starIdx + 1;
-                        continue;
-                    }
-                    result.Add(typeName);
-                }
-            }
-
-            i = starIdx + 1;
-        }
-    }
 }

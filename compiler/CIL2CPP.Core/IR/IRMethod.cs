@@ -1,6 +1,22 @@
 namespace CIL2CPP.Core.IR;
 
 /// <summary>
+/// Classification of methods as known dead code at the IR level.
+/// Tagged during method shell creation based on Cecil metadata (namespace, declaring type),
+/// NOT on rendered C++ function names.
+/// </summary>
+public enum DeadCodeCategory : byte
+{
+    None = 0,
+    /// <summary>SIMD intrinsics + vector methods + helpers — guarded by IsSupported/IsHardwareAccelerated = false</summary>
+    Simd = 1,
+    /// <summary>EventSource diagnostics — guarded by IsEnabled() = false in AOT</summary>
+    EventSource = 2,
+    /// <summary>AOT-incompatible operations (AssemblyLoadContext) — no runtime equivalent</summary>
+    AotIncompatible = 3,
+}
+
+/// <summary>
 /// Represents a method in the IR.
 /// </summary>
 public class IRMethod
@@ -69,6 +85,46 @@ public class IRMethod
     /// this contains the detailed reason. Null if not stubbed at IR level.
     /// </summary>
     public string? IrStubReason { get; set; }
+
+    /// <summary>
+    /// Dead code classification based on Cecil metadata (namespace/type).
+    /// Set during method shell creation (Pass 3) and generic specialization.
+    /// </summary>
+    public DeadCodeCategory DeadCodeCategory { get; set; } = DeadCodeCategory.None;
+
+    /// <summary>TypeInfo names referenced by this method's body (e.g., for casts, boxing, interface dispatch).</summary>
+    public HashSet<string> ReferencedTypeInfoNames { get; } = new();
+
+    /// <summary>Pointer type names referenced by this method's body (need forward declarations).</summary>
+    public HashSet<string> ReferencedPointerTypeNames { get; } = new();
+
+    /// <summary>Whether ComputeTypeReferences() has been called.</summary>
+    private bool _typeRefsComputed;
+
+    /// <summary>
+    /// Collect type references from all instructions into ReferencedTypeInfoNames and ReferencedPointerTypeNames.
+    /// Called after body compilation. Replaces post-render string scanning (CollectTypeInfoRefs/CollectBodyPointerTypeRefs).
+    /// </summary>
+    public void ComputeTypeReferences()
+    {
+        ReferencedTypeInfoNames.Clear();
+        ReferencedPointerTypeNames.Clear();
+        foreach (var block in BasicBlocks)
+            foreach (var instr in block.Instructions)
+                instr.CollectTypeReferences(ReferencedTypeInfoNames, ReferencedPointerTypeNames);
+        _typeRefsComputed = true;
+    }
+
+    /// <summary>
+    /// Ensure type references are computed. Lazy — computes on first access if not already done.
+    /// Called by code generation to handle methods compiled via paths that don't call ConvertMethodBody.
+    /// </summary>
+    public void EnsureTypeReferencesComputed()
+    {
+        if (!_typeRefsComputed && BasicBlocks.Count > 0)
+            ComputeTypeReferences();
+    }
+
     public int VTableSlot { get; set; } = -1;
 
     /// <summary>Raw ECMA-335 MethodAttributes value (II.23.1.10)</summary>

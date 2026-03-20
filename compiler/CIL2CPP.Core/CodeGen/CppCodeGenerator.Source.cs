@@ -514,9 +514,6 @@ public partial class CppCodeGenerator
         var sb = new StringBuilder();
         EmitSourceFileHeader(sb, "Stubs: unreachable method placeholders (tree-shaking gaps)");
 
-        // Forward declarations for NativeLibrary QCall implementations
-        EmitNativeLibraryQCallDecls(sb);
-
         // Partition: CoreRuntimeTypes methods vs everything else.
         // Both partitions get stub bodies — CoreRuntimeTypes methods can't compile from IL
         // (struct layout mismatch) but callers in other BCL code still reference them.
@@ -800,16 +797,6 @@ public partial class CppCodeGenerator
             }
             if (hasProblematicType) continue;
 
-            // Check if this is a NativeLibrary QCall with a known implementation
-            var nativeLibBody = GetNativeLibraryQCallBody(method.CppName);
-            if (nativeLibBody != null)
-            {
-                sb.AppendLine($"{sig} {{");
-                sb.AppendLine(nativeLibBody);
-                sb.AppendLine("}");
-                continue;
-            }
-
             sb.AppendLine($"{sig} {{");
             sb.AppendLine($"#ifndef NDEBUG");
             sb.AppendLine($"    cil2cpp::stub_called(\"{method.CppName}\");");
@@ -824,98 +811,6 @@ public partial class CppCodeGenerator
                 sb.AppendLine("    return {}; // stub: method unreachable (tree-shaking gap)");
             sb.AppendLine("}");
         }
-    }
-
-    /// <summary>
-    /// Emits file-scope forward declarations for NativeLibrary QCall implementations.
-    /// </summary>
-    private static void EmitNativeLibraryQCallDecls(StringBuilder sb)
-    {
-        sb.AppendLine();
-        sb.AppendLine("// Forward declarations for NativeLibrary QCall implementations");
-        sb.AppendLine("#ifdef _WIN32");
-        sb.AppendLine("extern \"C\" __declspec(dllimport) void* __stdcall LoadLibraryW(const wchar_t*);");
-        sb.AppendLine("extern \"C\" __declspec(dllimport) int __stdcall FreeLibrary(void*);");
-        sb.AppendLine("extern \"C\" __declspec(dllimport) void* __stdcall GetProcAddress(void*, const char*);");
-        sb.AppendLine("extern \"C\" __declspec(dllimport) int __stdcall WideCharToMultiByte(unsigned, unsigned long, const wchar_t*, int, char*, int, const char*, int*);");
-        sb.AppendLine("#else");
-        sb.AppendLine("#include <dlfcn.h>");
-        sb.AppendLine("#endif");
-    }
-
-    /// <summary>
-    /// Provides platform-specific implementations for NativeLibrary QCall stubs.
-    /// These BCL methods use [DllImport("QCall")] which has no real DLL — they need
-    /// runtime implementations for LoadLibrary/GetProcAddress/FreeLibrary.
-    /// </summary>
-    private static string? GetNativeLibraryQCallBody(string cppName)
-    {
-        // Match the compiler-generated __PInvoke wrapper names for NativeLibrary QCalls.
-        // The numeric suffixes may vary across BCL versions, so match by prefix.
-        if (cppName.Contains("NativeLibrary") && cppName.Contains("PInvoke"))
-        {
-            if (cppName.Contains("_GetSymbol_"))
-                return """
-                        // QCall: NativeLibrary.GetSymbol → GetProcAddress/dlsym
-                    #ifdef _WIN32
-                        auto handle = reinterpret_cast<void*>(__handle_native);
-                        char narrow[256];
-                        int len = WideCharToMultiByte(65001, 0, reinterpret_cast<const wchar_t*>(__symbolName_native), -1, narrow, 256, nullptr, nullptr);
-                        if (len <= 0) return 0;
-                        return reinterpret_cast<intptr_t>(GetProcAddress(handle, narrow));
-                    #else
-                        (void)__throwOnError_native;
-                        auto handle = reinterpret_cast<void*>(__handle_native);
-                        char narrow[256];
-                        size_t i = 0;
-                        for (; __symbolName_native[i] && i < 255; ++i) narrow[i] = static_cast<char>(__symbolName_native[i]);
-                        narrow[i] = 0;
-                        return reinterpret_cast<intptr_t>(dlsym(handle, narrow));
-                    #endif
-                    """;
-
-            if (cppName.Contains("_LoadFromPath_"))
-                return """
-                        // QCall: NativeLibrary.LoadFromPath → LoadLibraryW/dlopen
-                    #ifdef _WIN32
-                        return reinterpret_cast<intptr_t>(LoadLibraryW(reinterpret_cast<const wchar_t*>(__libraryName_native)));
-                    #else
-                        (void)__throwOnError_native;
-                        char narrow[512];
-                        size_t i = 0;
-                        for (; __libraryName_native[i] && i < 511; ++i) narrow[i] = static_cast<char>(__libraryName_native[i]);
-                        narrow[i] = 0;
-                        return reinterpret_cast<intptr_t>(dlopen(narrow, RTLD_LAZY));
-                    #endif
-                    """;
-
-            if (cppName.Contains("_LoadByName_"))
-                return """
-                        // QCall: NativeLibrary.LoadByName → LoadLibraryW/dlopen
-                    #ifdef _WIN32
-                        return reinterpret_cast<intptr_t>(LoadLibraryW(reinterpret_cast<const wchar_t*>(__libraryName_native)));
-                    #else
-                        (void)__throwOnError_native;
-                        char narrow[512];
-                        size_t i = 0;
-                        for (; __libraryName_native[i] && i < 511; ++i) narrow[i] = static_cast<char>(__libraryName_native[i]);
-                        narrow[i] = 0;
-                        return reinterpret_cast<intptr_t>(dlopen(narrow, RTLD_LAZY));
-                    #endif
-                    """;
-
-            if (cppName.Contains("FreeLib"))
-                return """
-                        // QCall: NativeLibrary.FreeLib → FreeLibrary/dlclose
-                    #ifdef _WIN32
-                        FreeLibrary(reinterpret_cast<void*>(handle));
-                    #else
-                        dlclose(reinterpret_cast<void*>(handle));
-                    #endif
-                    """;
-        }
-
-        return null;
     }
 
     private void GenerateTypeInfo(StringBuilder sb, IRType type)
