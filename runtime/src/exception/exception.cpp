@@ -269,6 +269,11 @@ String* capture_stack_trace() {
     // In Release mode, skip stack trace capture for performance
     return string_literal("[Stack trace disabled in Release build]");
 #else
+    // 64 frames is sufficient for most managed call stacks; deeper recursion
+    // will simply have the oldest frames truncated from the trace.
+    constexpr int MAX_FRAMES = 64;
+    // Skip the 2 internal frames: capture_stack_trace() and create_exception()
+    constexpr int FRAMES_TO_SKIP = 2;
 
 #if defined(CIL2CPP_WINDOWS)
     // Windows: CaptureStackBackTrace + DbgHelp symbolication
@@ -280,11 +285,6 @@ String* capture_stack_trace() {
         sym_initialized = true;
     }
 
-    // 64 frames is sufficient for most managed call stacks; deeper recursion
-    // will simply have the oldest frames truncated from the trace.
-    constexpr int MAX_FRAMES = 64;
-    // Skip the 2 internal frames: capture_stack_trace() and create_exception()
-    constexpr int FRAMES_TO_SKIP = 2;
     void* frames[MAX_FRAMES];
     USHORT frame_count = CaptureStackBackTrace(
         FRAMES_TO_SKIP,
@@ -333,11 +333,6 @@ String* capture_stack_trace() {
 
 #elif defined(CIL2CPP_POSIX)
     // Linux/macOS: backtrace + backtrace_symbols
-    // 64 frames is sufficient for most managed call stacks; deeper recursion
-    // will simply have the oldest frames truncated from the trace.
-    constexpr int MAX_FRAMES = 64;
-    // Skip the 2 internal frames: capture_stack_trace() and create_exception()
-    constexpr int FRAMES_TO_SKIP = 2;
     void* frames[MAX_FRAMES];
     int frame_count = backtrace(frames, MAX_FRAMES);
 

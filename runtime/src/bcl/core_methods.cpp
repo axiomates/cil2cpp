@@ -48,8 +48,10 @@
 static cil2cpp::Object* s_singleton_module = nullptr;
 static std::once_flag s_module_once;
 
-// RuntimeModule has ~6 reference-type fields (all zero-initialized for our singleton).
-// This size must be >= the generated RuntimeModule struct's field area.
+// RuntimeModule field area size for singleton allocation.
+// RuntimeModule has ~6 reference-type fields (ScopeName, FullyQualifiedName, etc.),
+// all zero-initialized. 48 = 6 pointers × 8 bytes on x64.
+// Must be >= the generated RuntimeModule struct's field area (excluding Object header).
 static constexpr size_t kRuntimeModuleFieldsSize = 48;
 
 static cil2cpp::Object* get_singleton_module() {
@@ -508,7 +510,7 @@ extern "C" void* System_Reflection_FieldInfo_GetRawConstantValue(void* __this) {
     auto* fi = reinterpret_cast<cil2cpp::ManagedFieldInfo*>(__this);
     if (!fi || !fi->native_info) return nullptr;
     auto* native = fi->native_info;
-    bool is_literal = (native->flags & 0x0040) != 0;
+    bool is_literal = cil2cpp::metadata::field_is_literal(native->flags);
     if (is_literal && native->field_type) {
         auto elem_size = native->field_type->element_size;
         if (elem_size == 0) elem_size = native->field_type->instance_size;
@@ -536,27 +538,27 @@ extern "C" bool System_Reflection_FieldInfo_get_IsStatic(void* __this) {
 extern "C" bool System_Reflection_FieldInfo_get_IsPublic(void* __this) {
     auto* fi = reinterpret_cast<cil2cpp::ManagedFieldInfo*>(__this);
     if (!fi || !fi->native_info) return false;
-    return (fi->native_info->flags & 0x0007) == 0x0006; // FieldAttributes.Public
+    return cil2cpp::metadata::field_is_public(fi->native_info->flags);
 }
 extern "C" bool System_Reflection_FieldInfo_get_IsPrivate(void* __this) {
     auto* fi = reinterpret_cast<cil2cpp::ManagedFieldInfo*>(__this);
     if (!fi || !fi->native_info) return false;
-    return (fi->native_info->flags & 0x0007) == 0x0001; // FieldAttributes.Private
+    return cil2cpp::metadata::field_is_private(fi->native_info->flags);
 }
 extern "C" bool System_Reflection_FieldInfo_get_IsInitOnly(void* __this) {
     auto* fi = reinterpret_cast<cil2cpp::ManagedFieldInfo*>(__this);
     if (!fi || !fi->native_info) return false;
-    return (fi->native_info->flags & 0x0020) != 0; // FieldAttributes.InitOnly
+    return cil2cpp::metadata::field_is_init_only(fi->native_info->flags);
 }
 extern "C" bool System_Reflection_FieldInfo_get_IsLiteral(void* __this) {
     auto* fi = reinterpret_cast<cil2cpp::ManagedFieldInfo*>(__this);
     if (!fi || !fi->native_info) return false;
-    return (fi->native_info->flags & 0x0040) != 0; // FieldAttributes.Literal
+    return cil2cpp::metadata::field_is_literal(fi->native_info->flags);
 }
 extern "C" bool System_Reflection_FieldInfo_get_IsSpecialName(void* __this) {
     auto* fi = reinterpret_cast<cil2cpp::ManagedFieldInfo*>(__this);
     if (!fi || !fi->native_info) return false;
-    return (fi->native_info->flags & 0x0200) != 0; // FieldAttributes.SpecialName
+    return cil2cpp::metadata::field_is_special_name(fi->native_info->flags);
 }
 
 // ===== System.Reflection.MemberInfo =====
@@ -723,7 +725,7 @@ extern "C" System_Reflection_CallingConventions System_Reflection_MethodBase_get
     auto* ni = _get_native_mi(__this);
     // CallingConventions.Standard = 1, HasThis = 0x20
     // Static methods use Standard, instance methods use Standard|HasThis
-    if (ni && (ni->flags & 0x0010)) return 1; // Static → Standard
+    if (ni && cil2cpp::metadata::method_is_static(ni->flags)) return 1; // Static → Standard
     return 0x21; // Standard | HasThis
 }
 extern "C" bool System_Reflection_MethodBase_get_ContainsGenericParameters(void* /*__this*/) {
@@ -737,15 +739,15 @@ extern "C" bool System_Reflection_MethodBase_get_IsGenericMethodDefinition(void*
 }
 extern "C" bool System_Reflection_MethodBase_get_IsPublic(void* __this) {
     auto* ni = _get_native_mi(__this);
-    return ni && (ni->flags & 0x0007) == 0x0006;
+    return ni && cil2cpp::metadata::method_is_public(ni->flags);
 }
 extern "C" bool System_Reflection_MethodBase_get_IsStatic(void* __this) {
     auto* ni = _get_native_mi(__this);
-    return ni && (ni->flags & 0x0010) != 0;
+    return ni && cil2cpp::metadata::method_is_static(ni->flags);
 }
 extern "C" bool System_Reflection_MethodBase_get_IsFinal(void* __this) {
     auto* ni = _get_native_mi(__this);
-    return ni && (ni->flags & 0x0020) != 0; // MethodAttributes.Final
+    return ni && cil2cpp::metadata::method_is_final(ni->flags);
 }
 extern "C" System_RuntimeMethodHandle System_Reflection_MethodBase_get_MethodHandle(void* __this) {
     auto* ni = _get_native_mi(__this);
@@ -945,7 +947,7 @@ extern "C" System_Reflection_InvocationFlags System_Reflection_RuntimeConstructo
     auto* ni = _get_native_mi(__this);
     if (!ni) return {};
     int32_t flags = 1; // INVOCATION_FLAGS_INITIALIZED
-    if ((ni->flags & 0x0007) != 0x0006) flags |= 2; // Non-public
+    if (!cil2cpp::metadata::method_is_public(ni->flags)) flags |= 2; // Non-public
     return static_cast<System_Reflection_InvocationFlags>(flags);
 }
 
@@ -1035,7 +1037,7 @@ extern "C" System_Reflection_InvocationFlags System_Reflection_RuntimeMethodInfo
     auto* ni = _get_native_mi(__this);
     if (!ni) return {};
     int32_t flags = 1; // INVOCATION_FLAGS_INITIALIZED
-    if ((ni->flags & 0x0007) != 0x0006) flags |= 2; // Non-public
+    if (!cil2cpp::metadata::method_is_public(ni->flags)) flags |= 2; // Non-public
     return static_cast<System_Reflection_InvocationFlags>(flags);
 }
 
@@ -1185,7 +1187,7 @@ extern "C" void* System_Reflection_RuntimePropertyInfo_GetSetMethod(void* __this
 
 // ===== System.Reflection.RuntimePropertyInfo.get =====
 extern "C" System_Reflection_BindingFlags System_Reflection_RuntimePropertyInfo_get_BindingFlags(void* /*__this*/) {
-    return 0x14; // BindingFlags.Public | BindingFlags.Instance (reasonable default)
+    return cil2cpp::binding_flags::Default; // Public | Instance
 }
 extern "C" void* System_Reflection_RuntimePropertyInfo_get_ReflectedTypeInternal(void* __this) {
     auto* pi = reinterpret_cast<cil2cpp::ManagedPropertyInfo*>(__this);

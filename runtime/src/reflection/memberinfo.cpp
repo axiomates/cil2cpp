@@ -303,8 +303,7 @@ ManagedFieldInfo* type_get_field(Type* t, String* name) {
     for (UInt32 i = 0; i < info->field_count; i++) {
         if (std::strcmp(info->fields[i].name, name_utf8) == 0) {
             // .NET GetField(string) without BindingFlags returns public fields only
-            // FieldAttributes.FieldAccessMask = 0x0007, FieldAttributes.Public = 0x0006
-            if ((info->fields[i].flags & 0x0007) != 0x0006) continue;
+            if (!metadata::field_is_public(info->fields[i].flags)) continue;
             return create_managed_field_info(&info->fields[i]);
         }
     }
@@ -332,27 +331,27 @@ Type* methodinfo_get_return_type(ManagedMethodInfo* mi) {
 
 Boolean methodinfo_get_is_public(ManagedMethodInfo* mi) {
     if (!mi || !mi->native_info) throw_null_reference();
-    return (mi->native_info->flags & 0x0007) == 0x0006; // MemberAccessMask == Public
+    return metadata::method_is_public(mi->native_info->flags);
 }
 
 Boolean methodinfo_get_is_static(ManagedMethodInfo* mi) {
     if (!mi || !mi->native_info) throw_null_reference();
-    return (mi->native_info->flags & 0x0010) != 0; // Static
+    return metadata::method_is_static(mi->native_info->flags);
 }
 
 Boolean methodinfo_get_is_virtual(ManagedMethodInfo* mi) {
     if (!mi || !mi->native_info) throw_null_reference();
-    return (mi->native_info->flags & 0x0040) != 0; // Virtual
+    return metadata::method_is_virtual(mi->native_info->flags);
 }
 
 Boolean methodinfo_get_is_abstract(ManagedMethodInfo* mi) {
     if (!mi || !mi->native_info) throw_null_reference();
-    return (mi->native_info->flags & 0x0400) != 0; // Abstract
+    return metadata::method_is_abstract(mi->native_info->flags);
 }
 
 Boolean methodinfo_get_is_final(ManagedMethodInfo* mi) {
     if (!mi || !mi->native_info) throw_null_reference();
-    return (mi->native_info->flags & 0x0020) != 0; // Final
+    return metadata::method_is_final(mi->native_info->flags);
 }
 
 String* methodinfo_to_string(ManagedMethodInfo* mi) {
@@ -405,7 +404,7 @@ Object* methodinfo_invoke(ManagedMethodInfo* mi, Object* obj, Array* parameters)
     // For simplicity, support up to 4 parameters for now
     // This covers the vast majority of reflection invocation use cases
     UInt32 param_count = native->parameter_count;
-    bool is_static = (native->flags & 0x0010) != 0;
+    bool is_static = metadata::method_is_static(native->flags);
 
     // Collect parameter pointers from array
     Object** args = nullptr;
@@ -474,32 +473,32 @@ Type* fieldinfo_get_field_type(ManagedFieldInfo* fi) {
 
 Boolean fieldinfo_get_is_public(ManagedFieldInfo* fi) {
     if (!fi || !fi->native_info) throw_null_reference();
-    return (fi->native_info->flags & 0x0007) == 0x0006; // Public
+    return metadata::field_is_public(fi->native_info->flags);
 }
 
 Boolean fieldinfo_get_is_static(ManagedFieldInfo* fi) {
     if (!fi || !fi->native_info) throw_null_reference();
-    return (fi->native_info->flags & 0x0010) != 0; // Static
+    return metadata::field_is_static(fi->native_info->flags);
 }
 
 Boolean fieldinfo_get_is_init_only(ManagedFieldInfo* fi) {
     if (!fi || !fi->native_info) throw_null_reference();
-    return (fi->native_info->flags & 0x0020) != 0; // InitOnly
+    return metadata::field_is_init_only(fi->native_info->flags);
 }
 
 Boolean fieldinfo_get_is_literal(ManagedFieldInfo* fi) {
     if (!fi || !fi->native_info) throw_null_reference();
-    return (fi->native_info->flags & 0x0040) != 0; // Literal
+    return metadata::field_is_literal(fi->native_info->flags);
 }
 
 Boolean fieldinfo_get_is_private(ManagedFieldInfo* fi) {
     if (!fi || !fi->native_info) throw_null_reference();
-    return (fi->native_info->flags & 0x0007) == 0x0001; // Private
+    return metadata::field_is_private(fi->native_info->flags);
 }
 
 Boolean fieldinfo_get_is_special_name(ManagedFieldInfo* fi) {
     if (!fi || !fi->native_info) throw_null_reference();
-    return (fi->native_info->flags & 0x0200) != 0; // SpecialName
+    return metadata::field_is_special_name(fi->native_info->flags);
 }
 
 String* fieldinfo_to_string(ManagedFieldInfo* fi) {
@@ -518,13 +517,13 @@ String* fieldinfo_to_string(ManagedFieldInfo* fi) {
 Object* fieldinfo_get_value(ManagedFieldInfo* fi, Object* obj) {
     if (!fi || !fi->native_info) throw_null_reference();
     auto* native = fi->native_info;
-    bool is_static = (native->flags & 0x0010) != 0;
+    bool is_static = metadata::field_is_static(native->flags);
 
     if (!is_static && !obj) throw_null_reference();
 
     // For literal static fields (enum constants, const), box the constant_value
     if (is_static) {
-        bool is_literal = (native->flags & 0x0040) != 0;
+        bool is_literal = metadata::field_is_literal(native->flags);
         if (is_literal && native->field_type) {
             auto elem_size = native->field_type->element_size;
             if (elem_size == 0) elem_size = native->field_type->instance_size;
@@ -550,7 +549,7 @@ Object* fieldinfo_get_value(ManagedFieldInfo* fi, Object* obj) {
 void fieldinfo_set_value(ManagedFieldInfo* fi, Object* obj, Object* value) {
     if (!fi || !fi->native_info) throw_null_reference();
     auto* native = fi->native_info;
-    bool is_static = (native->flags & 0x0010) != 0;
+    bool is_static = metadata::field_is_static(native->flags);
 
     if (!is_static && !obj) throw_null_reference();
 

@@ -105,6 +105,7 @@ enum class FieldAttributeFlags : UInt32 {
     Literal         = 0x0040,
     NotSerialized   = 0x0080,
     HasFieldRVA     = 0x0100,
+    SpecialName     = 0x0200,
 };
 
 inline FieldAttributeFlags operator|(FieldAttributeFlags a, FieldAttributeFlags b) {
@@ -141,6 +142,66 @@ inline MethodAttributeFlags operator|(MethodAttributeFlags a, MethodAttributeFla
 inline bool operator&(MethodAttributeFlags a, MethodAttributeFlags b) {
     return (static_cast<UInt32>(a) & static_cast<UInt32>(b)) != 0;
 }
+
+// ---- Inline helpers for ECMA-335 attribute flag queries ----
+// These wrap the raw bitmask operations above, replacing ~41 scattered raw hex sites.
+
+namespace metadata {
+
+// MethodAttributes helpers (ECMA-335 II.23.1.10)
+inline bool method_is_public(UInt32 flags) {
+    return (flags & static_cast<UInt32>(MethodAttributeFlags::MemberAccessMask))
+        == static_cast<UInt32>(MethodAttributeFlags::Public);
+}
+inline bool method_is_assembly(UInt32 flags) {
+    return (flags & static_cast<UInt32>(MethodAttributeFlags::MemberAccessMask))
+        == static_cast<UInt32>(MethodAttributeFlags::Assembly);
+}
+inline bool method_is_static(UInt32 flags) {
+    return (flags & static_cast<UInt32>(MethodAttributeFlags::Static)) != 0;
+}
+inline bool method_is_virtual(UInt32 flags) {
+    return (flags & static_cast<UInt32>(MethodAttributeFlags::Virtual)) != 0;
+}
+inline bool method_is_abstract(UInt32 flags) {
+    return (flags & static_cast<UInt32>(MethodAttributeFlags::Abstract)) != 0;
+}
+inline bool method_is_final(UInt32 flags) {
+    return (flags & static_cast<UInt32>(MethodAttributeFlags::Final)) != 0;
+}
+
+// FieldAttributes helpers (ECMA-335 II.23.1.5)
+inline bool field_is_public(UInt32 flags) {
+    return (flags & static_cast<UInt32>(FieldAttributeFlags::FieldAccessMask))
+        == static_cast<UInt32>(FieldAttributeFlags::Public);
+}
+inline bool field_is_private(UInt32 flags) {
+    return (flags & static_cast<UInt32>(FieldAttributeFlags::FieldAccessMask))
+        == static_cast<UInt32>(FieldAttributeFlags::Private);
+}
+inline bool field_is_static(UInt32 flags) {
+    return (flags & static_cast<UInt32>(FieldAttributeFlags::Static)) != 0;
+}
+inline bool field_is_init_only(UInt32 flags) {
+    return (flags & static_cast<UInt32>(FieldAttributeFlags::InitOnly)) != 0;
+}
+inline bool field_is_literal(UInt32 flags) {
+    return (flags & static_cast<UInt32>(FieldAttributeFlags::Literal)) != 0;
+}
+inline bool field_is_special_name(UInt32 flags) {
+    return (flags & static_cast<UInt32>(FieldAttributeFlags::SpecialName)) != 0;
+}
+
+} // namespace metadata
+
+// ---- System.Reflection.BindingFlags constants ----
+namespace binding_flags {
+    constexpr Int32 Instance  = 0x04;
+    constexpr Int32 Static    = 0x08;
+    constexpr Int32 Public    = 0x10;
+    constexpr Int32 NonPublic = 0x20;
+    constexpr Int32 Default   = Public | Instance; // 0x14
+} // namespace binding_flags
 
 /**
  * Custom attribute constructor argument value.

@@ -216,7 +216,7 @@ void Marshal_StructureToPtr(void* structure, intptr_t ptr, Boolean /*fDeleteOld*
     if (!ti || ti->instance_size <= 0) return;
     // Boxed value type layout: [TypeInfo* (8)] [sync_block (4)] [pad (4)] [struct data...]
     // TypeInfo.instance_size = sizeof(ValueType) (no header)
-    auto* src = reinterpret_cast<uint8_t*>(structure) + 16; // skip object header
+    auto* src = reinterpret_cast<uint8_t*>(structure) + sizeof(cil2cpp::Object); // skip object header
     std::memcpy(reinterpret_cast<void*>(ptr), src, static_cast<size_t>(ti->instance_size));
 }
 
@@ -400,7 +400,7 @@ Boolean Thread_Yield() {
 }
 
 Int32 Thread_get_OptimalMaxSpinWaitsPerSpinIteration() {
-    return 70; // Same default as .NET runtime
+    return 70; // CoreCLR SpinWait.cs: SLEEP_0_EVER_ITERATION = 70
 }
 
 void* Thread_get_CurrentThread() {
@@ -969,62 +969,62 @@ static MethodInfo* get_native_method_info(void* __this) {
 
 Boolean MethodBase_get_IsVirtual(void* __this) {
     auto* ni = get_native_method_info(__this);
-    return ni && (ni->flags & 0x0040); // MethodAttributes.Virtual
+    return ni && metadata::method_is_virtual(ni->flags);
 }
 
 Boolean MethodBase_get_IsPublic(void* __this) {
     auto* ni = get_native_method_info(__this);
-    return ni && (ni->flags & 0x0007) == 0x0006; // MemberAccessMask == Public
+    return ni && metadata::method_is_public(ni->flags);
 }
 
 Boolean MethodBase_get_IsStatic(void* __this) {
     auto* ni = get_native_method_info(__this);
-    return ni && (ni->flags & 0x0010); // MethodAttributes.Static
+    return ni && metadata::method_is_static(ni->flags);
 }
 
 Boolean MethodBase_get_IsAbstract(void* __this) {
     auto* ni = get_native_method_info(__this);
-    return ni && (ni->flags & 0x0400); // MethodAttributes.Abstract
+    return ni && metadata::method_is_abstract(ni->flags);
 }
 
 Boolean MethodBase_get_IsAssembly(void* __this) {
     auto* ni = get_native_method_info(__this);
-    return ni && (ni->flags & 0x0007) == 0x0003; // MemberAccessMask == Assembly
+    return ni && metadata::method_is_assembly(ni->flags);
 }
 
 Boolean MethodBase_get_IsFinal(void* __this) {
     auto* ni = get_native_method_info(__this);
-    return ni && (ni->flags & 0x0020); // MethodAttributes.Final
+    return ni && metadata::method_is_final(ni->flags);
 }
 
 Boolean FieldInfo_get_IsPublic(void* __this) {
     auto* fi = static_cast<ManagedFieldInfo*>(static_cast<Object*>(__this));
     if (!fi || !fi->native_info) return false;
-    return (fi->native_info->flags & 0x0007) == 0x0006; // Public
+    return metadata::field_is_public(fi->native_info->flags);
 }
 
 Boolean FieldInfo_get_IsPrivate(void* __this) {
     auto* fi = static_cast<ManagedFieldInfo*>(static_cast<Object*>(__this));
     if (!fi || !fi->native_info) return false;
-    return (fi->native_info->flags & 0x0007) == 0x0001; // Private
+    return metadata::field_is_private(fi->native_info->flags);
 }
 
 Boolean FieldInfo_get_IsInitOnly(void* __this) {
     auto* fi = static_cast<ManagedFieldInfo*>(static_cast<Object*>(__this));
     if (!fi || !fi->native_info) return false;
-    return (fi->native_info->flags & 0x0020) != 0; // InitOnly
+    return metadata::field_is_init_only(fi->native_info->flags);
 }
 
 Boolean FieldInfo_get_IsLiteral(void* __this) {
     auto* fi = static_cast<ManagedFieldInfo*>(static_cast<Object*>(__this));
     if (!fi || !fi->native_info) return false;
-    return (fi->native_info->flags & 0x0040) != 0; // Literal
+    return metadata::field_is_literal(fi->native_info->flags);
 }
 
 Boolean FieldInfo_get_IsSpecialName(void* __this) {
     auto* fi = static_cast<ManagedFieldInfo*>(static_cast<Object*>(__this));
     if (!fi || !fi->native_info) return false;
-    return (fi->native_info->flags & 0x0200) != 0; // SpecialName
+    return metadata::field_is_special_name(fi->native_info->flags);
 }
 
 Boolean Type_get_IsNotPublic(void* __this) {
@@ -1046,14 +1046,13 @@ String* MemberInfo_get_Name(void* __this) {
 }
 
 Int32 RuntimeMethodInfo_get_BindingFlags(void* __this) {
-    // BindingFlags: Public=16, NonPublic=32, Static=8, Instance=4
     auto* ni = get_native_method_info(__this);
-    if (!ni) return 0x14; // fallback: Public | Instance
+    if (!ni) return binding_flags::Default;
     Int32 flags = 0;
-    if ((ni->flags & 0x0007) == 0x0006) flags |= 0x10; // Public
-    else flags |= 0x20; // NonPublic
-    if (ni->flags & 0x0010) flags |= 0x08; // Static
-    else flags |= 0x04; // Instance
+    if (metadata::method_is_public(ni->flags)) flags |= binding_flags::Public;
+    else flags |= binding_flags::NonPublic;
+    if (metadata::method_is_static(ni->flags)) flags |= binding_flags::Static;
+    else flags |= binding_flags::Instance;
     return flags;
 }
 
@@ -1072,12 +1071,12 @@ void* RuntimeMethodInfo_GetDeclaringTypeInternal(void* __this) {
 
 Int32 RuntimeConstructorInfo_get_BindingFlags(void* __this) {
     auto* ni = get_native_method_info(__this);
-    if (!ni) return 0x14;
+    if (!ni) return binding_flags::Default;
     Int32 flags = 0;
-    if ((ni->flags & 0x0007) == 0x0006) flags |= 0x10; // Public
-    else flags |= 0x20; // NonPublic
-    if (ni->flags & 0x0010) flags |= 0x08; // Static
-    else flags |= 0x04; // Instance
+    if (metadata::method_is_public(ni->flags)) flags |= binding_flags::Public;
+    else flags |= binding_flags::NonPublic;
+    if (metadata::method_is_static(ni->flags)) flags |= binding_flags::Static;
+    else flags |= binding_flags::Instance;
     return flags;
 }
 
@@ -1104,14 +1103,14 @@ void* ConstructorInfo_Invoke(void* __this, Int32 /*invokeAttr*/, void* /*binder*
 
 Int32 RuntimeFieldInfo_get_BindingFlags(void* __this) {
     // RuntimeFieldInfo aliases to ManagedFieldInfo which has native_info (FieldInfo*)
-    if (!__this) return 0x14;
+    if (!__this) return binding_flags::Default;
     auto* fi = reinterpret_cast<ManagedFieldInfo*>(__this);
-    if (!fi->native_info) return 0x14;
+    if (!fi->native_info) return binding_flags::Default;
     Int32 flags = 0;
-    if ((fi->native_info->flags & 0x0007) == 0x0006) flags |= 0x10; // Public
-    else flags |= 0x20; // NonPublic
-    if (fi->native_info->flags & 0x0010) flags |= 0x08; // Static
-    else flags |= 0x04; // Instance
+    if (metadata::field_is_public(fi->native_info->flags)) flags |= binding_flags::Public;
+    else flags |= binding_flags::NonPublic;
+    if (metadata::field_is_static(fi->native_info->flags)) flags |= binding_flags::Static;
+    else flags |= binding_flags::Instance;
     return flags;
 }
 
@@ -1299,9 +1298,11 @@ void* RuntimeType_get_Cache(void* __this) {
     auto it = g_type_cache_map.find(type->type_info);
     if (it != g_type_cache_map.end()) return it->second;
 
-    // Allocate a RuntimeTypeCache object (176 bytes should be enough)
-    // The exact size doesn't matter much — GC-allocated, zeroed
-    auto* cache = gc::alloc(176, &System_RuntimeType_RuntimeTypeCache_TypeInfo);
+    // Allocate a RuntimeTypeCache object using the codegen-provided instance_size.
+    // Fallback to 176 (= sizeof(Object) + 20 fields × 8 bytes) for test stubs.
+    auto alloc_size = System_RuntimeType_RuntimeTypeCache_TypeInfo.instance_size;
+    if (alloc_size <= static_cast<int32_t>(sizeof(cil2cpp::Object))) alloc_size = 176;
+    auto* cache = gc::alloc(alloc_size, &System_RuntimeType_RuntimeTypeCache_TypeInfo);
     auto* data = reinterpret_cast<char*>(cache);
     // Set f_m_runtimeType at offset sizeof(Object) — first field after Object header
     *reinterpret_cast<void**>(data + sizeof(Object)) = __this;

@@ -43,6 +43,8 @@ cil2cpp::TypeInfo System_AttributeUsageAttribute_TypeInfo = {
 };
 
 // RuntimeType.RuntimeTypeCache TypeInfo — defined in generated code.
+// instance_size = 176: Object header (16) + 20 pointer/enum fields (160) on x64.
+// In production, codegen sets this via sizeof(System_RuntimeType_RuntimeTypeCache).
 cil2cpp::TypeInfo System_RuntimeType_RuntimeTypeCache_TypeInfo = {
     .name = "RuntimeTypeCache", .namespace_name = "System",
     .full_name = "System.RuntimeType+RuntimeTypeCache",

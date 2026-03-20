@@ -23,7 +23,7 @@ public partial class IRBuilder
                     SynthesizeRecordGetHashCode(method, type);
                     break;
                 case "Equals" when !method.IsStatic && method.Parameters.Count == 1
-                    && method.Parameters[0].CppTypeName.Contains(type.CppName):
+                    && method.Parameters[0].ILTypeName == type.ILFullName:
                     SynthesizeRecordTypedEquals(method, type);
                     break;
                 case "Equals" when !method.IsStatic && method.Parameters.Count == 1:
