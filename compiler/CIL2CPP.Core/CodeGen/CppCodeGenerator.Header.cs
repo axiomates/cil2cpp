@@ -562,6 +562,15 @@ public partial class CppCodeGenerator
             sb.AppendLine();
         }
 
+        // Compile-time validation: runtime singleton allocation sizes must fit generated structs
+        if (userTypes.Any(t => t.CppName == "System_Reflection_RuntimeModule"))
+        {
+            sb.AppendLine("// Safety: runtime allocates kRuntimeModuleFieldsSize=48 bytes for RuntimeModule fields");
+            sb.AppendLine("static_assert(sizeof(System_Reflection_RuntimeModule) - sizeof(cil2cpp::Object) <= 48,");
+            sb.AppendLine("    \"RuntimeModule fields exceed runtime's kRuntimeModuleFieldsSize (48 bytes)\");");
+            sb.AppendLine();
+        }
+
         return new GeneratedFile
         {
             FileName = $"{_module.Name}.h",

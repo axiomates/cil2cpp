@@ -1247,7 +1247,8 @@ extern "C" bool System_RuntimeType_get_IsNullableOfT(void* __this) {
     // CoreCLR reads MethodTable.Flags — we check the type name instead.
     auto* t = reinterpret_cast<cil2cpp::Type*>(__this);
     if (!t || !t->type_info || !t->type_info->full_name) return false;
-    return std::strncmp(t->type_info->full_name, "System.Nullable`1", 17) == 0;
+    static constexpr char kNullablePrefix[] = "System.Nullable`1";
+    return std::strncmp(t->type_info->full_name, kNullablePrefix, sizeof(kNullablePrefix) - 1) == 0;
 }
 
 // ===== System.RuntimeTypeHandle =====
