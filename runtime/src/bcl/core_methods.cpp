@@ -1242,6 +1242,14 @@ extern "C" bool System_RuntimeType_IsDelegate(void* __this) {
     return base_name && std::strcmp(base_name, "System.MulticastDelegate") == 0;
 }
 
+extern "C" bool System_RuntimeType_get_IsNullableOfT(void* __this) {
+    // Checks if this RuntimeType represents Nullable<T>.
+    // CoreCLR reads MethodTable.Flags — we check the type name instead.
+    auto* t = reinterpret_cast<cil2cpp::Type*>(__this);
+    if (!t || !t->type_info || !t->type_info->full_name) return false;
+    return std::strncmp(t->type_info->full_name, "System.Nullable`1", 17) == 0;
+}
+
 // ===== System.RuntimeTypeHandle =====
 // Methods removed from SkipAllMethodsTypes were compiled from IL by SocketTest.
 // But RuntimeTypeHandle is back in SkipAllMethodsTypes due to pointer-level mismatches.

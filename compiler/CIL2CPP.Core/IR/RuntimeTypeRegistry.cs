@@ -340,7 +340,7 @@ public static class RuntimeTypeRegistry
         // (offset 16) instead of TypeInfo.base_type (offset 24). core_methods.cpp provides correct
         // implementations using TypeInfo.base_type.
         if (ilTypeName == "System.RuntimeType" && method.Name is "get_IsEnum" or "get_IsActualEnum"
-            or "IsDelegate" or "MakeGenericType")
+            or "IsDelegate" or "MakeGenericType" or "get_IsNullableOfT")
             return true;
 
         // Other CoreRuntimeTypes: allow methods with real compiled bodies.

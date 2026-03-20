@@ -923,7 +923,8 @@ public static class ICallRegistry
         {
             var typeArg = gim.GenericArguments[0];
             bool isValueType = false;
-            try { isValueType = typeArg.Resolve()?.IsValueType == true; } catch { }
+            try { isValueType = typeArg.Resolve()?.IsValueType == true; }
+            catch { isValueType = CppNameMapper.IsValueType(typeArg.FullName); }
             if (!isValueType)
             {
                 return Lookup(typeFullName, methodName, paramCount, "System.Object&");

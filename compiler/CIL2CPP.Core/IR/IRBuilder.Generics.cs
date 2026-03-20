@@ -868,6 +868,14 @@ public partial class IRBuilder
                 {
                     GenerateStubBody(irMethod);
                 }
+                // Pre-compilation check: detect MemberInfo body type conflicts on Cecil body
+                // before wasting compilation effort (e.g., MemberInfoCache<RuntimePropertyInfo>.PopulateMethods()
+                // creates RuntimeMethodInfo — non-homomorphic with T)
+                else if (HasGenericBodyTypeConflict(bodyMethod, declaringIrType))
+                {
+                    irMethod.IrStubReason = "GenericBodyTypeConflict";
+                    GenerateStubBody(irMethod);
+                }
                 else
                 {
                     // Pre-scan: discover generic types referenced in the body that need to
@@ -888,14 +896,6 @@ public partial class IRBuilder
 
                     var methodInfo = new IL.MethodInfo(bodyMethod);
                     ConvertMethodBodyWithGenerics(methodInfo, irMethod, typeParamMap);
-
-                    // Detect MemberInfo body type conflicts after compilation
-                    if (DetectGenericBodyTypeConflict(irMethod, declaringIrType))
-                    {
-                        irMethod.IrStubReason = "GenericBodyTypeConflict";
-                        irMethod.BasicBlocks.Clear();
-                        GenerateStubBody(irMethod);
-                    }
                 }
             }
     }
@@ -1564,32 +1564,33 @@ public partial class IRBuilder
     }
 
     /// <summary>
-    /// Known MemberInfo subtype C++ names — used for generic body type conflict detection.
+    /// Known MemberInfo subtype IL names — used for generic body type conflict pre-check on Cecil body.
     /// </summary>
-    private static readonly string[] MemberInfoSubtypeNames =
+    private static readonly HashSet<string> MemberInfoSubtypeILNames = new()
     {
-        "System_Reflection_RuntimeMethodInfo",
-        "System_Reflection_RuntimeConstructorInfo",
-        "System_Reflection_RuntimeFieldInfo",
-        "System_Reflection_RuntimePropertyInfo",
-        "System_Reflection_RuntimeEventInfo",
-        "System_RuntimeType",
+        "System.Reflection.RuntimeMethodInfo",
+        "System.Reflection.RuntimeConstructorInfo",
+        "System.Reflection.RuntimeFieldInfo",
+        "System.Reflection.RuntimePropertyInfo",
+        "System.Reflection.RuntimeEventInfo",
+        "System.RuntimeType",
     };
 
-    private static bool IsMemberInfoSubtype(string cppTypeName)
-        => cppTypeName.StartsWith("System_Reflection_Runtime") || cppTypeName == "System_RuntimeType";
+    private static bool IsMemberInfoSubtypeIL(string ilTypeName)
+        => MemberInfoSubtypeILNames.Contains(ilTypeName);
 
     /// <summary>
-    /// Detect methods on generic type specializations where the method body uses
-    /// a different MemberInfo subtype than the parent type's generic argument.
+    /// Pre-compilation check: scan Cecil method body for MemberInfo subtype references
+    /// that conflict with the declaring generic type's type argument.
     /// E.g., MemberInfoCache&lt;RuntimePropertyInfo&gt;.PopulateMethods() creates
     /// RuntimeMethodInfo objects — the body is inherently non-homomorphic with T.
-    /// Returns true if the method should be stubbed.
+    /// Returns true if the method should be stubbed WITHOUT compiling.
     /// </summary>
-    private static bool DetectGenericBodyTypeConflict(IRMethod irMethod, IRType declaringType)
+    private static bool HasGenericBodyTypeConflict(
+        Mono.Cecil.MethodDefinition cecilMethod, IRType declaringType)
     {
         if (!declaringType.IsGenericInstance) return false;
-        if (irMethod.BasicBlocks.Count == 0) return false;
+        if (cecilMethod.Body == null) return false;
 
         // Extract generic args from the declaring type's IL name
         var typeIlName = declaringType.ILFullName;
@@ -1599,32 +1600,32 @@ public partial class IRBuilder
         var typeArgs = CppNameMapper.ParseGenericArgs(argsStr);
         if (typeArgs.Count == 0) return false;
 
-        var typeArgCppNames = typeArgs.Select(CppNameMapper.MangleTypeName).ToHashSet();
+        // Check if any type arg is a MemberInfo subtype
+        var memberInfoArgs = typeArgs.Where(IsMemberInfoSubtypeIL).ToList();
+        if (memberInfoArgs.Count == 0) return false;
 
-        // Collect MemberInfo subtypes referenced in method body
+        // Scan Cecil body for newobj/call/callvirt referencing different MemberInfo subtypes
         var bodyMemberInfoTypes = new HashSet<string>();
-        foreach (var block in irMethod.BasicBlocks)
+        foreach (var instr in cecilMethod.Body.Instructions)
         {
-            foreach (var instr in block.Instructions)
-            {
-                if (instr is IRNewObj newObj && IsMemberInfoSubtype(newObj.TypeCppName))
-                    bodyMemberInfoTypes.Add(newObj.TypeCppName);
-                else if (instr is IRCall call && !string.IsNullOrEmpty(call.FunctionName))
-                {
-                    foreach (var memberType in MemberInfoSubtypeNames)
-                    {
-                        if (call.FunctionName.Contains(memberType))
-                            bodyMemberInfoTypes.Add(memberType);
-                    }
-                }
-            }
+            if (instr.Operand is not MethodReference mr) continue;
+            var declTypeName = mr.DeclaringType.FullName;
+            // Strip generic suffix for nested generic types
+            var backtick = declTypeName.IndexOf('`');
+            if (backtick > 0) declTypeName = declTypeName[..backtick];
+            if (IsMemberInfoSubtypeIL(declTypeName))
+                bodyMemberInfoTypes.Add(declTypeName);
+            // Also check for newobj of MemberInfo subtypes
+            if (instr.OpCode == Mono.Cecil.Cil.OpCodes.Newobj && IsMemberInfoSubtypeIL(declTypeName))
+                bodyMemberInfoTypes.Add(declTypeName);
         }
 
+        // Conflict: body references MemberInfo subtype X, but type arg is MemberInfo subtype Y (X≠Y)
         foreach (var bodyType in bodyMemberInfoTypes)
         {
-            foreach (var argCpp in typeArgCppNames)
+            foreach (var arg in memberInfoArgs)
             {
-                if (IsMemberInfoSubtype(argCpp) && argCpp != bodyType)
+                if (arg != bodyType)
                     return true;
             }
         }
@@ -3532,6 +3533,14 @@ public partial class IRBuilder
                 // Skip ICall-mapped methods — dead code (callers redirected to ICall function)
                 if (irMethod.HasICallMapping) continue;
 
+                // Pre-compilation check: detect MemberInfo body type conflicts on Cecil body
+                if (irMethod.DeclaringType != null && HasGenericBodyTypeConflict(cecilMethod, irMethod.DeclaringType))
+                {
+                    irMethod.IrStubReason = "GenericBodyTypeConflict";
+                    GenerateStubBody(irMethod);
+                    continue;
+                }
+
                 // Demand-driven: discover types referenced in this body BEFORE compiling.
                 var prevTypeCount = _module.Types.Count;
                 EnsureBodyReferencedTypesExist(cecilMethod, typeParamMap);
@@ -3542,14 +3551,6 @@ public partial class IRBuilder
 
                 var methodInfo = new IL.MethodInfo(cecilMethod);
                 ConvertMethodBodyWithGenerics(methodInfo, irMethod, typeParamMap);
-
-                // Detect MemberInfo body type conflicts after compilation
-                if (irMethod.DeclaringType != null && DetectGenericBodyTypeConflict(irMethod, irMethod.DeclaringType))
-                {
-                    irMethod.IrStubReason = "GenericBodyTypeConflict";
-                    irMethod.BasicBlocks.Clear();
-                    GenerateStubBody(irMethod);
-                }
             }
 
             // Recover skipped methods whose keys are now in _calledSpecializedMethods.

@@ -48,6 +48,12 @@ public partial class IRBuilder
         "System.Reflection.RuntimeCustomAttributeData",
         // RuntimeMethodHandleInternal: CLR-internal struct wrapping method pointer
         "System.RuntimeMethodHandleInternal",
+        // Reflection.Emit — JIT-only, AOT-incompatible (DynamicMethod, ILGenerator, etc.)
+        "System.Reflection.Emit.DynamicMethod",
+        "System.Reflection.Emit.ILGenerator",
+        "System.Reflection.Emit.Label",
+        "System.Reflection.Emit.LocalBuilder",
+        "System.Reflection.Emit.RuntimeModuleBuilder",
         // Phase II.2: DefaultBinder/DBNull/Signature/ThreadInt64PersistentCounter/IAsyncLocal/PosixSignalRegistration removed — BCL IL compiles
         // Phase II.1: CalendarId/EraInfo removed — BCL enums/structs compile from IL
         // Phase II.5: WaitHandle removed — RuntimeProvided with OS primitive ICalls
@@ -117,6 +123,10 @@ public partial class IRBuilder
         // Only block if the open type can't be resolved (missing Cecil definition).
         // Resolvable display classes will be discovered and compiled by the demand-driven
         // generic specialization fixpoint in ConvertDeferredGenericBodies.
+        // NOTE: We intentionally do NOT scan instruction operands for CLR-internal types here.
+        // Methods may reference Reflection.Emit/EventSource types in conditional branches
+        // (guarded by RuntimeFeature.IsDynamicCodeSupported) — stubbing the entire method
+        // would break real code paths.
         foreach (var instr in cecilMethod.Body.Instructions)
         {
             TypeReference? refType = null;

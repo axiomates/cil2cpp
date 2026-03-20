@@ -1131,8 +1131,9 @@ public partial class IRBuilder
             else
             {
                 // Fallback: try Cecil resolve (works for non-generic typeArg)
+                // Resolution can throw on corrupt metadata or cross-assembly references — null is safe
                 TypeDefinition? activatorTargetDef = null;
-                try { activatorTargetDef = typeArg.Resolve(); } catch { }
+                try { activatorTargetDef = typeArg.Resolve(); } catch (Exception) { }
                 if (activatorTargetDef != null)
                 {
                     hasParameterlessCtor = activatorTargetDef.Methods.Any(m =>
@@ -1878,7 +1879,7 @@ public partial class IRBuilder
                 //   IntPtr/UIntPtr — ToPointer ICall takes intptr_t*/uintptr_t*
                 bool isValueTarget = false;
                 try { isValueTarget = methodRef.DeclaringType.Resolve()?.IsValueType == true; }
-                catch { }
+                catch { isValueTarget = CppNameMapper.IsValueType(methodRef.DeclaringType.FullName); }
                 if (isValueTarget
                     && methodRef.DeclaringType.FullName is not "System.ArgIterator"
                         and not "System.IntPtr" and not "System.UIntPtr")
@@ -2840,12 +2841,13 @@ public partial class IRBuilder
             else
             {
                 // Fallback: check Cecil for BCL delegate types not in _typeCache
+                // Resolution can fail for cross-assembly types — isDelegateCtor stays false (safe default)
                 try
                 {
                     var resolved = ctorRef.DeclaringType.Resolve();
                     isDelegateCtor = resolved?.BaseType?.FullName is "System.MulticastDelegate" or "System.Delegate";
                 }
-                catch { }
+                catch (Exception) { }
             }
         }
         if (isDelegateCtor)
@@ -2989,7 +2991,8 @@ public partial class IRBuilder
         else
         {
             // Fallback: check Cecil directly (handles BCL generic types not yet in cache)
-            try { isValueType = ctorRef.DeclaringType.Resolve()?.IsValueType == true; } catch { }
+            try { isValueType = ctorRef.DeclaringType.Resolve()?.IsValueType == true; }
+            catch { isValueType = CppNameMapper.IsValueType(ctorRef.DeclaringType.FullName); }
         }
         if (isValueType)
         {

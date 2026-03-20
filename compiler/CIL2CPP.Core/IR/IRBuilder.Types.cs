@@ -544,7 +544,10 @@ public partial class IRBuilder
 
             toAdd.Add(resolved);
         }
-        catch { }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[CIL2CPP] Warning: TryDiscoverValueTypeLocal failed to resolve '{typeRef?.FullName}': {ex.Message}");
+        }
     }
 
     private void TryDiscoverCecilType(TypeReference? typeRef, HashSet<string> seen, List<TypeDefinition> toAdd)
@@ -574,6 +577,9 @@ public partial class IRBuilder
 
             toAdd.Add(resolved);
         }
-        catch { }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[CIL2CPP] Warning: TryDiscoverCecilType failed to resolve '{typeRef?.FullName}': {ex.Message}");
+        }
     }
 }
