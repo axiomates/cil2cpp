@@ -32,10 +32,10 @@ These are required before CIL2CPP can claim "compiles .NET NativeAOT projects":
 | Full HTTP GET | C.6 ✅ | `HttpClient.GetStringAsync("http://...")` async request/response chain — **working** |
 | NativeAOT metadata | D | `[DynamicallyAccessedMembers]`, ILLink feature switches, NuGet package validation |
 | JSON serialization (SG) | D.5 ✅ | System.Text.Json source generator + Newtonsoft.Json 13.0.3 (NuGet) — **both validated end-to-end** |
-| MarshalAs P/Invoke | C.7 ✅ | `[MarshalAs]` ✅, `[Out]`/`[In]` ✅, array marshaling (ByValTStr/ByValArray/LPArray ✅, [Out] arrays pending) — PInvokeTest all 8 tests pass |
+| MarshalAs P/Invoke | C.7 ✅ | `[MarshalAs]` ✅, `[Out]`/`[In]` ✅, array marshaling (ByValTStr/ByValArray/LPArray ✅, [Out] LPArray + SizeParamIndex ✅) — PInvokeTest all 10 tests pass |
 | SChannel TLS (Windows) | E.win ✅ | HTTPS via `secur32.dll`/`schannel.dll` P/Invoke — **working** (HttpsGetTest passes) |
-| Compression | E.2 | zlib via System.IO.Compression.Native |
-| RenderedBodyError → 0 | H.2 | Fix remaining codegen bugs (17 RE stubs in HelloWorld baseline, not blocking NuGet) |
+| Compression | E.2 ✅ | zlib via System.IO.Compression.Native — GZipStream/DeflateStream round-trip working (CompressionTest passes) |
+| RenderedBodyError → 0 | H.2 | Investigated: ~114 stubs are genuinely correct AOT stubs (CLR-internal deps, GenericBodyTypeConflict). Not a codegen bug. |
 | SIMD scalar completion | F.1 | Eliminate remaining SIMD stubs via complete scalar fallback paths |
 | 10 NuGet package validation | G.2 | Prove real-world packages compile and run (10/10 smoke tests pass, but coverage is shallow — see Maturity Assessment) |
 
@@ -252,7 +252,7 @@ CIL2CPP at 50K lines is approximately **17-25%** of a minimum viable tool, and *
 
 - `[DynamicallyAccessedMembers]` — **complete (validated)**: 13 DamFlags, field/method/parameter scanning, CLI `--rdxml` wired
 - ILLink feature switches — **active**: FeatureSwitchResolver substitutes 10+ AOT defaults at compile time
-- `[MarshalAs]` attribute — **C.7.1 ✅ + C.7.2 ✅**: Cecil parsing + 21 type mappings + [Out]/[In] support. C.7.3 array marshaling in progress
+- `[MarshalAs]` attribute — **C.7.1 ✅ + C.7.2 ✅ + C.7.3 ✅**: Cecil parsing + 21 type mappings + [Out]/[In] support + LPArray array marshaling (direction-aware + SizeParamIndex assertion)
 - NuGet PackageReference — 10 packages pass smoke tests, but coverage is extremely shallow
 - Codegen performance — NuGetSimpleTest 196s→89s (two optimizations, 2026-03-21). Room for further optimization
 - **Compiler optimization** — ❌ Zero optimization passes (no inlining, devirtualization, escape analysis). Generated C++ is naive IL translation
@@ -494,7 +494,7 @@ CIL2CPP at 50K lines is approximately **17-25%** of a minimum viable tool, and *
 |---|------|----------|--------|-------------|
 | C.7.1 | `[MarshalAs]` attribute parsing | Medium | ✅ Done | Cecil MarshalInfo parsing (IRBuilder.Methods.cs:123-143), 21-type MarshalAsType enum (PInvokeEnums.cs), full type mapping in GetPInvokeNativeType() (Source.cs:3024-3094). LPStr/LPWStr/Bool/integers all working. |
 | C.7.2 | `[Out]`/`[In]` parameter direction | Low | ✅ Done | IR layer fully parses PInvokeDirection (In/Out/InOut). bool* copy-back implemented (bool=1B, BOOL=4B — cannot reinterpret_cast). Blittable pointer types write directly — no copy-back needed (IL2CPP architecture: managed types ARE C++ types, no managed/native memory boundary). PInvokeTest integration test validates: GetSystemInfo [Out] struct, QueryPerformanceCounter [Out] int64, GetDiskFreeSpaceExW multiple [Out] + SetLastError. |
-| C.7.3 | Array marshaling | Medium | ✅ Mostly done | ByValTStr ✅ (Header.cs inline char16_t arrays), ByValArray ✅ (Header.cs inline fixed-size arrays), LPArray ✅ (Source.cs managed array→native pointer, PInvokeTest Test 6 validates), ExplicitLayout ✅ (PInvokeTest Test 8 validates). SizeParamIndex parsed (IRBuilder.Methods.cs:208) but not used in codegen (IL2CPP architecture: managed memory IS native memory, no size validation needed for basic cases). Remaining: [Out] array direction pre-allocation (implement when System.Native requires it). |
+| C.7.3 | Array marshaling | Medium | ✅ Done | ByValTStr ✅ (Header.cs inline char16_t arrays), ByValArray ✅ (Header.cs inline fixed-size arrays), LPArray ✅ (Source.cs managed array→native pointer, supports [In]/[Out]/[InOut] direction), ExplicitLayout ✅. SizeParamIndex codegen debug assertion implemented. PInvokeTest validates: Test 6 GetTempPathW, Test 9 GetModuleFileNameW [Out], Test 10 GetComputerNameW [Out]+ref size. IL2CPP architecture: managed memory IS native memory, [Out] arrays need no copy-back. |
 
 **Prerequisites**: Phase C ✅
 **Output**: P/Invoke compatible with System.Native declarations and NuGet native interop packages
@@ -561,7 +561,7 @@ Phase 1-4 ✅  →  Phase A ✅  →  Phase B ✅ (Windows)
    │   Phase E.win ✅ (SChannel TLS)             │ ← parallel
    │      ↓                                     │
    │   Phase C.7.2 ✅ ([Out]/[In])              Phase D ✅ (NativeAOT metadata + NuGet)
-   │   Phase C.7.3 (array marshaling)           │
+   │   Phase C.7.3 ✅ (array marshaling)         │
    │      ↓                                     │
    │   Phase E.2 (zlib compression)              │
    │      ↓                                     │
@@ -616,7 +616,7 @@ macOS support (Objective-C bridge)
 | **M3: Networked Apps** | HttpClient HTTP GET compiles from BCL IL and runs | C.6 | ✅ HTTP + HTTPS GET working |
 | **M3.5: REST Client** | HTTP GET + JSON serialization end-to-end | C.6+D | ✅ JsonSGTest + NuGetSimpleTest (Newtonsoft.Json) |
 | **M4: Library Ecosystem** | Project with 3+ NuGet PackageReferences compiles and runs | D+G.2 | ✅ DITest (DI+Logging+Console = 3 NuGet packages) |
-| **M5: Ecosystem Breadth** | HTTPS + Compression + DI/logging/config + 10 NuGet smoke tests | E+G.2 | In progress (HTTPS ✅, DI/logging/config ✅, SIMD ✅, 10 NuGet ✅, compression pending) |
+| **M5: Ecosystem Breadth** | HTTPS + Compression + DI/logging/config + 10 NuGet smoke tests | E+G.2 | ✅ Complete (HTTPS ✅, Compression ✅, DI/logging/config ✅, SIMD ✅, 10 NuGet ✅, ValidationApp ✅) |
 | **M6: Ecosystem Depth** | 50+ NuGet packages compile without manual fixes + 3 real apps validated | G | Not started |
 | **M7: Compiler Optimization** | Inlining, devirtualization, basic escape analysis | F+ | Not started |
 | **M8: Cross-Platform** | Linux x64 support (System.Native + OpenSSL) | B.5+E.linux | Not started |

@@ -82,6 +82,19 @@ public class Program
         [FieldOffset(0)] public long QuadPart;
     }
 
+    // Test 9: [Out] LPArray — GetModuleFileNameW fills pre-allocated char[] buffer
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    static extern uint GetModuleFileNameW(
+        IntPtr hModule,
+        [Out, MarshalAs(UnmanagedType.LPArray, SizeParamIndex = 2)] char[] lpFilename,
+        uint nSize);
+
+    // Test 10: [Out] LPArray — GetComputerNameW fills pre-allocated char[] buffer with size ref
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    static extern bool GetComputerNameW(
+        [Out, MarshalAs(UnmanagedType.LPArray)] char[] lpBuffer,
+        ref uint nSize);
+
     public static void Main()
     {
         Console.WriteLine("=== PInvokeTest ===");
@@ -131,6 +144,19 @@ public class Program
         u.QuadPart = 0x0000000200000001L; // HighPart=2, LowPart=1
         bool validExplicit = u.LowPart == 1 && u.HighPart == 2;
         Console.WriteLine(validExplicit ? "ExplicitLayout: OK" : "ExplicitLayout: FAIL");
+
+        // Test 9: [Out] LPArray — GetModuleFileNameW fills char[] buffer with current exe path
+        char[] modBuf = new char[260];
+        uint modLen = GetModuleFileNameW(IntPtr.Zero, modBuf, 260);
+        string modPath = modLen > 0 ? new string(modBuf, 0, (int)modLen) : "";
+        Console.WriteLine(modLen > 0 && modPath.Length > 0 ? "OutLPArray: OK" : "OutLPArray: FAIL");
+
+        // Test 10: [Out] LPArray — GetComputerNameW fills char[] buffer with size ref
+        char[] compBuf = new char[256];
+        uint compSize = 256;
+        bool ok4 = GetComputerNameW(compBuf, ref compSize);
+        string compName = ok4 && compSize > 0 ? new string(compBuf, 0, (int)compSize) : "";
+        Console.WriteLine(ok4 && compName.Length > 0 ? "OutLPArrayRef: OK" : "OutLPArrayRef: FAIL");
 
         Console.WriteLine("=== Done ===");
     }

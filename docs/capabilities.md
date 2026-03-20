@@ -109,6 +109,7 @@ CIL2CPP is a C# → C++ AOT compiler (similar to Unity IL2CPP). Currently suppor
 | yield return / IEnumerable | ✅ | Iterator state machines |
 | IAsyncEnumerable\<T\> | ✅ | await foreach |
 | System.IO (File/Path/Directory) | ✅ | 22 ICalls, C++17 filesystem |
+| System.IO.Compression | ✅ | GZipStream/DeflateStream via zlib (FetchContent), CompressionNative_* interop |
 | System.Net (Socket/DNS/HTTP) | ✅ | Socket TCP loopback ✅, DNS resolution ✅, HttpClient HTTP GET ✅, HTTPS GET ✅ (Windows, via Winsock/SChannel P/Invoke). TLS via OS-provided SChannel. |
 
 ### Delegates & Events
@@ -214,8 +215,8 @@ FileStream / StreamReader / StreamWriter compile from BCL IL and work end-to-end
 | CharSet.Auto | ⚠️ | Hard-coded to Unicode |
 | SafeHandle methods | ⚠️ | 8 ICalls (.ctor/DangerousGetHandle/SetHandle/DangerousAddRef/DangerousRelease/IsClosed/SetHandleAsInvalid/Dispose), missing ReleaseHandle virtual dispatch |
 | MarshalAs attribute | ✅ | Cecil MarshalInfo parsing, 21 type mappings (LPStr/LPWStr/Bool/integers etc.) |
-| Out/In attributes | ❌ | Parameter direction not distinguished (C.7.2) |
-| Array marshaling / Ref String | ⚠️ | SizeParamIndex parsed, codegen incomplete (C.7.3) |
+| Out/In attributes | ✅ | PInvokeDirection fully parsed, bool* copy-back, blittable pointers write directly (C.7.2) |
+| Array marshaling / Ref String | ✅ | LPArray direction-aware + SizeParamIndex debug assertion, ByValTStr/ByValArray inline arrays (C.7.3) |
 
 ---
 

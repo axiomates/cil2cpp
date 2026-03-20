@@ -428,7 +428,8 @@ public partial class CppCodeGenerator
             .SelectMany(t => t.Methods)
             .Where(m => m.IsPInvoke && !string.IsNullOrEmpty(m.PInvokeModule))
             .Select(m => m.PInvokeModule!)
-            .Where(m => !InternalPInvokeModules.Contains(m))
+            .Where(m => !InternalPInvokeModules.Contains(m)
+                     && !RuntimeProvidedPInvokeModules.Contains(m))
             .Distinct()
             .ToList();
         if (pinvokeModules.Count > 0)

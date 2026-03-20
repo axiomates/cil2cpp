@@ -32,10 +32,10 @@ CIL2CPP 能声称"可编译 .NET NativeAOT 项目"之前必须完成：
 | 完整 HTTP GET | C.6 ✅ | `HttpClient.GetStringAsync("http://...")` 异步请求/响应链 — **已完成** |
 | NativeAOT 元数据 | D | `[DynamicallyAccessedMembers]`、ILLink feature switch、NuGet 包验证 |
 | JSON 序列化 (SG) | D.5 ✅ | System.Text.Json source generator + Newtonsoft.Json 13.0.3 (NuGet) — **两者均已端到端验证** |
-| MarshalAs P/Invoke | C.7 ✅ | `[MarshalAs]` ✅、`[Out]`/`[In]` ✅、数组编组（ByValTStr/ByValArray/LPArray ✅、[Out]数组待做）— PInvokeTest 8 项全部通过 |
+| MarshalAs P/Invoke | C.7 ✅ | `[MarshalAs]` ✅、`[Out]`/`[In]` ✅、数组编组（ByValTStr/ByValArray/LPArray ✅、[Out] LPArray + SizeParamIndex ✅）— PInvokeTest 10 项全部通过 |
 | SChannel TLS (Windows) | E.win ✅ | 通过 `secur32.dll`/`schannel.dll` P/Invoke 实现 HTTPS — **已完成**（HttpsGetTest 通过） |
-| 压缩 | E.2 | 通过 System.IO.Compression.Native 的 zlib |
-| RenderedBodyError → 0 | H.2 | 修复剩余 codegen bug（HelloWorld 基线 17 个 RE stubs，不影响 NuGet） |
+| 压缩 | E.2 ✅ | 通过 System.IO.Compression.Native 的 zlib — GZipStream/DeflateStream 往返测试通过（CompressionTest 通过） |
+| RenderedBodyError → 0 | H.2 | 调查完成：~114 个 stubs 是正确的 AOT stubs（CLR内部依赖、泛型体类型冲突），非 codegen bug |
 | SIMD 标量完善 | F.1 | 消除剩余 SIMD stubs（完整标量回退路径） |
 | 10 个 NuGet 包验证 | G.2 | 证明真实包可编译和运行（10/10 冒烟测试通过，但覆盖极浅 — 见成熟度评估） |
 
@@ -252,7 +252,7 @@ CIL2CPP 的 50K 行约为最小可用级的 **17-25%**，约为 IL2CPP 的 **7-1
 
 - `[DynamicallyAccessedMembers]` — **已完成并验证**：13 种 DamFlag，字段/方法/参数扫描，CLI `--rdxml` 已接入
 - ILLink feature switches — **已上线**：FeatureSwitchResolver 编译期替换 10+ AOT 默认开关
-- `[MarshalAs]` 属性 — **C.7.1 ✅ + C.7.2 ✅**：Cecil 解析 + 21 种类型映射 + [Out]/[In] 支持。C.7.3 数组编组进行中
+- `[MarshalAs]` 属性 — **C.7.1 ✅ + C.7.2 ✅ + C.7.3 ✅**：Cecil 解析 + 21 种类型映射 + [Out]/[In] 支持 + LPArray 数组编组（含方向感知 + SizeParamIndex 断言）
 - NuGet PackageReference — 10 个包冒烟测试通过，但覆盖极浅
 - Codegen 性能 — NuGetSimpleTest 196s→89s（2026-03-21 两次优化后）。仍有优化空间
 - **编译器优化** — ❌ 零优化 pass（无内联、去虚拟化、逃逸分析）。生成的 C++ 是朴素 IL 翻译
@@ -493,7 +493,7 @@ CIL2CPP 的 50K 行约为最小可用级的 **17-25%**，约为 IL2CPP 的 **7-1
 |---|------|------|------|------|
 | C.7.1 | `[MarshalAs]` 属性解析 | 中 | ✅ 完成 | Cecil MarshalInfo 解析（IRBuilder.Methods.cs:123-143），21 种 MarshalAsType 枚举（PInvokeEnums.cs），完整类型映射 GetPInvokeNativeType()（Source.cs:3024-3094）。LPStr/LPWStr/Bool/整数类型均可用。 |
 | C.7.2 | `[Out]`/`[In]` 参数方向 | 低 | ✅ 完成 | IR 层完整解析 PInvokeDirection（In/Out/InOut）。bool* copy-back 已实现（bool=1B, BOOL=4B 不可 reinterpret_cast）。blittable 指针类型 native 直接写入无需 copy-back（IL2CPP 架构：managed 即 C++ 类型，无 managed/native 内存边界）。PInvokeTest 集成测试验证：GetSystemInfo [Out] struct、QueryPerformanceCounter [Out] int64、GetDiskFreeSpaceExW 多 [Out] + SetLastError。 |
-| C.7.3 | 数组编组 | 中 | ✅ 大部分完成 | ByValTStr ✅（Header.cs 内联 char16_t 数组）、ByValArray ✅（Header.cs 内联固定大小数组）、LPArray ✅（Source.cs 管理数组→原生指针，PInvokeTest Test 6 验证）、ExplicitLayout ✅（PInvokeTest Test 8 验证）。SizeParamIndex 已解析（IRBuilder.Methods.cs:208）但 codegen 未使用（IL2CPP 架构下管理内存即原生内存，基本场景无需大小验证）。剩余：[Out] 数组方向预分配（System.Native 需要时实现）。 |
+| C.7.3 | 数组编组 | 中 | ✅ 完成 | ByValTStr ✅（Header.cs 内联 char16_t 数组）、ByValArray ✅（Header.cs 内联固定大小数组）、LPArray ✅（Source.cs 管理数组→原生指针，支持 [In]/[Out]/[InOut] 方向）、ExplicitLayout ✅。SizeParamIndex codegen 调试断言已实现。PInvokeTest 验证：Test 6 GetTempPathW、Test 9 GetModuleFileNameW [Out]、Test 10 GetComputerNameW [Out]+ref size。IL2CPP 架构下管理内存即原生内存，[Out] 数组无需 copy-back。 |
 
 **前置**：Phase C ✅
 **产出**：P/Invoke 兼容 System.Native 声明和 NuGet 原生互操作包
@@ -560,7 +560,7 @@ Phase 1-4 ✅  →  Phase A ✅  →  Phase B ✅ (Windows)
    │   Phase E.win ✅ (SChannel TLS)             │ ← 并行
    │      ↓                                     │
    │   Phase C.7.2 ✅ ([Out]/[In])              Phase D ✅ (NativeAOT 元数据 + NuGet)
-   │   Phase C.7.3 (数组编组)                   │
+   │   Phase C.7.3 ✅ (数组编组)                 │
    │      ↓                                     │
    │   Phase E.2 (zlib 压缩)                    │
    │      ↓                                     │
@@ -615,7 +615,7 @@ macOS 支持 (Objective-C 桥接)
 | **M3: 联网应用** | HttpClient HTTP GET 从 BCL IL 编译并运行 | C.6 | ✅ HTTP + HTTPS GET 已通过 |
 | **M3.5: REST 客户端** | HTTP GET + JSON 序列化端到端 | C.6+D | ✅ JsonSGTest + NuGetSimpleTest（Newtonsoft.Json） |
 | **M4: 库生态** | 3+ NuGet PackageReference 项目编译并运行 | D+G.2 | ✅ DITest（DI+Logging+Console = 3 个 NuGet 包） |
-| **M5: 生态广度** | HTTPS + 压缩 + DI/日志/配置 + 10 NuGet 包冒烟测试 | E+G.2 | 进行中（HTTPS ✅、DI/日志/配置 ✅、SIMD ✅、10 NuGet 包 ✅、压缩待完成） |
+| **M5: 生态广度** | HTTPS + 压缩 + DI/日志/配置 + 10 NuGet 包冒烟测试 | E+G.2 | ✅ 完成（HTTPS ✅、压缩 ✅、DI/日志/配置 ✅、SIMD ✅、10 NuGet 包 ✅、ValidationApp ✅） |
 | **M6: 生态深度** | 50+ NuGet 包无需手动修复即可编译 + 3 个真实应用验证 | G | 未开始 |
 | **M7: 编译器优化** | 内联、去虚拟化、基本逃逸分析 | F+ | 未开始 |
 | **M8: 跨平台** | Linux x64 支持（System.Native + OpenSSL） | B.5+E.linux | 未开始 |

@@ -2716,14 +2716,24 @@ public partial class CppCodeGenerator
         "fopen", "fclose", "fread", "fwrite", "fseek", "ftell"
     };
 
-    // .NET internal P/Invoke modules — no extern declarations needed
+    // .NET internal P/Invoke modules — no extern declarations or wrappers needed
     // (QCall = CLR-internal; libSystem.* = Unix-only native shims; ucrtbase = C runtime)
     private static readonly HashSet<string> InternalPInvokeModules = new(StringComparer.OrdinalIgnoreCase)
     {
         "QCall", "QCall.dll", "libSystem.Native", "libSystem.Globalization.Native",
-        "System.Globalization.Native", "System.Native", "System.IO.Compression.Native",
+        "System.Globalization.Native", "System.Native",
         "System.Security.Cryptography.Native.OpenSsl", "System.Net.Security.Native",
         "ucrtbase", "ucrtbase.dll"
+    };
+
+    // P/Invoke modules whose native entry points are provided by the CIL2CPP runtime library.
+    // These modules get wrapper generation (calling the native entry point) but:
+    // - No extern "C" declarations (runtime provides the functions via compression_interop.cpp etc.)
+    // - No CMake target_link_libraries (already linked via cil2cpp::runtime)
+    // Entry points are forward-declared as extern "C" in the generated code.
+    private static readonly HashSet<string> RuntimeProvidedPInvokeModules = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "System.IO.Compression.Native"
     };
 
     private void EmitPInvokeDeclarations(StringBuilder sb, List<IRType> userTypes,
@@ -2739,10 +2749,11 @@ public partial class CppCodeGenerator
 
         if (allPInvokeMethods.Count == 0) return;
 
-        // Exclude InternalPInvokeModules from extern declarations (they're available via system headers)
-        // but keep them for wrapper generation (the managed→native wrapper functions are still needed)
+        // Exclude InternalPInvokeModules and RuntimeProvidedPInvokeModules from extern declarations.
+        // RuntimeProvidedPInvokeModules get separate forward declarations (entry points in runtime lib).
         var pinvokeMethods = allPInvokeMethods
-            .Where(m => !InternalPInvokeModules.Contains(m.PInvokeModule!))
+            .Where(m => !InternalPInvokeModules.Contains(m.PInvokeModule!)
+                     && !RuntimeProvidedPInvokeModules.Contains(m.PInvokeModule!))
             .ToList();
 
         // Filter out C stdlib functions and methods with delegate/function pointer parameters
@@ -2827,6 +2838,49 @@ public partial class CppCodeGenerator
                 declaredParamTypes[entryPoint] = nativeParamTypes;
             }
 
+            sb.AppendLine("}");
+            sb.AppendLine();
+        }
+
+        // RuntimeProvidedPInvokeModules: entry points provided by cil2cpp runtime library.
+        // Forward-declare them so the wrapper generation gate passes; the linker resolves
+        // against the runtime library (e.g., compression_interop.cpp).
+        var runtimeProvidedMethods = allPInvokeMethods
+            .Where(m => RuntimeProvidedPInvokeModules.Contains(m.PInvokeModule!))
+            .ToList();
+        if (runtimeProvidedMethods.Count > 0)
+        {
+            sb.AppendLine("// ===== Runtime-Provided P/Invoke Entry Points =====");
+            sb.AppendLine("extern \"C\" {");
+            var emittedRuntimeEntryPoints = new HashSet<string>();
+            foreach (var method in runtimeProvidedMethods)
+            {
+                var entryPoint = method.PInvokeEntryPoint ?? method.Name;
+                if (!emittedRuntimeEntryPoints.Add(entryPoint)) continue;
+
+                var cs = method.PInvokeCharSet;
+                var retType = GetPInvokeNativeType(method.ReturnTypeCpp, null, cs, method.ReturnMarshalAs);
+                if (!IsValidExternCType(retType)) continue;
+
+                bool hasInvalidType = false;
+                var nativeParamTypes = new List<string>();
+                foreach (var p in method.Parameters)
+                {
+                    var nt = GetPInvokeNativeType(p.CppTypeName, p.ParameterType, cs, p.MarshalAs, p.MarshalArrayElementILType);
+                    if (!IsValidExternCType(nt)) { hasInvalidType = true; break; }
+                    nativeParamTypes.Add(nt);
+                }
+                if (hasInvalidType) continue;
+
+                var paramParts = new List<string>();
+                for (int i = 0; i < method.Parameters.Count; i++)
+                    paramParts.Add($"{nativeParamTypes[i]} p{i}");
+                var paramDecl = string.Join(", ", paramParts);
+
+                sb.AppendLine($"    {retType} {entryPoint}({paramDecl});");
+                declaredEntryPoints.Add(entryPoint);
+                declaredParamTypes[entryPoint] = nativeParamTypes;
+            }
             sb.AppendLine("}");
             sb.AppendLine();
         }
@@ -2967,14 +3021,33 @@ public partial class CppCodeGenerator
                 else if (param.MarshalAs == IR.MarshalAsType.LPArray
                          && param.CppTypeName.Contains("Array"))
                 {
-                    // C.7.3: [MarshalAs(UnmanagedType.LPArray)] — pass typed data pointer from managed array
+                    // C.7.3: [MarshalAs(UnmanagedType.LPArray)] — pass typed data pointer from managed array.
+                    // IL2CPP architecture: managed arrays ARE native memory (no copy boundary).
+                    // [In], [Out], [InOut] all use the same pointer — native reads/writes directly.
                     var elemCppType = param.MarshalArrayElementILType != null
                         ? CppNameMapper.GetCppTypeForDecl(param.MarshalArrayElementILType).TrimEnd('*')
                         : null;
                     var castExpr = elemCppType != null
                         ? $"static_cast<{elemCppType}*>(cil2cpp::array_data(reinterpret_cast<cil2cpp::Array*>({param.CppName})))"
                         : $"cil2cpp::array_data(reinterpret_cast<cil2cpp::Array*>({param.CppName}))";
+                    // [Out] arrays must be pre-allocated by caller — assert non-null in debug
+                    if (param.PInvokeDirection is IR.PInvokeParameterDirection.Out
+                        or IR.PInvokeParameterDirection.InOut)
+                    {
+                        sb.AppendLine($"#ifdef CIL2CPP_DEBUG");
+                        sb.AppendLine($"    assert({param.CppName} != nullptr && \"[Out] LPArray parameter must be pre-allocated\");");
+                        sb.AppendLine($"#endif");
+                    }
                     sb.AppendLine($"    auto __p{i} = {param.CppName} ? {castExpr} : nullptr;");
+                    // SizeParamIndex validation: if specified, assert array length >= size parameter
+                    if (param.MarshalAsSizeParamIndex >= 0
+                        && param.MarshalAsSizeParamIndex < method.Parameters.Count)
+                    {
+                        var sizeParam = method.Parameters[param.MarshalAsSizeParamIndex];
+                        sb.AppendLine($"#ifdef CIL2CPP_DEBUG");
+                        sb.AppendLine($"    assert(!{param.CppName} || static_cast<int32_t>(reinterpret_cast<cil2cpp::Array*>({param.CppName})->length) >= static_cast<int32_t>({sizeParam.CppName}));");
+                        sb.AppendLine($"#endif");
+                    }
                     callArgs.Add($"__p{i}");
                 }
                 else if (externParamTypes != null && i < externParamTypes.Count

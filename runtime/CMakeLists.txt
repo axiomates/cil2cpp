@@ -89,6 +89,23 @@ else()
     find_package(ICU REQUIRED COMPONENTS uc data i18n)
 endif()
 
+# === zlib (FetchContent for compression support) ===
+FetchContent_Declare(
+    zlib
+    GIT_REPOSITORY https://github.com/madler/zlib.git
+    GIT_TAG v1.3.1
+)
+# Suppress zlib's own install/example targets
+set(ZLIB_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(SKIP_INSTALL_ALL ON CACHE BOOL "" FORCE)
+FetchContent_GetProperties(zlib)
+if(NOT zlib_POPULATED)
+    FetchContent_Populate(zlib)
+    add_subdirectory(${zlib_SOURCE_DIR} ${zlib_BINARY_DIR} EXCLUDE_FROM_ALL)
+endif()
+# Match our DEBUG_POSTFIX convention
+set_target_properties(zlibstatic PROPERTIES DEBUG_POSTFIX d)
+
 # Runtime library sources
 set(RUNTIME_SOURCES
     src/runtime.cpp
@@ -127,6 +144,7 @@ set(RUNTIME_SOURCES
     src/interop/marshal.cpp
     src/interop/interop_platform.cpp
     src/interop/globalization_interop.cpp
+    src/interop/compression_interop.cpp
 )
 
 # Create static library
@@ -156,6 +174,10 @@ target_compile_definitions(cil2cpp_runtime PRIVATE GC_NOT_DLL GC_THREADS)
 
 # ICU4C — PRIVATE dep for Unicode support (UTF conversion, char classification, globalization)
 target_link_libraries(cil2cpp_runtime PRIVATE ICU::uc ICU::dt ICU::in)
+
+# zlib — headers for build time; actual library linked by consumers via find_package
+# (cil2cpp_runtime is a static archive — zlib symbols resolved at final link time)
+target_include_directories(cil2cpp_runtime PRIVATE ${zlib_SOURCE_DIR} ${zlib_BINARY_DIR})
 
 # Platform-specific settings
 if(WIN32)
@@ -208,6 +230,9 @@ install(DIRECTORY include/
 
 # Install BoehmGC library (needed by consumers at link time)
 install(FILES $<TARGET_FILE:gc> DESTINATION lib)
+
+# Install zlib library (needed by consumers at link time)
+install(FILES $<TARGET_FILE:zlibstatic> DESTINATION lib)
 
 # Install ICU libraries (needed by consumers at link + run time)
 if(WIN32)

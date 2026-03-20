@@ -3882,11 +3882,19 @@ public partial class IRBuilder
         if (string.IsNullOrEmpty(resolvedName)) return true;
         // IL generic param notation: !0, !1, !!0, etc.
         if (resolvedName.StartsWith("!")) return true;
-        // Single-word uppercase name without dots/namespace — likely generic param (T, TKey, TValue, etc.)
-        if (!resolvedName.Contains('.') && !resolvedName.Contains('/') && resolvedName.Length <= 10
-            && resolvedName.Length >= 1 && char.IsUpper(resolvedName[0])
+        // .NET generic parameter naming conventions (no dots/namespace):
+        //   - Single uppercase letter: T, K, V, S
+        //   - "T" + uppercase: TKey, TValue, TResult, TSource, TElement, TStorage
+        // User-defined types without namespace (Product, Order, Entity) must NOT match.
+        if (!resolvedName.Contains('.') && !resolvedName.Contains('/')
             && resolvedName.All(c => char.IsLetterOrDigit(c)))
-            return true;
+        {
+            if (resolvedName.Length == 1 && char.IsUpper(resolvedName[0]))
+                return true;
+            if (resolvedName.Length >= 2 && resolvedName.Length <= 12
+                && resolvedName[0] == 'T' && char.IsUpper(resolvedName[1]))
+                return true;
+        }
         return false;
     }
 

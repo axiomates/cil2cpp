@@ -1921,6 +1921,120 @@ def cmd_integration(args):
     runner.step(f"CMake build ({config})", cfg_cmake_build)
     runner.step("Run and compare C++ vs .NET output", cfg_run_verify)
 
+    # ===== Phase 21: CompressionTest (GZipStream/DeflateStream round-trip) =====
+    header("Phase 21: CompressionTest (System.IO.Compression — zlib)")
+    runner.begin_phase("CompressionTest")
+
+    cmp_sample = TESTPROJECTS_DIR / "CompressionTest" / "CompressionTest.csproj"
+    cmp_output = temp_dir / "cmp_output"
+    cmp_build = temp_dir / "cmp_build"
+
+    dotnet_cmp_output = None
+
+    def cmp_dotnet_run():
+        nonlocal dotnet_cmp_output
+        dotnet_cmp_output = _get_dotnet_output(cmp_sample)
+        print(f"    .NET output: {repr(dotnet_cmp_output[:200])}")
+
+    def cmp_codegen():
+        run(["dotnet", "run", "--project", str(CLI_PROJECT), "--",
+             "codegen", "-i", str(cmp_sample), "-o", str(cmp_output)],
+            capture=True)
+
+    def cmp_files_exist():
+        for f in ["CompressionTest.h", "CompressionTest_data.cpp", "CompressionTest_stubs.cpp",
+                   "main.cpp", "CMakeLists.txt"]:
+            if not (cmp_output / f).exists():
+                raise RuntimeError(f"Missing: {f}")
+        runner.record_metric("lines", count_cpp_lines(cmp_output))
+
+    def cmp_cmake_configure():
+        run(["cmake", "-B", str(cmp_build), "-S", str(cmp_output),
+             "-G", generator, *cmake_arch,
+             f"-DCMAKE_PREFIX_PATH={runtime_prefix}"],
+            capture=True)
+
+    def cmp_cmake_build():
+        return _cmake_build_with_diagnostics(cmp_build, config)
+
+    def cmp_run_verify():
+        exe = _exe_path(cmp_build, config, "CompressionTest")
+        if not exe.exists():
+            raise RuntimeError(f"Executable not found: {exe}")
+        r = subprocess.run([str(exe)], capture_output=True, text=True, check=False,
+                           encoding="utf-8", errors="replace")
+        if r.returncode != 0:
+            raise RuntimeError(f"CompressionTest exited with code {r.returncode}\nstderr: {r.stderr}")
+        got = r.stdout.strip()
+        expected = dotnet_cmp_output.strip()
+        if got != expected:
+            raise RuntimeError(
+                f"Output mismatch!\n  Got:      {repr(got[:200])}\n  Expected: {repr(expected[:200])}")
+
+    runner.step("Get .NET reference output", cmp_dotnet_run)
+    runner.step("Codegen CompressionTest", cmp_codegen)
+    runner.step("Generated files exist", cmp_files_exist)
+    runner.step("CMake configure", cmp_cmake_configure)
+    runner.step(f"CMake build ({config})", cmp_cmake_build)
+    runner.step("Run and compare C++ vs .NET output", cmp_run_verify)
+
+    # ===== Phase 22: ValidationApp (feature composition stress test) =====
+    header("Phase 22: ValidationApp (feature composition stress test)")
+    runner.begin_phase("ValidationApp")
+
+    val_sample = TESTPROJECTS_DIR / "ValidationApp" / "ValidationApp.csproj"
+    val_output = temp_dir / "val_output"
+    val_build = temp_dir / "val_build"
+
+    dotnet_val_output = None
+
+    def val_dotnet_run():
+        nonlocal dotnet_val_output
+        dotnet_val_output = _get_dotnet_output(val_sample)
+        print(f"    .NET output: {repr(dotnet_val_output[:200])}")
+
+    def val_codegen():
+        run(["dotnet", "run", "--project", str(CLI_PROJECT), "--",
+             "codegen", "-i", str(val_sample), "-o", str(val_output)],
+            capture=True)
+
+    def val_files_exist():
+        for f in ["ValidationApp.h", "ValidationApp_data.cpp", "ValidationApp_stubs.cpp",
+                   "main.cpp", "CMakeLists.txt"]:
+            if not (val_output / f).exists():
+                raise RuntimeError(f"Missing: {f}")
+        runner.record_metric("lines", count_cpp_lines(val_output))
+
+    def val_cmake_configure():
+        run(["cmake", "-B", str(val_build), "-S", str(val_output),
+             "-G", generator, *cmake_arch,
+             f"-DCMAKE_PREFIX_PATH={runtime_prefix}"],
+            capture=True)
+
+    def val_cmake_build():
+        return _cmake_build_with_diagnostics(val_build, config)
+
+    def val_run_verify():
+        exe = _exe_path(val_build, config, "ValidationApp")
+        if not exe.exists():
+            raise RuntimeError(f"Executable not found: {exe}")
+        r = subprocess.run([str(exe)], capture_output=True, text=True, check=False,
+                           encoding="utf-8", errors="replace")
+        if r.returncode != 0:
+            raise RuntimeError(f"ValidationApp exited with code {r.returncode}\nstderr: {r.stderr}")
+        got = r.stdout.strip()
+        expected = dotnet_val_output.strip()
+        if got != expected:
+            raise RuntimeError(
+                f"Output mismatch!\n  Got:      {repr(got[:200])}\n  Expected: {repr(expected[:200])}")
+
+    runner.step("Get .NET reference output", val_dotnet_run)
+    runner.step("Codegen ValidationApp", val_codegen)
+    runner.step("Generated files exist", val_files_exist)
+    runner.step("CMake configure", val_cmake_configure)
+    runner.step(f"CMake build ({config})", val_cmake_build)
+    runner.step("Run and compare C++ vs .NET output", val_run_verify)
+
     # ===== Cleanup =====
     header("Cleanup")
 
