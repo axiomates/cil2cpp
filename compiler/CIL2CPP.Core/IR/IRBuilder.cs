@@ -356,6 +356,8 @@ public partial class IRBuilder
     private readonly Dictionary<string, GenericInstantiationInfo> _genericInstantiations = new();
     // Pending keys for incremental CreateGenericSpecializations processing
     private readonly HashSet<string> _pendingGenericKeys = new();
+    // Secondary index: open type name → Cecil TypeDefinition (avoids O(n) scan of _genericInstantiations)
+    private readonly Dictionary<string, Mono.Cecil.TypeDefinition> _openTypeCecilCache = new();
 
     private record GenericInstantiationInfo(
         string OpenTypeName,

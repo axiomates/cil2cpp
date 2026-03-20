@@ -1964,13 +1964,14 @@ public partial class IRBuilder
             allProcessed.AddRange(batch);
 
             // Auto-create nested type specializations (Entry, Enumerator, etc.)
+            // Only process the current batch's entries (not all _genericInstantiations).
             // Iterate until fixpoint to handle nested-nested types (e.g., KeyCollection.Enumerator).
-            int prevNested;
-            do
+            var nestedCandidates = batch;
+            while (nestedCandidates.Count > 0)
             {
-                prevNested = _genericInstantiations.Count;
-                CreateNestedGenericSpecializations();
-            } while (_genericInstantiations.Count > prevNested);
+                var newlyCreatedKeys = CreateNestedGenericSpecializationsFor(nestedCandidates);
+                nestedCandidates = newlyCreatedKeys;
+            }
             // New entries from nested specializations are in _pendingGenericKeys → next while iteration
         }
 
@@ -2563,13 +2564,18 @@ public partial class IRBuilder
     ///   - Dictionary&lt;String,Object&gt;.Enumerator (returned by GetEnumerator)
     ///   - List&lt;T&gt;.Enumerator, etc.
     /// </summary>
-    private void CreateNestedGenericSpecializations()
+    /// <summary>
+    /// Create nested type specializations only for the given parent keys (not all _genericInstantiations).
+    /// Returns the list of newly created keys (for fixpoint iteration on nested-nested types).
+    /// </summary>
+    private List<string> CreateNestedGenericSpecializationsFor(List<string> parentKeys)
     {
         // Collect nested types to add (can't modify _genericInstantiations while iterating)
         var nestedToAdd = new List<(string key, GenericInstantiationInfo info)>();
 
-        foreach (var (key, info) in _genericInstantiations)
+        foreach (var parentKey in parentKeys)
         {
+            if (!_genericInstantiations.TryGetValue(parentKey, out var info)) continue;
             if (info.CecilOpenType == null) continue;
             if (!info.CecilOpenType.HasNestedTypes) continue;
 
@@ -2602,7 +2608,9 @@ public partial class IRBuilder
             }
         }
 
-        if (nestedToAdd.Count == 0) return;
+        if (nestedToAdd.Count == 0) return new List<string>();
+
+        var newlyCreatedKeys = new List<string>();
 
         // Register nested types and create IRType objects for them
         foreach (var (nestedKey, info) in nestedToAdd)
@@ -2610,6 +2618,7 @@ public partial class IRBuilder
             if (_genericInstantiations.ContainsKey(nestedKey)) continue;
             RegisterGenericInstantiation(nestedKey, info);
             EnsureComparerCompanionType(info.OpenTypeName, info.TypeArguments);
+            newlyCreatedKeys.Add(nestedKey);
 
             var openType = info.CecilOpenType;
             if (openType == null) continue;
@@ -2824,6 +2833,8 @@ public partial class IRBuilder
                 }
             }
         }
+
+        return newlyCreatedKeys;
     }
 
     /// <summary>
@@ -2866,6 +2877,9 @@ public partial class IRBuilder
     {
         _genericInstantiations[key] = info;
         _pendingGenericKeys.Add(key);
+        // Populate secondary index for O(1) Cecil type lookup by open type name
+        if (info.CecilOpenType != null)
+            _openTypeCecilCache.TryAdd(info.OpenTypeName, info.CecilOpenType);
     }
 
     /// <summary>
@@ -3010,18 +3024,9 @@ public partial class IRBuilder
             cecilOpenType = asm.MainModule.GetType(openTypeName);
             if (cecilOpenType != null) break;
         }
-        // Also try finding it through existing _genericInstantiations that share the open type
+        // Also try finding it through the secondary Cecil type cache (O(1) vs O(n) scan)
         if (cecilOpenType == null)
-        {
-            foreach (var (_, info) in _genericInstantiations)
-            {
-                if (info.OpenTypeName == openTypeName && info.CecilOpenType != null)
-                {
-                    cecilOpenType = info.CecilOpenType;
-                    break;
-                }
-            }
-        }
+            _openTypeCecilCache.TryGetValue(openTypeName, out cecilOpenType);
 
         var mangledName = CppNameMapper.MangleGenericInstanceTypeName(openTypeName, args);
         RegisterGenericInstantiation(instKey, new GenericInstantiationInfo(
