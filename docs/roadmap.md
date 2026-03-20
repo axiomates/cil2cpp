@@ -192,7 +192,7 @@ See "RuntimeProvided Type Classification" section above.
 **Implementation gaps** (2026-03-18 audit):
 - `[DynamicallyAccessedMembers]` — **complete (validated)**: 13 DamFlags, field/method/parameter scanning, CLI `--rdxml` wired, 7 DAM reachability tests + 14 rd.xml parser tests
 - ILLink feature switches — **active**: FeatureSwitchResolver substitutes 10+ AOT defaults at compile time. SIMD IsSupported=false dead-branch elimination via brfalse pattern detection + 4-layer SIMD dead-code elimination.
-- `[MarshalAs]` attribute — **implemented** (C.7.1): Cecil parsing + 21 type mappings. C.7.2 in progress: bool* copy-back implemented (bool=1B, BOOL=4B), blittable pointer types write directly — no copy-back needed. C.7.3: basic LPArray working, ByValTStr deferred.
+- `[MarshalAs]` attribute — **C.7.1 ✅ + C.7.2 ✅**: Cecil parsing + 21 type mappings + [Out]/[In] parameter direction fully supported. PInvokeTest integration test validates (GetSystemInfo [Out] struct, QueryPerformanceCounter [Out] int64, GetDiskFreeSpaceExW multiple [Out] + SetLastError). C.7.3: basic LPArray working, ByValTStr/SizeParamIndex deferred to System.Native.
 - NuGet PackageReference — **✅ fully validated** (Phase 14+15): NuGetSimpleTest (Newtonsoft.Json 13.0.3) + DITest (DI+Logging+Console, 3 NuGet packages) both compile and run end-to-end. OOM issue resolved via demand-driven generic discovery + specialized method reachability.
 - DI ecosystem — **✅ validated** (Phase 15): DITest with Microsoft.Extensions.DependencyInjection — constructor injection, singleton/transient lifetimes, reflection-based service resolution. M4 milestone achieved.
 - Source generator output — **✅ fully validated** (D.5): JsonSGTest with `[JsonSerializable]` compiles and runs end-to-end through CIL2CPP.
@@ -433,7 +433,7 @@ See "RuntimeProvided Type Classification" section above.
 | # | Task | Estimate | Status | Description |
 |---|------|----------|--------|-------------|
 | C.7.1 | `[MarshalAs]` attribute parsing | Medium | ✅ Done | Cecil MarshalInfo parsing (IRBuilder.Methods.cs:123-143), 21-type MarshalAsType enum (PInvokeEnums.cs), full type mapping in GetPInvokeNativeType() (Source.cs:3024-3094). LPStr/LPWStr/Bool/integers all working. |
-| C.7.2 | `[Out]`/`[In]` parameter direction | Low | In progress | IR layer fully parses PInvokeDirection (In/Out/InOut). bool* copy-back implemented (bool=1B, BOOL=4B — cannot reinterpret_cast). Blittable pointer types (int*, struct*) write directly through pointer — no copy-back needed. |
+| C.7.2 | `[Out]`/`[In]` parameter direction | Low | ✅ Done | IR layer fully parses PInvokeDirection (In/Out/InOut). bool* copy-back implemented (bool=1B, BOOL=4B — cannot reinterpret_cast). Blittable pointer types write directly — no copy-back needed (IL2CPP architecture: managed types ARE C++ types, no managed/native memory boundary). PInvokeTest integration test validates: GetSystemInfo [Out] struct, QueryPerformanceCounter [Out] int64, GetDiskFreeSpaceExW multiple [Out] + SetLastError. |
 | C.7.3 | Array marshaling | Medium | In progress | SizeParamIndex parsed (IRMethod.cs:136) but codegen incomplete. Fixed-size arrays in structs, `[MarshalAs(UnmanagedType.LPArray)]` runtime marshaling pending. |
 
 **Prerequisites**: Phase C ✅

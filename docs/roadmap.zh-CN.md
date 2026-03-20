@@ -192,7 +192,7 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 **实现缺口**（2026-03-18 审计）：
 - `[DynamicallyAccessedMembers]` — **已完成并验证**：13 种 DamFlag，字段/方法/参数扫描，CLI `--rdxml` 已接入，7 个 DAM 可达性测试 + 14 个 rd.xml 解析器测试
 - ILLink feature switches — **已上线**：FeatureSwitchResolver 编译期替换 10+ AOT 默认开关。SIMD IsSupported=false 死分支消除通过 brfalse 模式检测 + 4 层 SIMD 死代码消除。
-- `[MarshalAs]` 属性 — **已实现**（C.7.1）：Cecil 解析 + 21 种类型映射。C.7.2 进行中：bool* copy-back 已实现（bool=1B, BOOL=4B），blittable 指针类型 native 直接写入无需 copy-back。C.7.3：基础 LPArray 已工作，ByValTStr 推迟。
+- `[MarshalAs]` 属性 — **C.7.1 ✅ + C.7.2 ✅**：Cecil 解析 + 21 种类型映射 + [Out]/[In] 参数方向完整支持。PInvokeTest 集成测试验证（GetSystemInfo [Out] struct、QueryPerformanceCounter [Out] int64、GetDiskFreeSpaceExW 多 [Out] + SetLastError）。C.7.3：基础 LPArray 已工作，ByValTStr/SizeParamIndex 推迟到 System.Native。
 - NuGet PackageReference — **✅ 完整验证**（Phase 14+15）：NuGetSimpleTest（Newtonsoft.Json 13.0.3）+ DITest（DI+Logging+Console，3 个 NuGet 包）均端到端编译并运行。OOM 问题通过按需泛型发现 + 特化方法可达性分析解决。
 - DI 生态 — **✅ 已验证**（Phase 15）：DITest 使用 Microsoft.Extensions.DependencyInjection — 构造函数注入、singleton/transient 生命周期、反射式服务解析。M4 里程碑达成。
 - Source generator 输出 — **✅ 完整验证**（D.5）：JsonSGTest 使用 `[JsonSerializable]` 通过 CIL2CPP 端到端编译并运行。
@@ -432,7 +432,7 @@ IL2CPP 从 IL 编译: Task/async 全家族、CancellationToken/Source、WaitHand
 | # | 任务 | 预估 | 状态 | 说明 |
 |---|------|------|------|------|
 | C.7.1 | `[MarshalAs]` 属性解析 | 中 | ✅ 完成 | Cecil MarshalInfo 解析（IRBuilder.Methods.cs:123-143），21 种 MarshalAsType 枚举（PInvokeEnums.cs），完整类型映射 GetPInvokeNativeType()（Source.cs:3024-3094）。LPStr/LPWStr/Bool/整数类型均可用。 |
-| C.7.2 | `[Out]`/`[In]` 参数方向 | 低 | 进行中 | IR 层已完整解析 PInvokeDirection（In/Out/InOut）。bool* copy-back 已实现（bool=1B, BOOL=4B 不可 reinterpret_cast）。blittable 指针类型 (int*, struct*) native 直接写入，无需 copy-back。 |
+| C.7.2 | `[Out]`/`[In]` 参数方向 | 低 | ✅ 完成 | IR 层完整解析 PInvokeDirection（In/Out/InOut）。bool* copy-back 已实现（bool=1B, BOOL=4B 不可 reinterpret_cast）。blittable 指针类型 native 直接写入无需 copy-back（IL2CPP 架构：managed 即 C++ 类型，无 managed/native 内存边界）。PInvokeTest 集成测试验证：GetSystemInfo [Out] struct、QueryPerformanceCounter [Out] int64、GetDiskFreeSpaceExW 多 [Out] + SetLastError。 |
 | C.7.3 | 数组编组 | 中 | 进行中 | SizeParamIndex 已解析（IRMethod.cs:136），codegen 待完善。struct 固定大小数组 + `[MarshalAs(UnmanagedType.LPArray)]` 运行时编组待做。 |
 
 **前置**：Phase C ✅

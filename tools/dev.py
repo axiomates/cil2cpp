@@ -1634,6 +1634,61 @@ def cmd_integration(args):
     runner.step(f"CMake build ({config})", py_cmake_build)
     runner.step("Run and compare C++ vs .NET output", py_run_verify)
 
+    # ===== Phase 18: PInvokeTest (P/Invoke [Out]/[In] parameter direction, C.7.2) =====
+    header("Phase 18: PInvokeTest (P/Invoke [Out]/[In] marshaling)")
+
+    pi_sample = TESTPROJECTS_DIR / "PInvokeTest" / "PInvokeTest.csproj"
+    pi_output = temp_dir / "pi_output"
+    pi_build = temp_dir / "pi_build"
+
+    dotnet_pi_output = None
+
+    def pi_dotnet_run():
+        nonlocal dotnet_pi_output
+        dotnet_pi_output = _get_dotnet_output(pi_sample)
+        print(f"    .NET output: {repr(dotnet_pi_output[:200])}")
+
+    def pi_codegen():
+        run(["dotnet", "run", "--project", str(CLI_PROJECT), "--",
+             "codegen", "-i", str(pi_sample), "-o", str(pi_output)],
+            capture=True)
+
+    def pi_files_exist():
+        for f in ["PInvokeTest.h", "PInvokeTest_data.cpp", "PInvokeTest_stubs.cpp",
+                   "main.cpp", "CMakeLists.txt"]:
+            if not (pi_output / f).exists():
+                raise RuntimeError(f"Missing: {f}")
+
+    def pi_cmake_configure():
+        run(["cmake", "-B", str(pi_build), "-S", str(pi_output),
+             "-G", generator, *cmake_arch,
+             f"-DCMAKE_PREFIX_PATH={runtime_prefix}"],
+            capture=True)
+
+    def pi_cmake_build():
+        return _cmake_build_with_diagnostics(pi_build, config)
+
+    def pi_run_verify():
+        exe = _exe_path(pi_build, config, "PInvokeTest")
+        if not exe.exists():
+            raise RuntimeError(f"Executable not found: {exe}")
+        r = subprocess.run([str(exe)], capture_output=True, text=True, check=False,
+                           encoding="utf-8", errors="replace")
+        if r.returncode != 0:
+            raise RuntimeError(f"PInvokeTest exited with code {r.returncode}\nstderr: {r.stderr}")
+        got = r.stdout.strip()
+        expected = dotnet_pi_output.strip()
+        if got != expected:
+            raise RuntimeError(
+                f"Output mismatch!\n  Got:      {repr(got[:200])}\n  Expected: {repr(expected[:200])}")
+
+    runner.step("Get .NET reference output", pi_dotnet_run)
+    runner.step("Codegen PInvokeTest", pi_codegen)
+    runner.step("Generated files exist", pi_files_exist)
+    runner.step("CMake configure", pi_cmake_configure)
+    runner.step(f"CMake build ({config})", pi_cmake_build)
+    runner.step("Run and compare C++ vs .NET output", pi_run_verify)
+
     # ===== Cleanup =====
     header("Cleanup")
 
