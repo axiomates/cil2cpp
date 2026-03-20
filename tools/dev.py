@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 # ===== Constants =====
@@ -453,23 +454,68 @@ def cmd_compile(args):
 
 # ===== cmd_integration =====
 
+def count_cpp_lines(directory):
+    """Count total lines in *.h and *.cpp files in directory."""
+    total = 0
+    d = Path(directory)
+    if not d.exists():
+        return 0
+    for pattern in ("*.h", "*.cpp"):
+        for f in d.glob(pattern):
+            try:
+                total += sum(1 for _ in open(f, errors="ignore"))
+            except OSError:
+                pass
+    return total
+
+
 class TestRunner:
-    """Lightweight test runner for integration tests."""
+    """Lightweight test runner for integration tests with per-phase timing."""
+
+    # Step name patterns → metric keys
+    _STEP_CATEGORIES = [
+        ("Get .NET reference",  "dotnet_s"),
+        ("Codegen ",            "codegen_s"),
+        ("Generated files",     "files_s"),
+        ("CMake configure",     "configure_s"),
+        ("CMake build",         "build_s"),
+        ("Run and compare",     "run_s"),
+    ]
 
     def __init__(self):
         self.test_count = 0
         self.pass_count = 0
         self.fail_count = 0
         self.failures = []
+        self.phase_metrics = {}   # phase_name -> {codegen_s, build_s, ..., lines}
+        self._current_phase = None
+
+    def begin_phase(self, name):
+        """Mark the start of a named test phase."""
+        self._current_phase = name
+        if name not in self.phase_metrics:
+            self.phase_metrics[name] = {}
+
+    def record_metric(self, key, value):
+        """Record a custom metric for the current phase."""
+        if self._current_phase:
+            self.phase_metrics[self._current_phase][key] = value
 
     def step(self, name, fn):
         self.test_count += 1
         print(f"  [{self.test_count}] {name} ... ", end="", flush=True)
+        t0 = time.time()
         try:
             extra = fn()
+            elapsed = time.time() - t0
             self.pass_count += 1
+            # Record timing under current phase
+            self._record_step_timing(name, elapsed)
+            parts = []
             if extra:
-                print(f"({extra}) ", end="")
+                parts.append(str(extra))
+            parts.append(f"{elapsed:.1f}s")
+            print(f"({', '.join(parts)}) ", end="")
             success("PASS")
         except Exception as e:
             self.fail_count += 1
@@ -477,7 +523,43 @@ class TestRunner:
             error("FAIL")
             print(f"       {e}")
 
+    def _record_step_timing(self, name, elapsed):
+        if not self._current_phase:
+            return
+        for prefix, key in self._STEP_CATEGORIES:
+            if name.startswith(prefix):
+                self.phase_metrics.setdefault(self._current_phase, {})[key] = elapsed
+                break
+
+    def print_metrics(self):
+        if not self.phase_metrics:
+            return
+        print()
+        # Column headers
+        print(f"  {'Phase':<22} {'Codegen':>8} {'Build':>8} {'Total':>8} {'C++ Lines':>12}")
+        print(f"  {'-'*22} {'-'*8} {'-'*8} {'-'*8} {'-'*12}")
+        grand_codegen = 0.0
+        grand_build = 0.0
+        grand_total = 0.0
+        for phase, m in self.phase_metrics.items():
+            cg = m.get("codegen_s", 0)
+            bd = m.get("build_s", 0)
+            dn = m.get("dotnet_s", 0)
+            cf = m.get("configure_s", 0)
+            rn = m.get("run_s", 0)
+            fl = m.get("files_s", 0)
+            total = dn + cg + fl + cf + bd + rn
+            grand_codegen += cg
+            grand_build += bd
+            grand_total += total
+            lines = m.get("lines", 0)
+            lines_str = f"{lines:,}" if lines else "-"
+            print(f"  {phase:<22} {cg:>7.1f}s {bd:>7.1f}s {total:>7.1f}s {lines_str:>12}")
+        print(f"  {'-'*22} {'-'*8} {'-'*8} {'-'*8} {'-'*12}")
+        print(f"  {'TOTAL':<22} {grand_codegen:>7.1f}s {grand_build:>7.1f}s {grand_total:>7.1f}s")
+
     def summary(self):
+        self.print_metrics()
         print(f"\n  Total:  {self.test_count}")
         success(f"  Passed: {self.pass_count}")
         if self.fail_count:
@@ -659,6 +741,7 @@ def cmd_integration(args):
 
     # ===== Phase 1: HelloWorld =====
     header("Phase 1: HelloWorld (executable with entry point)")
+    runner.begin_phase("HelloWorld")
 
     hw_sample = TESTPROJECTS_DIR / "HelloWorld" / "HelloWorld.csproj"
     hw_output = temp_dir / "helloworld_output"
@@ -685,6 +768,7 @@ def cmd_integration(args):
         # At least one methods file must exist
         if not list(hw_output.glob("HelloWorld_methods_*.cpp")):
             raise RuntimeError("No HelloWorld_methods_*.cpp files found")
+        runner.record_metric("lines", count_cpp_lines(hw_output))
 
     def hw_cmake_configure():
         run(["cmake", "-B", str(hw_build), "-S", str(hw_output),
@@ -718,6 +802,7 @@ def cmd_integration(args):
 
     # ===== Phase 2: ArrayTest =====
     header("Phase 2: ArrayTest (array operations)")
+    runner.begin_phase("ArrayTest")
 
     at_sample = TESTPROJECTS_DIR / "ArrayTest" / "ArrayTest.csproj"
     at_output = temp_dir / "arraytest_output"
@@ -742,6 +827,7 @@ def cmd_integration(args):
                 raise RuntimeError(f"Missing: {f}")
         if not list(at_output.glob("ArrayTest_methods_*.cpp")):
             raise RuntimeError("No ArrayTest_methods_*.cpp files found")
+        runner.record_metric("lines", count_cpp_lines(at_output))
 
     def at_cmake_configure():
         run(["cmake", "-B", str(at_build), "-S", str(at_output),
@@ -775,6 +861,7 @@ def cmd_integration(args):
 
     # ===== Phase 3: FeatureTest (100+ language features) =====
     header("Phase 3: FeatureTest (100+ language features)")
+    runner.begin_phase("FeatureTest")
 
     ft_sample = TESTPROJECTS_DIR / "FeatureTest" / "FeatureTest.csproj"
     ft_output = temp_dir / "featuretest_output"
@@ -798,6 +885,7 @@ def cmd_integration(args):
                 raise RuntimeError(f"Missing: {f}")
         if not list(ft_output.glob("FeatureTest_methods_*.cpp")):
             raise RuntimeError("No FeatureTest_methods_*.cpp files found")
+        runner.record_metric("lines", count_cpp_lines(ft_output))
 
     def ft_cmake_configure():
         run(["cmake", "-B", str(ft_build), "-S", str(ft_output),
@@ -830,6 +918,7 @@ def cmd_integration(args):
 
     # ===== Phase 4: ArglistTest (varargs + TypedReference) =====
     header("Phase 4: ArglistTest (varargs, mkrefany, refanyval)")
+    runner.begin_phase("ArglistTest")
 
     arg_sample = TESTPROJECTS_DIR / "ArglistTest" / "ArglistTest.csproj"
     arg_output = temp_dir / "arglist_output"
@@ -852,6 +941,7 @@ def cmd_integration(args):
                    "main.cpp", "CMakeLists.txt"]:
             if not (arg_output / f).exists():
                 raise RuntimeError(f"Missing: {f}")
+        runner.record_metric("lines", count_cpp_lines(arg_output))
 
     def arg_cmake_configure():
         run(["cmake", "-B", str(arg_build), "-S", str(arg_output),
@@ -885,6 +975,7 @@ def cmd_integration(args):
 
     # ===== Phase 5: MultiAssemblyTest (cross-project, references MathLib) =====
     header("Phase 5: MultiAssemblyTest (cross-assembly references)")
+    runner.begin_phase("MultiAssemblyTest")
 
     multi_sample = TESTPROJECTS_DIR / "MultiAssemblyTest" / "MultiAssemblyTest.csproj"
     multi_output = temp_dir / "multi_output"
@@ -907,6 +998,7 @@ def cmd_integration(args):
                    "MultiAssemblyTest_stubs.cpp", "main.cpp", "CMakeLists.txt"]:
             if not (multi_output / f).exists():
                 raise RuntimeError(f"Missing: {f}")
+        runner.record_metric("lines", count_cpp_lines(multi_output))
 
     def multi_cmake_configure():
         run(["cmake", "-B", str(multi_build), "-S", str(multi_output),
@@ -940,6 +1032,7 @@ def cmd_integration(args):
 
     # ===== Phase 6: SystemIOTest (File/Path/Directory I/O) =====
     header("Phase 6: SystemIOTest (File, Path, Directory I/O)")
+    runner.begin_phase("SystemIOTest")
 
     sio_sample = TESTPROJECTS_DIR / "SystemIOTest" / "SystemIOTest.csproj"
     sio_output = temp_dir / "sio_output"
@@ -962,6 +1055,7 @@ def cmd_integration(args):
                    "main.cpp", "CMakeLists.txt"]:
             if not (sio_output / f).exists():
                 raise RuntimeError(f"Missing: {f}")
+        runner.record_metric("lines", count_cpp_lines(sio_output))
 
     def sio_cmake_configure():
         run(["cmake", "-B", str(sio_build), "-S", str(sio_output),
@@ -995,6 +1089,7 @@ def cmd_integration(args):
 
     # ===== Phase 7: FileStreamTest (FileStream, StreamReader/StreamWriter) =====
     header("Phase 7: FileStreamTest (FileStream, StreamReader, StreamWriter)")
+    runner.begin_phase("FileStreamTest")
 
     fst_sample = TESTPROJECTS_DIR / "FileStreamTest" / "FileStreamTest.csproj"
     fst_output = temp_dir / "fst_output"
@@ -1017,6 +1112,7 @@ def cmd_integration(args):
                    "main.cpp", "CMakeLists.txt"]:
             if not (fst_output / f).exists():
                 raise RuntimeError(f"Missing: {f}")
+        runner.record_metric("lines", count_cpp_lines(fst_output))
 
     def fst_cmake_configure():
         run(["cmake", "-B", str(fst_build), "-S", str(fst_output),
@@ -1050,6 +1146,7 @@ def cmd_integration(args):
 
     # ===== Phase 8: SocketTest (TCP sockets, DNS) =====
     header("Phase 8: SocketTest (TCP sockets, DNS)")
+    runner.begin_phase("SocketTest")
 
     sk_sample = TESTPROJECTS_DIR / "SocketTest" / "SocketTest.csproj"
     sk_output = temp_dir / "sockettest_output"
@@ -1073,6 +1170,7 @@ def cmd_integration(args):
                 raise RuntimeError(f"Missing: {f}")
         if not list(sk_output.glob("SocketTest_methods_*.cpp")):
             raise RuntimeError("No SocketTest_methods_*.cpp files found")
+        runner.record_metric("lines", count_cpp_lines(sk_output))
 
     def sk_cmake_configure():
         run(["cmake", "-B", str(sk_build), "-S", str(sk_output),
@@ -1122,6 +1220,7 @@ def cmd_integration(args):
 
     # ===== Phase 9: HttpGetTest (HTTP client, async/await) =====
     header("Phase 9: HttpGetTest (HTTP client, async/await)")
+    runner.begin_phase("HttpGetTest")
 
     hg_sample = TESTPROJECTS_DIR / "HttpGetTest" / "HttpGetTest.csproj"
     hg_output = temp_dir / "httpgettest_output"
@@ -1145,6 +1244,7 @@ def cmd_integration(args):
                 raise RuntimeError(f"Missing: {f}")
         if not list(hg_output.glob("HttpGetTest_methods_*.cpp")):
             raise RuntimeError("No HttpGetTest_methods_*.cpp files found")
+        runner.record_metric("lines", count_cpp_lines(hg_output))
 
     def hg_cmake_configure():
         run(["cmake", "-B", str(hg_build), "-S", str(hg_output),
@@ -1185,6 +1285,7 @@ def cmd_integration(args):
 
     # ===== Phase 10: HttpTest (HttpClient construction) =====
     header("Phase 10: HttpTest (HttpClient construction)")
+    runner.begin_phase("HttpTest")
 
     ht_sample = TESTPROJECTS_DIR / "HttpTest" / "HttpTest.csproj"
     ht_output = temp_dir / "httptest_output"
@@ -1208,6 +1309,7 @@ def cmd_integration(args):
                 raise RuntimeError(f"Missing: {f}")
         if not list(ht_output.glob("HttpTest_methods_*.cpp")):
             raise RuntimeError("No HttpTest_methods_*.cpp files found")
+        runner.record_metric("lines", count_cpp_lines(ht_output))
 
     def ht_cmake_configure():
         run(["cmake", "-B", str(ht_build), "-S", str(ht_output),
@@ -1248,6 +1350,7 @@ def cmd_integration(args):
 
     # ===== Phase 11: HttpsGetTest (HTTPS client, TLS/SChannel) =====
     header("Phase 11: HttpsGetTest (HTTPS client, TLS/SChannel)")
+    runner.begin_phase("HttpsGetTest")
 
     hsg_sample = TESTPROJECTS_DIR / "HttpsGetTest" / "HttpsGetTest.csproj"
     hsg_output = temp_dir / "httpsgettest_output"
@@ -1271,6 +1374,7 @@ def cmd_integration(args):
                 raise RuntimeError(f"Missing: {f}")
         if not list(hsg_output.glob("HttpsGetTest_methods_*.cpp")):
             raise RuntimeError("No HttpsGetTest_methods_*.cpp files found")
+        runner.record_metric("lines", count_cpp_lines(hsg_output))
 
     def hsg_cmake_configure():
         run(["cmake", "-B", str(hsg_build), "-S", str(hsg_output),
@@ -1311,6 +1415,7 @@ def cmd_integration(args):
 
     # ===== Phase 12: DirTest (Directory operations) =====
     header("Phase 12: DirTest (Directory.Exists, CreateDirectory)")
+    runner.begin_phase("DirTest")
 
     dt_sample = TESTPROJECTS_DIR / "DirTest" / "DirTest.csproj"
     dt_output = temp_dir / "dt_output"
@@ -1333,6 +1438,7 @@ def cmd_integration(args):
                    "main.cpp", "CMakeLists.txt"]:
             if not (dt_output / f).exists():
                 raise RuntimeError(f"Missing: {f}")
+        runner.record_metric("lines", count_cpp_lines(dt_output))
 
     def dt_cmake_configure():
         run(["cmake", "-B", str(dt_build), "-S", str(dt_output),
@@ -1364,6 +1470,7 @@ def cmd_integration(args):
 
     # ===== Phase 13: JsonSGTest (System.Text.Json serialization/deserialization) =====
     header("Phase 13: JsonSGTest (System.Text.Json source-generated)")
+    runner.begin_phase("JsonSGTest")
 
     js_sample = TESTPROJECTS_DIR / "JsonSGTest" / "JsonSGTest.csproj"
     js_output = temp_dir / "js_output"
@@ -1386,6 +1493,7 @@ def cmd_integration(args):
                    "main.cpp", "CMakeLists.txt"]:
             if not (js_output / f).exists():
                 raise RuntimeError(f"Missing: {f}")
+        runner.record_metric("lines", count_cpp_lines(js_output))
 
     def js_cmake_configure():
         run(["cmake", "-B", str(js_build), "-S", str(js_output),
@@ -1418,6 +1526,7 @@ def cmd_integration(args):
 
     # ===== Phase 14: NuGetSimpleTest (Newtonsoft.Json serialization/deserialization) =====
     header("Phase 14: NuGetSimpleTest (Newtonsoft.Json 13.0.3)")
+    runner.begin_phase("NuGetSimpleTest")
 
     ng_sample = TESTPROJECTS_DIR / "NuGetSimpleTest" / "NuGetSimpleTest.csproj"
     ng_output = temp_dir / "ng_output"
@@ -1440,6 +1549,7 @@ def cmd_integration(args):
                    "main.cpp", "CMakeLists.txt"]:
             if not (ng_output / f).exists():
                 raise RuntimeError(f"Missing: {f}")
+        runner.record_metric("lines", count_cpp_lines(ng_output))
 
     def ng_cmake_configure():
         run(["cmake", "-B", str(ng_build), "-S", str(ng_output),
@@ -1472,6 +1582,7 @@ def cmd_integration(args):
 
     # ===== Phase 15: DITest (Microsoft.Extensions.DependencyInjection) =====
     header("Phase 15: DITest (DependencyInjection + Logging + Console)")
+    runner.begin_phase("DITest")
 
     di_sample = TESTPROJECTS_DIR / "DITest" / "DITest.csproj"
     di_output = temp_dir / "di_output"
@@ -1494,6 +1605,7 @@ def cmd_integration(args):
                    "main.cpp", "CMakeLists.txt"]:
             if not (di_output / f).exists():
                 raise RuntimeError(f"Missing: {f}")
+        runner.record_metric("lines", count_cpp_lines(di_output))
 
     def di_cmake_configure():
         run(["cmake", "-B", str(di_build), "-S", str(di_output),
@@ -1526,6 +1638,7 @@ def cmd_integration(args):
 
     # ===== Phase 16: HumanizerTest (Humanizer NuGet package) =====
     header("Phase 16: HumanizerTest (Humanizer 2.14.1)")
+    runner.begin_phase("HumanizerTest")
 
     hm_sample = TESTPROJECTS_DIR / "HumanizerTest" / "HumanizerTest.csproj"
     hm_output = temp_dir / "hm_output"
@@ -1548,6 +1661,7 @@ def cmd_integration(args):
                    "main.cpp", "CMakeLists.txt"]:
             if not (hm_output / f).exists():
                 raise RuntimeError(f"Missing: {f}")
+        runner.record_metric("lines", count_cpp_lines(hm_output))
 
     def hm_cmake_configure():
         run(["cmake", "-B", str(hm_build), "-S", str(hm_output),
@@ -1581,6 +1695,7 @@ def cmd_integration(args):
 
     # ===== Phase 17: PollyTest (Polly NuGet package — resilience framework) =====
     header("Phase 17: PollyTest (Polly 8.5.2)")
+    runner.begin_phase("PollyTest")
 
     py_sample = TESTPROJECTS_DIR / "PollyTest" / "PollyTest.csproj"
     py_output = temp_dir / "py_output"
@@ -1603,6 +1718,7 @@ def cmd_integration(args):
                    "main.cpp", "CMakeLists.txt"]:
             if not (py_output / f).exists():
                 raise RuntimeError(f"Missing: {f}")
+        runner.record_metric("lines", count_cpp_lines(py_output))
 
     def py_cmake_configure():
         run(["cmake", "-B", str(py_build), "-S", str(py_output),
@@ -1636,6 +1752,7 @@ def cmd_integration(args):
 
     # ===== Phase 18: PInvokeTest (P/Invoke [Out]/[In] parameter direction, C.7.2) =====
     header("Phase 18: PInvokeTest (P/Invoke [Out]/[In] marshaling)")
+    runner.begin_phase("PInvokeTest")
 
     pi_sample = TESTPROJECTS_DIR / "PInvokeTest" / "PInvokeTest.csproj"
     pi_output = temp_dir / "pi_output"
@@ -1658,6 +1775,7 @@ def cmd_integration(args):
                    "main.cpp", "CMakeLists.txt"]:
             if not (pi_output / f).exists():
                 raise RuntimeError(f"Missing: {f}")
+        runner.record_metric("lines", count_cpp_lines(pi_output))
 
     def pi_cmake_configure():
         run(["cmake", "-B", str(pi_build), "-S", str(pi_output),
@@ -1691,6 +1809,7 @@ def cmd_integration(args):
 
     # ===== Phase 19: SerilogTest (Serilog structured logging) =====
     header("Phase 19: SerilogTest (Serilog 4.2.0 + Console sink)")
+    runner.begin_phase("SerilogTest")
 
     sl_sample = TESTPROJECTS_DIR / "SerilogTest" / "SerilogTest.csproj"
     sl_output = temp_dir / "sl_output"
@@ -1713,6 +1832,7 @@ def cmd_integration(args):
                    "main.cpp", "CMakeLists.txt"]:
             if not (sl_output / f).exists():
                 raise RuntimeError(f"Missing: {f}")
+        runner.record_metric("lines", count_cpp_lines(sl_output))
 
     def sl_cmake_configure():
         run(["cmake", "-B", str(sl_build), "-S", str(sl_output),
@@ -1746,6 +1866,7 @@ def cmd_integration(args):
 
     # ===== Phase 20: ConfigTest (Microsoft.Extensions.Configuration) =====
     header("Phase 20: ConfigTest (M.E.Configuration + Binder)")
+    runner.begin_phase("ConfigTest")
 
     cfg_sample = TESTPROJECTS_DIR / "ConfigTest" / "ConfigTest.csproj"
     cfg_output = temp_dir / "cfg_output"
@@ -1768,6 +1889,7 @@ def cmd_integration(args):
                    "main.cpp", "CMakeLists.txt"]:
             if not (cfg_output / f).exists():
                 raise RuntimeError(f"Missing: {f}")
+        runner.record_metric("lines", count_cpp_lines(cfg_output))
 
     def cfg_cmake_configure():
         run(["cmake", "-B", str(cfg_build), "-S", str(cfg_output),
