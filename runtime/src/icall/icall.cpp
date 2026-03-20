@@ -597,12 +597,12 @@ Boolean RuntimeHelpers_ObjectHasComponentSize(Object* obj) {
     // Strings: __type_info points to System.String TypeInfo
     if (obj->__type_info->full_name &&
         std::strcmp(obj->__type_info->full_name, "System.String") == 0) return 1;
-    // Arrays: alloc_array sets both __type_info and element_type to the same
-    // element TypeInfo pointer. Check the Array struct pattern:
-    // Array { __type_info, __sync_block, element_type, length, data... }
-    // If element_type (offset 16) == __type_info (offset 0), it's an array.
+    // Arrays: detected two ways:
+    // 1. Legacy: element_type == __type_info (old alloc_array pattern)
+    // 2. Proper: TypeFlags::Array set on SZArray TypeInfo
     auto* as_arr = reinterpret_cast<Array*>(obj);
-    if (as_arr->element_type == obj->__type_info && as_arr->length >= 0) return 1;
+    if ((as_arr->element_type == obj->__type_info && as_arr->length >= 0)
+        || (obj->__type_info->flags & TypeFlags::Array)) return 1;
     return 0;
 }
 

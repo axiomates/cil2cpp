@@ -834,11 +834,17 @@ public class IRLoadFunctionPointer : IRInstruction
     public bool IsVirtual { get; set; }
     public string? ObjectExpr { get; set; }
     public int VTableSlot { get; set; } = -1;
+    public bool IsInterfaceCall { get; set; }
+    public string? InterfaceTypeCppName { get; set; }
 
     public override string ToCpp()
     {
         if (IsVirtual && VTableSlot >= 0 && ObjectExpr != null)
+        {
+            if (IsInterfaceCall && InterfaceTypeCppName != null)
+                return $"cil2cpp::null_check((void*){ObjectExpr}); {ResultVar} = cil2cpp::obj_get_interface_vtable(((cil2cpp::Object*){ObjectExpr}), &{InterfaceTypeCppName}_TypeInfo)->methods[{VTableSlot}];";
             return $"cil2cpp::null_check((void*){ObjectExpr}); {ResultVar} = ((cil2cpp::Object*){ObjectExpr})->__type_info->vtable->methods[{VTableSlot}];";
+        }
         return $"{ResultVar} = (void*){MethodCppName};";
     }
 }

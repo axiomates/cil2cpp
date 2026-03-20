@@ -200,19 +200,27 @@ InterfaceVTable* type_get_interface_vtable_checked(TypeInfo* type, TypeInfo* int
 InterfaceVTable* obj_get_interface_vtable(Object* obj, TypeInfo* interface_type) {
     if (!obj) throw_null_reference();
 
-    // First try normal lookup on the object's type
-    auto* result = type_get_interface_vtable(obj->__type_info, interface_type);
-    if (result) return result;
-
-    // Check if this is an array: arrays have element_type == __type_info
-    // Array layout: Object { __type_info, __sync_block } + element_type + length + data
+    // Check if this is an array — detected two ways:
+    // 1. Legacy: alloc_array set __type_info = element_type (element_type == __type_info)
+    // 2. Proper: get_szarray_type_info creates array TypeInfo with TypeFlags::Array
+    // Arrays must be checked FIRST because System.Array (base_type) has interface_vtables
+    // with all-null method entries (it's a CoreRuntimeType). If we let type_get_interface_vtable
+    // walk the base_type chain first, it finds those broken vtables and returns them,
+    // causing null function pointer crashes. The array adapters provide correct implementations.
     auto* as_arr = reinterpret_cast<Array*>(obj);
-    if (as_arr->element_type == obj->__type_info && as_arr->length >= 0) {
-        // This is an array — try the array generic interface adapter
-        result = array_get_generic_interface_vtable(obj->__type_info, interface_type);
+    bool is_array = (as_arr->element_type == obj->__type_info && as_arr->length >= 0)
+                 || (obj->__type_info->flags & TypeFlags::Array);
+    if (is_array) {
+        // Try array-specific adapters FIRST (generic + non-generic collection interfaces + ICloneable)
+        auto* result = array_get_generic_interface_vtable(as_arr->element_type, interface_type);
         if (result) return result;
-        // Also try non-generic collection interfaces (ICollection, IList, IEnumerable)
         result = array_get_nongeneric_interface_vtable(interface_type);
+        if (result) return result;
+        // Arrays only implement collection interfaces + ICloneable. Don't fall through to
+        // type_get_interface_vtable which would walk base_type → System.Array's broken vtables.
+    } else {
+        // Normal lookup on the object's type (walks base_type chain)
+        auto* result = type_get_interface_vtable(obj->__type_info, interface_type);
         if (result) return result;
     }
 
@@ -288,12 +296,14 @@ Boolean object_is_instance_of(Object* obj, TypeInfo* type) {
         return true;
     }
 
-    // Array structural check: alloc_array sets __type_info = element_type,
-    // so arrays' __type_info doesn't have System.Array in its hierarchy.
-    // Detect arrays structurally (element_type == __type_info) and check
-    // if the target type is System.Array or one of its ancestors/interfaces.
+    // Array structural check: detect arrays and check against System.Array
+    // and its interfaces. Arrays are detected two ways:
+    // 1. Legacy: alloc_array sets __type_info = element_type (element_type == __type_info)
+    // 2. Proper: get_szarray_type_info creates array TypeInfo with TypeFlags::Array
     auto* as_arr = reinterpret_cast<Array*>(obj);
-    if (as_arr->element_type == obj->__type_info && as_arr->length >= 0) {
+    bool is_array = (as_arr->element_type == obj->__type_info && as_arr->length >= 0)
+                 || (obj->__type_info->flags & TypeFlags::Array);
+    if (is_array) {
         if (type->full_name &&
             std::strcmp(type->full_name, "System.Array") == 0) {
             return true;
@@ -325,7 +335,7 @@ Boolean object_is_instance_of(Object* obj, TypeInfo* type) {
                     std::strcmp(genDef, "System_Collections_Generic_IReadOnlyList_1") == 0 ||
                     std::strcmp(genDef, "System_Collections_Generic_IReadOnlyCollection_1") == 0;
                 if (isArrayInterface) {
-                    auto* elemType = obj->__type_info;
+                    auto* elemType = as_arr->element_type;
                     auto* interfaceArgType = type->generic_arguments[0];
                     if (elemType == interfaceArgType ||
                         type_is_assignable_from(interfaceArgType, elemType)) {
@@ -349,7 +359,7 @@ Boolean object_is_instance_of(Object* obj, TypeInfo* type) {
                     if (std::strncmp(fn, prefix, plen) == 0) {
                         // Extract type argument from full_name: "prefix<TypeArg>"
                         // Compare with the array element type's full_name
-                        auto* elemType = obj->__type_info;
+                        auto* elemType = as_arr->element_type;
                         if (elemType && elemType->full_name) {
                             size_t argLen = std::strlen(fn) - plen - 1; // -1 for trailing '>'
                             if (argLen > 0 && std::strncmp(fn + plen, elemType->full_name, argLen) == 0

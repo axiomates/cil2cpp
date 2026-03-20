@@ -1689,6 +1689,116 @@ def cmd_integration(args):
     runner.step(f"CMake build ({config})", pi_cmake_build)
     runner.step("Run and compare C++ vs .NET output", pi_run_verify)
 
+    # ===== Phase 19: SerilogTest (Serilog structured logging) =====
+    header("Phase 19: SerilogTest (Serilog 4.2.0 + Console sink)")
+
+    sl_sample = TESTPROJECTS_DIR / "SerilogTest" / "SerilogTest.csproj"
+    sl_output = temp_dir / "sl_output"
+    sl_build = temp_dir / "sl_build"
+
+    dotnet_sl_output = None
+
+    def sl_dotnet_run():
+        nonlocal dotnet_sl_output
+        dotnet_sl_output = _get_dotnet_output(sl_sample)
+        print(f"    .NET output: {repr(dotnet_sl_output[:200])}")
+
+    def sl_codegen():
+        run(["dotnet", "run", "--project", str(CLI_PROJECT), "--",
+             "codegen", "-i", str(sl_sample), "-o", str(sl_output), "-c", "Debug"],
+            capture=True)
+
+    def sl_files_exist():
+        for f in ["SerilogTest.h", "SerilogTest_data.cpp", "SerilogTest_stubs.cpp",
+                   "main.cpp", "CMakeLists.txt"]:
+            if not (sl_output / f).exists():
+                raise RuntimeError(f"Missing: {f}")
+
+    def sl_cmake_configure():
+        run(["cmake", "-B", str(sl_build), "-S", str(sl_output),
+             "-G", generator, *cmake_arch,
+             f"-DCMAKE_PREFIX_PATH={runtime_prefix}"],
+            capture=True)
+
+    def sl_cmake_build():
+        return _cmake_build_with_diagnostics(sl_build, config)
+
+    def sl_run_verify():
+        exe = _exe_path(sl_build, config, "SerilogTest")
+        if not exe.exists():
+            raise RuntimeError(f"Executable not found: {exe}")
+        r = subprocess.run([str(exe)], capture_output=True, text=True, check=False,
+                           encoding="utf-8", errors="replace")
+        if r.returncode != 0:
+            raise RuntimeError(f"SerilogTest exited with code {r.returncode}\nstderr: {r.stderr}")
+        got = r.stdout.strip()
+        expected = dotnet_sl_output.strip()
+        if got != expected:
+            raise RuntimeError(
+                f"Output mismatch!\n  Got:      {repr(got[:200])}\n  Expected: {repr(expected[:200])}")
+
+    runner.step("Get .NET reference output", sl_dotnet_run)
+    runner.step("Codegen SerilogTest", sl_codegen)
+    runner.step("Generated files exist", sl_files_exist)
+    runner.step("CMake configure", sl_cmake_configure)
+    runner.step(f"CMake build ({config})", sl_cmake_build)
+    runner.step("Run and compare C++ vs .NET output", sl_run_verify)
+
+    # ===== Phase 20: ConfigTest (Microsoft.Extensions.Configuration) =====
+    header("Phase 20: ConfigTest (M.E.Configuration + Binder)")
+
+    cfg_sample = TESTPROJECTS_DIR / "ConfigTest" / "ConfigTest.csproj"
+    cfg_output = temp_dir / "cfg_output"
+    cfg_build = temp_dir / "cfg_build"
+
+    dotnet_cfg_output = None
+
+    def cfg_dotnet_run():
+        nonlocal dotnet_cfg_output
+        dotnet_cfg_output = _get_dotnet_output(cfg_sample)
+        print(f"    .NET output: {repr(dotnet_cfg_output[:200])}")
+
+    def cfg_codegen():
+        run(["dotnet", "run", "--project", str(CLI_PROJECT), "--",
+             "codegen", "-i", str(cfg_sample), "-o", str(cfg_output)],
+            capture=True)
+
+    def cfg_files_exist():
+        for f in ["ConfigTest.h", "ConfigTest_data.cpp", "ConfigTest_stubs.cpp",
+                   "main.cpp", "CMakeLists.txt"]:
+            if not (cfg_output / f).exists():
+                raise RuntimeError(f"Missing: {f}")
+
+    def cfg_cmake_configure():
+        run(["cmake", "-B", str(cfg_build), "-S", str(cfg_output),
+             "-G", generator, *cmake_arch,
+             f"-DCMAKE_PREFIX_PATH={runtime_prefix}"],
+            capture=True)
+
+    def cfg_cmake_build():
+        return _cmake_build_with_diagnostics(cfg_build, config)
+
+    def cfg_run_verify():
+        exe = _exe_path(cfg_build, config, "ConfigTest")
+        if not exe.exists():
+            raise RuntimeError(f"Executable not found: {exe}")
+        r = subprocess.run([str(exe)], capture_output=True, text=True, check=False,
+                           encoding="utf-8", errors="replace")
+        if r.returncode != 0:
+            raise RuntimeError(f"ConfigTest exited with code {r.returncode}\nstderr: {r.stderr}")
+        got = r.stdout.strip()
+        expected = dotnet_cfg_output.strip()
+        if got != expected:
+            raise RuntimeError(
+                f"Output mismatch!\n  Got:      {repr(got[:200])}\n  Expected: {repr(expected[:200])}")
+
+    runner.step("Get .NET reference output", cfg_dotnet_run)
+    runner.step("Codegen ConfigTest", cfg_codegen)
+    runner.step("Generated files exist", cfg_files_exist)
+    runner.step("CMake configure", cfg_cmake_configure)
+    runner.step(f"CMake build ({config})", cfg_cmake_build)
+    runner.step("Run and compare C++ vs .NET output", cfg_run_verify)
+
     # ===== Cleanup =====
     header("Cleanup")
 

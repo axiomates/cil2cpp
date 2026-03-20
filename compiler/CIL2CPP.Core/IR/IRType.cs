@@ -134,6 +134,12 @@ public class IRType
     /// </summary>
     public bool IsExplicitLayout { get; set; }
 
+    /// <summary>
+    /// True if this type has [InlineArray(N)] attribute (C# inline array).
+    /// The struct has a single field repeated N times; ExplicitSize = N * sizeof(element).
+    /// </summary>
+    public bool IsInlineArray { get; set; }
+
     /// <summary>Custom attributes applied to this type</summary>
     public List<IRCustomAttribute> CustomAttributes { get; } = new();
 

@@ -166,8 +166,96 @@ public partial class IRBuilder
             irType.ExplicitSize = cecilType.ClassSize;
         }
 
+        // Detect [InlineArray(N)] attribute (C# 12+).
+        // These types have a single field repeated N times. The runtime computes
+        // size as N * sizeof(element), but ClassSize in metadata may be absent or
+        // reflect 32-bit sizes (e.g., ref fields as 4 bytes instead of 8 on x64).
+        // We compute ExplicitSize = N * elemSize ourselves, overriding ClassSize
+        // when we can determine the element size correctly.
+        if (irType.IsValueType && cecilType.HasCustomAttributes)
+        {
+            foreach (var attr in cecilType.CustomAttributes)
+            {
+                if (attr.AttributeType.FullName == "System.Runtime.CompilerServices.InlineArrayAttribute"
+                    && attr.HasConstructorArguments)
+                {
+                    irType.IsInlineArray = true;
+                    int inlineCount = (int)attr.ConstructorArguments[0].Value;
+                    if (irType.Fields.Count == 1)
+                    {
+                        var fieldDef = cecilType.Fields.FirstOrDefault(f => !f.IsStatic);
+                        int elemSize = ResolveInlineArrayElementSizeFromCecil(fieldDef?.FieldType);
+                        if (elemSize > 0)
+                            irType.ExplicitSize = inlineCount * elemSize;
+                        // If elemSize == 0 (unknown type), keep ClassSize from metadata as fallback
+                    }
+                    break;
+                }
+            }
+        }
+
         // Calculate instance size
         CalculateInstanceSize(irType);
+    }
+
+    /// <summary>
+    /// Compute the element size for an [InlineArray] field using Cecil type metadata.
+    /// Works for non-generic types where the field type is already concrete.
+    /// </summary>
+    private int ResolveInlineArrayElementSizeFromCecil(Mono.Cecil.TypeReference? fieldType)
+    {
+        if (fieldType == null) return 0;
+
+        // Managed references (ref T) and unmanaged pointers (T*) are always pointer-sized
+        if (fieldType.IsByReference || fieldType.IsPointer) return 8;
+        if (fieldType.IsArray) return 8; // Arrays are reference types
+
+        try
+        {
+            var resolved = fieldType.Resolve();
+            if (resolved == null) return 0;
+            if (!resolved.IsValueType) return 8; // Reference type → pointer
+
+            // Value type: try primitive sizes
+            return resolved.FullName switch
+            {
+                "System.Boolean" or "System.Byte" or "System.SByte" => 1,
+                "System.Int16" or "System.UInt16" or "System.Char" => 2,
+                "System.Int32" or "System.UInt32" or "System.Single" => 4,
+                "System.Int64" or "System.UInt64" or "System.Double" or "System.IntPtr" or "System.UIntPtr" => 8,
+                _ => 0, // Unknown value type — need IR lookup
+            };
+        }
+        catch { return 0; }
+    }
+
+    /// <summary>
+    /// Estimate the C++ size of a field given its IR type name.
+    /// Returns sizeof(void*) for reference types, known sizes for primitives,
+    /// or looks up the IRType's InstanceSize for value types. Returns 0 if unknown.
+    /// </summary>
+    private int EstimateFieldSize(string fieldTypeName)
+    {
+        // Reference types are always pointer-sized
+        if (fieldTypeName.EndsWith("*"))
+            return 8;
+
+        var result = fieldTypeName switch
+        {
+            "bool" or "int8_t" or "uint8_t" or "cil2cpp::Byte" or "cil2cpp::SByte" or "cil2cpp::Boolean" => 1,
+            "int16_t" or "uint16_t" or "cil2cpp::Int16" or "cil2cpp::UInt16" or "cil2cpp::Char" => 2,
+            "int32_t" or "uint32_t" or "float" or "cil2cpp::Int32" or "cil2cpp::UInt32" or "cil2cpp::Single" => 4,
+            "int64_t" or "uint64_t" or "double" or "cil2cpp::Int64" or "cil2cpp::UInt64" or "cil2cpp::Double" or "cil2cpp::IntPtr" or "cil2cpp::UIntPtr" => 8,
+            _ => 0,
+        };
+        if (result > 0) return result;
+
+        // Try to look up already-created value type by CppName
+        var existing = _module.Types.FirstOrDefault(t => t.CppName == fieldTypeName && t.IsValueType);
+        if (existing != null && existing.InstanceSize > 0)
+            return existing.InstanceSize;
+
+        return 0;
     }
 
     // Object header: TypeInfo* (8 bytes) + sync_block UInt32 (4 bytes) + padding (4 bytes) = 16

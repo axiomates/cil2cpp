@@ -3221,6 +3221,14 @@ public partial class CppCodeGenerator
             sb.AppendLine($"    cil2cpp::task_set_typeinfo(&{taskType.CppName}_TypeInfo);");
         }
 
+        // Register System.Array TypeInfo so SZArray TypeInfos (T[]) inherit base_type/vtable/interfaces
+        var arrayType = _userTypes.FirstOrDefault(t => t.ILFullName == "System.Array");
+        if (arrayType != null)
+        {
+            sb.AppendLine("    // Register System.Array TypeInfo for SZArray TypeInfo creation");
+            sb.AppendLine($"    cil2cpp::array_set_system_array_typeinfo(&{arrayType.CppName}_TypeInfo);");
+        }
+
         // Patch System.Object's runtime TypeInfo with generated VTable.
         // The runtime defines System_Object_TypeInfo with vtable=nullptr.
         // Without this patch, virtual calls (GetHashCode, Equals, ToString) on

@@ -15,6 +15,100 @@
 
 namespace cil2cpp {
 
+// Cache of element_type → SZArray TypeInfo. Protected by mutex for thread safety.
+static std::mutex g_szarray_cache_mutex;
+static std::unordered_map<TypeInfo*, TypeInfo*> g_szarray_cache;
+
+// The generated System.Array TypeInfo — set by __init_runtime_vtables() via
+// array_set_system_array_typeinfo(). Used as base_type/vtable source for SZArray TypeInfos.
+static TypeInfo* g_system_array_typeinfo = nullptr;
+
+TypeInfo* get_szarray_type_info(TypeInfo* element_type) {
+    if (!element_type) return nullptr;
+
+    {
+        std::lock_guard<std::mutex> lock(g_szarray_cache_mutex);
+        auto it = g_szarray_cache.find(element_type);
+        if (it != g_szarray_cache.end()) return it->second;
+    }
+
+    // Build "ElementFullName[]" string
+    std::string name;
+    if (element_type->full_name) {
+        name = std::string(element_type->full_name) + "[]";
+    } else if (element_type->name) {
+        name = std::string(element_type->name) + "[]";
+    } else {
+        name = "?[]";
+    }
+
+    // Build short name
+    std::string short_name;
+    if (element_type->name) {
+        short_name = std::string(element_type->name) + "[]";
+    } else {
+        short_name = "?[]";
+    }
+
+    // Allocate persistent copies of the name strings
+    char* full_name_copy = new char[name.size() + 1];
+    std::memcpy(full_name_copy, name.c_str(), name.size() + 1);
+    char* short_name_copy = new char[short_name.size() + 1];
+    std::memcpy(short_name_copy, short_name.c_str(), short_name.size() + 1);
+
+    // Allocate the TypeInfo (not GC-managed — lives for process lifetime).
+    auto* ti = new TypeInfo{};
+    ti->name = short_name_copy;
+    ti->namespace_name = element_type->namespace_name;
+    ti->full_name = full_name_copy;
+    ti->instance_size = sizeof(Array);
+    ti->element_size = element_type->element_size;
+    ti->flags = TypeFlags::Array | TypeFlags::Sealed | TypeFlags::Public;
+    ti->cor_element_type = cor_element_type::SZARRAY;
+    ti->array_rank = 1;
+    ti->element_type_info = element_type;
+
+    // T[] inherits from System.Array.
+    // Copy base_type, vtable, and interface LIST (for type_implements_interface),
+    // but NOT interface_vtables — System.Array's interface vtables have null method
+    // entries (CoreRuntimeType). The array adapter (array_get_generic_interface_vtable /
+    // array_get_nongeneric_interface_vtable) handles all array interface dispatch.
+    if (g_system_array_typeinfo) {
+        ti->base_type = g_system_array_typeinfo;
+        ti->vtable = g_system_array_typeinfo->vtable;
+        ti->interfaces = g_system_array_typeinfo->interfaces;
+        ti->interface_count = g_system_array_typeinfo->interface_count;
+        // Deliberately NOT copying interface_vtables — forces obj_get_interface_vtable
+        // to fall through to the array-specific adapter which provides correct methods.
+    }
+
+    std::lock_guard<std::mutex> lock(g_szarray_cache_mutex);
+    auto [it, inserted] = g_szarray_cache.emplace(element_type, ti);
+    if (!inserted) {
+        // Another thread beat us — free our copy and return theirs
+        delete[] full_name_copy;
+        delete[] short_name_copy;
+        delete ti;
+    }
+    return it->second;
+}
+
+void array_set_system_array_typeinfo(TypeInfo* system_array_ti) {
+    if (!system_array_ti) return;
+
+    std::lock_guard<std::mutex> lock(g_szarray_cache_mutex);
+    g_system_array_typeinfo = system_array_ti;
+
+    // Patch all already-cached SZArray TypeInfos — base_type = System.Array itself
+    // Same as get_szarray_type_info: copy interfaces but NOT interface_vtables.
+    for (auto& [elem, ti] : g_szarray_cache) {
+        ti->base_type = system_array_ti;
+        ti->vtable = system_array_ti->vtable;
+        ti->interfaces = system_array_ti->interfaces;
+        ti->interface_count = system_array_ti->interface_count;
+    }
+}
+
 Array* array_create(TypeInfo* element_type, Int32 length) {
     if (length < 0) {
         throw_argument_out_of_range();
@@ -444,6 +538,15 @@ static void* g_array_nongeneric_ienumerable_methods[] = {
     (void*)&array_iface_get_enumerator,
 };
 
+// ICloneable: Clone (returns shallow copy of the array)
+void* array_iface_clone(void* __this) {
+    return cil2cpp::array_clone(__this);
+}
+
+static void* g_array_icloneable_methods[] = {
+    (void*)&array_iface_clone,
+};
+
 // Non-generic IList: get_Item, set_Item, Add, Contains, Clear, get_IsReadOnly, get_IsFixedSize,
 //                     IndexOf, Insert, Remove, RemoveAt
 static void* g_array_nongeneric_ilist_methods[] = {
@@ -490,7 +593,7 @@ bool is_array_generic_collection_interface(cil2cpp::TypeInfo* iface_type, void**
     return false;
 }
 
-// Check if interface is one of the non-generic collection interfaces that arrays implement.
+// Check if interface is one of the non-generic interfaces that arrays implement.
 bool is_array_nongeneric_collection_interface(cil2cpp::TypeInfo* iface_type, void**& methods, uint32_t& count) {
     if (!iface_type || !iface_type->full_name) return false;
 
@@ -503,6 +606,9 @@ bool is_array_nongeneric_collection_interface(cil2cpp::TypeInfo* iface_type, voi
     }
     if (std::strcmp(name, "System.Collections.IList") == 0) {
         methods = g_array_nongeneric_ilist_methods; count = 11; return true;
+    }
+    if (std::strcmp(name, "System.ICloneable") == 0) {
+        methods = g_array_icloneable_methods; count = 1; return true;
     }
     return false;
 }

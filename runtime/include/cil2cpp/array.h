@@ -150,6 +150,23 @@ void array_copy_to(void* __this, void* dest, Int32 index);
 /// System.Array::IsValueOfElementType(object) — check if value's type matches element type.
 Boolean array_is_value_of_element_type(void* __this, void* value);
 
+/**
+ * Get or create the TypeInfo for a T[] (SZArray) type from its element TypeInfo.
+ * Cached per element type — repeated calls return the same pointer.
+ * The returned TypeInfo has: full_name="ElementFullName[]", base_type=System.Array,
+ * flags=Array, element_type_info=element_type, cor_element_type=SZARRAY.
+ * Used by: alloc_array (sets arr->__type_info), ldtoken T[] (typeof(T[])).
+ */
+TypeInfo* get_szarray_type_info(TypeInfo* element_type);
+
+/**
+ * Register the generated System.Array TypeInfo with the runtime.
+ * Called from __init_runtime_vtables() so that dynamically-created SZArray TypeInfos
+ * inherit base_type, vtable, and interfaces from the canonical System.Array TypeInfo.
+ * Patches all already-cached entries and sets the default for future ones.
+ */
+void array_set_system_array_typeinfo(TypeInfo* system_array_ti);
+
 /// Array generic interface vtable adapter: T[] implements IList<T>, ICollection<T>, etc.
 /// Returns a synthesized InterfaceVTable for array-to-generic-interface dispatch, or nullptr.
 InterfaceVTable* array_get_generic_interface_vtable(TypeInfo* array_type, TypeInfo* interface_type);

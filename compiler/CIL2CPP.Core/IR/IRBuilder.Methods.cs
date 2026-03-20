@@ -1240,13 +1240,33 @@ public partial class IRBuilder
                 else if (instr.Operand is TypeReference typeRef)
                 {
                     // ldtoken <type> → push pointer to TypeInfo (RuntimeTypeHandle)
-                    // Array types (T[]) all share System.Array's TypeInfo in the runtime.
-                    // This also handles generic array types (T[] where T is a type param)
-                    // which would otherwise produce unresolvable T___TypeInfo references.
                     string typeInfoName;
-                    if (typeRef is Mono.Cecil.ArrayType)
+                    if (typeRef is Mono.Cecil.ArrayType arrayTypeRef)
                     {
-                        typeInfoName = "System_Array";
+                        // Array types (T[]) need proper SZArray TypeInfo for typeof(T[]).
+                        // Use get_szarray_type_info(&Element_TypeInfo) so typeof(T[]) == new T[].GetType().
+                        // GenericParameter element types are resolved via _activeTypeParamMap
+                        // (monomorphized generics). Only truly unresolvable params fall back to System_Array.
+                        var elemType = arrayTypeRef.ElementType;
+                        bool unresolved = elemType is GenericParameter gp &&
+                            (_activeTypeParamMap == null || !_activeTypeParamMap.ContainsKey(gp.Name));
+
+                        if (unresolved)
+                        {
+                            typeInfoName = "System_Array";
+                            stack.Push(new StackEntry($"&{typeInfoName}_TypeInfo", "cil2cpp::TypeInfo*"));
+                        }
+                        else
+                        {
+                            var elemName = GetMangledTypeNameForRef(elemType);
+                            RecordAutoTypeInfoMetadata(elemType);
+                            var resolvedFullName = ResolveTypeRefOperand(elemType);
+                            if (CppNameMapper.IsPrimitive(resolvedFullName))
+                                _module.RegisterPrimitiveTypeInfo(resolvedFullName);
+                            stack.Push(new StackEntry(
+                                $"cil2cpp::get_szarray_type_info(&{elemName}_TypeInfo)",
+                                "cil2cpp::TypeInfo*"));
+                        }
                     }
                     else
                     {
@@ -1257,8 +1277,8 @@ public partial class IRBuilder
                         {
                             _module.RegisterPrimitiveTypeInfo(typeRef.FullName);
                         }
+                        stack.Push(new StackEntry($"&{typeInfoName}_TypeInfo", "cil2cpp::TypeInfo*"));
                     }
-                    stack.Push(new StackEntry($"&{typeInfoName}_TypeInfo", "cil2cpp::TypeInfo*"));
                 }
                 else if (instr.Operand is MethodReference)
                 {
@@ -3015,8 +3035,19 @@ public partial class IRBuilder
                 var obj = stack.PopExprOr("nullptr");
                 var tmp = $"__t{tempCounter++}";
 
-                // Try to find vtable slot
+                // Detect interface vs class dispatch
                 int vtableSlot = -1;
+                bool isInterfaceCall = false;
+                string? interfaceTypeCppName = null;
+
+                var declaringTypeRef = targetMethod.DeclaringType;
+                var resolvedDeclType = declaringTypeRef.Resolve();
+                if (resolvedDeclType != null && resolvedDeclType.IsInterface)
+                {
+                    isInterfaceCall = true;
+                    interfaceTypeCppName = targetTypeCpp;
+                }
+
                 if (_typeCache.TryGetValue(ResolveCacheKey(targetMethod.DeclaringType), out var targetType))
                 {
                     var entry = targetType.VTable.FirstOrDefault(e => e.MethodName == targetMethod.Name
@@ -3031,7 +3062,9 @@ public partial class IRBuilder
                     ResultVar = tmp,
                     IsVirtual = true,
                     ObjectExpr = obj,
-                    VTableSlot = vtableSlot
+                    VTableSlot = vtableSlot,
+                    IsInterfaceCall = isInterfaceCall,
+                    InterfaceTypeCppName = interfaceTypeCppName
                 });
                 stack.Push(tmp);
                 break;

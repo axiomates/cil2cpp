@@ -2261,6 +2261,8 @@ public partial class IRBuilder
         if (irType.IsValueType && openType.HasLayoutInfo && openType.ClassSize > 0)
             irType.ExplicitSize = openType.ClassSize;
 
+        PropagateInlineArrayAttribute(irType, openType, typeParamMap);
+
         // Calculate instance size
         CalculateInstanceSize(irType);
 
@@ -2705,6 +2707,8 @@ public partial class IRBuilder
 
             if (irType.IsValueType && openType.HasLayoutInfo && openType.ClassSize > 0)
                 irType.ExplicitSize = openType.ClassSize;
+
+            PropagateInlineArrayAttribute(irType, openType, typeParamMap);
 
             CalculateInstanceSize(irType);
 
@@ -3229,6 +3233,95 @@ public partial class IRBuilder
             baseRef = baseDef.BaseType;
         }
         return result;
+    }
+
+    /// <summary>
+    /// Detect [InlineArray(N)] on an open Cecil type and propagate to the IR specialization.
+    /// Computes ExplicitSize = N * elemSize using typeParamMap to resolve generic field types.
+    /// </summary>
+    private void PropagateInlineArrayAttribute(IRType irType, Mono.Cecil.TypeDefinition openType,
+        Dictionary<string, string> typeParamMap)
+    {
+        if (!irType.IsValueType || !openType.HasCustomAttributes) return;
+
+        foreach (var attr in openType.CustomAttributes)
+        {
+            if (attr.AttributeType.FullName == "System.Runtime.CompilerServices.InlineArrayAttribute"
+                && attr.HasConstructorArguments)
+            {
+                irType.IsInlineArray = true;
+                int inlineCount = (int)attr.ConstructorArguments[0].Value;
+                if (irType.Fields.Count == 1 && irType.ExplicitSize <= 0)
+                {
+                    var fieldDef = openType.Fields.FirstOrDefault(f => !f.IsStatic);
+                    int elemSize = ResolveInlineArrayElementSize(fieldDef?.FieldType, typeParamMap);
+                    if (elemSize > 0)
+                        irType.ExplicitSize = inlineCount * elemSize;
+                }
+                break;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Compute the element size in bytes for an [InlineArray] field type.
+    /// Resolves generic parameters through typeParamMap. Reference types → 8 (pointer),
+    /// primitives → known size, value types → look up InstanceSize from IR, arrays → 8.
+    /// </summary>
+    private int ResolveInlineArrayElementSize(Mono.Cecil.TypeReference? fieldType,
+        Dictionary<string, string> typeParamMap)
+    {
+        if (fieldType == null) return 0;
+
+        // Resolve generic parameter T → concrete type
+        if (fieldType is Mono.Cecil.GenericParameter gp
+            && typeParamMap.TryGetValue(gp.Name, out var resolvedName))
+        {
+            // Check if the resolved type is a value type
+            if (CppNameMapper.IsValueType(resolvedName))
+            {
+                // Try primitive sizes first
+                int primSize = EstimateFieldSize(CppNameMapper.MangleTypeName(resolvedName));
+                if (primSize > 0) return primSize;
+
+                // Look up the value type's InstanceSize from IR
+                var mangledName = CppNameMapper.MangleTypeName(resolvedName);
+                var existing = _module.Types.FirstOrDefault(t => t.CppName == mangledName);
+                if (existing != null && existing.InstanceSize > 0)
+                    return existing.InstanceSize;
+
+                return 0; // Unknown value type size
+            }
+            else
+            {
+                return 8; // Reference type → pointer-sized
+            }
+        }
+
+        // Non-generic: check Cecil type directly
+        if (fieldType.IsArray)
+            return 8; // Arrays are reference types
+
+        try
+        {
+            var resolved = fieldType.Resolve();
+            if (resolved != null && !resolved.IsValueType)
+                return 8; // Reference type → pointer
+            if (resolved != null && resolved.IsValueType)
+            {
+                // Try to find in our IR
+                var mangledName = CppNameMapper.MangleTypeName(resolved.FullName);
+                int primSize = EstimateFieldSize(mangledName);
+                if (primSize > 0) return primSize;
+
+                var existing = _module.Types.FirstOrDefault(t => t.CppName == mangledName);
+                if (existing != null && existing.InstanceSize > 0)
+                    return existing.InstanceSize;
+            }
+        }
+        catch { /* Resolve can fail for forwarded types */ }
+
+        return 0;
     }
 
     /// <summary>

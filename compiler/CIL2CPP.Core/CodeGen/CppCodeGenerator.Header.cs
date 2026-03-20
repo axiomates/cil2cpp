@@ -702,13 +702,18 @@ public partial class CppCodeGenerator
             //   2. StaticArrayInitTypeSize: no fields → emit raw byte array
             //   3. Other: has fields + explicit size → emit fields + padding
 
-            if (type.Fields.Count == 1 && type.Fields[0].Name == "FixedElementField")
+            if (type.Fields.Count == 1 &&
+                (type.Fields[0].Name == "FixedElementField" || type.IsInlineArray))
             {
-                // Case 1: Fixed-size buffer (C# fixed keyword / [InlineArray])
+                // Case 1: Fixed-size buffer (C# fixed keyword) or [InlineArray(N)].
+                // Single field repeated N times; ClassSize = N * sizeof(element).
                 var field = type.Fields[0];
                 var cppType = SanitizeFieldType(field.FieldTypeName, definedTypes);
                 int elemSize = GetPrimitiveSize(cppType);
-                if (elemSize > 0)
+                // Reference types (pointers) have pointer-sized elements
+                if (elemSize <= 0 && cppType.EndsWith("*"))
+                    elemSize = 8; // sizeof(void*) on 64-bit
+                if (elemSize > 0 && type.ExplicitSize >= elemSize)
                 {
                     int count = type.ExplicitSize / elemSize;
                     sb.AppendLine($"    {cppType} {field.CppName}[{count}];");
