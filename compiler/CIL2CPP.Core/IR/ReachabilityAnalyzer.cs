@@ -1115,6 +1115,19 @@ public class ReachabilityAnalyzer
         // This prevents SIMD methods from being marked reachable when guarded by IsSupported=false.
         var deadRanges = ComputeFeatureSwitchDeadRanges(method.Body.Instructions);
 
+        // Scan local variable types — value types used as locals (e.g., DecCalc.Buf12)
+        // must be marked reachable so IRBuilder creates full struct definitions with fields.
+        // Without this, types only referenced as locals get opaque empty stubs in codegen.
+        if (method.Body.HasVariables)
+        {
+            foreach (var local in method.Body.Variables)
+            {
+                var localTypeDef = TryResolve(local.VariableType);
+                if (localTypeDef != null)
+                    MarkTypeReachable(localTypeDef);
+            }
+        }
+
         foreach (var instr in method.Body.Instructions)
         {
             // Skip instructions in dead (feature-switch guarded) code ranges

@@ -2310,6 +2310,14 @@ public partial class IRBuilder
                         ResolveGenericTypeRef(methodRef.ReturnType, methodRef.DeclaringType));
                     irCall.VTableParamTypes = BuildVTableParamTypes(methodRef);
                 }
+                else if (methodRef is GenericInstanceMethod gvmRefIface
+                    && gvmRefIface.ElementMethod.Resolve() is { IsVirtual: true, HasGenericParameters: true })
+                {
+                    // Generic interface method dispatch: interface methods with generic parameters
+                    // can't be found by ParameterTypesMatchRef (open vs resolved type args).
+                    // Use type-check dispatch chain on all implementing types.
+                    TrySetupGenericVirtualDispatch(irCall, gvmRefIface, resolved);
+                }
             }
             else if (resolved != null && !resolved.IsValueType)
             {
@@ -4267,12 +4275,14 @@ public partial class IRBuilder
 
         var baseTypeName = baseType.ILFullName;
         var methodName = elemMethod.Name;
-        var targets = new List<(string TypeInfoName, string FunctionName)>();
+        var targets = new List<(string TypeInfoName, string FunctionName, string DeclTypeCppName)>();
 
-        // Find all constructed subtypes (including the base type itself) that override this method
+        // Find all constructed subtypes (including the base type itself) that override this method.
+        // For interface dispatch, also check non-constructed types (they may be instantiated
+        // via factory methods in generic code that isn't tracked by ConstructedTypes).
         foreach (var (ilName, irType) in _typeCache)
         {
-            if (!_module.ConstructedTypes.Contains(ilName)) continue;
+            if (!baseType.IsInterface && !_module.ConstructedTypes.Contains(ilName)) continue;
             if (irType.IsInterface || irType.IsAbstract) continue;
 
             // Check if this type is a subtype of the base type
@@ -4301,7 +4311,7 @@ public partial class IRBuilder
                     overrideDeclType.ILFullName, methodName, typeArgs, mangledName, overrideCecil);
             }
 
-            targets.Add((typeInfoName, mangledName));
+            targets.Add((typeInfoName, mangledName, overrideDeclType.CppName));
         }
 
         if (targets.Count > 0)
@@ -4333,13 +4343,88 @@ public partial class IRBuilder
     private bool IsSubtypeOf(IRType irType, string ancestorILName)
     {
         if (irType.ILFullName == ancestorILName) return true;
+        // Walk class inheritance chain
         var current = irType.BaseType;
         while (current != null)
         {
             if (current.ILFullName == ancestorILName) return true;
             current = current.BaseType;
         }
+        // Check interface implementations (for generic virtual dispatch on interfaces).
+        // InterfaceImpls may be empty for generic specializations, so also check Cecil data.
+        if (CheckInterfaceImplsRecursive(irType, ancestorILName))
+            return true;
+        // Fallback: check Cecil type metadata for interfaces (handles generic specializations
+        // where InterfaceImpls isn't populated from the open generic definition)
+        return CheckCecilInterfaces(irType, ancestorILName);
+    }
+
+    private bool CheckInterfaceImplsRecursive(IRType irType, string ifaceName)
+    {
+        var current = irType;
+        while (current != null)
+        {
+            foreach (var iface in current.InterfaceImpls)
+            {
+                if (iface.Interface.ILFullName == ifaceName) return true;
+            }
+            current = current.BaseType;
+        }
         return false;
+    }
+
+    private bool CheckCecilInterfaces(IRType irType, string ifaceName)
+    {
+        // For generic specializations, InterfaceImpls may be empty.
+        // Walk the IRType base chain and check Cecil type definitions for interface implementations.
+        var current = irType;
+        while (current != null)
+        {
+            // Find the Cecil definition for this type (use open generic name for generic types)
+            var ilName = current.ILFullName;
+            var openName = ilName.Contains('<') ? ilName.Substring(0, ilName.IndexOf('<')) : ilName;
+            foreach (var typeDef in _allTypes)
+            {
+                if (typeDef.FullName != openName) continue;
+                var cecilType = typeDef.GetCecilType();
+                foreach (var cecilIface in cecilType.Interfaces)
+                {
+                    // Resolve the interface name with the type's generic arguments
+                    var resolvedIfaceName = ResolveInterfaceNameForGenericType(
+                        cecilIface.InterfaceType, current);
+                    if (resolvedIfaceName == ifaceName) return true;
+                }
+                break;
+            }
+            current = current.BaseType;
+        }
+        return false;
+    }
+
+    private string ResolveInterfaceNameForGenericType(Mono.Cecil.TypeReference ifaceRef, IRType irType)
+    {
+        // For a generic interface like IOrderedEnumerable`1<!TElement>, resolve the
+        // generic parameters using the IRType's generic arguments.
+        if (ifaceRef is Mono.Cecil.GenericInstanceType git)
+        {
+            var resolvedArgs = new List<string>();
+            foreach (var arg in git.GenericArguments)
+            {
+                if (arg is Mono.Cecil.GenericParameter gp)
+                {
+                    // Resolve from the IRType's generic arguments
+                    if (gp.Position < irType.GenericArguments.Count)
+                        resolvedArgs.Add(irType.GenericArguments[gp.Position]);
+                    else
+                        resolvedArgs.Add(arg.FullName);
+                }
+                else
+                    resolvedArgs.Add(arg.FullName);
+            }
+            var baseName = git.ElementType.FullName;
+            return $"{baseName}<{string.Join(",", resolvedArgs)}>";
+        }
+        return ifaceRef.FullName;
     }
 
     /// <summary>
@@ -4368,13 +4453,22 @@ public partial class IRBuilder
     /// </summary>
     private Mono.Cecil.MethodDefinition? FindCecilGenericMethod(string ilTypeName, string methodName, int paramCount)
     {
+        // For closed generic types (e.g. "OrderedEnumerable`1<TodoItem>"),
+        // also try matching the open generic name (e.g. "OrderedEnumerable`1").
+        var openName = ilTypeName.Contains('<')
+            ? ilTypeName.Substring(0, ilTypeName.IndexOf('<'))
+            : null;
+
         foreach (var typeDef in _allTypes)
         {
-            if (typeDef.FullName != ilTypeName) continue;
+            if (typeDef.FullName != ilTypeName && (openName == null || typeDef.FullName != openName))
+                continue;
             var cecilType = typeDef.GetCecilType();
+            // Match both direct names and explicit interface implementations
+            // (e.g., "System.Linq.IOrderedEnumerable<TElement>.CreateOrderedEnumerable")
             var method = cecilType.Methods.FirstOrDefault(m =>
-                m.IsVirtual && m.Name == methodName && m.Parameters.Count == paramCount
-                && m.HasGenericParameters);
+                m.IsVirtual && m.Parameters.Count == paramCount && m.HasGenericParameters
+                && (m.Name == methodName || m.Name.EndsWith("." + methodName)));
             if (method != null) return method;
             return null;
         }

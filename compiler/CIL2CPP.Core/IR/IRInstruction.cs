@@ -100,7 +100,7 @@ public class IRCall : IRInstruction
         TryAddTypeInfo(InterfaceTypeCppName, typeInfoNames);
         // GVM dispatch references TypeInfos for each target type
         if (GenericVirtualTargets != null)
-            foreach (var (typeInfo, _) in GenericVirtualTargets)
+            foreach (var (typeInfo, _, _) in GenericVirtualTargets)
             {
                 // Strip _TypeInfo suffix to get the type name
                 var name = typeInfo.EndsWith("_TypeInfo") ? typeInfo[..^"_TypeInfo".Length] : typeInfo;
@@ -141,9 +141,10 @@ public class IRCall : IRInstruction
     /// generic virtual method (e.g., ExecuteCore&lt;TResult, TState&gt;). Standard vtable dispatch
     /// cannot handle method-level generics because each vtable slot holds only one function pointer
     /// while generic methods have multiple specializations.
-    /// Each entry maps a concrete type's TypeInfo name to the monomorphized override function name.
+    /// Each entry maps a concrete type's TypeInfo name to the monomorphized override function name,
+    /// plus the declaring type's CppName for correct `this` pointer casting.
     /// </summary>
-    public List<(string TypeInfoName, string FunctionName)>? GenericVirtualTargets { get; set; }
+    public List<(string TypeInfoName, string FunctionName, string DeclTypeCppName)>? GenericVirtualTargets { get; set; }
 
     public override string ToCpp()
     {
@@ -217,15 +218,14 @@ public class IRCall : IRInstruction
         // Each branch casts `this` to the concrete target type (flat struct model — no C++ inheritance).
         for (int i = 0; i < GenericVirtualTargets!.Count; i++)
         {
-            var (typeInfo, funcName) = GenericVirtualTargets[i];
+            var (typeInfo, funcName, declTypeCppName) = GenericVirtualTargets[i];
             var prefix = i == 0 ? "if" : "else if";
             sb.Append($"{prefix} (((cil2cpp::Object*){thisExpr})->__type_info == &{typeInfo}) ");
 
-            // Derive the concrete type name from the TypeInfo name (strip _TypeInfo suffix)
-            var concreteType = typeInfo.EndsWith("_TypeInfo")
-                ? typeInfo[..^"_TypeInfo".Length] + "*"
-                : $"void*";
-            var castThis = $"({concreteType}){thisExpr}";
+            // Cast `this` to the declaring type of the override method (not the concrete type),
+            // since the override may be declared on a base class (e.g., OrderedEnumerable`1
+            // declares CreateOrderedEnumerable but we're dispatching on OrderedEnumerable`2).
+            var castThis = $"({declTypeCppName}*){thisExpr}";
             var branchArgs = otherArgs.Length > 0 ? $"{castThis}, {otherArgs}" : castThis;
             var callExpr = $"{funcName}({branchArgs})";
             if (ResultVar != null)
@@ -407,6 +407,10 @@ public class IRFieldAccess : IRInstruction
 {
     public string ObjectExpr { get; set; } = "";
     public string FieldCppName { get; set; } = "";
+    /// <summary>IL field name from the FieldReference (used for field-hiding disambiguation).</summary>
+    public string? FieldNameIL { get; set; }
+    /// <summary>IL declaring type name from the FieldReference (used for field-hiding disambiguation).</summary>
+    public string? FieldDeclaringTypeIL { get; set; }
     public string ResultVar { get; set; } = "";
     public bool IsStore { get; set; }
     public string? StoreValue { get; set; }

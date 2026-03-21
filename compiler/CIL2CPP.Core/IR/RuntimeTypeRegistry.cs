@@ -315,8 +315,10 @@ public static class RuntimeTypeRegistry
             return method.IrStubReason != null;
 
         // ReflectionAliased: all instance methods blocked (field layout mismatch)
+        // Exception: generic method specializations with compiled IL bodies are safe —
+        // they operate on generic type parameters, not on the declaring type's fields.
         if (desc.Has(RuntimeTypeFlags.ReflectionAliased))
-            return true;
+            return !(method.IsGenericInstance && method.BasicBlocks.Count > 0);
 
         // BlanketGated: fundamental types fully provided by runtime
         if (desc.Has(RuntimeTypeFlags.BlanketGated))

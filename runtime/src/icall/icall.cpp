@@ -1137,6 +1137,35 @@ Int32 RuntimeFieldInfo_get_BindingFlags(void* __this) {
     return flags;
 }
 
+// ===== FieldInfo / TypedReference (CLR-internal stubs) =====
+
+void FieldInfo_SetValueDirect(void* /*__this*/, System_TypedReference /*typedRef*/, void* /*value*/) {
+    // TypedReference-based field set — requires CLR managed pointer tracking.
+    // Not supported in AOT. Callers should use FieldInfo.SetValue() instead.
+    stub_called("FieldInfo.SetValueDirect");
+}
+
+Boolean FieldInfo_get_IsNotSerialized(void* /*__this*/) {
+    // Obsolete API: always returns false (all fields serializable).
+    return 0;
+}
+
+// MethodInfo_CreateDelegate is declared elsewhere (reflection ICalls)
+
+System_TypedReference TypedReference_MakeTypedReference(void* /*target*/, void* /*fields*/) {
+    // TypedReference construction — CLR-internal, not AOT-compatible.
+    stub_called("TypedReference.MakeTypedReference");
+    return System_TypedReference{};
+}
+
+void TypedReference_SetTypedReference(System_TypedReference /*typedRef*/, void* /*value*/) {
+    stub_called("TypedReference.SetTypedReference");
+}
+
+Boolean TypedReference_get_IsNull(System_TypedReference /*__this*/) {
+    return 1; // Treat as null (no TypedReference support in AOT)
+}
+
 // ===== System.Delegate =====
 
 void* Delegate_get_Method(void* /*__this*/) {

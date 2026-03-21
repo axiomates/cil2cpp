@@ -1,0 +1,95 @@
+[1] Parsed 20 employees: PASS
+[2] Headers: Id, Name, Department, Salary, HireDate, Title
+    Repository count: 20
+[3] Department summaries (3 departments):
+    Engineering: 8 employees, avg $126000, top=Henry Davis
+    Marketing: 6 employees, avg $84667, top=Quinn Garcia
+    Sales: 6 employees, avg $96500, top=Leo Thomas
+[4] Salary $90K-$120K (9 employees):
+    David Brown (Sales, $92000, 5yr)
+    Ivy Taylor (Marketing, $95000, 8yr)
+    Olivia Harris (Sales, $97000, 5yr)
+    Kate Anderson (Engineering, $98000, 2yr)
+    Grace Chen (Sales, $105000, 7yr)
+    Sam Clark (Engineering, $105000, 1yr)
+    Eva Martinez (Engineering, $110000, 3yr)
+    Quinn Garcia (Marketing, $110000, 9yr)
+    Leo Thomas (Sales, $115000, 10yr)
+[5] Name search 'son' (5 matches):
+    Alice Johnson (Engineering)
+    Jack Wilson (Sales)
+    Kate Anderson (Engineering)
+    Mia Jackson (Marketing)
+    Rachel Robinson (Sales)
+[6] Hires by year:
+    2012: 1 hires
+    2013: 1 hires
+    2014: 1 hires
+    2015: 2 hires
+    2016: 2 hires
+    2017: 1 hires
+    2018: 1 hires
+    2019: 2 hires
+    2020: 1 hires
+    2021: 2 hires
+    2022: 2 hires
+    2023: 2 hires
+    2024: 2 hires
+[7] Top 5 earners:
+    Henry Davis: $155000
+    Paul Martin: $145000
+    Carol Williams: $140000
+    Nathan White: $130000
+    Alice Johnson: $125000
+[8] Senior employees (5+ years): 11
+    Paul Martin: 12 years
+    Henry Davis: 11 years
+    Leo Thomas: 10 years
+    Carol Williams: 9 years
+    Quinn Garcia: 9 years
+    Ivy Taylor: 8 years
+    Nathan White: 8 years
+    Grace Chen: 7 years
+    Alice Johnson: 6 years
+    David Brown: 5 years
+    Olivia Harris: 5 years
+[9] Engineering team table:
+  ID | Name                 | Department  | Salary   | Hired      | Title
+  ---+----------------------+-------------+----------+------------+------
+    1 | Alice Johnson        | Engineering |   125000 | 2018-03-15 | Senior Engineer
+    3 | Carol Williams       | Engineering |   140000 | 2015-11-01 | Staff Engineer
+    5 | Eva Martinez         | Engineering |   110000 | 2021-01-18 | Engineer
+    8 | Henry Davis          | Engineering |   155000 | 2013-02-14 | Principal Engineer
+   11 | Kate Anderson        | Engineering |    98000 | 2022-11-20 | Engineer
+   14 | Nathan White         | Engineering |   130000 | 2016-07-19 | Senior Engineer
+   16 | Paul Martin          | Engineering |   145000 | 2012-10-11 | Staff Engineer
+   19 | Sam Clark            | Engineering |   105000 | 2023-04-01 | Engineer
+[10] Total payroll: $2095000
+[11] Summary CSV written and verified (4 lines)
+    Department,Employees,TotalSalary,AvgSalary,MinSalary,MaxSalary,TopEarner
+    Engineering,8,1008000,126000.00,98000,155000,Henry Davis
+    Marketing,6,508000,84667.00,68000,110000,Quinn Garcia
+    Sales,6,579000,96500.00,82000,115000,Leo Thomas
+[12] Avg salary by dept (>$80K employees only):
+    Engineering: $126000
+    Marketing: $96667
+    Sales: $96500
+[13] Title analysis: 14 with, 6 without
+    Engineering: Senior Engineer, Staff Engineer, Engineer, Principal Engineer, Engineer, Senior Engineer, Staff Engineer, Engineer
+    Marketing: Marketing Manager, VP Marketing
+    Sales: Account Manager, Senior Account Manager, Regional Director, Account Manager
+[14] Bad CSV error handling: PASS — CsvParseException(Line 2): Expected at least 5 fields, got 2 — "1,Bad"
+[15] Departments: Engineering, Marketing, Sales
+    First 10 name words: Alice, Anderson, Bob, Brown, Carol, Chen, Clark, David, Davis, Eva
+[16] Max salary per department:
+    Engineering: $155000
+    Marketing: $110000
+    Sales: $115000
+[17] Pagination (page size 5):
+    Page 1: Alice Johnson, Bob Smith, Carol Williams, David Brown, Eva Martinez
+    Page 2: Frank Lee, Grace Chen, Henry Davis, Ivy Taylor, Jack Wilson
+    Page 3: Kate Anderson, Leo Thomas, Mia Jackson, Nathan White, Olivia Harris
+[18] Bottom 5 (zipped): Tina Lewis=$68000, Mia Jackson=$72000, Frank Lee=$78000, Rachel Robinson=$82000, Bob Smith=$85000
+[19] Any >$150K: True, All positive: True, Has Engineering: True
+[20] First: Alice Johnson, Last: Tina Lewis, Missing: null
+=== MiniCsvTool complete ===

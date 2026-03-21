@@ -659,10 +659,11 @@ public partial class CppCodeGenerator
                 }
             }
 
-            // Own fields (skip fields already emitted as inherited)
+            // Own fields — HidesBaseField fields have __own suffix (set by IRBuilder final pass)
+            // Same-type hidden fields were already handled: IRBuilder merged them by keeping inherited
             foreach (var field in type.Fields)
             {
-                if (inheritedFieldNames.Contains(field.CppName)) continue;
+                if (!field.HidesBaseField && inheritedFieldNames.Contains(field.CppName)) continue;
                 sb.AppendLine($"    {GetFieldDeclaration(field, type, definedTypes)};");
             }
 

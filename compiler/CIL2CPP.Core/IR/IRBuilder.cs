@@ -746,7 +746,8 @@ public partial class IRBuilder
                                   or "System.Collections.Generic.ObjectComparer`1"
                                   or "System.Collections.Generic.GenericEqualityComparer`1"
                                   or "System.Collections.Generic.GenericComparer`1"
-                                  or "System.Collections.Generic.EnumEqualityComparer`1")
+                                  or "System.Collections.Generic.EnumEqualityComparer`1"
+                                  or "System.Collections.Generic.EnumComparer`1")
             {
                 _module.ConstructedTypes.Add(key);
             }
@@ -872,6 +873,11 @@ public partial class IRBuilder
                 SynthesizeRecordMethods(irType);
         }
 
+        // Final pass: Detect C# field hiding (derived class declares a field with same name as base)
+        // For type-incompatible hidden fields: rename CppName to __own and update IRFieldAccess
+        // For type-compatible hidden fields: remove own field (inherited one suffices in flat struct)
+        DetectFieldHiding();
+
         var totalMethods = _module.Types.Sum(t => t.Methods.Count);
         Console.Error.WriteLine($"[perf] IRBuilder total: types={_module.Types.Count}, methods={totalMethods}");
 
@@ -895,6 +901,90 @@ public partial class IRBuilder
             ? git.ElementType.FullName
             : typeRef.FullName;
         return elementName == "System.Nullable`1";
+    }
+
+    /// <summary>
+    /// Detect C# field hiding across all types and fix CppName + method body references.
+    /// When a derived class declares a field with the same name as a base class field:
+    /// - If types differ: rename own field to CppName__own and update IRFieldAccess instructions
+    /// - If types match: remove own field (inherited field at correct offset suffices in flat struct)
+    /// </summary>
+    private void DetectFieldHiding()
+    {
+        // Collect all type-incompatible hidden fields that need __own renaming
+        var renamedFields = new Dictionary<(string TypeILName, string FieldName), string>();
+
+        foreach (var irType in _module.Types)
+        {
+            if (irType.BaseType == null || irType.IsValueType) continue;
+
+            // Collect inherited field info: CppName → FieldTypeName
+            var inheritedFieldTypes = new Dictionary<string, string>();
+            var ancestor = irType.BaseType;
+            while (ancestor != null)
+            {
+                foreach (var f in ancestor.Fields)
+                {
+                    // First inherited field with this name wins (furthest ancestor)
+                    if (!inheritedFieldTypes.ContainsKey(f.CppName))
+                        inheritedFieldTypes[f.CppName] = f.FieldTypeName;
+                }
+                ancestor = ancestor.BaseType;
+            }
+            if (inheritedFieldTypes.Count == 0) continue;
+
+            var fieldsToRemove = new List<IRField>();
+            foreach (var field in irType.Fields)
+            {
+                if (field.IsStatic || field.HidesBaseField) continue;
+                if (!inheritedFieldTypes.TryGetValue(field.CppName, out var inheritedTypeName)) continue;
+
+                if (field.FieldTypeName != inheritedTypeName)
+                {
+                    // Type-incompatible: rename to __own
+                    field.HidesBaseField = true;
+                    var oldCppName = field.CppName;
+                    field.CppName = oldCppName + "__own";
+                    renamedFields[(irType.ILFullName, field.Name)] = field.CppName;
+                }
+                else
+                {
+                    // Type-compatible: remove own field (inherited one suffices)
+                    fieldsToRemove.Add(field);
+                }
+            }
+            foreach (var f in fieldsToRemove)
+                irType.Fields.Remove(f);
+        }
+
+        if (renamedFields.Count == 0) return;
+
+        // Update IRFieldAccess instructions: use FieldDeclaringTypeIL + FieldNameIL
+        // to determine whether the field access targets a hidden field (use __own).
+        foreach (var irType in _module.Types)
+        {
+            foreach (var method in irType.Methods)
+            {
+                foreach (var block in method.BasicBlocks)
+                {
+                    foreach (var instr in block.Instructions)
+                    {
+                        if (instr is IRFieldAccess fa
+                            && fa.FieldDeclaringTypeIL != null
+                            && fa.FieldNameIL != null)
+                        {
+                            // Direct lookup: does the IL declaring type have a renamed hidden field
+                            // with this IL name?
+                            if (renamedFields.TryGetValue(
+                                (fa.FieldDeclaringTypeIL, fa.FieldNameIL), out var ownCppName))
+                            {
+                                fa.FieldCppName = ownCppName;
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// <summary>

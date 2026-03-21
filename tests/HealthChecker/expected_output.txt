@@ -1,0 +1,62 @@
+[1] Config: HealthChecker v1.0.0, interval=30s, retries=3
+[2] Loaded 7 endpoints:
+    API Gateway → http://api.example.com/health (timeout=3000ms, tags=api,critical)
+    Auth Service → http://auth.example.com/ping (timeout=2000ms, tags=auth)
+    Database → http://db.example.com/slow/status (timeout=5000ms, tags=database,critical)
+    Cache → http://cache.example.com/health (timeout=1000ms, tags=cache)
+    Legacy Service → http://legacy.example.com/fail/health (timeout=5000ms, tags=legacy,deprecated)
+    CDN → http://cdn.example.com/health (timeout=2000ms, tags=cdn)
+    Search Engine → http://search.example.com/slow/status (timeout=4000ms, tags=search)
+[INF] HealthChecker initialized: HealthChecker v1.0.0
+[3] Serilog initialized
+[4] Health check results (7):
+    API Gateway: HEALTHY (143ms)
+    Auth Service: HEALTHY (38ms)
+    Database: HEALTHY (335ms)
+    Cache: HEALTHY (114ms)
+    Legacy Service: UNHEALTHY (543ms) — Connection refused
+    CDN: HEALTHY (62ms)
+    Search Engine: DEGRADED (454ms) — Slow response
+[5] Report: overall=Unhealthy, healthy=5, degraded=1, unhealthy=1, avg=241ms
+[6] Critical endpoints (2):
+    API Gateway: HEALTHY (143ms)
+    Database: HEALTHY (335ms)
+[7] Tags (9):
+    api: API Gateway
+    auth: Auth Service
+    cache: Cache
+    cdn: CDN
+    critical: API Gateway, Database
+    database: Database
+    deprecated: Legacy Service
+    legacy: Legacy Service
+    search: Search Engine
+[8] By status:
+    Healthy: 5 — API Gateway, Auth Service, Database, Cache, CDN
+    Degraded: 1 — Search Engine
+    Unhealthy: 1 — Legacy Service
+[9] History after 3 rounds:
+    API Gateway: 3 checks, avg=114ms, healthy=100%
+    Auth Service: 3 checks, avg=48ms, healthy=100%
+    Cache: 3 checks, avg=62ms, healthy=100%
+    CDN: 3 checks, avg=99ms, healthy=100%
+    Database: 3 checks, avg=403ms, healthy=67%
+    Legacy Service: 3 checks, avg=592ms, healthy=0%
+    Search Engine: 3 checks, avg=406ms, healthy=67%
+[10] Latency: min=38ms, p50=143ms, p90=543ms, max=543ms
+[11] Markdown report: 10 lines, starts with '# Health Report — Unhealthy
+Checks: 7, Avg: 241ms'
+[12] Caught HealthCheckException: endpoint=BadEndpoint, msg=DNS resolution failed
+[13] Nullable: null=(null), healthy=API Gateway, unhealthy=Legacy Service
+[14] HealthStatus values: Healthy=0, Degraded=1, Unhealthy=2, Unknown=3
+[15] Lookup: hasApi=True, hasMissing=False, cache=Cache, cacheTimeout=1000
+[16] Timeouts: sum=22000, avg=3143, max=5000, min=1000
+[17] Parallel check: 3 results, all done=True
+[18] Summary: len=71, contains_name=True
+    System: HealthChecker | Status: Unhealthy | Endpoints: 7 | Healthy: 5/7
+[INF] Check API Gateway: Healthy in 143ms
+[INF] Check Auth Service: Healthy in 38ms
+[INF] Check Database: Healthy in 335ms
+[19] Serilog messages logged
+[20] Final: total=7, unhealthy=[Legacy Service], degraded=[Search Engine]
+=== HealthChecker complete ===

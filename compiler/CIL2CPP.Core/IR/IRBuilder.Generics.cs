@@ -573,14 +573,21 @@ public partial class IRBuilder
         foreach (var companionOpenName in companionOpenNames)
             EnsureGenericCompanionInstantiation(companionOpenName, typeArgs);
 
-        // For enum type arguments, also generate EnumEqualityComparer<T>.
-        // The BCL's CreateDefaultEqualityComparer selects EnumEqualityComparer<T>
+        // For enum type arguments, also generate EnumEqualityComparer<T> / EnumComparer<T>.
+        // The BCL's CreateDefaultComparer/CreateDefaultEqualityComparer selects these
         // via reflection (CreateInstanceForAnotherGenericParameter) for enum types.
-        if (openTypeName == "System.Collections.Generic.EqualityComparer`1"
-            && typeArgs.Count == 1 && IsEnumTypeArg(typeArgs[0]))
+        if (typeArgs.Count == 1 && IsEnumTypeArg(typeArgs[0]))
         {
-            EnsureGenericCompanionInstantiation(
-                "System.Collections.Generic.EnumEqualityComparer`1", typeArgs);
+            if (openTypeName == "System.Collections.Generic.EqualityComparer`1")
+            {
+                EnsureGenericCompanionInstantiation(
+                    "System.Collections.Generic.EnumEqualityComparer`1", typeArgs);
+            }
+            else if (openTypeName == "System.Collections.Generic.Comparer`1")
+            {
+                EnsureGenericCompanionInstantiation(
+                    "System.Collections.Generic.EnumComparer`1", typeArgs);
+            }
         }
     }
 
@@ -1707,6 +1714,10 @@ public partial class IRBuilder
         }
 
         // Populate both instance and static fields
+        // LayoutKind.Explicit: fields have explicit byte offsets, may overlap (unions)
+        if (cecilTypeDef.IsExplicitLayout)
+            irType.IsExplicitLayout = true;
+
         foreach (var fieldDef in cecilTypeDef.Fields)
         {
             var irField = new IRField
@@ -1721,11 +1732,19 @@ public partial class IRBuilder
             if (_typeCache.TryGetValue(fieldDef.FieldType.FullName, out var fieldType))
                 irField.FieldType = fieldType;
 
+            // LayoutKind.Explicit: read per-field byte offset
+            if (!fieldDef.IsStatic && cecilTypeDef.IsExplicitLayout)
+                irField.ExplicitOffset = fieldDef.Offset;
+
             if (fieldDef.IsStatic)
                 irType.StaticFields.Add(irField);
             else
                 irType.Fields.Add(irField);
         }
+
+        // Read explicit struct size from ClassSize metadata
+        if (irType.IsValueType && cecilTypeDef.HasLayoutInfo && cecilTypeDef.ClassSize > 0)
+            irType.ExplicitSize = cecilTypeDef.ClassSize;
 
         // Flag cctor if present
         irType.HasCctor = cecilTypeDef.Methods.Any(m => m.IsConstructor && m.IsStatic && m.HasBody);
@@ -3514,17 +3533,26 @@ public partial class IRBuilder
     private string ResolveFieldCppName(FieldReference fieldRef, IRMethod method)
     {
         var baseName = CppNameMapper.MangleFieldName(fieldRef.Name);
-        // Check if the method's declaring type has a hidden field with this name
+        // Check if the method's declaring type (or a type in its hierarchy) has a hidden field
         if (method.DeclaringType != null)
         {
-            var hiddenField = method.DeclaringType.Fields.FirstOrDefault(
-                f => f.Name == fieldRef.Name && f.HidesBaseField);
-            if (hiddenField != null)
+            // Walk from the method's declaring type upward to find a type that has a hidden field
+            var checkType = method.DeclaringType;
+            while (checkType != null)
             {
-                // If the field reference's field type uses a generic parameter (!0, !!0, etc.),
-                // it's from the current generic type (not a non-generic ancestor).
-                if (FieldTypeUsesGenericParameter(fieldRef.FieldType))
-                    return hiddenField.CppName;
+                var hiddenField = checkType.Fields.FirstOrDefault(
+                    f => f.Name == fieldRef.Name && f.HidesBaseField);
+                if (hiddenField != null)
+                {
+                    // The IL fieldRef.DeclaringType tells us which class owns the field.
+                    // If it matches the type that has the hidden field (by IL name), use __own.
+                    // Also use __own when the field type uses generic parameters (always from current type).
+                    var fieldDeclName = fieldRef.DeclaringType.FullName;
+                    if (fieldDeclName == checkType.ILFullName
+                        || FieldTypeUsesGenericParameter(fieldRef.FieldType))
+                        return hiddenField.CppName;
+                }
+                checkType = checkType.BaseType;
             }
         }
         return baseName;

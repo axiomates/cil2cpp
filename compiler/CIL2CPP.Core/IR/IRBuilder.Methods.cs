@@ -257,6 +257,41 @@ public partial class IRBuilder
             });
         }
 
+        // Ensure value types used as locals exist in the IR module.
+        // Types like DecCalc.Buf12 may be missed by the reachability analyzer
+        // (only referenced as locals in late-discovered methods, not through
+        // initobj/ldobj instructions). Without this, codegen produces opaque stubs.
+        if (cecilMethod.HasBody && cecilMethod.Body.HasVariables)
+        {
+            foreach (var localVar in cecilMethod.Body.Variables)
+            {
+                var localType = localVar.VariableType;
+                // Unwrap by-ref/pointer wrappers
+                while (localType is Mono.Cecil.ByReferenceType byRef)
+                    localType = byRef.ElementType;
+                while (localType is Mono.Cecil.PointerType ptr)
+                    localType = ptr.ElementType;
+                if (localType is Mono.Cecil.GenericParameter) continue;
+                if (localType is Mono.Cecil.GenericInstanceType) continue;
+
+                // Only create demand-driven types for non-enum value types (structs).
+                // Enums are handled as external enum aliases (using X = int32_t).
+                // Reference types don't need struct definitions.
+                try
+                {
+                    var resolved = localType.Resolve();
+                    if (resolved == null || !resolved.IsValueType || resolved.IsEnum) continue;
+                }
+                catch { continue; }
+
+                var localTypeName = localType.FullName;
+                if (!_typeCache.ContainsKey(localTypeName))
+                {
+                    EnsureDemandDrivenNonGenericTypeExists(localType);
+                }
+            }
+        }
+
         // Note: method body is converted in a later pass (after VTables are built)
         return irMethod;
     }
@@ -1835,6 +1870,8 @@ public partial class IRBuilder
                 {
                     ObjectExpr = obj,
                     FieldCppName = ResolveFieldCppName(fieldRef, method),
+                    FieldNameIL = fieldRef.Name,
+                    FieldDeclaringTypeIL = fieldRef.DeclaringType.FullName,
                     ResultVar = tmp2,
                     IsValueAccess = isValueAccess,
                     CastToType = castToType,
@@ -1886,9 +1923,34 @@ public partial class IRBuilder
                 var irFieldTypeCpp = LookupIRFieldTypeCpp(fieldRef);
                 if (irFieldTypeCpp != null && irFieldTypeCpp != fieldTypeCpp)
                 {
-                    var isHiddenField = method.DeclaringType?.Fields.Any(
-                        f => f.Name == fieldRef.Name && f.HidesBaseField) == true
-                        && FieldTypeUsesGenericParameter(fieldRef.FieldType);
+                    // Check if this is field hiding: the declaring type has its own field
+                    // AND the field also exists in the base chain (HidesBaseField may not be set yet
+                    // for non-generic types — the final DetectFieldHiding pass runs later).
+                    var isHiddenField = false;
+                    if (method.DeclaringType != null)
+                    {
+                        var hasOwnField = method.DeclaringType.Fields.Any(
+                            f => f.Name == fieldRef.Name && !f.IsStatic);
+                        if (hasOwnField)
+                        {
+                            // Check if a base type also has this field (= field hiding)
+                            var ancestor = method.DeclaringType.BaseType;
+                            while (ancestor != null && !isHiddenField)
+                            {
+                                if (ancestor.Fields.Any(f => f.Name == fieldRef.Name && !f.IsStatic))
+                                    isHiddenField = true;
+                                ancestor = ancestor.BaseType;
+                            }
+                        }
+                        // Also check already-marked HidesBaseField (for generic specializations)
+                        if (!isHiddenField)
+                        {
+                            isHiddenField = method.DeclaringType.Fields.Any(
+                                f => f.Name == fieldRef.Name && f.HidesBaseField
+                                && (f.DeclaringType?.ILFullName == fieldRef.DeclaringType.FullName
+                                    || FieldTypeUsesGenericParameter(fieldRef.FieldType)));
+                        }
+                    }
                     if (!isHiddenField)
                         fieldTypeCpp = irFieldTypeCpp;
                 }
@@ -1938,6 +2000,8 @@ public partial class IRBuilder
                 {
                     ObjectExpr = obj,
                     FieldCppName = ResolveFieldCppName(fieldRef, method),
+                    FieldNameIL = fieldRef.Name,
+                    FieldDeclaringTypeIL = fieldRef.DeclaringType.FullName,
                     IsStore = true,
                     StoreValue = val,
                     IsValueAccess = isValueAccess,
@@ -2882,26 +2946,9 @@ public partial class IRBuilder
                 {
                     // Check if this is a reference type (class, not value type).
                     // Boxing a reference type is a no-op in the CLR — the value is already an Object*.
-                    // Use multiple detection: Cecil Resolve, type cache, CppNameMapper
-                    bool isValueType;
-                    try
-                    {
-                        var resolved = typeRef.Resolve();
-                        if (resolved != null)
-                            isValueType = resolved.IsValueType;
-                        else if (_typeCache.TryGetValue(resolvedName, out var cachedType))
-                            isValueType = cachedType.IsValueType;
-                        else
-                            isValueType = CppNameMapper.IsValueType(resolvedName);
-                    }
-                    catch
-                    {
-                        // Can't resolve — fall back to CppNameMapper + type cache
-                        if (_typeCache.TryGetValue(resolvedName, out var cachedType))
-                            isValueType = cachedType.IsValueType;
-                        else
-                            isValueType = CppNameMapper.IsValueType(resolvedName);
-                    }
+                    // Arrays are always reference types, even through generic params
+                    // (e.g., Interlocked.CompareExchange<byte[]>).
+                    bool isValueType = DetectIsValueTypeForBox(typeRef, resolvedName);
 
                     if (!isValueType)
                     {
@@ -3769,5 +3816,40 @@ public partial class IRBuilder
             return DeadCodeCategory.AotIncompatible;
 
         return DeadCodeCategory.None;
+    }
+
+    /// <summary>
+    /// Determine if a type operand in a box instruction is a value type.
+    /// Arrays are always reference types even when reached through generic
+    /// parameters (e.g., Interlocked.CompareExchange&lt;byte[]&gt;).
+    /// </summary>
+    private bool DetectIsValueTypeForBox(TypeReference typeRef, string resolvedName)
+    {
+        // Arrays are always reference types
+        if (typeRef is ArrayType)
+            return false;
+        if (resolvedName.EndsWith("[]"))
+            return false;
+
+        // Generic parameter: resolve through active type param map and check the resolved name
+        if (typeRef is Mono.Cecil.GenericParameter gp && _activeTypeParamMap != null
+            && _activeTypeParamMap.TryGetValue(gp.Name, out var mapped))
+        {
+            if (mapped.EndsWith("[]"))
+                return false;
+        }
+
+        try
+        {
+            var resolved = typeRef.Resolve();
+            if (resolved != null)
+                return resolved.IsValueType;
+        }
+        catch { /* fall through */ }
+
+        if (_typeCache.TryGetValue(resolvedName, out var cachedType))
+            return cachedType.IsValueType;
+
+        return CppNameMapper.IsValueType(resolvedName);
     }
 }

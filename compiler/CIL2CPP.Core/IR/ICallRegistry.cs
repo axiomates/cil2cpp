@@ -654,6 +654,23 @@ public static class ICallRegistry
         RegisterICall("System.Reflection.RuntimeFieldInfo", "get_BindingFlags", 0,
             "cil2cpp::icall::RuntimeFieldInfo_get_BindingFlags");
 
+        // FieldInfo.SetValueDirect — requires TypedReference (CLR-internal, not AOT-compatible)
+        // Stub: throws NotSupportedException at runtime
+        RegisterICall("System.Reflection.FieldInfo", "SetValueDirect", 2,
+            "cil2cpp::icall::FieldInfo_SetValueDirect");
+        // FieldInfo.get_IsNotSerialized — obsolete reflection property
+        RegisterICall("System.Reflection.FieldInfo", "get_IsNotSerialized", 0,
+            "cil2cpp::icall::FieldInfo_get_IsNotSerialized");
+        // ===== System.TypedReference (CLR-internal, not AOT-compatible) =====
+        // TypedReference uses managed pointer tracking that only works under JIT.
+        // These stubs throw NotSupportedException if actually called.
+        RegisterICall("System.TypedReference", "MakeTypedReference", 2,
+            "cil2cpp::icall::TypedReference_MakeTypedReference");
+        RegisterICall("System.TypedReference", "SetTypedReference", 2,
+            "cil2cpp::icall::TypedReference_SetTypedReference");
+        RegisterICall("System.TypedReference", "get_IsNull", 0,
+            "cil2cpp::icall::TypedReference_get_IsNull");
+
         // ===== System.Reflection.CustomAttribute (AOT attribute handling) =====
         // CLR's GetAttributeUsage depends on MetadataImport/metadata tokens which don't exist in AOT.
         // Returns default AttributeUsage(All, Inherited=true, AllowMultiple=false).

@@ -11,6 +11,7 @@
 #include "types.h"
 #include "object.h"
 #include "string.h"
+#include "typed_reference.h"
 
 namespace cil2cpp {
 namespace icall {
@@ -107,6 +108,13 @@ Int32 RuntimeConstructorInfo_get_BindingFlags(void* __this);
 void* ConstructorInfo_Invoke(void* __this, Int32 invokeAttr, void* binder,
                              void* parameters, void* culture);
 Int32 RuntimeFieldInfo_get_BindingFlags(void* __this);
+void FieldInfo_SetValueDirect(void* __this, System_TypedReference typedRef, void* value);
+Boolean FieldInfo_get_IsNotSerialized(void* __this);
+
+// System.TypedReference (CLR-internal stubs)
+System_TypedReference TypedReference_MakeTypedReference(void* target, void* fields);
+void TypedReference_SetTypedReference(System_TypedReference typedRef, void* value);
+Boolean TypedReference_get_IsNull(System_TypedReference __this);
 
 // System.RuntimeType/RuntimeTypeCache (reflection member lists)
 void* RuntimeTypeCache_GetMethodList(void* __this, Int32 listType, void* name);

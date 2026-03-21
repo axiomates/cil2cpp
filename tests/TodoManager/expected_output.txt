@@ -1,0 +1,70 @@
+[1] Created 10 todos: PASS
+[2] Guard validation (4 caught): empty-title, null-desc, neg-priority, bad-status
+[3] Custom exceptions (2): Validation(Title), Duplicate(Buy groceries)
+[4] By status: Pending=7, InProgress=2, Completed=1
+[5] High/Critical priority (5):
+    [1] Implement user auth (Critical/InProgress) due:2025-05-30 [dev,security] @Alice
+    [9] Performance profiling (Critical/Pending) due:2025-05-20 [dev,performance] @Diana
+    [7] Add unit tests for auth module (High/Pending) due:2025-06-10 [dev,testing] @Alice
+    [6] Deploy staging environment (High/InProgress) due:2025-05-28 [dev,devops] @Diana
+    [4] Upgrade database schema (High/Pending) due:2025-05-25 [dev,database] @Alice
+[6] Overdue items (4):
+    [9] Performance profiling — due 2025-05-20 (Critical)
+    [4] Upgrade database schema — due 2025-05-25 (High)
+    [6] Deploy staging environment — due 2025-05-28 (High)
+    [1] Implement user auth — due 2025-05-30 (Critical)
+[7] Tag groups (10):
+    bug: 1 items — Fix login page CSS
+    database: 1 items — Upgrade database schema
+    design: 1 items — Design new dashboard
+    dev: 6 items — Add unit tests for auth module, Deploy staging environment, Implement user auth, Performance profiling, Review PR #42, Upgrade database schema
+    devops: 1 items — Deploy staging environment
+    docs: 2 items — Update README, Write API documentation
+    frontend: 2 items — Design new dashboard, Fix login page CSS
+    performance: 1 items — Performance profiling
+    security: 1 items — Implement user auth
+    testing: 1 items — Add unit tests for auth module
+[8] Active workload:
+    Alice: 3 active (3 high/critical)
+    Bob: 2 active (0 high/critical)
+    Diana: 2 active (2 high/critical)
+    Charlie: 1 active (0 high/critical)
+[9] After operations: completed=2, cancelled=1
+    [1] Implement user auth → Completed, completedAt=2025-06-01
+    [5] Review PR #42 → Cancelled
+[10] Recurring: 'Weekly review' → next='Weekly review (#2)', due=2025-06-02
+[11] Statistics: total=12, pending=7, inProgress=1, completed=3, cancelled=1, overdue=3, highPri=5
+    By tag: bug=1, database=1, design=1, dev=6, devops=1, docs=2, frontend=2, performance=1, recurring=2, security=1, testing=1
+    By assignee: Alice=5, Bob=2, Charlie=1, Diana=2, Eve=1
+[12] Dev/bug active items (5):
+    [2] Fix login page CSS (Medium/Pending) due:2025-06-05 [bug,frontend] @Bob
+    [7] Add unit tests for auth module (High/Pending) due:2025-06-10 [dev,testing] @Alice
+    [6] Deploy staging environment (High/InProgress) due:2025-05-28 [dev,devops] @Diana
+    [4] Upgrade database schema (High/Pending) due:2025-05-25 [dev,database] @Alice
+    [9] Performance profiling (Critical/Pending) due:2025-05-20 [dev,performance] @Diana
+[13] Date analysis:
+    Newest: [12] Weekly review (#2) (2025-06-01)
+    Oldest: [3] Write API documentation (2025-02-15)
+    Age spread: 0d, 12d, 13d, 1mo, 22d, 2mo, 3mo
+[14] Due date categories: future=1, no-date=2, overdue=6, this-week=3
+[15] Priority map:
+    Low: 2 items — Write API documentation, Update README
+    Medium: 5 items — Fix login page CSS, Review PR #42, Design new dashboard...
+    High: 3 items — Upgrade database schema, Deploy staging environment, Add unit tests for auth module
+    Critical: 2 items — Implement user auth, Performance profiling
+[16] Tag repository: count=4, colored=4, hasBug=True
+    Names: dev, bug, feature, urgent
+    Found: urgent (orange)
+[17] Remove: before=12, removed=True, notFound=True, after=True
+[18] Formatted (markdown):
+- [ ] **Fix login page CSS** (Medium)
+- [ ] **Upgrade database schema** (High)
+- [ ] **Add unit tests for auth module** (High)
+[19] Summary report:
+Total: 11 items
+Statuses: Pending=6, InProgress=1, Completed=3, Cancelled=1
+Priorities: Low=1, Medium=5, High=3, Critical=2
+Assignees: Alice, Bob, Diana, Eve
+[20] Manual serial: 11 items, len=250, valid=True
+    Sample: [1] Implement user auth, priority=Critical, tags=2
+=== TodoManager complete ===
