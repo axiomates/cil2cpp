@@ -113,8 +113,9 @@ void Program_Main() {
 | IL opcode coverage | 100% (all ~230 ECMA-335 opcodes) |
 | ICallRegistry entries | ~490 |
 | C# compiler tests | 1,291 (xUnit) |
-| C++ runtime tests | 600 (Google Test) |
-| End-to-end integration tests | 93 (15 test projects) |
+| C++ runtime tests | 576 (Google Test) |
+| End-to-end integration tests | 177 (29 test projects) |
+| NuGet packages validated | 14 (Newtonsoft.Json, DI, Serilog, Polly, Humanizer, Stateless, etc.) |
 
 ## Documentation
 
@@ -138,7 +139,7 @@ cil2cpp/
 ├── runtime/                    # C++ runtime (C++20, CMake)
 │   ├── include/cil2cpp/        #   Headers (32 files)
 │   ├── src/                    #   GC / type system / exception / BCL icall
-│   └── tests/                  #   Runtime tests (GTest, 600 tests)
+│   └── tests/                  #   Runtime tests (GTest, 576 tests)
 ├── tests/                      # Test C# projects
 ├── tools/dev.py                # Developer CLI
 └── docs/                       # Project documentation

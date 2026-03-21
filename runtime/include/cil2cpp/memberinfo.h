@@ -161,6 +161,21 @@ String* parameterinfo_get_name(ManagedParameterInfo* pi);
 Type*   parameterinfo_get_parameter_type(ManagedParameterInfo* pi);
 Int32   parameterinfo_get_position(ManagedParameterInfo* pi);
 
+// ===== ldtoken method → RuntimeMethodHandle support =====
+
+/**
+ * Find a MethodInfo entry in a TypeInfo's methods table by name and parameter count.
+ * Used by ldtoken method IL instruction to create RuntimeMethodHandle values.
+ * Returns nullptr if not found.
+ */
+MethodInfo* find_method_info(TypeInfo* type_info, const char* name, uint32_t param_count);
+
+/**
+ * Create a managed ManagedMethodInfo wrapper around a native MethodInfo.
+ * Used by GetMethodFromHandle ICall.
+ */
+ManagedMethodInfo* create_managed_method_info(MethodInfo* native);
+
 // ===== Universal MemberInfo dispatchers =====
 // Called when the IL declaring type is System.Reflection.MemberInfo and the
 // receiver could be Type, MethodInfo, or FieldInfo. Dispatch at runtime based on TypeInfo.

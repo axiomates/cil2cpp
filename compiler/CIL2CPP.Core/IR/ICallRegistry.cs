@@ -631,6 +631,8 @@ public static class ICallRegistry
 
         // ===== System.Reflection (binding flags and introspection) =====
         RegisterICall("System.Reflection.TypeInfo", "AsType", 0, "cil2cpp::icall::TypeInfo_AsType");
+        RegisterICall("System.Reflection.MethodBase", "GetMethodFromHandle", 1,
+            "cil2cpp::icall::MethodBase_GetMethodFromHandle");
         RegisterICall("System.Reflection.MethodBase", "get_IsVirtual", 0,
             "cil2cpp::icall::MethodBase_get_IsVirtual");
         RegisterICall("System.Reflection.MethodBase", "get_IsPublic", 0,
@@ -786,8 +788,12 @@ public static class ICallRegistry
         // ===== System.Reflection.MethodBase / System.Type (additional) =====
         RegisterICall("System.Reflection.MethodBase", "get_IsAbstract", 0,
             "cil2cpp::icall::MethodBase_get_IsAbstract");
+        RegisterICall("System.Reflection.MethodBase", "get_IsConstructor", 0,
+            "cil2cpp::icall::MethodBase_get_IsConstructor");
         RegisterICall("System.Reflection.MethodBase", "get_IsAssembly", 0,
             "cil2cpp::icall::MethodBase_get_IsAssembly");
+        RegisterICall("System.Reflection.MethodInfo", "CreateDelegate", 1,
+            "cil2cpp::icall::MethodInfo_CreateDelegate");
         RegisterICall("System.Type", "get_IsNestedAssembly", 0,
             "cil2cpp::icall::Type_get_IsNestedAssembly");
         RegisterICall("System.Type", "get_IsNotPublic", 0,

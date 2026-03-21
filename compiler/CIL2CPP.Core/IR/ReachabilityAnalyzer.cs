@@ -1056,12 +1056,12 @@ public class ReachabilityAnalyzer
         // Recursive generic types in this namespace are safely bounded by
         // IsRecursiveGenericInstantiation in IRBuilder.
 
-        // LINQ Expression trees — require JIT compilation (Expression.Compile()).
-        // Full namespace excluded (not just .Interpreter) because expression tree
-        // compilation is fundamentally JIT-dependent. LambdaExpression, MethodCallExpression,
-        // etc. are tree nodes that only matter for runtime compilation.
-        // Note: The .Interpreter sub-namespace is subsumed by this broader exclusion.
-        if (typeFullName.StartsWith("System.Linq.Expressions."))
+        // LINQ Expression trees — the tree node types (LambdaExpression, MemberExpression,
+        // etc.) are data structures that work in AOT. Libraries like FluentValidation use
+        // them to inspect lambda structure (member names, property paths) without JIT.
+        // Only the Interpreter and Compiler sub-namespaces are JIT-dependent.
+        if (typeFullName.StartsWith("System.Linq.Expressions.Interpreter.")
+            || typeFullName.StartsWith("System.Linq.Expressions.Compiler."))
             return true;
 
         // REMOVED: System.Xml.Serialization — not AOT-incompatible, NativeAOT supports it.

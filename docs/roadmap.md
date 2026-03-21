@@ -37,7 +37,7 @@ These are required before CIL2CPP can claim "compiles .NET NativeAOT projects":
 | Compression | E.2 ✅ | zlib via System.IO.Compression.Native — GZipStream/DeflateStream round-trip working (CompressionTest passes) |
 | RenderedBodyError → 0 | H.2 | Investigated: ~114 stubs are genuinely correct AOT stubs (CLR-internal deps, GenericBodyTypeConflict). Not a codegen bug. |
 | SIMD scalar completion | F.1 | Eliminate remaining SIMD stubs via complete scalar fallback paths |
-| 13 NuGet package validation | G.2 | Prove real-world packages compile and run (13/13 smoke tests pass, but coverage is shallow — see Maturity Assessment) |
+| 14 NuGet package validation | G.2 | Prove real-world packages compile and run (14/14 smoke tests pass, but coverage is shallow — see Maturity Assessment) |
 
 #### Deferred (after Must-Implement is complete)
 
@@ -157,7 +157,7 @@ See "RuntimeProvided Type Classification" section above.
 **Unfixable or deferred**: SIMD dead-code branches are handled by FeatureSwitchResolver (IsSupported=false dead-branch elimination). CLR internal types (~96) are permanently retained.
 
 **IL translation rate**: ~95%+. History: Phase A: 2,777 → 1,478; Phase B: 1,478 → 1,537; Phase C: → 1,666; Phase X + demand-driven generics: → 1,280 (method count also reduced ~26k from ~31k via specialized method reachability).
-**Tests**: 1,291 C# + 576 C++ + 171 integration (28 test projects) — all passing.
+**Tests**: 1,291 C# + 576 C++ + 177 integration (29 test projects) — all passing.
 
 ### Implemented Architecture Capabilities
 
@@ -174,7 +174,7 @@ CIL2CPP's "IL-first" architecture is extremely efficient at **breadth**: fixing 
 
 - **Each feature is only smoke-tested** (30-100 line test programs)
 - **Each new NuGet package requires compiler fixes** — the compiler isn't robust enough for arbitrary .NET code
-- **No real-world complex .NET NativeAOT project has been compiled** — all 28 test projects are toy examples
+- **No real-world complex .NET NativeAOT project has been compiled** — all 29 test projects are toy examples
 - **Zero compiler optimizations** — no inlining, no devirtualization, no escape analysis
 
 For comparison: a truly mature C compiler (like chibicc) proves itself by compiling the Linux kernel. CIL2CPP has no equivalent real-world validation.
@@ -225,7 +225,7 @@ CIL2CPP at 50K lines is approximately **17-25%** of a minimum viable tool, and *
 | File I/O apps | ~95% | Low | Basic FileStream/StreamReader pass; complex scenarios untested |
 | Network apps (HTTP/HTTPS) | ~85% | Low | Single GET request works; redirects/auth/streaming untested |
 | JSON serialization | ~85% | Low | Simple object serialization works; nested/polymorphic/custom converters untested |
-| NuGet packages | ~70% | Very low | 13 packages pass minimal examples; only 2-5 APIs tested per library |
+| NuGet packages | ~70% | Very low | 14 packages pass minimal examples; only 2-5 APIs tested per library |
 | Production-grade apps | ~15% | None | No real application has been compiled |
 | Arbitrary NativeAOT .csproj | **~20-30%** | None | Considering both breadth and depth |
 
@@ -248,6 +248,7 @@ CIL2CPP at 50K lines is approximately **17-25%** of a minimum viable tool, and *
 | 11 | Hashids.net | 1.7.0 | 62 | Encode/decode integers, hex encoding, LINQ Intersect |
 | 12 | Ardalis.GuardClauses | 4.6.0 | 70 | Guard.Against.Null/NullOrEmpty/OutOfRange/Zero/NegativeOrZero |
 | 13 | Slugify.Core | 4.0.1 | 77 | GenerateSlug, special characters, custom config |
+| 14 | Stateless | 5.16.0 | ~60 | State machine, generic interface dispatch, 6 tests |
 
 > **Note**: Each package was validated with a minimal smoke test, covering a tiny subset of each library's API (<5%). Each new package required compiler bug fixes. This does NOT mean the library is production-ready in CIL2CPP.
 
@@ -256,7 +257,7 @@ CIL2CPP at 50K lines is approximately **17-25%** of a minimum viable tool, and *
 - `[DynamicallyAccessedMembers]` — **complete (validated)**: 13 DamFlags, field/method/parameter scanning, CLI `--rdxml` wired
 - ILLink feature switches — **active**: FeatureSwitchResolver substitutes 10+ AOT defaults at compile time
 - `[MarshalAs]` attribute — **C.7.1 ✅ + C.7.2 ✅ + C.7.3 ✅**: Cecil parsing + 21 type mappings + [Out]/[In] support + LPArray array marshaling (direction-aware + SizeParamIndex assertion)
-- NuGet PackageReference — 13 packages pass smoke tests, but coverage is extremely shallow
+- NuGet PackageReference — 14 packages pass smoke tests, but coverage is extremely shallow
 - Codegen performance — NuGetSimpleTest 196s→89s (two optimizations, 2026-03-21). Room for further optimization
 - **Compiler optimization** — ❌ Zero optimization passes (no inlining, devirtualization, escape analysis). Generated C++ is naive IL translation
 - **Real project validation** — ❌ No real application >100 lines has been compiled end-to-end
@@ -477,7 +478,7 @@ CIL2CPP at 50K lines is approximately **17-25%** of a minimum viable tool, and *
 
 | # | Task | Estimate | Status | Description |
 |---|------|----------|--------|-------------|
-| D.0 | NuGet package integration tests | Medium | ✅ Complete | 13 NuGet packages pass smoke tests (Newtonsoft.Json, DI+Logging+Console, Humanizer, Polly, Serilog+Console, Configuration+Binder, Hashids.net, Ardalis.GuardClauses, Slugify.Core). Each package validated with 30-88 line minimal examples — coverage is extremely shallow. 171/171 integration tests. |
+| D.0 | NuGet package integration tests | Medium | ✅ Complete | 14 NuGet packages pass smoke tests (Newtonsoft.Json, DI+Logging+Console, Humanizer, Polly, Serilog+Console, Configuration+Binder, Hashids.net, Ardalis.GuardClauses, Slugify.Core, Stateless). Each package validated with 30-88 line minimal examples — coverage is extremely shallow. 177/177 integration tests. |
 | D.1 | `[DynamicallyAccessedMembers]` parsing | Medium | ✅ Complete (validated) | ReachabilityAnalyzer.cs — full 13-flag DAM parsing + SeedDynamicallyAccessedMembers(). Includes DAM on generic method/type parameters (critical for DI: `AddSingleton<TService, [DAM] TImpl>()` preserves TImpl constructors). CLI `--rdxml`. 7 DAM tests + 14 rd.xml tests. |
 | D.2 | rd.xml parser | Low | ✅ Complete (validated) | RdXmlParser.cs — full XML parsing + PreservationRule mapping. CLI `--rdxml` option wired in Program.cs (codegen + analyze commands). |
 | D.3 | ILLink feature switch substitution | Medium | ✅ Active | FeatureSwitchResolver.cs (10 AOT defaults) + IRBuilder.Methods.cs:1372-1386 (Ldsfld substitution). Automatically active in all builds. |
@@ -545,7 +546,7 @@ CIL2CPP at 50K lines is approximately **17-25%** of a minimum viable tool, and *
 | # | Task | Estimate | Status | Description |
 |---|------|----------|--------|-------------|
 | G.1 | CI/CD (GitHub Actions: Win + Linux) | Medium | Not started | |
-| G.2 | 13 NuGet package smoke tests | High | ✅ Done | 13 packages pass minimal examples (see detailed list in Maturity Assessment). Note: each package only validated a tiny API subset (<5%) |
+| G.2 | 14 NuGet package smoke tests | High | ✅ Done | 14 packages pass minimal examples (see detailed list in Maturity Assessment). Note: each package only validated a tiny API subset (<5%) |
 | G.3 | Self-contained deployment mode + RID detection | Medium | Not started | |
 | G.4 | Documentation completion | Medium | Not started | |
 | G.5 | 50+ NuGet packages compile without manual fixes | Very high | Not started | True compiler robustness validation — currently each new package requires compiler bug fixes |
@@ -620,7 +621,7 @@ macOS support (Objective-C bridge)
 | **M3.5: REST Client** | HTTP GET + JSON serialization end-to-end | C.6+D | ✅ JsonSGTest + NuGetSimpleTest (Newtonsoft.Json) |
 | **M4: Library Ecosystem** | Project with 3+ NuGet PackageReferences compiles and runs | D+G.2 | ✅ DITest (DI+Logging+Console = 3 NuGet packages) |
 | **M5: Ecosystem Breadth** | HTTPS + Compression + DI/logging/config + 10 NuGet smoke tests | E+G.2 | ✅ Complete (HTTPS ✅, Compression ✅, DI/logging/config ✅, SIMD ✅, 10 NuGet ✅, ValidationApp ✅) |
-| **M6: Ecosystem Depth** | 50+ NuGet packages compile without manual fixes + 3 real apps validated | G | In progress (13 NuGet, Regex ✅, DateTime ✅, Decimal ✅) |
+| **M6: Ecosystem Depth** | 50+ NuGet packages compile without manual fixes + 3 real apps validated | G | In progress (14 NuGet, Regex ✅, DateTime ✅, Decimal ✅) |
 | **M7: Compiler Optimization** | Inlining, devirtualization, basic escape analysis | F+ | Not started |
 | **M8: Cross-Platform** | Linux x64 support (System.Native + OpenSSL) | B.5+E.linux | Not started |
 | **M9: Production Candidate** | Comprehensive testing + CI/CD + documentation + debugging support | G+ | Not started |

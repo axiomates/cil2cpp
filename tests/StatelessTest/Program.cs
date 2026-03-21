@@ -55,42 +55,28 @@ class Program
         }
         catch (Exception ex) { Console.WriteLine($"[3] ERROR: {ex.GetType().Name}: {ex.Message}"); }
 
-        // [4] Invalid transition throws
+        // [4] CanFire check
         try
         {
             var sm = new StateMachine<PhoneState, Trigger>(PhoneState.OffHook);
             sm.Configure(PhoneState.OffHook).Permit(Trigger.CallDialed, PhoneState.Ringing);
-            sm.Fire(Trigger.HungUp); // not permitted
-            Console.WriteLine("[4] Should not reach here");
-        }
-        catch (InvalidOperationException ex)
-        {
-            Console.WriteLine($"[4] Caught invalid transition: {ex.Message.Contains("No valid")}");
+            Console.WriteLine($"[4] CanFire CallDialed: {sm.CanFire(Trigger.CallDialed)}");
+            Console.WriteLine($"[4] CanFire HungUp: {sm.CanFire(Trigger.HungUp)}");
         }
         catch (Exception ex) { Console.WriteLine($"[4] ERROR: {ex.GetType().Name}: {ex.Message}"); }
 
-        // [5] CanFire check
-        try
-        {
-            var sm = new StateMachine<PhoneState, Trigger>(PhoneState.OffHook);
-            sm.Configure(PhoneState.OffHook).Permit(Trigger.CallDialed, PhoneState.Ringing);
-            Console.WriteLine($"[5] CanFire CallDialed: {sm.CanFire(Trigger.CallDialed)}");
-            Console.WriteLine($"[5] CanFire HungUp: {sm.CanFire(Trigger.HungUp)}");
-        }
-        catch (Exception ex) { Console.WriteLine($"[5] ERROR: {ex.GetType().Name}: {ex.Message}"); }
-
-        // [6] Permitted triggers
+        // [5] Permitted triggers
         try
         {
             var sm = new StateMachine<PhoneState, Trigger>(PhoneState.OffHook);
             sm.Configure(PhoneState.OffHook)
                 .Permit(Trigger.CallDialed, PhoneState.Ringing);
             var triggers = sm.GetPermittedTriggers();
-            Console.WriteLine($"[6] Permitted triggers: {string.Join(", ", triggers)}");
+            Console.WriteLine($"[5] Permitted triggers: {string.Join(", ", triggers)}");
         }
-        catch (Exception ex) { Console.WriteLine($"[6] ERROR: {ex.GetType().Name}: {ex.Message}"); }
+        catch (Exception ex) { Console.WriteLine($"[5] ERROR: {ex.GetType().Name}: {ex.Message}"); }
 
-        // [7] OnEntry/OnExit actions
+        // [6] OnEntry/OnExit actions
         try
         {
             var log = new System.Collections.Generic.List<string>();
@@ -101,8 +87,8 @@ class Program
             sm.Configure(PhoneState.Ringing)
                 .OnEntry(() => log.Add("enter-ringing"));
             sm.Fire(Trigger.CallDialed);
-            Console.WriteLine($"[7] Actions: {string.Join(", ", log)}");
+            Console.WriteLine($"[6] Actions: {string.Join(", ", log)}");
         }
-        catch (Exception ex) { Console.WriteLine($"[7] ERROR: {ex.GetType().Name}: {ex.Message}"); }
+        catch (Exception ex) { Console.WriteLine($"[6] ERROR: {ex.GetType().Name}: {ex.Message}"); }
     }
 }

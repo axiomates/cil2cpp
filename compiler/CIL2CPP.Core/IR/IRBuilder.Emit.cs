@@ -4416,15 +4416,23 @@ public partial class IRBuilder
     {
         if (typeRef is GenericParameter gp)
         {
-            // Try resolving through declaring GenericInstanceType
+            // Try resolving through declaring GenericInstanceType, but only if the
+            // GenericParameter belongs to the declaring type (not an outer/unrelated type).
+            // Without this check, Position-based indexing into the GIT args gives wrong
+            // results for parameters from outer generic types (e.g., TTrigger from
+            // StateMachine`2 resolved through IDictionary`2's args).
             if (methodRef.DeclaringType is GenericInstanceType git
-                && gp.Position < git.GenericArguments.Count)
+                && gp.Position < git.GenericArguments.Count
+                && gp.Owner is TypeReference gpOwner
+                && gpOwner.FullName == git.ElementType.FullName)
             {
                 var resolved = git.GenericArguments[gp.Position];
                 if (resolved is GenericParameter gp2 && _activeTypeParamMap != null
                     && _activeTypeParamMap.TryGetValue(gp2.Name, out var mapped))
                     return mapped;
-                return resolved.FullName;
+                // Recursively resolve — the GIT arg may be a GenericInstanceType with
+                // its own unresolved parameters (e.g., StateRepresentation<TState,TTrigger>).
+                return ResolveTypeRefForMatching(resolved, methodRef);
             }
             // Try resolving directly through active type parameter map
             if (_activeTypeParamMap != null && _activeTypeParamMap.TryGetValue(gp.Name, out var directMapped))

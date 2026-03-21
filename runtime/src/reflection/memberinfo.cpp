@@ -143,7 +143,7 @@ void reflection_patch_property_vtables(TypeInfo* prop_ti, TypeInfo* runtime_prop
 
 // ===== Helper: Create managed wrappers =====
 
-static ManagedMethodInfo* create_managed_method_info(MethodInfo* native) {
+ManagedMethodInfo* create_managed_method_info(MethodInfo* native) {
     auto* mi = static_cast<ManagedMethodInfo*>(
         gc::alloc(sizeof(ManagedMethodInfo), s_methodinfo_ti));
     mi->native_info = native;
@@ -271,6 +271,17 @@ Array* type_get_fields_by_name(Type* t, const char* name, int listType) {
         if (match) data[idx++] = create_managed_field_info(&info->fields[i]);
     }
     return arr;
+}
+
+MethodInfo* find_method_info(TypeInfo* type_info, const char* name, uint32_t param_count) {
+    if (!type_info || !type_info->methods) return nullptr;
+    for (UInt32 i = 0; i < type_info->method_count; i++) {
+        if (std::strcmp(type_info->methods[i].name, name) == 0
+            && type_info->methods[i].parameter_count == param_count) {
+            return &type_info->methods[i];
+        }
+    }
+    return nullptr;
 }
 
 ManagedMethodInfo* type_get_method(Type* t, String* name) {

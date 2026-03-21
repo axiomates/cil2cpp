@@ -961,6 +961,14 @@ void* RuntimeType_CreateEnum(void* __this, Int64 value) {
 
 // ===== System.Reflection =====
 
+// GetMethodFromHandle: convert RuntimeMethodHandle → MethodBase (ManagedMethodInfo)
+// Takes void* (raw MethodInfo pointer from ldtoken method), same pattern as GetTypeFromHandle.
+Object* MethodBase_GetMethodFromHandle(void* handle) {
+    auto* mi = reinterpret_cast<MethodInfo*>(handle);
+    if (!mi) return nullptr;
+    return reinterpret_cast<Object*>(create_managed_method_info(mi));
+}
+
 static MethodInfo* get_native_method_info(void* __this) {
     if (!__this) return nullptr;
     auto* mi = reinterpret_cast<ManagedMethodInfo*>(__this);
@@ -985,6 +993,21 @@ Boolean MethodBase_get_IsStatic(void* __this) {
 Boolean MethodBase_get_IsAbstract(void* __this) {
     auto* ni = get_native_method_info(__this);
     return ni && metadata::method_is_abstract(ni->flags);
+}
+
+Boolean MethodBase_get_IsConstructor(void* __this) {
+    auto* ni = get_native_method_info(__this);
+    if (!ni || !ni->name) return false;
+    return std::strcmp(ni->name, ".ctor") == 0 || std::strcmp(ni->name, ".cctor") == 0;
+}
+
+// CreateDelegate from MethodInfo — simplified AOT implementation.
+// Creates a delegate that calls the method via its stored function pointer.
+Object* MethodInfo_CreateDelegate(void* __this, void* /*delegateType*/) {
+    // In AOT, we can't create arbitrary delegates from MethodInfo at runtime
+    // (would require JIT-like thunk generation). Return nullptr for now.
+    // Libraries that need this (e.g., Newtonsoft.Json) typically have fallback paths.
+    return nullptr;
 }
 
 Boolean MethodBase_get_IsAssembly(void* __this) {

@@ -2377,6 +2377,63 @@ def cmd_integration(args):
     runner.step(f"CMake build ({config})", slug_cmake_build)
     runner.step("Run and compare C++ vs .NET output", slug_run_verify)
 
+    # ===== Phase 29: StatelessTest (Stateless NuGet — state machine library) =====
+    header("Phase 29: StatelessTest (Stateless 5.16.0 - state machine)")
+    runner.begin_phase("StatelessTest")
+
+    stl_sample = TESTPROJECTS_DIR / "StatelessTest" / "StatelessTest.csproj"
+    stl_output = temp_dir / "stl_output"
+    stl_build = temp_dir / "stl_build"
+
+    dotnet_stl_output = None
+
+    def stl_dotnet_run():
+        nonlocal dotnet_stl_output
+        dotnet_stl_output = _get_dotnet_output(stl_sample)
+        print(f"    .NET output: {repr(dotnet_stl_output[:200])}")
+
+    def stl_codegen():
+        run(["dotnet", "run", "--project", str(CLI_PROJECT), "--",
+             "codegen", "-i", str(stl_sample), "-o", str(stl_output)],
+            capture=True)
+
+    def stl_files_exist():
+        for f in ["StatelessTest.h", "StatelessTest_data.cpp", "StatelessTest_stubs.cpp",
+                   "main.cpp", "CMakeLists.txt"]:
+            if not (stl_output / f).exists():
+                raise RuntimeError(f"Missing: {f}")
+        runner.record_metric("lines", count_cpp_lines(stl_output))
+
+    def stl_cmake_configure():
+        run(["cmake", "-B", str(stl_build), "-S", str(stl_output),
+             "-G", generator, *cmake_arch,
+             f"-DCMAKE_PREFIX_PATH={runtime_prefix}"],
+            capture=True)
+
+    def stl_cmake_build():
+        return _cmake_build_with_diagnostics(stl_build, config)
+
+    def stl_run_verify():
+        exe = _exe_path(stl_build, config, "StatelessTest")
+        if not exe.exists():
+            raise RuntimeError(f"Executable not found: {exe}")
+        r = subprocess.run([str(exe)], capture_output=True, text=True, check=False,
+                           encoding="utf-8", errors="replace")
+        if r.returncode != 0:
+            raise RuntimeError(f"StatelessTest exited with code {r.returncode}\nstderr: {r.stderr}")
+        got = r.stdout.strip()
+        expected = dotnet_stl_output.strip()
+        if got != expected:
+            raise RuntimeError(
+                f"Output mismatch!\n  Got:      {repr(got[:200])}\n  Expected: {repr(expected[:200])}")
+
+    runner.step("Get .NET reference output", stl_dotnet_run)
+    runner.step("Codegen StatelessTest", stl_codegen)
+    runner.step("Generated files exist", stl_files_exist)
+    runner.step("CMake configure", stl_cmake_configure)
+    runner.step(f"CMake build ({config})", stl_cmake_build)
+    runner.step("Run and compare C++ vs .NET output", stl_run_verify)
+
     # ===== Cleanup =====
     header("Cleanup")
 

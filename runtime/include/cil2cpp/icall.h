@@ -85,10 +85,13 @@ void* RuntimeType_CreateEnum(void* __this, Int64 value);
 
 // System.Reflection
 inline void* TypeInfo_AsType(void* __this) { return __this; }
+Object* MethodBase_GetMethodFromHandle(void* handle);
 Boolean MethodBase_get_IsVirtual(void* __this);
 Boolean MethodBase_get_IsPublic(void* __this);
 Boolean MethodBase_get_IsStatic(void* __this);
 Boolean MethodBase_get_IsAbstract(void* __this);
+Boolean MethodBase_get_IsConstructor(void* __this);
+Object* MethodInfo_CreateDelegate(void* __this, void* delegateType);
 Boolean MethodBase_get_IsAssembly(void* __this);
 Boolean MethodBase_get_IsFinal(void* __this);
 Boolean FieldInfo_get_IsPublic(void* __this);

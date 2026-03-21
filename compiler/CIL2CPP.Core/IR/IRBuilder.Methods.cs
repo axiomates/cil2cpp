@@ -1290,9 +1290,22 @@ public partial class IRBuilder
                         stack.Push(new StackEntry($"&{typeInfoName}_TypeInfo", "cil2cpp::TypeInfo*"));
                     }
                 }
-                else if (instr.Operand is MethodReference)
+                else if (instr.Operand is MethodReference methodTokenRef)
                 {
-                    stack.Push("0 /* ldtoken method */");
+                    // ldtoken method → push MethodInfo* pointer (raw, not wrapped in RuntimeMethodHandle).
+                    // Same pattern as ldtoken type → TypeInfo* (GetTypeFromHandle takes void*).
+                    // GetMethodFromHandle ICall takes void* and wraps in ManagedMethodInfo.
+                    var declaringType = GetMangledTypeNameForRef(methodTokenRef.DeclaringType);
+                    var methodName = methodTokenRef.Name;
+                    var paramCount = methodTokenRef.Parameters.Count;
+                    var tmp = $"__t{tempCounter++}";
+                    block.Instructions.Add(new IRRawCpp
+                    {
+                        Code = $"{tmp} = (void*)cil2cpp::find_method_info(&{declaringType}_TypeInfo, \"{methodName}\", {paramCount});",
+                        ResultVar = tmp,
+                        ResultTypeCpp = "void*"
+                    });
+                    stack.Push(new StackEntry(tmp, "void*"));
                 }
                 else
                 {
@@ -1592,6 +1605,10 @@ public partial class IRBuilder
                 {
                     if (compileTimeValue.Value != 0)
                     {
+                        // Save stack snapshot for branch target before eliminating.
+                        // The target may resume from dead code and needs the current stack.
+                        if (stack.Count > 0 && !branchTargetStacks.ContainsKey(target.Offset))
+                            branchTargetStacks[target.Offset] = stack.Reverse().ToArray();
                         // brtrue with non-zero → branch ALWAYS taken, fall-through is dead until target
                         block.Instructions.Add(new IRBranch { TargetLabel = $"IL_{target.Offset:X4}" });
                         skipUntilOffset = target.Offset;
@@ -1639,6 +1656,9 @@ public partial class IRBuilder
                 {
                     if (compileTimeValue.Value == 0)
                     {
+                        // Save stack snapshot for branch target before eliminating.
+                        if (stack.Count > 0 && !branchTargetStacks.ContainsKey(target.Offset))
+                            branchTargetStacks[target.Offset] = stack.Reverse().ToArray();
                         // brfalse with 0 → branch ALWAYS taken, fall-through is dead until target
                         block.Instructions.Add(new IRBranch { TargetLabel = $"IL_{target.Offset:X4}" });
                         skipUntilOffset = target.Offset;
@@ -2828,6 +2848,7 @@ public partial class IRBuilder
                 var valEntry = stack.PopEntry();
                 var val = valEntry.Expr;
                 var tmp = $"__t{tempCounter++}";
+                bool boxAlwaysNonNull = false; // Value type box is guaranteed non-null
                 // When boxing as IntPtr/UIntPtr, the stack may hold a pointer type
                 // (e.g., QUIC_HANDLE*). In IL, native ints and pointers are
                 // interchangeable, but in C++ we need an explicit cast.
@@ -2910,9 +2931,14 @@ public partial class IRBuilder
                             TypeInfoCppName = typeCpp != typeInfoCpp ? typeInfoCpp : null,
                             ResultVar = tmp
                         });
+                        boxAlwaysNonNull = true;
                     }
                 }
-                stack.Push(new StackEntry(tmp, "cil2cpp::Object*"));
+                // Boxing a non-nullable value type always produces non-null.
+                // CompileTimeConstant:1 enables brtrue elimination for box+brtrue patterns
+                // (e.g., C# null-forgiving operator on value types).
+                stack.Push(new StackEntry(tmp, "cil2cpp::Object*",
+                    CompileTimeConstant: boxAlwaysNonNull ? 1 : null));
                 break;
             }
 

@@ -113,8 +113,9 @@ void Program_Main() {
 | IL 操作码覆盖率 | 100%（全部 ~230 种 ECMA-335 操作码） |
 | ICallRegistry 条目 | ~490 个 |
 | C# 编译器测试 | 1,291 个 (xUnit) |
-| C++ 运行时测试 | 600 个 (Google Test) |
-| 端到端集成测试 | 93 个（15 个测试项目） |
+| C++ 运行时测试 | 576 个 (Google Test) |
+| 端到端集成测试 | 177 个（29 个测试项目） |
+| 已验证 NuGet 包 | 14 个（Newtonsoft.Json、DI、Serilog、Polly、Humanizer、Stateless 等） |
 
 ## 项目文档
 
@@ -138,7 +139,7 @@ cil2cpp/
 ├── runtime/                    # C++ 运行时 (C++20, CMake)
 │   ├── include/cil2cpp/        #   头文件（32 个）
 │   ├── src/                    #   GC / 类型系统 / 异常 / BCL icall
-│   └── tests/                  #   运行时测试 (GTest, 600 tests)
+│   └── tests/                  #   运行时测试 (GTest, 576 tests)
 ├── tests/                      # 测试用 C# 项目
 ├── tools/dev.py                # 开发者 CLI
 └── docs/                       # 项目文档
