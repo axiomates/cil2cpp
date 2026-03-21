@@ -521,6 +521,15 @@ public partial class IRBuilder
         // Comparer<T> needs ObjectComparer<T>. The BCL creates these via MakeGenericType
         // at runtime (AOT-incompatible), so we must pre-generate the correct specialization.
         EnsureComparerCompanionType(openTypeName, typeArgs);
+
+        // Recursively collect generic arguments that are themselves generic types.
+        // E.g., Func<IMessageBuilderContext<Person,int>, string> needs IMessageBuilderContext<Person,int>
+        // to exist as a forward-declared type for delegate invoke function pointer casts.
+        foreach (var arg in git.GenericArguments)
+        {
+            if (arg is GenericInstanceType argGit)
+                CollectGenericType(argGit);
+        }
     }
 
     /// <summary>
@@ -2961,6 +2970,13 @@ public partial class IRBuilder
             openTypeName, resolvedArgs, mangledName, cecilOpenType));
 
         EnsureComparerCompanionType(openTypeName, resolvedArgs);
+
+        // Recursively collect generic arguments that are themselves generic types.
+        foreach (var arg in git.GenericArguments)
+        {
+            if (arg is GenericInstanceType argGit && !ContainsGenericParameter(argGit))
+                CollectGenericType(argGit);
+        }
     }
 
     /// <summary>

@@ -524,10 +524,9 @@ public partial class IRBuilder
                 else if (handler.HandlerType == Mono.Cecil.Cil.ExceptionHandlerType.Fault)
                 {
                     // Fault handlers run only on exception (like finally but not on normal exit).
-                    // Emit as finally — our CIL2CPP_END_TRY macro handles both paths.
-                    // The fault body typically calls Dispose() in iterator state machines.
+                    // Distinct from finally: uses IRFaultBegin which guards with exception check.
                     AddExceptionEvent(exceptionEvents, handler.HandlerStart,
-                        new ExceptionEvent(ExceptionEventKind.FinallyBegin, null,
+                        new ExceptionEvent(ExceptionEventKind.FaultBegin, null,
                             handler.TryStart, handler.TryEnd));
                 }
                 else if (handler.HandlerType == Mono.Cecil.Cil.ExceptionHandlerType.Filter
@@ -704,6 +703,7 @@ public partial class IRBuilder
                     ExceptionEventKind.FilterBegin => 2,
                     ExceptionEventKind.FilterHandlerBegin => 2,
                     ExceptionEventKind.FinallyBegin => 3,
+                    ExceptionEventKind.FaultBegin => 3,
                     _ => 4
                 }))
                 {
@@ -815,6 +815,15 @@ public partial class IRBuilder
                                 block.Instructions.Add(new IRLabel { LabelName = $"__leave_body_end_{evt.TryStart:X4}_{evt.TryEnd:X4}" });
                             block.Instructions.Add(new IRFinallyBegin());
                             break;
+                        case ExceptionEventKind.FaultBegin:
+                            skipUntilOffset = null;
+                            stack.Clear();
+                            _inFaultHandler = true;
+                            var faultKey = (evt.TryStart, evt.TryEnd);
+                            if (regionsNeedingLeaveExit.Contains(faultKey))
+                                block.Instructions.Add(new IRLabel { LabelName = $"__leave_body_end_{evt.TryStart:X4}_{evt.TryEnd:X4}" });
+                            block.Instructions.Add(new IRFaultBegin());
+                            break;
                         case ExceptionEventKind.HandlerEnd:
                             // Close filter handler if-scope if we're ending a filter handler
                             if (_currentFilterSkipLabel != null)
@@ -835,7 +844,8 @@ public partial class IRBuilder
                                 && e.TryStart == evt.TryStart && e.TryEnd == evt.TryEnd
                                 && (e.Kind == ExceptionEventKind.FilterBegin
                                     || e.Kind == ExceptionEventKind.CatchBegin
-                                    || e.Kind == ExceptionEventKind.FinallyBegin));
+                                    || e.Kind == ExceptionEventKind.FinallyBegin
+                                    || e.Kind == ExceptionEventKind.FaultBegin));
                             if (!hasFollowingHandlerSameTry)
                                 block.Instructions.Add(new IRTryEnd());
                             // After END_TRY for any protected region with crossing leaves, emit dispatch
@@ -1062,7 +1072,7 @@ public partial class IRBuilder
                     var hasFollowingHandler = events.Any(e =>
                         e != evt && e.TryStart == evt.TryStart && e.TryEnd == evt.TryEnd
                         && e.Kind is ExceptionEventKind.CatchBegin or ExceptionEventKind.FinallyBegin
-                            or ExceptionEventKind.FilterBegin);
+                            or ExceptionEventKind.FaultBegin or ExceptionEventKind.FilterBegin);
                     if (!hasFollowingHandler)
                         block.Instructions.Add(new IRTryEnd());
                 }
@@ -2715,7 +2725,13 @@ public partial class IRBuilder
             }
 
             case Code.Endfinally:
-                // Handled by macros, no-op in generated code
+                // For fault handlers, close the conditional guard opened by IRFaultBegin
+                if (_inFaultHandler)
+                {
+                    block.Instructions.Add(new IRFaultEnd());
+                    _inFaultHandler = false;
+                }
+                // For finally handlers, handled by macros, no-op
                 break;
 
             case Code.Endfilter:

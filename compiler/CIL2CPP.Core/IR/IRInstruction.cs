@@ -689,6 +689,25 @@ public class IRFinallyBegin : IRInstruction
     public override string ToCpp() => "CIL2CPP_FINALLY";
 }
 
+/// <summary>
+/// Fault handler: like finally but only runs on exception (not normal exit).
+/// Emits CIL2CPP_FINALLY with a conditional guard around the handler body.
+/// The matching endfinally/endfault in IL closes the guard with IRFaultEnd.
+/// </summary>
+public class IRFaultBegin : IRInstruction
+{
+    public override string ToCpp() => "CIL2CPP_FINALLY\n    if (__exc_ctx.current_exception != nullptr) {";
+}
+
+/// <summary>
+/// Closes the conditional guard opened by IRFaultBegin.
+/// Emitted just before endfinally/endfault in fault handler regions.
+/// </summary>
+public class IRFaultEnd : IRInstruction
+{
+    public override string ToCpp() => "    }";
+}
+
 public class IRTryEnd : IRInstruction
 {
     public override string ToCpp() => "CIL2CPP_END_TRY";
@@ -872,6 +891,13 @@ public class IRDelegateInvoke : IRInstruction
     public List<string> ParamTypes { get; } = new();
     public List<string> Arguments { get; } = new();
     public string? ResultVar { get; set; }
+
+    public override void CollectTypeReferences(HashSet<string> typeInfoNames, HashSet<string> pointerTypeNames)
+    {
+        foreach (var pt in ParamTypes)
+            TryAddPointerType(pt, pointerTypeNames);
+        TryAddPointerType(ReturnTypeCpp, pointerTypeNames);
+    }
 
     public override string ToCpp()
     {

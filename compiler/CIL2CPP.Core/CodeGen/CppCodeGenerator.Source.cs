@@ -1195,7 +1195,7 @@ public partial class CppCodeGenerator
                 // (CIL2CPP_TRY/CATCH/FINALLY/END_TRY macros expand to { if / } else if / } })
                 // IRFilterBegin with IsFirst=false doesn't need scope closing (no } else { emitted)
                 // IRFilterHandlerEnd emits a skip label inside the else block
-                if (instr is IRTryBegin or IRFinallyBegin or IRTryEnd
+                if (instr is IRTryBegin or IRFinallyBegin or IRFaultBegin or IRTryEnd
                     || (instr is IRFilterBegin fb && fb.IsFirst)
                     || (instr is IRCatchBegin cb && !cb.AfterFilter))
                 {
@@ -3344,6 +3344,28 @@ public partial class CppCodeGenerator
                 sb.Append(", ");
                 sb.Append(runtimePropInfoType != null ? $"&{runtimePropInfoType.CppName}_TypeInfo" : "nullptr");
                 sb.AppendLine(");");
+            }
+        }
+
+        // Patch exception TypeInfos with generated VTables.
+        // Runtime exception TypeInfos (cil2cpp::ArgumentNullException_TypeInfo etc.) have vtable=nullptr.
+        // The generated code creates proper VTables with IL-compiled virtual method overrides
+        // (ToString, get_Message, get_ParamName, etc.). Without this patch, vtable dispatch
+        // on caught exceptions crashes with null dereference.
+        foreach (var (mangledName, runtimeTypeInfoName) in RuntimeTypeRegistry.GetExceptionTypeInfoAliases())
+        {
+            var excType = _userTypes.FirstOrDefault(t => t.CppName == mangledName);
+            if (excType == null || excType.VTable.Count == 0) continue;
+            sb.AppendLine($"    {runtimeTypeInfoName}.vtable = &{excType.CppName}_VTable;");
+            if (excType.BaseType != null)
+            {
+                // Point base_type to the base exception's runtime TypeInfo
+                var baseAlias = RuntimeTypeRegistry.GetExceptionTypeInfoAliases()
+                    .FirstOrDefault(a => a.MangledName == excType.BaseType.CppName);
+                if (baseAlias.RuntimeTypeInfoName != null)
+                    sb.AppendLine($"    {runtimeTypeInfoName}.base_type = &{baseAlias.RuntimeTypeInfoName};");
+                else
+                    sb.AppendLine($"    {runtimeTypeInfoName}.base_type = &{excType.BaseType.CppName}_TypeInfo;");
             }
         }
 

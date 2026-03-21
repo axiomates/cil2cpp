@@ -317,6 +317,9 @@ public partial class IRBuilder
     // constrained. prefix type — set by Code.Constrained, consumed by next callvirt
     private TypeReference? _constrainedType;
 
+    // Fault handler tracking — fault handlers use IRFaultBegin/IRFaultEnd conditional guard
+    private bool _inFaultHandler;
+
     // Exception filter tracking — set during filter evaluation region (FilterStart → endfilter)
     private bool _inFilterRegion;
     private int _endfilterOffset = -1;

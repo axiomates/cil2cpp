@@ -2576,7 +2576,9 @@ public partial class IRBuilder
             return;
         }
 
-        // Special: BCL exception types (System.Exception, InvalidOperationException, etc.)
+        // BCL exception types: allocate using runtime C++ struct, then call the constructor.
+        // Their structs are aliased (using System_ArgumentNullException = cil2cpp::ArgumentNullException)
+        // and their constructors compile from IL.
         if (TryEmitExceptionNewObj(block, stack, ctorRef, ref tempCounter))
             return;
 
@@ -3060,10 +3062,13 @@ public partial class IRBuilder
         }
     }
 
+
     /// <summary>
-    /// Intercepts newobj for BCL exception types (System.Exception, InvalidOperationException, etc.)
-    /// and emits runtime exception creation code instead of trying to reference non-existent
-    /// generated structs/constructors.
+    /// Handles newobj for BCL exception types (System.Exception, InvalidOperationException, etc.)
+    /// Allocates using the runtime C++ struct (cil2cpp::Exception etc.) and calls the actual
+    /// IL-compiled constructor. This is needed because System.Exception is a CoreRuntimeType
+    /// whose methods are mostly provided by the runtime, but constructors compile from IL
+    /// on derived types (SystemException, ArgumentException, etc.).
     /// </summary>
     private bool TryEmitExceptionNewObj(IRBasicBlock block, Stack<StackEntry> stack,
         MethodReference ctorRef, ref int tempCounter)
@@ -3072,22 +3077,6 @@ public partial class IRBuilder
         if (runtimeCppName == null) return false;
 
         var paramCount = ctorRef.Parameters.Count;
-
-        // Check upfront if all parameters can be handled by field-setting shortcut.
-        // If any parameter has a type we can't handle (arrays, collections, Task, etc.),
-        // fall through to the normal newobj path which calls the actual constructor.
-        var excTypeName = ctorRef.DeclaringType.FullName;
-        for (int i = 0; i < paramCount; i++)
-        {
-            var paramTypeName = ctorRef.Parameters[i].ParameterType.FullName;
-            bool canHandle = paramTypeName == "System.String"
-                || paramTypeName == "System.Exception"
-                || (paramTypeName == "System.Threading.CancellationToken"
-                    && excTypeName is "System.OperationCanceledException" or "System.Threading.Tasks.TaskCanceledException");
-            if (!canHandle)
-                return false; // Let normal newobj path handle it (calls actual ctor)
-        }
-
         var tmp = $"__t{tempCounter++}";
 
         // Pop constructor args
@@ -3104,40 +3093,58 @@ public partial class IRBuilder
             ResultTypeCpp = runtimeCppName + "*",
         });
 
-        // Set fields based on actual parameter types (not position).
-        // Exception constructors with simple signatures:
-        //   .ctor() — no args
-        //   .ctor(String message) — set f__message
-        //   .ctor(String message, Exception inner) — set f__message + f__innerException
-        //   .ctor(CancellationToken token) — set f__cancellationToken
-        //   .ctor(String message, String paramName) — ArgumentException: f__message + f__paramName
-        bool messageSet = false;
-        for (int i = 0; i < paramCount; i++)
+        // Call the actual constructor (compiled from IL on derived types).
+        // For System.Exception itself (BlanketGated), constructors are simple field setters
+        // that may not be compiled — fall back to direct field assignment.
+        if (paramCount > 0)
         {
-            var paramTypeName = ctorRef.Parameters[i].ParameterType.FullName;
-            if (paramTypeName == "System.String" && !messageSet)
+            var typeCpp = CppNameMapper.MangleTypeName(ctorRef.DeclaringType.FullName);
+            var ctorName = CppNameMapper.MangleMethodName(typeCpp, ".ctor");
+
+            // Disambiguate overloaded constructors
+            var declTypeDef = ctorRef.DeclaringType.Resolve();
+            if (declTypeDef != null)
             {
-                block.Instructions.Add(new IRRawCpp { Code = $"{tmp}->f__message = (cil2cpp::String*){args[i]};" });
-                messageSet = true;
+                var overloadCount = declTypeDef.Methods.Count(m => m.Name == ".ctor");
+                if (overloadCount > 1)
+                {
+                    var ilSuffix = string.Join("_", ctorRef.Parameters.Select(p =>
+                        CppNameMapper.MangleTypeName(ResolveGenericTypeRef(p.ParameterType, ctorRef.DeclaringType).TrimEnd('*', '&', ' '))));
+                    ctorName = $"{ctorName}__{ilSuffix}";
+                }
             }
-            else if (paramTypeName == "System.String")
+
+            // Check if constructor is on System.Exception itself (BlanketGated base type).
+            // Its constructors may not be compiled from IL since it's a CoreRuntimeType.
+            // Fall back to direct field assignment for Exception base constructors.
+            if (ctorRef.DeclaringType.FullName == "System.Exception")
             {
-                // Second String param — type-specific fields
-                if (excTypeName is "System.ArgumentException" or "System.ArgumentNullException"
-                    or "System.ArgumentOutOfRangeException")
-                    block.Instructions.Add(new IRRawCpp { Code = $"{tmp}->f__paramName = (cil2cpp::String*){args[i]};" });
-                else if (excTypeName == "System.ObjectDisposedException")
-                    block.Instructions.Add(new IRRawCpp { Code = $"{tmp}->f__objectName = (cil2cpp::String*){args[i]};" });
-                else if (excTypeName == "System.TypeInitializationException")
-                    block.Instructions.Add(new IRRawCpp { Code = $"{tmp}->f__typeName = (cil2cpp::String*){args[i]};" });
+                // Exception(string message) — set f__message directly
+                // Exception(string message, Exception inner) — set f__message + f__innerException
+                for (int i = 0; i < paramCount; i++)
+                {
+                    var paramTypeName = ctorRef.Parameters[i].ParameterType.FullName;
+                    if (paramTypeName == "System.String")
+                        block.Instructions.Add(new IRRawCpp { Code = $"{tmp}->f__message = (cil2cpp::String*){args[i]};" });
+                    else if (paramTypeName == "System.Exception")
+                        block.Instructions.Add(new IRRawCpp { Code = $"{tmp}->f__innerException = (cil2cpp::Exception*){args[i]};" });
+                }
             }
-            else if (paramTypeName == "System.Exception")
+            else
             {
-                block.Instructions.Add(new IRRawCpp { Code = $"{tmp}->f__innerException = (cil2cpp::Exception*){args[i]};" });
-            }
-            else if (paramTypeName == "System.Threading.CancellationToken")
-            {
-                block.Instructions.Add(new IRRawCpp { Code = $"{tmp}->f__cancellationToken = {args[i]};" });
+                // Derived exception types: call the actual constructor.
+                // Cast tmp from runtime type (cil2cpp::IOException*) to mangled type (System_IO_IOException*)
+                // since the constructor's __this parameter uses the mangled name.
+                CastArgumentsToParameterTypes(args, ctorRef);
+                var allArgs = new List<string> { $"({typeCpp}*)(void*){tmp}" };
+                allArgs.AddRange(args);
+                block.Instructions.Add(new IRCall
+                {
+                    FunctionName = ctorName,
+                    Arguments = { },
+                });
+                var call = (IRCall)block.Instructions.Last();
+                call.Arguments.AddRange(allArgs);
             }
         }
 
@@ -4159,7 +4166,7 @@ public partial class IRBuilder
         => int.TryParse(expr, out var v) ? v : null;
 
     // Exception event helpers
-    private enum ExceptionEventKind { TryBegin, CatchBegin, FinallyBegin, FilterBegin, FilterHandlerBegin, HandlerEnd }
+    private enum ExceptionEventKind { TryBegin, CatchBegin, FinallyBegin, FaultBegin, FilterBegin, FilterHandlerBegin, HandlerEnd }
 
     private record ExceptionEvent(ExceptionEventKind Kind, string? CatchTypeName = null, int TryStart = 0, int TryEnd = 0);
 

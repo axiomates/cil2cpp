@@ -675,6 +675,9 @@ public partial class CppCodeGenerator
         {
             // LayoutKind.Explicit: fields have explicit byte offsets, may overlap (unions).
             // Emit as anonymous union of offset-padded anonymous structs.
+            // Must use pack(1) to prevent MSVC from padding fields to natural alignment,
+            // which would break field offsets (e.g., uint64_t at offset 4 gets padded to 8).
+            sb.AppendLine("#pragma pack(push, 1)");
             sb.AppendLine("    union {");
             foreach (var field in type.Fields)
             {
@@ -693,6 +696,7 @@ public partial class CppCodeGenerator
                 }
             }
             sb.AppendLine("    };");
+            sb.AppendLine("#pragma pack(pop)");
         }
         else if (type.ExplicitSize > 0)
         {

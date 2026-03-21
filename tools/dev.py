@@ -1922,7 +1922,7 @@ def cmd_integration(args):
     runner.step("Run and compare C++ vs .NET output", cfg_run_verify)
 
     # ===== Phase 21: CompressionTest (GZipStream/DeflateStream round-trip) =====
-    header("Phase 21: CompressionTest (System.IO.Compression — zlib)")
+    header("Phase 21: CompressionTest (System.IO.Compression - zlib)")
     runner.begin_phase("CompressionTest")
 
     cmp_sample = TESTPROJECTS_DIR / "CompressionTest" / "CompressionTest.csproj"
@@ -2034,6 +2034,348 @@ def cmd_integration(args):
     runner.step("CMake configure", val_cmake_configure)
     runner.step(f"CMake build ({config})", val_cmake_build)
     runner.step("Run and compare C++ vs .NET output", val_run_verify)
+
+    # ===== Phase 23: RegexTest (Regex interpreter mode) =====
+    header("Phase 23: RegexTest (Regex interpreter mode)")
+    runner.begin_phase("RegexTest")
+
+    rgx_sample = TESTPROJECTS_DIR / "RegexTest" / "RegexTest.csproj"
+    rgx_output = temp_dir / "rgx_output"
+    rgx_build = temp_dir / "rgx_build"
+
+    dotnet_rgx_output = None
+
+    def rgx_dotnet_run():
+        nonlocal dotnet_rgx_output
+        dotnet_rgx_output = _get_dotnet_output(rgx_sample)
+        print(f"    .NET output: {repr(dotnet_rgx_output[:200])}")
+
+    def rgx_codegen():
+        run(["dotnet", "run", "--project", str(CLI_PROJECT), "--",
+             "codegen", "-i", str(rgx_sample), "-o", str(rgx_output)],
+            capture=True)
+
+    def rgx_files_exist():
+        for f in ["RegexTest.h", "RegexTest_data.cpp", "RegexTest_stubs.cpp",
+                   "main.cpp", "CMakeLists.txt"]:
+            if not (rgx_output / f).exists():
+                raise RuntimeError(f"Missing: {f}")
+        runner.record_metric("lines", count_cpp_lines(rgx_output))
+
+    def rgx_cmake_configure():
+        run(["cmake", "-B", str(rgx_build), "-S", str(rgx_output),
+             "-G", generator, *cmake_arch,
+             f"-DCMAKE_PREFIX_PATH={runtime_prefix}"],
+            capture=True)
+
+    def rgx_cmake_build():
+        return _cmake_build_with_diagnostics(rgx_build, config)
+
+    def rgx_run_verify():
+        exe = _exe_path(rgx_build, config, "RegexTest")
+        if not exe.exists():
+            raise RuntimeError(f"Executable not found: {exe}")
+        r = subprocess.run([str(exe)], capture_output=True, text=True, check=False,
+                           encoding="utf-8", errors="replace")
+        if r.returncode != 0:
+            raise RuntimeError(f"RegexTest exited with code {r.returncode}\nstderr: {r.stderr}")
+        got = r.stdout.strip()
+        expected = dotnet_rgx_output.strip()
+        if got != expected:
+            raise RuntimeError(
+                f"Output mismatch!\n  Got:      {repr(got[:200])}\n  Expected: {repr(expected[:200])}")
+
+    runner.step("Get .NET reference output", rgx_dotnet_run)
+    runner.step("Codegen RegexTest", rgx_codegen)
+    runner.step("Generated files exist", rgx_files_exist)
+    runner.step("CMake configure", rgx_cmake_configure)
+    runner.step(f"CMake build ({config})", rgx_cmake_build)
+    runner.step("Run and compare C++ vs .NET output", rgx_run_verify)
+
+    # ===== Phase 24: DateTimeTest (DateTime/TimeSpan/DateTimeOffset) =====
+    header("Phase 24: DateTimeTest (DateTime/TimeSpan/DateTimeOffset)")
+    runner.begin_phase("DateTimeTest")
+
+    dtt_sample = TESTPROJECTS_DIR / "DateTimeTest" / "DateTimeTest.csproj"
+    dtt_output = temp_dir / "dtt_output"
+    dtt_build = temp_dir / "dtt_build"
+
+    dotnet_dtt_output = None
+
+    def dtt_dotnet_run():
+        nonlocal dotnet_dtt_output
+        dotnet_dtt_output = _get_dotnet_output(dtt_sample)
+        print(f"    .NET output: {repr(dotnet_dtt_output[:200])}")
+
+    def dtt_codegen():
+        run(["dotnet", "run", "--project", str(CLI_PROJECT), "--",
+             "codegen", "-i", str(dtt_sample), "-o", str(dtt_output)],
+            capture=True)
+
+    def dtt_files_exist():
+        for f in ["DateTimeTest.h", "DateTimeTest_data.cpp", "DateTimeTest_stubs.cpp",
+                   "main.cpp", "CMakeLists.txt"]:
+            if not (dtt_output / f).exists():
+                raise RuntimeError(f"Missing: {f}")
+        runner.record_metric("lines", count_cpp_lines(dtt_output))
+
+    def dtt_cmake_configure():
+        run(["cmake", "-B", str(dtt_build), "-S", str(dtt_output),
+             "-G", generator, *cmake_arch,
+             f"-DCMAKE_PREFIX_PATH={runtime_prefix}"],
+            capture=True)
+
+    def dtt_cmake_build():
+        return _cmake_build_with_diagnostics(dtt_build, config)
+
+    def dtt_run_verify():
+        exe = _exe_path(dtt_build, config, "DateTimeTest")
+        if not exe.exists():
+            raise RuntimeError(f"Executable not found: {exe}")
+        r = subprocess.run([str(exe)], capture_output=True, text=True, check=False,
+                           encoding="utf-8", errors="replace")
+        if r.returncode != 0:
+            raise RuntimeError(f"DateTimeTest exited with code {r.returncode}\nstderr: {r.stderr}")
+        got = r.stdout.strip()
+        expected = dotnet_dtt_output.strip()
+        if got != expected:
+            raise RuntimeError(
+                f"Output mismatch!\n  Got:      {repr(got[:200])}\n  Expected: {repr(expected[:200])}")
+
+    runner.step("Get .NET reference output", dtt_dotnet_run)
+    runner.step("Codegen DateTimeTest", dtt_codegen)
+    runner.step("Generated files exist", dtt_files_exist)
+    runner.step("CMake configure", dtt_cmake_configure)
+    runner.step(f"CMake build ({config})", dtt_cmake_build)
+    runner.step("Run and compare C++ vs .NET output", dtt_run_verify)
+
+    # ===== Phase 25: DecimalTest (Decimal arithmetic/formatting/parsing) =====
+    header("Phase 25: DecimalTest (Decimal arithmetic/formatting/parsing)")
+    runner.begin_phase("DecimalTest")
+
+    dec_sample = TESTPROJECTS_DIR / "DecimalTest" / "DecimalTest.csproj"
+    dec_output = temp_dir / "dec_output"
+    dec_build = temp_dir / "dec_build"
+
+    dotnet_dec_output = None
+
+    def dec_dotnet_run():
+        nonlocal dotnet_dec_output
+        dotnet_dec_output = _get_dotnet_output(dec_sample)
+        print(f"    .NET output: {repr(dotnet_dec_output[:200])}")
+
+    def dec_codegen():
+        run(["dotnet", "run", "--project", str(CLI_PROJECT), "--",
+             "codegen", "-i", str(dec_sample), "-o", str(dec_output)],
+            capture=True)
+
+    def dec_files_exist():
+        for f in ["DecimalTest.h", "DecimalTest_data.cpp", "DecimalTest_stubs.cpp",
+                   "main.cpp", "CMakeLists.txt"]:
+            if not (dec_output / f).exists():
+                raise RuntimeError(f"Missing: {f}")
+        runner.record_metric("lines", count_cpp_lines(dec_output))
+
+    def dec_cmake_configure():
+        run(["cmake", "-B", str(dec_build), "-S", str(dec_output),
+             "-G", generator, *cmake_arch,
+             f"-DCMAKE_PREFIX_PATH={runtime_prefix}"],
+            capture=True)
+
+    def dec_cmake_build():
+        return _cmake_build_with_diagnostics(dec_build, config)
+
+    def dec_run_verify():
+        exe = _exe_path(dec_build, config, "DecimalTest")
+        if not exe.exists():
+            raise RuntimeError(f"Executable not found: {exe}")
+        r = subprocess.run([str(exe)], capture_output=True, text=True, check=False,
+                           encoding="utf-8", errors="replace")
+        if r.returncode != 0:
+            raise RuntimeError(f"DecimalTest exited with code {r.returncode}\nstderr: {r.stderr}")
+        got = r.stdout.strip()
+        expected = dotnet_dec_output.strip()
+        if got != expected:
+            raise RuntimeError(
+                f"Output mismatch!\n  Got:      {repr(got[:200])}\n  Expected: {repr(expected[:200])}")
+
+    runner.step("Get .NET reference output", dec_dotnet_run)
+    runner.step("Codegen DecimalTest", dec_codegen)
+    runner.step("Generated files exist", dec_files_exist)
+    runner.step("CMake configure", dec_cmake_configure)
+    runner.step(f"CMake build ({config})", dec_cmake_build)
+    runner.step("Run and compare C++ vs .NET output", dec_run_verify)
+
+    # ===== Phase 26: HashidsTest (Hashids.net NuGet — encode/decode, LINQ Intersect) =====
+    header("Phase 26: HashidsTest (Hashids.net NuGet - encode/decode, LINQ Intersect)")
+    runner.begin_phase("HashidsTest")
+
+    hid_sample = TESTPROJECTS_DIR / "HashidsTest" / "HashidsTest.csproj"
+    hid_output = temp_dir / "hid_output"
+    hid_build = temp_dir / "hid_build"
+
+    dotnet_hid_output = None
+
+    def hid_dotnet_run():
+        nonlocal dotnet_hid_output
+        dotnet_hid_output = _get_dotnet_output(hid_sample)
+        print(f"    .NET output: {repr(dotnet_hid_output[:200])}")
+
+    def hid_codegen():
+        run(["dotnet", "run", "--project", str(CLI_PROJECT), "--",
+             "codegen", "-i", str(hid_sample), "-o", str(hid_output)],
+            capture=True)
+
+    def hid_files_exist():
+        for f in ["HashidsTest.h", "HashidsTest_data.cpp", "HashidsTest_stubs.cpp",
+                   "main.cpp", "CMakeLists.txt"]:
+            if not (hid_output / f).exists():
+                raise RuntimeError(f"Missing: {f}")
+        runner.record_metric("lines", count_cpp_lines(hid_output))
+
+    def hid_cmake_configure():
+        run(["cmake", "-B", str(hid_build), "-S", str(hid_output),
+             "-G", generator, *cmake_arch,
+             f"-DCMAKE_PREFIX_PATH={runtime_prefix}"],
+            capture=True)
+
+    def hid_cmake_build():
+        return _cmake_build_with_diagnostics(hid_build, config)
+
+    def hid_run_verify():
+        exe = _exe_path(hid_build, config, "HashidsTest")
+        if not exe.exists():
+            raise RuntimeError(f"Executable not found: {exe}")
+        r = subprocess.run([str(exe)], capture_output=True, text=True, check=False,
+                           encoding="utf-8", errors="replace")
+        if r.returncode != 0:
+            raise RuntimeError(f"HashidsTest exited with code {r.returncode}\nstderr: {r.stderr}")
+        got = r.stdout.strip()
+        expected = dotnet_hid_output.strip()
+        if got != expected:
+            raise RuntimeError(
+                f"Output mismatch!\n  Got:      {repr(got[:200])}\n  Expected: {repr(expected[:200])}")
+
+    runner.step("Get .NET reference output", hid_dotnet_run)
+    runner.step("Codegen HashidsTest", hid_codegen)
+    runner.step("Generated files exist", hid_files_exist)
+    runner.step("CMake configure", hid_cmake_configure)
+    runner.step(f"CMake build ({config})", hid_cmake_build)
+    runner.step("Run and compare C++ vs .NET output", hid_run_verify)
+
+    # ===== Phase 27: GuardClausesTest (Ardalis.GuardClauses NuGet — guard pattern validation) =====
+    header("Phase 27: GuardClausesTest (Ardalis.GuardClauses NuGet - guard pattern validation)")
+    runner.begin_phase("GuardClausesTest")
+
+    gc_sample = TESTPROJECTS_DIR / "GuardClausesTest" / "GuardClausesTest.csproj"
+    gc_output = temp_dir / "gc_output"
+    gc_build = temp_dir / "gc_build"
+
+    dotnet_gc_output = None
+
+    def gc_dotnet_run():
+        nonlocal dotnet_gc_output
+        dotnet_gc_output = _get_dotnet_output(gc_sample)
+        print(f"    .NET output: {repr(dotnet_gc_output[:200])}")
+
+    def gc_codegen():
+        run(["dotnet", "run", "--project", str(CLI_PROJECT), "--",
+             "codegen", "-i", str(gc_sample), "-o", str(gc_output)],
+            capture=True)
+
+    def gc_files_exist():
+        for f in ["GuardClausesTest.h", "GuardClausesTest_data.cpp", "GuardClausesTest_stubs.cpp",
+                   "main.cpp", "CMakeLists.txt"]:
+            if not (gc_output / f).exists():
+                raise RuntimeError(f"Missing: {f}")
+        runner.record_metric("lines", count_cpp_lines(gc_output))
+
+    def gc_cmake_configure():
+        run(["cmake", "-B", str(gc_build), "-S", str(gc_output),
+             "-G", generator, *cmake_arch,
+             f"-DCMAKE_PREFIX_PATH={runtime_prefix}"],
+            capture=True)
+
+    def gc_cmake_build():
+        return _cmake_build_with_diagnostics(gc_build, config)
+
+    def gc_run_verify():
+        exe = _exe_path(gc_build, config, "GuardClausesTest")
+        if not exe.exists():
+            raise RuntimeError(f"Executable not found: {exe}")
+        r = subprocess.run([str(exe)], capture_output=True, text=True, check=False,
+                           encoding="utf-8", errors="replace")
+        if r.returncode != 0:
+            raise RuntimeError(f"GuardClausesTest exited with code {r.returncode}\nstderr: {r.stderr}")
+        got = r.stdout.strip()
+        expected = dotnet_gc_output.strip()
+        if got != expected:
+            raise RuntimeError(
+                f"Output mismatch!\n  Got:      {repr(got[:200])}\n  Expected: {repr(expected[:200])}")
+
+    runner.step("Get .NET reference output", gc_dotnet_run)
+    runner.step("Codegen GuardClausesTest", gc_codegen)
+    runner.step("Generated files exist", gc_files_exist)
+    runner.step("CMake configure", gc_cmake_configure)
+    runner.step(f"CMake build ({config})", gc_cmake_build)
+    runner.step("Run and compare C++ vs .NET output", gc_run_verify)
+
+    # ===== Phase 28: SlugifyTest (Slugify.Core NuGet — URL slug generation) =====
+    header("Phase 28: SlugifyTest (Slugify.Core NuGet - URL slug generation)")
+    runner.begin_phase("SlugifyTest")
+
+    slug_sample = TESTPROJECTS_DIR / "SlugifyTest" / "SlugifyTest.csproj"
+    slug_output = temp_dir / "slug_output"
+    slug_build = temp_dir / "slug_build"
+
+    dotnet_slug_output = None
+
+    def slug_dotnet_run():
+        nonlocal dotnet_slug_output
+        dotnet_slug_output = _get_dotnet_output(slug_sample)
+        print(f"    .NET output: {repr(dotnet_slug_output[:200])}")
+
+    def slug_codegen():
+        run(["dotnet", "run", "--project", str(CLI_PROJECT), "--",
+             "codegen", "-i", str(slug_sample), "-o", str(slug_output)],
+            capture=True)
+
+    def slug_files_exist():
+        for f in ["SlugifyTest.h", "SlugifyTest_data.cpp", "SlugifyTest_stubs.cpp",
+                   "main.cpp", "CMakeLists.txt"]:
+            if not (slug_output / f).exists():
+                raise RuntimeError(f"Missing: {f}")
+        runner.record_metric("lines", count_cpp_lines(slug_output))
+
+    def slug_cmake_configure():
+        run(["cmake", "-B", str(slug_build), "-S", str(slug_output),
+             "-G", generator, *cmake_arch,
+             f"-DCMAKE_PREFIX_PATH={runtime_prefix}"],
+            capture=True)
+
+    def slug_cmake_build():
+        return _cmake_build_with_diagnostics(slug_build, config)
+
+    def slug_run_verify():
+        exe = _exe_path(slug_build, config, "SlugifyTest")
+        if not exe.exists():
+            raise RuntimeError(f"Executable not found: {exe}")
+        r = subprocess.run([str(exe)], capture_output=True, text=True, check=False,
+                           encoding="utf-8", errors="replace")
+        if r.returncode != 0:
+            raise RuntimeError(f"SlugifyTest exited with code {r.returncode}\nstderr: {r.stderr}")
+        got = r.stdout.strip()
+        expected = dotnet_slug_output.strip()
+        if got != expected:
+            raise RuntimeError(
+                f"Output mismatch!\n  Got:      {repr(got[:200])}\n  Expected: {repr(expected[:200])}")
+
+    runner.step("Get .NET reference output", slug_dotnet_run)
+    runner.step("Codegen SlugifyTest", slug_codegen)
+    runner.step("Generated files exist", slug_files_exist)
+    runner.step("CMake configure", slug_cmake_configure)
+    runner.step(f"CMake build ({config})", slug_cmake_build)
+    runner.step("Run and compare C++ vs .NET output", slug_run_verify)
 
     # ===== Cleanup =====
     header("Cleanup")

@@ -1,6 +1,6 @@
 # CIL2CPP Capabilities
 
-> Last updated: 2026-03-18
+> Last updated: 2026-03-21
 >
 > This document describes what CIL2CPP **can currently do**. For development plans and progress, see [roadmap.md](roadmap.md).
 >
@@ -8,7 +8,7 @@
 
 ## Overview
 
-CIL2CPP is a C# → C++ AOT compiler (similar to Unity IL2CPP). Currently supports complete C# syntax (100% IL opcode coverage), BCL compiled from IL (Unity IL2CPP architecture), ~490 ICall entries. 1,291 C# + 576 C++ + 93 integration tests all passing. NuGet packages validated: Newtonsoft.Json 13.0.3 + DI ecosystem (DITest with 3 NuGet packages).
+CIL2CPP is a C# → C++ AOT compiler (similar to Unity IL2CPP). Currently supports complete C# syntax (100% IL opcode coverage), BCL compiled from IL (Unity IL2CPP architecture), ~490 ICall entries. 1,291 C# + 576 C++ + 171 integration tests all passing. 13 NuGet packages validated (Newtonsoft.Json, DI+Logging+Console, Humanizer, Polly, Serilog+Console, Configuration+Binder, Hashids.net, GuardClauses, Slugify.Core). Regex, DateTime, Decimal BCL features validated.
 
 ## Key Metrics
 
@@ -18,7 +18,7 @@ CIL2CPP is a C# → C++ AOT compiler (similar to Unity IL2CPP). Currently suppor
 | ICallRegistry entries | **~490** (covering 30+ categories) |
 | C# compiler tests | **1,291** (xUnit) |
 | C++ runtime tests | **576** (Google Test, 17 test files) |
-| End-to-end integration tests | **93** (15 test projects) |
+| End-to-end integration tests | **171** (28 test projects) |
 | Runtime headers | **32** |
 
 ---
@@ -110,6 +110,9 @@ CIL2CPP is a C# → C++ AOT compiler (similar to Unity IL2CPP). Currently suppor
 | IAsyncEnumerable\<T\> | ✅ | await foreach |
 | System.IO (File/Path/Directory) | ✅ | 22 ICalls, C++17 filesystem |
 | System.IO.Compression | ✅ | GZipStream/DeflateStream via zlib (FetchContent), CompressionNative_* interop |
+| System.Text.RegularExpressions | ✅ | Interpreter mode (non-Compiled). IsMatch/Match/Replace/Split, named groups, RegexOptions, timeout |
+| System.DateTime / TimeSpan | ✅ | DateTime.Now/UtcNow/Parse/ToString, TimeSpan arithmetic, DateTimeOffset, formatting |
+| System.Decimal | ✅ | Arithmetic, Parse/TryParse, ToString, Math.Round/Floor/Ceiling |
 | System.Net (Socket/DNS/HTTP) | ✅ | Socket TCP loopback ✅, DNS resolution ✅, HttpClient HTTP GET ✅, HTTPS GET ✅ (Windows, via Winsock/SChannel P/Invoke). TLS via OS-provided SChannel. |
 
 ### Delegates & Events
@@ -227,7 +230,7 @@ FileStream / StreamReader / StreamWriter compile from BCL IL and work end-to-end
 | CLR internal type dependencies | BCL IL references QCallTypeHandle / MetadataImport etc. → method bodies auto-stubbed |
 | BCL deep dependency chains | Middle layers stubbed → upper-level methods unavailable |
 | System.Net (HTTPS edge cases) | HttpClient HTTP/HTTPS GET working; complex scenarios (redirects, chunked encoding, auth) not yet validated |
-| Regex internals | Depends on CLR internal RegexCache etc. |
+| Regex Compiled mode | Compiled mode uses Reflection.Emit (AOT incompatible); interpreter mode works |
 | SIMD | Requires platform-specific intrinsics, currently uses scalar fallback structs |
 | 32-bit targets | Pointer size hardcoded to 8 bytes (64-bit only). ARM/x86 deferred to Phase F |
 
@@ -322,4 +325,4 @@ FileStream / StreamReader / StreamWriter compile from BCL IL and work end-to-end
 
 ### End-to-End Integration Tests (93)
 
-Full compilation pipeline: C# `.csproj` → codegen → CMake configure → C++ build → run → verify output. Covers 15 test projects: HelloWorld, ArrayTest, FeatureTest, ArglistTest, MultiAssemblyTest, SystemIOTest, FileStreamTest, SocketTest, HttpGetTest, HttpTest, HttpsGetTest, DirTest, JsonSGTest, NuGetSimpleTest (Newtonsoft.Json 13.0.3), DITest (DI+Logging+Console). Also includes Debug configuration and library project tests.
+Full compilation pipeline: C# `.csproj` → codegen → CMake configure → C++ build → run → verify output. Covers 28 test projects: HelloWorld, ArrayTest, FeatureTest, ArglistTest, MultiAssemblyTest, SystemIOTest, FileStreamTest, SocketTest, HttpGetTest, HttpTest, HttpsGetTest, DirTest, JsonSGTest, NuGetSimpleTest (Newtonsoft.Json), DITest (DI+Logging+Console), HumanizerTest, PollyTest, PInvokeTest, SerilogTest, ConfigTest, CompressionTest, ValidationApp, RegexTest, DateTimeTest, DecimalTest, HashidsTest, GuardClausesTest, SlugifyTest. Also includes Debug configuration and library project tests.
