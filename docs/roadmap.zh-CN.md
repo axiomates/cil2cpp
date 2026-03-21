@@ -515,10 +515,10 @@ CIL2CPP 的 50K 行约为最小可用级的 **17-25%**，约为 IL2CPP 的 **7-1
 |---|------|------|------|
 | E.win | SChannel TLS（Windows） | 中 | ✅ SslStream → P/Invoke to `secur32.dll`/`schannel.dll`。HttpsGetTest 作为集成测试通过。 |
 | E.linux | OpenSSL TLS（Linux） | 高 | **待定。**从 dotnet/runtime 提取 `System.Security.Cryptography.Native.OpenSsl`，FetchContent + 链接 OpenSSL |
-| E.2 | System.IO.Compression.Native 集成 | 低 | 从 dotnet/runtime 提取，内嵌 zlib |
+| E.2 | System.IO.Compression.Native 集成 | 低 | ✅ zlib 已通过 FetchContent 集成。CompressionTest（GZipStream/DeflateStream 往返）通过。 |
 | E.3 | 移出 InternalPInvokeModules 对应项 | 低 | 让 BCL P/Invoke 声明正常生成 |
 | E.4 | Regex 解释器 BCL IL 验证 | 中 | ✅ Regex 解释器模式已验证 — IsMatch/Match/Replace/Split/命名组/超时全部通过（RegexTest）。非 Compiled 模式不依赖 Reflection.Emit |
-| E.5 | 端到端测试 | 低 | HTTPS GET + JSON 反序列化 |
+| E.5 | 端到端测试 | 低 | ✅ HttpsGetTest（HTTPS GET）+ JsonSGTest（JSON SG）+ NuGetSimpleTest（Newtonsoft.Json）全部通过 |
 
 **前置**：Phase C (TLS 需要 Socket) + Phase D (JSON 需要元数据感知) + Phase C.7 (MarshalAs 原生库 P/Invoke 需要)
 **产出**：`HttpClient.GetStringAsync("https://...")` + `JsonSerializer.Deserialize<T>()` 可用
@@ -565,7 +565,7 @@ Phase 1-4 ✅  →  Phase A ✅  →  Phase B ✅ (Windows)
    │   Phase C.7.2 ✅ ([Out]/[In])              Phase D ✅ (NativeAOT 元数据 + NuGet)
    │   Phase C.7.3 ✅ (数组编组)                 │
    │      ↓                                     │
-   │   Phase E.2 (zlib 压缩)                    │
+   │   Phase E.2 ✅ (zlib 压缩)                   │
    │      ↓                                     │
    └──────┴─────── 汇合 ───────────────────────┘
                         ↓

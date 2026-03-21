@@ -516,10 +516,10 @@ CIL2CPP at 50K lines is approximately **17-25%** of a minimum viable tool, and *
 |---|------|----------|-------------|
 | E.win | SChannel TLS (Windows) | Medium | ✅ SslStream → P/Invoke to `secur32.dll`/`schannel.dll`. HttpsGetTest passes as integration test. |
 | E.linux | OpenSSL TLS (Linux) | High | **Deferred.** Extract `System.Security.Cryptography.Native.OpenSsl` from dotnet/runtime, FetchContent + link OpenSSL |
-| E.2 | System.IO.Compression.Native integration | Low | Extract from dotnet/runtime, embed zlib |
+| E.2 | System.IO.Compression.Native integration | Low | ✅ zlib integrated via FetchContent. CompressionTest (GZipStream/DeflateStream round-trip) passes. |
 | E.3 | Remove corresponding InternalPInvokeModules | Low | Let BCL P/Invoke declarations generate normally |
 | E.4 | Regex interpreter BCL IL validation | Medium | ✅ Regex interpreter mode validated — IsMatch/Match/Replace/Split/named groups/timeout all working (RegexTest). Non-Compiled mode doesn't depend on Reflection.Emit |
-| E.5 | End-to-end tests | Low | HTTPS GET + JSON deserialization |
+| E.5 | End-to-end tests | Low | ✅ HttpsGetTest (HTTPS GET) + JsonSGTest (JSON SG) + NuGetSimpleTest (Newtonsoft.Json) all pass |
 
 **Prerequisites**: Phase C (TLS needs Socket) + Phase D (JSON needs metadata awareness) + Phase C.7 (MarshalAs needed for native lib P/Invoke)
 **Output**: `HttpClient.GetStringAsync("https://...")` + `JsonSerializer.Deserialize<T>()` available
@@ -566,7 +566,7 @@ Phase 1-4 ✅  →  Phase A ✅  →  Phase B ✅ (Windows)
    │   Phase C.7.2 ✅ ([Out]/[In])              Phase D ✅ (NativeAOT metadata + NuGet)
    │   Phase C.7.3 ✅ (array marshaling)         │
    │      ↓                                     │
-   │   Phase E.2 (zlib compression)              │
+   │   Phase E.2 ✅ (zlib compression)             │
    │      ↓                                     │
    └──────┴─────── convergence ─────────────────┘
                         ↓

@@ -1,0 +1,336 @@
+
+========================================
+ CIL2CPP Integration Test
+========================================
+  Repo:    C:\Users\kiro\Desktop\cil2cpp
+  Runtime: C:/cil2cpp_test
+  Config:  Release
+  Temp:    C:\Users\kiro\AppData\Local\Temp\cil2cpp_integration_usb5s5p9
+
+========================================
+ Phase 0: Prerequisites
+========================================
+  [1] dotnet SDK available ... (9.0.308, 0.1s) PASS
+  [2] CMake available ... (cmake version 4.1.0, 0.0s) PASS
+  [3] Runtime installed at C:/cil2cpp_test ... (0.0s) PASS
+
+========================================
+ Phase 1: HelloWorld (executable with entry point)
+========================================
+  [4] Get .NET reference output ...     .NET output: 'Hello, CIL2CPP!\n30\n42\n-10'
+(0.9s) PASS
+  [5] Codegen HelloWorld ... (10.1s) PASS
+  [6] Generated files exist (*.h, *.cpp, main.cpp, CMakeLists.txt) ... (0.1s) PASS
+  [7] CMake configure ... (2.6s) PASS
+  [8] CMake build (Release) ... (5.3s) PASS
+  [9] Run and compare C++ vs .NET output ... (0.3s) PASS
+
+========================================
+ Phase 2: ArrayTest (array operations)
+========================================
+  [10] Get .NET reference output ...     .NET output: '10\n30\n50\n5\n99\n0\n100\n200'
+(0.9s) PASS
+  [11] Codegen ArrayTest ... (9.9s) PASS
+  [12] Generated files exist (*.h, *.cpp, main.cpp, CMakeLists.txt) ... (0.1s) PASS
+  [13] CMake configure ... (2.6s) PASS
+  [14] CMake build (Release) ... (5.0s) PASS
+  [15] Run and compare C++ vs .NET output ... (0.3s) PASS
+
+========================================
+ Phase 3: FeatureTest (100+ language features)
+========================================
+  [16] Get .NET reference output ...     .NET output: '13\n-10\neq\nne\ngt\nlt\nge\nle\nTrue\nTrue\ntrue branch\n42\n42\n15\n-256\nCaught exception\nIn try\nIn finally\nCaught CustomException: 42\nCaught DerivedCustomException as CustomException: 999\nCaught CustomException '
+(1.0s) PASS
+  [17] Codegen FeatureTest ... (11.0s) PASS
+  [18] Generated files exist ... (0.1s) PASS
+  [19] CMake configure ... (2.6s) PASS
+  [20] CMake build (Release) ... (6.1s) PASS
+  [21] Run and compare C++ vs .NET output ... (0.3s) PASS
+
+========================================
+ Phase 4: ArglistTest (varargs, mkrefany, refanyval)
+========================================
+  [22] Get .NET reference output ...     .NET output: '3\nfixed=99 varargs=2\n60\n0\n100\n1 val=42'
+(1.0s) PASS
+  [23] Codegen ArglistTest ... (9.9s) PASS
+  [24] Generated files exist ... (0.1s) PASS
+  [25] CMake configure ... (2.6s) PASS
+  [26] CMake build (Release) ... (5.0s) PASS
+  [27] Run and compare C++ vs .NET output ... (0.3s) PASS
+
+========================================
+ Phase 5: MultiAssemblyTest (cross-assembly references)
+========================================
+  [28] Get .NET reference output ...     .NET output: '30\n3\n7'
+(1.0s) PASS
+  [29] Codegen MultiAssemblyTest ... (11.7s) PASS
+  [30] Generated files exist ... (0.1s) PASS
+  [31] CMake configure ... (2.6s) PASS
+  [32] CMake build (Release) ... (5.0s) PASS
+  [33] Run and compare C++ vs .NET output ... (0.3s) PASS
+
+========================================
+ Phase 6: SystemIOTest (File, Path, Directory I/O)
+========================================
+  [34] Get .NET reference output ...     .NET output: '=== Path ===\nGetFullPath: OK\nGetDirectoryName: OK\nGetFileName: OK\nGetFileNameWithoutExtension: OK\nGetExtension: OK\nGetTempPath: OK\n=== Directory ===\nCreateDirectory: SKIP (exists)\nExists(dir): OK\nNotE'
+(1.0s) PASS
+  [35] Codegen SystemIOTest ... (10.1s) PASS
+  [36] Generated files exist ... (0.1s) PASS
+  [37] CMake configure ... (2.6s) PASS
+  [38] CMake build (Release) ... (5.0s) PASS
+  [39] Run and compare C++ vs .NET output ... (0.3s) PASS
+
+========================================
+ Phase 7: FileStreamTest (FileStream, StreamReader, StreamWriter)
+========================================
+  [40] Get .NET reference output ...     .NET output: 'FileStream Write: OK\nFileStream Read: OK\nStreamWriter: OK\nReadLine test: peek=76 chars=22 sb=TestX sb2=BCD indexOf=5 RL=[Line 1]\n=== Done ==='
+(1.0s) PASS
+  [41] Codegen FileStreamTest ... (9.9s) PASS
+  [42] Generated files exist ... (0.1s) PASS
+  [43] CMake configure ... (2.6s) PASS
+  [44] CMake build (Release) ... (5.0s) PASS
+  [45] Run and compare C++ vs .NET output ... (0.3s) PASS
+
+========================================
+ Phase 8: SocketTest (TCP sockets, DNS)
+========================================
+  [46] Get .NET reference output ...     .NET output: '=== SocketTest ===\nSocket Create: OK\nIPEndPoint: OK\nPhase3: creating server socket...\nPhase3: server socket created\nPhase3: creating endpoint...\nPhase3: endpoint created\nPhase3: calling Bind...\nPhase3'
+(1.0s) PASS
+  [47] Codegen SocketTest ... (12.7s) PASS
+  [48] Generated files exist ... (0.2s) PASS
+  [49] CMake configure ... (2.6s) PASS
+  [50] CMake build (Release) ... (7.1s) PASS
+  [51] Run and compare C++ vs .NET output ... (0.3s) PASS
+
+========================================
+ Phase 9: HttpGetTest (HTTP client, async/await)
+========================================
+  [52] Get .NET reference output ...     .NET output: '=== HttpGetTest ===\nHTTP GET: OK\n=== Done ==='
+(1.0s) PASS
+  [53] Codegen HttpGetTest ... (31.5s) PASS
+  [54] Generated files exist ... (0.6s) PASS
+  [55] CMake configure ... (2.7s) PASS
+  [56] CMake build (Release) ... (28.7s) PASS
+  [57] Run and compare C++ vs .NET output ... (0.3s) PASS
+
+========================================
+ Phase 10: HttpTest (HttpClient construction)
+========================================
+  [58] Get .NET reference output ...     .NET output: '=== HttpTest ===\nHttpClient: OK\n=== Done ==='
+(1.0s) PASS
+  [59] Codegen HttpTest ... (11.9s) PASS
+  [60] Generated files exist ... (0.1s) PASS
+  [61] CMake configure ... (2.6s) PASS
+  [62] CMake build (Release) ... (6.4s) PASS
+  [63] Run and compare C++ vs .NET output ... (0.3s) PASS
+
+========================================
+ Phase 11: HttpsGetTest (HTTPS client, TLS/SChannel)
+========================================
+  [64] Get .NET reference output ...     .NET output: '=== HttpsGetTest ===\nHTTPS GET: OK (length=528)\n=== Done ==='
+(1.3s) PASS
+  [65] Codegen HttpsGetTest ... (35.0s) PASS
+  [66] Generated files exist ... (0.7s) PASS
+  [67] CMake configure ... (2.6s) PASS
+  [68] CMake build (Release) ... (28.9s) PASS
+  [69] Run and compare C++ vs .NET output ... (0.6s) PASS
+
+========================================
+ Phase 12: DirTest (Directory.Exists, CreateDirectory)
+========================================
+  [70] Get .NET reference output ...     .NET output: 'TempDir: C:\\Users\\kiro\\AppData\\Local\\Temp\\\nExists temp: True\nExists C:\\: True\nExists C:\\Windows: True\nTestDir: C:\\Users\\kiro\\AppData\\Local\\Temp\\cil2cpp_dirtest\nExists testDir: True\nCreated!\nExists aft'
+(1.0s) PASS
+  [71] Codegen DirTest ... (10.0s) PASS
+  [72] Generated files exist ... (0.1s) PASS
+  [73] CMake configure ... (2.7s) PASS
+  [74] CMake build (Release) ... (5.1s) PASS
+  [75] Run and compare C++ vs .NET output ... (0.3s) PASS
+
+========================================
+ Phase 13: JsonSGTest (System.Text.Json source-generated)
+========================================
+  [76] Get .NET reference output ...     .NET output: '=== JsonSGTest ===\nSerialized: {"Name":"Bob","Age":25}\nJsonSG: OK\n=== Done ==='
+(0.9s) PASS
+  [77] Codegen JsonSGTest ... (13.0s) PASS
+  [78] Generated files exist ... (0.2s) PASS
+  [79] CMake configure ... (2.6s) PASS
+  [80] CMake build (Release) ... (7.1s) PASS
+  [81] Run and compare C++ vs .NET output ... (0.3s) PASS
+
+========================================
+ Phase 14: NuGetSimpleTest (Newtonsoft.Json 13.0.3)
+========================================
+  [82] Get .NET reference output ...     .NET output: '=== NuGetSimpleTest ===\nSerialized: {"Name":"Alice","Age":30}\nNuGet: OK\n=== Done ==='
+(0.9s) PASS
+  [83] Codegen NuGetSimpleTest ... (85.7s) PASS
+  [84] Generated files exist ... (1.2s) PASS
+  [85] CMake configure ... (2.6s) PASS
+  [86] CMake build (Release) ... 
+    C:\Users\kiro\AppData\Local\Temp\cil2cpp_integration_usb5s5p9\ng_output\NuGetSimpleTest_methods_20.cpp(2733,22): warning C4805:
+(1 warning, 93.1s) PASS
+  [87] Run and compare C++ vs .NET output ... (0.3s) PASS
+
+========================================
+ Phase 15: DITest (DependencyInjection + Logging + Console)
+========================================
+  [88] Get .NET reference output ...     .NET output: '=== DITest ===\n[1] Resolving IGreeter...\nHello, DI!\n[2] Direct App creation...\nHello, World!\n[3] Resolving App via DI...\n[3] Running App...\nHello, World!\n=== Done ==='
+(1.0s) PASS
+  [89] Codegen DITest ... (12.9s) PASS
+  [90] Generated files exist ... (0.2s) PASS
+  [91] CMake configure ... (2.7s) PASS
+  [92] CMake build (Release) ... (7.3s) PASS
+  [93] Run and compare C++ vs .NET output ... (0.3s) PASS
+
+========================================
+ Phase 16: HumanizerTest (Humanizer 2.14.1)
+========================================
+  [94] Get .NET reference output ...     .NET output: '=== HumanizerTest ===\nPascal case input\nUnderscored input string\nLong text¡­\none\nforty-two\npeople\ndog\n=== Done ==='
+(1.2s) PASS
+  [95] Codegen HumanizerTest ... (16.9s) PASS
+  [96] Generated files exist ... (0.3s) PASS
+  [97] CMake configure ... (2.6s) PASS
+  [98] CMake build (Release) ... (16.2s) PASS
+  [99] Run and compare C++ vs .NET output ... (0.2s) PASS
+
+========================================
+ Phase 17: PollyTest (Polly 8.5.2)
+========================================
+  [100] Get .NET reference output ...     .NET output: '=== PollyTest ===\n[1] Testing empty pipeline...\nEmpty pipeline: OK (counter=1)\n[2] Testing execute with return value...\nExecute result: hello-polly\n[3] Testing execute with CancellationToken...\nCancel'
+(1.0s) PASS
+  [101] Codegen PollyTest ... (11.0s) PASS
+  [102] Generated files exist ... (0.2s) PASS
+  [103] CMake configure ... (2.7s) PASS
+  [104] CMake build (Release) ... (5.8s) PASS
+  [105] Run and compare C++ vs .NET output ... (0.3s) PASS
+
+========================================
+ Phase 18: PInvokeTest (P/Invoke [Out]/[In] marshaling)
+========================================
+  [106] Get .NET reference output ...     .NET output: '=== PInvokeTest ===\nProcessId: OK\nPerfCounter: OK\nPerfFrequency: OK\nSystemInfo: OK\nDiskSpace: OK\nLPArray: OK\nByValTStr: OK\nExplicitLayout: OK\nOutLPArray: OK\nOutLPArrayRef: OK\n=== Done ==='
+(1.0s) PASS
+  [107] Codegen PInvokeTest ... (10.0s) PASS
+  [108] Generated files exist ... (0.1s) PASS
+  [109] CMake configure ... (2.7s) PASS
+  [110] CMake build (Release) ... (5.2s) PASS
+  [111] Run and compare C++ vs .NET output ... (0.3s) PASS
+
+========================================
+ Phase 19: SerilogTest (Serilog 4.2.0 + Console sink)
+========================================
+  [112] Get .NET reference output ...     .NET output: '=== SerilogTest ===\n[1] Logger created\nINF: Hello Serilog\n[2] ok\nWRN: Count is 42\n[3] ok\nERR: Error occurred\n[4] ok\nINF: x y z\n[5] ok\nINF: X x y z\n[6] ok\nDBG: Debug message: verbose\n[7] ok\n=== Done =='
+(1.2s) PASS
+  [113] Codegen SerilogTest ... (15.0s) PASS
+  [114] Generated files exist ... (0.2s) PASS
+  [115] CMake configure ... (2.6s) PASS
+  [116] CMake build (Release) ... (9.4s) PASS
+  [117] Run and compare C++ vs .NET output ... (0.3s) PASS
+
+========================================
+ Phase 20: ConfigTest (M.E.Configuration + Binder)
+========================================
+  [118] Get .NET reference output ...     .NET output: '=== ConfigTest ===\n[1] Configuration built\n[2] AppName = TestApp\n[3] Port = 8080\n[4] Nested:Key1 = Value1\n[4] Nested:Key2 = Value2\n[5] Missing = null\n[6] Timeout (default) = 30\n=== Done ==='
+(1.0s) PASS
+  [119] Codegen ConfigTest ... (12.9s) PASS
+  [120] Generated files exist ... (0.2s) PASS
+  [121] CMake configure ... (2.6s) PASS
+  [122] CMake build (Release) ... (10.2s) PASS
+  [123] Run and compare C++ vs .NET output ... (0.3s) PASS
+
+========================================
+ Phase 21: CompressionTest (System.IO.Compression ¡ª zlib)
+========================================
+  [124] Get .NET reference output ...     .NET output: '=== CompressionTest ===\nGZipCompress: OK\nGZipDecompress: OK\nDeflateRoundTrip: OK\n=== Done ==='
+(1.0s) PASS
+  [125] Codegen CompressionTest ... (10.2s) PASS
+  [126] Generated files exist ... (0.1s) PASS
+  [127] CMake configure ... (2.6s) PASS
+  [128] CMake build (Release) ... (5.0s) PASS
+  [129] Run and compare C++ vs .NET output ... (0.3s) PASS
+
+========================================
+ Phase 22: ValidationApp (feature composition stress test)
+========================================
+  [130] Get .NET reference output ...     .NET output: '=== ValidationApp ===\n[1] Electronics: 3 items, total=1479.97\n[1] Top products: Chair, Desk, Laptop\n[2] Caught: NOT_FOUND - Product with ID 99 not found\n[2] Validation: 2 errors - Name required; Price'
+(1.1s) PASS
+  [131] Codegen ValidationApp ... (11.8s) PASS
+  [132] Generated files exist ... (0.1s) PASS
+  [133] CMake configure ... (2.6s) PASS
+  [134] CMake build (Release) ... (6.4s) PASS
+  [135] Run and compare C++ vs .NET output ... (0.2s) PASS
+
+========================================
+ Phase 23: RegexTest (Regex interpreter mode)
+========================================
+  [136] Get .NET reference output ...     .NET output: '[1] IsMatch digits: True, False\n[2] Date: year=2026, month=03, day=21\n[3] Name=John Smith, Age=30\n[4] Replace: foo bar baz\n[5] Split: one|two|three\n[6] IgnoreCase: True\n[7] Matches count: 4\n[8] Email:'
+(0.9s) PASS
+  [137] Codegen RegexTest ... (14.8s) PASS
+  [138] Generated files exist ... (0.2s) PASS
+  [139] CMake configure ... (2.6s) PASS
+  [140] CMake build (Release) ... (10.2s) PASS
+  [141] Run and compare C++ vs .NET output ... (0.2s) PASS
+
+========================================
+ Phase 24: DateTimeTest (DateTime/TimeSpan/DateTimeOffset)
+========================================
+  [142] Get .NET reference output ...     .NET output: '[1] DateTime: 2026-03-21 14:30:45\n[2] DateTime.Now valid: True\n[3] DateTime.UtcNow valid: True\n[4] AddDays(79): 3/21\n[4] AddHours(25): day=2, hour=1\n[5] Compare: d1<d2=True, d1==d1=True\n[6] Formatted:'
+(0.9s) PASS
+  [143] Codegen DateTimeTest ... (10.1s) PASS
+  [144] Generated files exist ... (0.1s) PASS
+  [145] CMake configure ... (2.6s) PASS
+  [146] CMake build (Release) ... (5.1s) PASS
+  [147] Run and compare C++ vs .NET output ... (0.3s) PASS
+
+========================================
+ Phase 25: DecimalTest (Decimal arithmetic/formatting/parsing)
+========================================
+  [148] Get .NET reference output ...     .NET output: '[1] Add: 124.25, Sub: 76.75, Mul: 2386.8750, Div: 4.2315789473684210526315789474\n[2] 10.5==10.50: True, 10.5<10.6: True\n[3] Parsed: 12345.6789\n[4] TryParse: valid=True (99.99), invalid=False\n[5] F2: 1'
+(0.9s) PASS
+  [149] Codegen DecimalTest ... (10.0s) PASS
+  [150] Generated files exist ... (0.1s) PASS
+  [151] CMake configure ... (2.6s) PASS
+  [152] CMake build (Release) ... (5.2s) PASS
+  [153] Run and compare C++ vs .NET output ... (0.3s) PASS
+
+========================================
+ Cleanup
+========================================
+  Cleaned up temp directory
+
+========================================
+ Results
+========================================
+
+  Phase                   Codegen    Build    Total    C++ Lines
+  ---------------------- -------- -------- -------- ------------
+  HelloWorld                10.1s     5.3s    19.3s      567,820
+  ArrayTest                  9.9s     5.0s    18.8s      567,884
+  FeatureTest               11.0s     6.1s    21.2s      632,414
+  ArglistTest                9.9s     5.0s    18.9s      567,873
+  MultiAssemblyTest         11.7s     5.0s    20.8s      567,842
+  SystemIOTest              10.1s     5.0s    19.2s      571,924
+  FileStreamTest             9.9s     5.0s    18.9s      570,496
+  SocketTest                12.7s     7.1s    23.9s      787,919
+  HttpGetTest               31.5s    28.7s    64.8s    2,047,589
+  HttpTest                  11.9s     6.4s    22.3s      680,571
+  HttpsGetTest              35.0s    28.9s    69.3s    2,045,774
+  DirTest                   10.0s     5.1s    19.1s      568,588
+  JsonSGTest                13.0s     7.1s    24.0s      774,591
+  NuGetSimpleTest           85.7s    93.1s   183.9s    4,648,385
+  DITest                    12.9s     7.3s    24.3s    1,142,312
+  HumanizerTest             16.9s    16.2s    37.3s    1,609,818
+  PollyTest                 11.0s     5.8s    20.9s      924,354
+  PInvokeTest               10.0s     5.2s    19.3s      568,178
+  SerilogTest               15.0s     9.4s    28.8s    1,404,882
+  ConfigTest                12.9s    10.2s    27.2s      811,267
+  CompressionTest           10.2s     5.0s    19.2s      573,490
+  ValidationApp             11.8s     6.4s    22.3s      703,426
+  RegexTest                 14.8s    10.2s    29.0s      965,647
+  DateTimeTest              10.1s     5.1s    19.1s      572,467
+  DecimalTest               10.0s     5.2s    19.1s      574,979
+  ---------------------- -------- -------- -------- ------------
+  TOTAL                    408.0s   298.8s   810.8s
+
+  Total:  153
+  Passed: 153
+  Failed: 0
+
