@@ -46,68 +46,14 @@ public class Program
         sw.Dispose();
         Console.WriteLine("OK");
 
-        // --- StreamReader ReadLine diagnostic ---
-        Console.Write("ReadLine test: ");
-        Console.Out.Flush();
-
-        // Step-by-step ReadLine implementation to find crash
+        // --- StreamReader ReadLine ---
+        Console.Write("StreamReader ReadLine: ");
         var sr = new StreamReader(swFile);
-
-        // Test 1: Can we Peek?
-        int peek = sr.Peek();
-        Console.Write("peek=");
-        Console.Write(peek);
-        Console.Write(" ");
-        Console.Out.Flush();
-
-        // Test 2: Can we read the whole stream as chars?
-        char[] charBuf = new char[256];
-        int charCount = sr.Read(charBuf, 0, 256);
-        Console.Write("chars=");
-        Console.Write(charCount);
-        Console.Write(" ");
-        Console.Out.Flush();
+        string? line1 = sr.ReadLine();
+        string? line2 = sr.ReadLine();
+        string? line3 = sr.ReadLine();
         sr.Dispose();
-
-        // Test 3: StringBuilder test
-        var sb = new StringBuilder();
-        sb.Append("Test");
-        sb.Append('X');
-        Console.Write("sb=");
-        Console.Write(sb.ToString());
-        Console.Write(" ");
-        Console.Out.Flush();
-
-        // Test 4: StringBuilder with Append(char[], int, int) — used by ReadLine
-        var sb2 = new StringBuilder();
-        char[] testChars = new char[] { 'A', 'B', 'C', 'D', 'E' };
-        sb2.Append(testChars, 1, 3);
-        Console.Write("sb2=");
-        Console.Write(sb2.ToString());
-        Console.Write(" ");
-        Console.Out.Flush();
-
-        // Test 5: IndexOf on ReadOnlySpan<char>
-        Console.Write("indexOf=");
-        Console.Out.Flush();
-        ReadOnlySpan<char> spanTest = "Hello\nWorld".AsSpan();
-        int idx = spanTest.IndexOfAny('\r', '\n');
-        Console.Write(idx);
-        Console.Write(" ");
-        Console.Out.Flush();
-
-        // Test 6: Actual ReadLine
-        Console.Write("RL=");
-        Console.Out.Flush();
-        var sr2 = new StreamReader(swFile);
-        string? line1 = sr2.ReadLine();
-        Console.Write("[");
-        Console.Write(line1 ?? "(null)");
-        Console.Write("]");
-        Console.Out.Flush();
-        sr2.Dispose();
-
-        Console.WriteLine();
+        Console.WriteLine(line1 == "Line 1" && line2 == "Line 2" && line3 == "Line 3" ? "OK" : "FAIL");
 
         // --- Cleanup ---
         File.Delete(testFile);

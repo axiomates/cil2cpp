@@ -23,6 +23,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
+#include <cassert>
 #include <cstring>
 #include <mutex>
 #include <string>
@@ -1422,9 +1423,9 @@ void* RuntimeType_get_Cache(void* __this) {
     if (it != g_type_cache_map.end()) return it->second;
 
     // Allocate a RuntimeTypeCache object using the codegen-provided instance_size.
-    // Fallback to 176 (= sizeof(Object) + 20 fields × 8 bytes) for test stubs.
     auto alloc_size = System_RuntimeType_RuntimeTypeCache_TypeInfo.instance_size;
-    if (alloc_size <= static_cast<int32_t>(sizeof(cil2cpp::Object))) alloc_size = 176;
+    assert(alloc_size > static_cast<int32_t>(sizeof(cil2cpp::Object)) &&
+           "RuntimeTypeCache TypeInfo.instance_size not set — check codegen or test stubs");
     auto* cache = gc::alloc(alloc_size, &System_RuntimeType_RuntimeTypeCache_TypeInfo);
     auto* data = reinterpret_cast<char*>(cache);
     // Set f_m_runtimeType at offset sizeof(Object) — first field after Object header

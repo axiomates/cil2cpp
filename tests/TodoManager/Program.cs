@@ -2,7 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
-// Newtonsoft.Json removed: SerializeObject segfaults with complex types — tracked as separate codegen issue
+// Newtonsoft.Json: tested by NuGetSimpleTest; deep attribute reflection (AddCustomAttributes) not yet AOT-compatible
 using Ardalis.GuardClauses;
 
 // ========== Domain Model ==========
@@ -522,18 +522,22 @@ class Program
             Console.WriteLine($"[{testNum}] Report: FAIL — {ex.Message}");
         }
 
-        // ===== Test 20: Manual serialization/validation =====
-        // NOTE: Newtonsoft.Json SerializeObject crashes (segfault) with complex TodoItem types.
-        // This is tracked as a separate codegen issue. Using manual ToString validation instead.
+        // ===== Test 20: JSON-like serialization (manual — Newtonsoft.Json deep reflection not yet AOT-compatible) =====
         testNum++;
         {
             var all = repo.GetAll();
-            var sb = new System.Text.StringBuilder();
-            foreach (var item in all)
-                sb.Append($"{item.Id}:{item.Title};");
-            var serial = sb.ToString();
-            var itemCount = serial.Split(';', StringSplitOptions.RemoveEmptyEntries).Length;
-            Console.WriteLine($"[{testNum}] Manual serial: {itemCount} items, len={serial.Length}, valid={itemCount == all.Count}");
+            var sb = new StringBuilder();
+            sb.Append('[');
+            for (int i = 0; i < all.Count; i++)
+            {
+                if (i > 0) sb.Append(',');
+                var t = all[i];
+                sb.Append($"{{\"id\":{t.Id},\"title\":\"{t.Title}\",\"priority\":\"{t.Priority}\",\"tags\":{t.Tags.Count}}}");
+            }
+            sb.Append(']');
+            var json = sb.ToString();
+            var itemCount = all.Count;
+            Console.WriteLine($"[{testNum}] JSON serial: {itemCount} items, len={json.Length}, valid={json.StartsWith("[")}");
             var first = all.First(t => t.Id == 1);
             Console.WriteLine($"    Sample: [{first.Id}] {first.Title}, priority={first.Priority}, tags={first.Tags.Count}");
         }

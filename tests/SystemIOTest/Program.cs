@@ -34,21 +34,10 @@ public class Program
 
         // Clean up from previous runs
         if (Directory.Exists(testDir))
-        {
-            if (File.Exists(testFile))
-                File.Delete(testFile);
-            // Note: we can't delete directories yet, so skip if exists
-        }
+            Directory.Delete(testDir, true);
 
-        if (!Directory.Exists(testDir))
-        {
-            Directory.CreateDirectory(testDir);
-            Console.WriteLine("CreateDirectory: OK");
-        }
-        else
-        {
-            Console.WriteLine("CreateDirectory: SKIP (exists)");
-        }
+        Directory.CreateDirectory(testDir);
+        Console.WriteLine("CreateDirectory: OK");
 
         Console.WriteLine(Directory.Exists(testDir) ? "Exists(dir): OK" : "Exists(dir): FAIL");
         Console.WriteLine(!Directory.Exists(testDir + "_nonexistent") ? "NotExists: OK" : "NotExists: FAIL");
@@ -99,10 +88,9 @@ public class Program
         File.Delete(moveDest);
         Console.WriteLine(!File.Exists(moveDest) ? "Delete: OK" : "Delete: FAIL");
 
-        // Cleanup
-        File.Delete(testFile);
-        File.Delete(bytesFile);
-        File.Delete(multiLine);
+        // Full cleanup including directory
+        if (Directory.Exists(testDir))
+            Directory.Delete(testDir, true);
 
         Console.WriteLine("=== Done ===");
     }

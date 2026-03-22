@@ -474,7 +474,7 @@ public partial class CppCodeGenerator
             sb.AppendLine($"    target_link_options({projectName} PRIVATE");
             sb.AppendLine("        $<$<CONFIG:Debug>:/DEBUG>");
             // BCL cctor chains can be deep; use 8MB stack instead of default 1MB
-            sb.AppendLine("        /STACK:8388608)");
+            sb.AppendLine($"        /STACK:{BuildConfiguration.DefaultStackSizeBytes})");
         }
         sb.AppendLine("else()");
         sb.AppendLine($"    target_compile_options({projectName} PRIVATE");
@@ -485,7 +485,7 @@ public partial class CppCodeGenerator
         {
             // BCL cctor chains (e.g. HttpClient → CultureInfo → NumberFormatInfo) create deep call stacks.
             // 8MB stack is a platform requirement for AOT-compiled .NET programs (same as NativeAOT default).
-            sb.AppendLine($"    target_link_options({projectName} PRIVATE -Wl,-z,stacksize=8388608)");
+            sb.AppendLine($"    target_link_options({projectName} PRIVATE -Wl,-z,stacksize={BuildConfiguration.DefaultStackSizeBytes})");
         }
         sb.AppendLine("endif()");
 

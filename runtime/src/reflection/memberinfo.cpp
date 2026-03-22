@@ -727,12 +727,16 @@ ManagedMethodInfo* propertyinfo_get_get_method(ManagedPropertyInfo* pi) {
             }
         }
     }
-    // Fallback: create a minimal MethodInfo with just the function pointer
-    // This covers the case where reflection metadata is stripped
-    static MethodInfo getter_stub = {};
-    getter_stub.name = "get_";
-    getter_stub.method_pointer = pi->native_info->getter;
-    return create_managed_method_info(&getter_stub);
+    // Fallback: property has a getter pointer but the declaring type's methods array
+    // doesn't include it. Create a GC-allocated MethodInfo with proper naming.
+    auto* stub = static_cast<MethodInfo*>(gc::alloc(sizeof(MethodInfo), nullptr));
+    std::memset(stub, 0, sizeof(MethodInfo));
+    static thread_local std::string getter_name_buf;
+    getter_name_buf = std::string("get_") + (pi->native_info->name ? pi->native_info->name : "");
+    stub->name = getter_name_buf.c_str();
+    stub->method_pointer = pi->native_info->getter;
+    stub->declaring_type = pi->native_info->declaring_type;
+    return create_managed_method_info(stub);
 }
 
 ManagedMethodInfo* propertyinfo_get_set_method(ManagedPropertyInfo* pi) {
@@ -746,10 +750,16 @@ ManagedMethodInfo* propertyinfo_get_set_method(ManagedPropertyInfo* pi) {
             }
         }
     }
-    static MethodInfo setter_stub = {};
-    setter_stub.name = "set_";
-    setter_stub.method_pointer = pi->native_info->setter;
-    return create_managed_method_info(&setter_stub);
+    // Fallback: property has a setter pointer but the declaring type's methods array
+    // doesn't include it. Create a GC-allocated MethodInfo with proper naming.
+    auto* stub = static_cast<MethodInfo*>(gc::alloc(sizeof(MethodInfo), nullptr));
+    std::memset(stub, 0, sizeof(MethodInfo));
+    static thread_local std::string setter_name_buf;
+    setter_name_buf = std::string("set_") + (pi->native_info->name ? pi->native_info->name : "");
+    stub->name = setter_name_buf.c_str();
+    stub->method_pointer = pi->native_info->setter;
+    stub->declaring_type = pi->native_info->declaring_type;
+    return create_managed_method_info(stub);
 }
 
 Boolean propertyinfo_can_read(ManagedPropertyInfo* pi) {

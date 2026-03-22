@@ -168,53 +168,72 @@ public class ReachabilityAnalyzer
     }
 
     /// <summary>
+    /// ICalls that internally dispatch virtual methods via vtable (invisible to IL).
+    /// When the ICall method becomes reachable, the virtual target must be seeded
+    /// on all reachable subtypes of the ICall's declaring type.
+    /// </summary>
+    private static readonly (string TypeFullName, string MethodName, int ParamCount,
+                              string VirtualTargetName, int VirtualTargetParamCount)[] ICallVirtualDependencies =
+    [
+        ("System.Runtime.InteropServices.SafeHandle", "Dispose", 1, "ReleaseHandle", 0),
+    ];
+
+    /// <summary>
     /// Certain [InternalCall] methods dispatch virtual methods from C++ runtime code
     /// (not via IL callvirt). RTA can't see these indirect dispatches, so we must
     /// explicitly mark the virtual slots as dispatched when the icall becomes reachable.
     /// </summary>
     private void SeedICallVirtualDependencies(MethodDefinition method)
     {
-        // SafeHandle.Dispose(bool) icall → internally dispatches ReleaseHandle() via vtable.
-        // Normal RTA can't see this because: (1) no IL does callvirt ReleaseHandle,
-        // (2) SafeHandle subtypes are often created via SafeHandleMarshaller's generic
-        // Activator.CreateInstance<T>(), which the analyzer can't resolve (T is unbound).
-        // Fix: when Dispose is reachable, directly seed ReleaseHandle on all reachable subtypes.
-        if (method.DeclaringType.FullName == "System.Runtime.InteropServices.SafeHandle"
-            && method.Name == "Dispose" && method.Parameters.Count == 1)
+        for (int i = 0; i < ICallVirtualDependencies.Length; i++)
         {
-            _safeHandleDisposeReachable = true;
-            SeedSafeHandleReleaseHandleOverrides();
+            var dep = ICallVirtualDependencies[i];
+            if (method.DeclaringType.FullName == dep.TypeFullName
+                && method.Name == dep.MethodName
+                && method.Parameters.Count == dep.ParamCount)
+            {
+                _activeICallVirtualDeps.Add(i);
+                SeedICallVirtualOverrides(i);
+            }
         }
     }
 
     /// <summary>
-    /// When SafeHandle.Dispose(bool) is reachable, seed ReleaseHandle overrides on all
-    /// reachable SafeHandle subtypes. Called both when Dispose is first seeded and when
-    /// new SafeHandle subtypes become reachable (via MarkTypeReachable).
+    /// When an ICall virtual dependency becomes active, seed its virtual target overrides
+    /// on all reachable subtypes. Called both when the ICall is first seeded and when
+    /// new subtypes become reachable (via MarkTypeReachable).
     /// </summary>
-    private void SeedSafeHandleReleaseHandleOverrides()
+    private void SeedICallVirtualOverrides(int depIndex)
     {
-        if (!_safeHandleDisposeReachable) return;
-        if (!_subtypeIndex.TryGetValue("System.Runtime.InteropServices.SafeHandle", out var subtypes)) return;
+        var dep = ICallVirtualDependencies[depIndex];
+        if (!_activeICallVirtualDeps.Contains(depIndex)) return;
+        if (!_subtypeIndex.TryGetValue(dep.TypeFullName, out var subtypes)) return;
 
         foreach (var type in subtypes.ToArray())
         {
             if (!_result.ReachableTypes.Contains(type)) continue;
-            var releaseHandle = type.Methods
-                .FirstOrDefault(m => m.Name == "ReleaseHandle" && m.IsVirtual && m.Parameters.Count == 0);
-            if (releaseHandle != null)
+            var target = type.Methods
+                .FirstOrDefault(m => m.Name == dep.VirtualTargetName && m.IsVirtual
+                    && m.Parameters.Count == dep.VirtualTargetParamCount);
+            if (target != null)
             {
-                // Mark as constructed so vtable dispatch includes this override
                 MarkTypeConstructed(type);
-                SeedMethod(releaseHandle);
-                // Runtime's SafeHandle_Dispose scans MethodInfo metadata to find
-                // ReleaseHandle's vtable slot — type must be a reflection target
+                SeedMethod(target);
                 _result.ReflectionTargetTypes.Add(type.FullName);
             }
         }
     }
 
-    private bool _safeHandleDisposeReachable;
+    /// <summary>
+    /// Seed all active ICall virtual dependency overrides (called when new types become reachable).
+    /// </summary>
+    private void SeedAllActiveICallVirtualOverrides()
+    {
+        foreach (var depIndex in _activeICallVirtualDeps)
+            SeedICallVirtualOverrides(depIndex);
+    }
+
+    private readonly HashSet<int> _activeICallVirtualDeps = new();
 
     /// <summary>
     /// P/Invoke methods that return class types create instances via the marshaller
@@ -490,8 +509,8 @@ public class ReachabilityAnalyzer
         if (type.IsValueType)
             MarkDispatchedOverrides(type);
 
-        // SafeHandle subtypes created by marshallers bypass newobj → need explicit construction
-        SeedSafeHandleReleaseHandleOverrides();
+        // ICall virtual dependencies (e.g., SafeHandle subtypes) bypass newobj → need explicit construction
+        SeedAllActiveICallVirtualOverrides();
     }
 
     /// <summary>

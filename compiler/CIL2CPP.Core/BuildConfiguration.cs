@@ -31,6 +31,13 @@ public record BuildConfiguration
     /// <summary>Configuration name for CMake (Debug or Release).</summary>
     public string ConfigurationName => IsDebug ? "Debug" : "Release";
 
+    /// <summary>
+    /// Default stack size for AOT-compiled executables (8 MB).
+    /// BCL cctor chains (HttpClient → CultureInfo → NumberFormatInfo) require deep stacks.
+    /// Matches NativeAOT default; the Windows/Linux default of 1 MB is insufficient.
+    /// </summary>
+    public const int DefaultStackSizeBytes = 8_388_608;
+
     // Cached singleton instances — avoids allocating new objects on every access
     private static readonly BuildConfiguration _debug = new()
     {

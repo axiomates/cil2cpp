@@ -972,6 +972,27 @@ public partial class CppCodeGenerator
         var skipPropertyReflection = type.IsRuntimeProvided
             || CppNameMapper.IsRuntimeExceptionType(type.ILFullName)
             || reflectableProperties.Count == 0;
+        // When properties are emitted, their getter/setter methods must be in the methods array
+        // so the runtime can match function pointers to MethodInfo objects.
+        if (!skipPropertyReflection && skipFieldMethodReflection && reflectableProperties.Count > 0)
+        {
+            var accessorNames = new HashSet<string>();
+            foreach (var prop in reflectableProperties)
+            {
+                if (prop.Getter != null && _declaredFunctionNames.Contains(prop.Getter.CppName))
+                    accessorNames.Add(prop.Getter.CppName);
+                if (prop.Setter != null && _declaredFunctionNames.Contains(prop.Setter.CppName))
+                    accessorNames.Add(prop.Setter.CppName);
+            }
+            if (accessorNames.Count > 0)
+            {
+                reflectableMethods = type.Methods
+                    .Where(m => accessorNames.Contains(m.CppName))
+                    .ToList();
+                allFields = new(); // Only emit accessor methods, not fields
+                skipFieldMethodReflection = false;
+            }
+        }
         var skipReflection = skipFieldMethodReflection && skipPropertyReflection;
         var fieldsExpr = (!skipFieldMethodReflection && allFields.Count > 0) ? $"{type.CppName}_fields" : "nullptr";
         var methodsExpr = (!skipFieldMethodReflection && reflectableMethods.Count > 0) ? $"{type.CppName}_methods" : "nullptr";
@@ -2445,6 +2466,26 @@ public partial class CppCodeGenerator
                 : type.Fields.Concat(type.StaticFields).ToList();
             var reflectableMethods = skipFieldMethod ? new List<IRMethod>()
                 : type.Methods.Where(m => !CppNameMapper.IsCompilerGeneratedType(m.Name)).ToList();
+
+            // When properties are emitted, their getter/setter methods must be in the methods array
+            // so the runtime can match function pointers to MethodInfo objects.
+            if (skipFieldMethod && reflectableProperties.Count > 0)
+            {
+                var accessorNames = new HashSet<string>();
+                foreach (var prop in reflectableProperties)
+                {
+                    if (prop.Getter != null && _declaredFunctionNames.Contains(prop.Getter.CppName))
+                        accessorNames.Add(prop.Getter.CppName);
+                    if (prop.Setter != null && _declaredFunctionNames.Contains(prop.Setter.CppName))
+                        accessorNames.Add(prop.Setter.CppName);
+                }
+                if (accessorNames.Count > 0)
+                {
+                    reflectableMethods = type.Methods
+                        .Where(m => accessorNames.Contains(m.CppName))
+                        .ToList();
+                }
+            }
 
             if (allFields.Count == 0 && reflectableMethods.Count == 0 && reflectableProperties.Count == 0) continue;
 

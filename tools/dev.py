@@ -1425,6 +1425,10 @@ def cmd_integration(args):
 
     def dt_dotnet_run():
         nonlocal dotnet_dt_output
+        # Clean up test directory from previous runs so .NET sees clean initial state
+        dt_test_dir = Path(os.environ.get('TEMP', '/tmp')) / "cil2cpp_dirtest"
+        if dt_test_dir.exists():
+            shutil.rmtree(dt_test_dir, ignore_errors=True)
         dotnet_dt_output = _get_dotnet_output(dt_sample)
         print(f"    .NET output: {repr(dotnet_dt_output[:200])}")
 
@@ -1453,13 +1457,19 @@ def cmd_integration(args):
         exe = _exe_path(dt_build, config, "DirTest")
         if not exe.exists():
             raise RuntimeError(f"Executable not found: {exe}")
+        # Clean up test directory left by .NET run so C++ sees same initial state
+        dt_test_dir = Path(os.environ.get('TEMP', '/tmp')) / "cil2cpp_dirtest"
+        if dt_test_dir.exists():
+            shutil.rmtree(dt_test_dir, ignore_errors=True)
         r = subprocess.run([str(exe)], capture_output=True, text=True, check=False)
         if r.returncode != 0:
             raise RuntimeError(f"DirTest exited with code {r.returncode}\nstderr: {r.stderr}")
         got = r.stdout.strip()
-        # Line 5 (0-indexed) is "Exists testDir:" which differs because
-        # .NET run creates the directory first, so C++ sees it already existing.
-        _compare_output_with_skip(got, dotnet_dt_output, skip_lines={5})
+        if got != dotnet_dt_output:
+            raise RuntimeError(
+                f"Output mismatch vs .NET:\n"
+                f"  .NET output:\n{dotnet_dt_output}\n"
+                f"  C++ output:\n{got}")
 
     runner.step("Get .NET reference output", dt_dotnet_run)
     runner.step("Codegen DirTest", dt_codegen)

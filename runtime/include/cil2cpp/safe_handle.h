@@ -177,37 +177,5 @@ inline void SafeHandle_Dispose(void* self, bool disposing) {
                     static_cast<int32_t>(SafeHandleState::Closed);
 }
 
-/// SafeFileHandle default .ctor — initializes _fileType = -1, base fields via SafeHandle__ctor.
-/// The BCL field initializer `private volatile int _fileType = -1` is compiled into .ctor IL,
-/// but the ctor body is stubbed in AOT (generic Activator.CreateInstance<T> prevents discovery).
-/// Layout must match the generated SafeFileHandle struct (fields in Cecil metadata order).
-inline void SafeFileHandle__ctor(void* self) {
-    // Initialize base SafeHandle fields: handle=0, ownsHandle=true
-    SafeHandle__ctor(self, 0, true);
-    // Set _fileType = -1 (field initializer that triggers lazy GetFileType() call)
-    // Uses SafeHandleLayout size to offset past base fields to SafeFileHandle-specific fields.
-    // SafeFileHandle layout after SafeHandle fields:
-    //   String* f_path;
-    //   int64_t f_length;
-    //   bool f_lengthCanBeCached;
-    //   int32_t f_fileOptions;  (enum)
-    //   int32_t f_fileType;     ← this field
-    struct SafeFileHandleLayout {
-        TypeInfo* __type_info;
-        UInt32 __sync_block;
-        intptr_t f_handle;
-        int32_t f_state;
-        bool f_ownsHandle;
-        bool f_fullyInitialized;
-        void* f__path;
-        int64_t f__length;
-        bool f__lengthCanBeCached;
-        int32_t f__fileOptions;
-        int32_t f__fileType;
-    };
-    auto* sfh = static_cast<SafeFileHandleLayout*>(self);
-    sfh->f__fileType = -1;
-}
-
 } // namespace icall
 } // namespace cil2cpp
