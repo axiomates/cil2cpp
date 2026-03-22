@@ -539,6 +539,10 @@ public partial class CppCodeGenerator
 
         // Runtime TypeInfo VTable patching (must be called after __init_string_literals)
         sb.AppendLine("void __init_runtime_vtables();");
+        // BCL resource string registration (compiler-extracted from assembly embedded resources)
+        sb.AppendLine("void __init_resource_strings();");
+        // Delegate trampoline registration (compiler-generated for CreateObjectArrayDelegate)
+        sb.AppendLine("void __init_delegate_trampolines();");
         sb.AppendLine();
 
         // Extern declarations for array initializer data (defined in data file)

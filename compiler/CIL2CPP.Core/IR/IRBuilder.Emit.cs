@@ -1623,6 +1623,23 @@ public partial class IRBuilder
         // ICall registry lookup for [InternalCall] and runtime-provided methods
         var mappedName = ICallRegistry.Lookup(methodRef);
 
+        // AOT intrinsic: LambdaCompiler.Compile(LambdaExpression) → interpreter path.
+        // Desktop BCL uses LambdaCompiler (Reflection.Emit / JIT-only).
+        // Replace with: new LightCompiler().CompileTop(expr).CreateDelegate()
+        // This is the same path NativeAOT BCL takes (FEATURE_COMPILE not defined).
+        if (mappedName == null
+            && methodRef.DeclaringType?.FullName == "System.Linq.Expressions.Compiler.LambdaCompiler"
+            && methodRef.Name == "Compile"
+            && methodRef.Parameters.Count == 1)
+        {
+            // Pop the LambdaExpression argument (static method, 1 param)
+            var lambdaEntry = stack.PopEntry();
+            if (EmitExpressionCompileInterpreterRedirect(block, stack, ref tempCounter, lambdaEntry.Expr))
+                return;
+            // Fallback: push argument back and let normal emission handle it
+            stack.Push(lambdaEntry);
+        }
+
         if (mappedName != null)
         {
             irCall.FunctionName = mappedName;
@@ -4299,13 +4316,20 @@ public partial class IRBuilder
             var typeInfoName = irType.CppName + "_TypeInfo";
             var mangledName = MangleGenericMethodName(overrideDeclType.ILFullName, methodName, typeArgs);
 
-            // Ensure the specialization is registered for compilation
+            // Ensure the specialization is registered for compilation.
+            // Use stored MangledName if already registered — it may include a disambiguation
+            // suffix (e.g., __paramTypes) added by TryCollectResolvedGenericMethod when two
+            // overloads produce the same base mangled name (Humanize<String> with 1 vs 3 params).
             var paramSig = string.Join(",", elemMethod.Parameters.Select(p =>
                 _activeTypeParamMap != null
                     ? ResolveGenericTypeName(p.ParameterType, _activeTypeParamMap)
                     : p.ParameterType.FullName));
             var key = MakeGenericMethodKey(overrideDeclType.ILFullName, methodName, typeArgs, paramSig);
-            if (!_genericMethodInstantiations.ContainsKey(key))
+            if (_genericMethodInstantiations.TryGetValue(key, out var existingInfo))
+            {
+                mangledName = existingInfo.MangledName;
+            }
+            else
             {
                 _genericMethodInstantiations[key] = new GenericMethodInstantiationInfo(
                     overrideDeclType.ILFullName, methodName, typeArgs, mangledName, overrideCecil);
@@ -4955,6 +4979,59 @@ public partial class IRBuilder
     /// Intercept BitOperations methods that use hardware intrinsics (X86.Popcnt, etc.)
     /// unavailable in AOT. Replace with portable C++ implementations.
     /// </summary>
+    /// <summary>
+    /// AOT intrinsic: replace LambdaCompiler.Compile(LambdaExpression) with interpreter path.
+    /// Emits: new LightCompiler().CompileTop(lambdaExpr).CreateDelegate()
+    /// Returns true if successful, false if interpreter types not available.
+    /// </summary>
+    private bool EmitExpressionCompileInterpreterRedirect(
+        IRBasicBlock block, Stack<StackEntry> stack, ref int tempCounter, string lambdaArg)
+    {
+        // Find interpreter types in the module
+        var lcType = _module.Types.FirstOrDefault(t =>
+            t.ILFullName == "System.Linq.Expressions.Interpreter.LightCompiler");
+        var ldcType = _module.Types.FirstOrDefault(t =>
+            t.ILFullName == "System.Linq.Expressions.Interpreter.LightDelegateCreator");
+        if (lcType == null || ldcType == null) return false;
+
+        var lcCtor = lcType.Methods.FirstOrDefault(m => m.Name == ".ctor" && m.Parameters.Count == 0);
+        var compileTop = lcType.Methods.FirstOrDefault(m => m.Name == "CompileTop" && m.Parameters.Count == 1);
+        var createDelegate = ldcType.Methods.FirstOrDefault(m => m.Name == "CreateDelegate" && m.Parameters.Count == 0);
+        if (lcCtor == null || compileTop == null || createDelegate == null) return false;
+
+        // 1. new LightCompiler()
+        var lcTmp = $"__t{tempCounter++}";
+        block.Instructions.Add(new IRNewObj
+        {
+            TypeCppName = lcType.CppName,
+            CtorName = lcCtor.CppName,
+            ResultVar = lcTmp,
+        });
+
+        // 2. LightCompiler.CompileTop(lambdaExpr)
+        var ldcTmp = $"__t{tempCounter++}";
+        block.Instructions.Add(new IRCall
+        {
+            FunctionName = compileTop.CppName,
+            Arguments = { $"({lcType.CppName}*){lcTmp}", $"(System_Linq_Expressions_LambdaExpression*){lambdaArg}" },
+            ResultVar = ldcTmp,
+            ResultTypeCpp = $"{ldcType.CppName}*",
+        });
+
+        // 3. LightDelegateCreator.CreateDelegate()
+        var delegateTmp = $"__t{tempCounter++}";
+        block.Instructions.Add(new IRCall
+        {
+            FunctionName = createDelegate.CppName,
+            Arguments = { $"({ldcType.CppName}*){ldcTmp}" },
+            ResultVar = delegateTmp,
+            ResultTypeCpp = "System_Delegate*",
+        });
+
+        stack.Push(new StackEntry(delegateTmp, "System_Delegate*"));
+        return true;
+    }
+
     private bool TryEmitBitOperationsIntrinsic(IRBasicBlock block, Stack<StackEntry> stack,
         MethodReference methodRef, ref int tempCounter)
     {

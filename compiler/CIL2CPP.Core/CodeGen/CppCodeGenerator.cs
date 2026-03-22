@@ -349,6 +349,10 @@ public partial class CppCodeGenerator
         }
         // Patch runtime TypeInfos with codegen VTable/interface data
         sb.AppendLine("    __init_runtime_vtables();");
+        // Register compiler-extracted BCL resource strings
+        sb.AppendLine("    __init_resource_strings();");
+        // Register compiler-generated delegate trampolines for CreateObjectArrayDelegate
+        sb.AppendLine("    __init_delegate_trampolines();");
         sb.AppendLine();
 
         // Call entry point
@@ -721,6 +725,10 @@ public partial class CppCodeGenerator
             return DeadCodeCategory.EventSource;
         // AOT-incompatible
         if (functionName.StartsWith("System_Runtime_Loader_AssemblyLoadContext_"))
+            return DeadCodeCategory.AotIncompatible;
+        // LambdaCompiler uses Reflection.Emit (JIT-only). Expression.Compile is redirected
+        // to the interpreter at IR level; any residual LambdaCompiler references are dead code.
+        if (functionName.StartsWith("System_Linq_Expressions_Compiler_"))
             return DeadCodeCategory.AotIncompatible;
         return DeadCodeCategory.None;
     }

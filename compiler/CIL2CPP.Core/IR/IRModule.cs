@@ -121,6 +121,14 @@ public class IRModule
     public Dictionary<string, AutoTypeInfoMetadata> TypeInfoAutoMetadata { get; } = new();
 
     /// <summary>
+    /// BCL resource strings extracted from assembly embedded resources at compile time.
+    /// Key: resource key (e.g., "InvalidOperation_NoValue"), Value: localized message.
+    /// Filtered to only keys referenced as string literals in compiled code.
+    /// Emitted as a C++ table in the generated data file.
+    /// </summary>
+    public Dictionary<string, string> ResourceStrings { get; } = new();
+
+    /// <summary>
     /// Register a primitive type that needs a TypeInfo (used as array element type).
     /// </summary>
     public void RegisterPrimitiveTypeInfo(string ilFullName)

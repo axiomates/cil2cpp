@@ -1315,8 +1315,21 @@ public partial class IRBuilder
                     }
                     else
                     {
-                        typeInfoName = GetMangledTypeNameForRef(typeRef);
-                        RecordAutoTypeInfoMetadata(typeRef);
+                        // Open generic type definitions (e.g., typeof(IList<>)) inside a monomorphized
+                        // generic context must NOT resolve through _activeTypeParamMap. The type's formal
+                        // generic parameters (T, TKey, etc.) are the definition's own params, not the
+                        // enclosing specialization's concrete types. Emit the open TypeInfo directly.
+                        if (_activeTypeParamMap != null && !(typeRef is GenericInstanceType) &&
+                            IsOpenGenericTypeRef(typeRef))
+                        {
+                            typeInfoName = CppNameMapper.MangleTypeName(typeRef.FullName);
+                            RecordOpenGenericTypeMetadata(typeRef, typeInfoName);
+                        }
+                        else
+                        {
+                            typeInfoName = GetMangledTypeNameForRef(typeRef);
+                            RecordAutoTypeInfoMetadata(typeRef);
+                        }
                         // Ensure TypeInfo exists for primitive types used in typeof()
                         if (CppNameMapper.IsPrimitive(typeRef.FullName))
                         {
@@ -3091,15 +3104,21 @@ public partial class IRBuilder
                 }
                 else if (targetMethod is GenericInstanceMethod ldftnGim)
                 {
-                    // Generic method: include monomorphized type args in the mangled name
+                    // Generic method: include monomorphized type args in the mangled name.
+                    // Resolve declaring type's generic params (e.g., AbstractValidator`1<T> → <Person>)
+                    // to match the resolved name used in ProcessGenericMethodSpecialization.
                     var elemMethod = ldftnGim.ElementMethod;
+                    var ldftnDeclType = ResolveTypeRefOperand(elemMethod.DeclaringType);
                     var typeArgs = ldftnGim.GenericArguments.Select(a => ResolveTypeRefOperand(a)).ToList();
-                    var paramSig = string.Join(",", elemMethod.Parameters.Select(p => p.ParameterType.FullName));
-                    var key = MakeGenericMethodKey(elemMethod.DeclaringType.FullName, elemMethod.Name, typeArgs, paramSig);
+                    var paramSig = string.Join(",", elemMethod.Parameters.Select(p =>
+                        _activeTypeParamMap != null
+                            ? ResolveGenericTypeName(p.ParameterType, _activeTypeParamMap)
+                            : p.ParameterType.FullName));
+                    var key = MakeGenericMethodKey(ldftnDeclType, elemMethod.Name, typeArgs, paramSig);
                     if (_genericMethodInstantiations.TryGetValue(key, out var gmInfo))
                         methodCppName = gmInfo.MangledName;
                     else
-                        methodCppName = MangleGenericMethodName(elemMethod.DeclaringType.FullName, elemMethod.Name, typeArgs);
+                        methodCppName = MangleGenericMethodName(ldftnDeclType, elemMethod.Name, typeArgs);
                 }
                 else
                 {
@@ -3715,6 +3734,47 @@ public partial class IRBuilder
         if (resolved.BaseType != null)
             baseTypeCppName = CppNameMapper.MangleTypeName(resolved.BaseType.FullName);
         _module.TypeInfoAutoMetadata[typeInfoName] = new AutoTypeInfoMetadata(
+            IsInterface: resolved.IsInterface,
+            IsAbstract: resolved.IsAbstract,
+            IsSealed: resolved.IsSealed,
+            IsValueType: resolved.IsValueType,
+            IsEnum: resolved.IsEnum,
+            IsPublic: resolved.IsPublic,
+            GenericParameterCount: resolved.GenericParameters.Count,
+            BaseTypeCppName: baseTypeCppName,
+            NamespaceName: resolved.Namespace
+        );
+    }
+
+    /// <summary>
+    /// Checks if a TypeReference represents an open generic type definition.
+    /// In Cecil, typeof(IList&lt;&gt;) produces a TypeReference (not GenericInstanceType)
+    /// with HasGenericParameters = true. The backtick fallback handles cross-assembly
+    /// references where Cecil may not carry GenericParameters.
+    /// </summary>
+    private static bool IsOpenGenericTypeRef(TypeReference typeRef)
+    {
+        if (typeRef.HasGenericParameters) return true;
+        var fn = typeRef.FullName;
+        var bt = fn.IndexOf('`');
+        return bt > 0 && !fn.Contains('<');
+    }
+
+    /// <summary>
+    /// Record TypeInfo metadata for an open generic type definition used in ldtoken.
+    /// Unlike RecordAutoTypeInfoMetadata, this uses the UNRESOLVED type name (no
+    /// _activeTypeParamMap substitution) so MakeGenericType receives the open definition.
+    /// </summary>
+    private void RecordOpenGenericTypeMetadata(TypeReference typeRef, string typeInfoCppName)
+    {
+        _module.TypeInfoCppToILMap.TryAdd(typeInfoCppName, typeRef.FullName);
+        if (_module.TypeInfoAutoMetadata.ContainsKey(typeInfoCppName)) return;
+        var resolved = typeRef.Resolve();
+        if (resolved == null) return;
+        string? baseTypeCppName = null;
+        if (resolved.BaseType != null)
+            baseTypeCppName = CppNameMapper.MangleTypeName(resolved.BaseType.FullName);
+        _module.TypeInfoAutoMetadata[typeInfoCppName] = new AutoTypeInfoMetadata(
             IsInterface: resolved.IsInterface,
             IsAbstract: resolved.IsAbstract,
             IsSealed: resolved.IsSealed,

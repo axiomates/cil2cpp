@@ -61,6 +61,14 @@ void reflection_set_typeinfos(TypeInfo* method_ti, TypeInfo* field_ti, TypeInfo*
  */
 void reflection_patch_property_vtables(TypeInfo* prop_ti, TypeInfo* runtime_prop_ti);
 
+/**
+ * Patch MethodBase/MethodInfo vtable slots for Equals/GetHashCode.
+ * MethodBase is ReflectionAliased (all instance methods blocked at codegen),
+ * so Equals/GetHashCode overrides are never compiled → vtable retains Object defaults.
+ * Called from __init_runtime_vtables() in generated code.
+ */
+void reflection_patch_method_vtables(TypeInfo* methodbase_ti, TypeInfo* methodinfo_ti);
+
 // ===== Type → GetMethods/GetFields API =====
 
 /**

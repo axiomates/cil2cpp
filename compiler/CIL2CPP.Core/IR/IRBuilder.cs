@@ -747,7 +747,9 @@ public partial class IRBuilder
                                   or "System.Collections.Generic.GenericEqualityComparer`1"
                                   or "System.Collections.Generic.GenericComparer`1"
                                   or "System.Collections.Generic.EnumEqualityComparer`1"
-                                  or "System.Collections.Generic.EnumComparer`1")
+                                  or "System.Collections.Generic.EnumComparer`1"
+                                  or "System.Collections.Generic.NullableComparer`1"
+                                  or "System.Collections.Generic.NullableEqualityComparer`1")
             {
                 _module.ConstructedTypes.Add(key);
             }
@@ -835,6 +837,31 @@ public partial class IRBuilder
             ConvertDeferredGenericBodies();
         }
 
+        // Pass 6.2: Recover specialized methods whose keys were added during Pass 6/6.1.
+        // Non-generic method bodies (e.g., PersonValidator..ctor) compiled in Pass 6 may call
+        // methods on generic specializations (e.g., AbstractValidator<Person>.RuleFor<string>)
+        // that were skipped in Pass 3.3b because their keys weren't yet in _calledSpecializedMethods.
+        // EnsureBodyReferencedTypesExist (called during body compilation) adds these keys, but
+        // the only prior recovery point (Pass 3.5a) runs before Pass 6.
+        // Fixpoint: recovered methods may discover more specializations (e.g., RuleFor → PropertyRule
+        // → AccessorCache → Expression.Compile). Keep recovering until no more methods are found.
+        {
+            int prevSkipped = _skippedSpecializedMethods.Count;
+            do
+            {
+                prevSkipped = _skippedSpecializedMethods.Count;
+                RecoverSkippedSpecializedMethods();
+                if (_deferredGenericBodies.Count > 0)
+                {
+                    BuildVTablesFixpoint();
+                    DisambiguateOverloadedMethods();
+                    ConvertDeferredGenericBodies();
+                }
+                // Also run generic method specializations discovered during recovery
+                CreateGenericMethodSpecializations();
+            } while (_skippedSpecializedMethods.Count < prevSkipped || _deferredGenericBodies.Count > 0);
+        }
+
         // Pass 6.4: Compile methods discovered during deferred generic body compilation.
         // Generic specialization bodies (e.g., SafeHandleMarshaller<T>) may call non-generic
         // methods through resolved type parameters that the reachability analyzer couldn't trace.
@@ -877,6 +904,14 @@ public partial class IRBuilder
         // For type-incompatible hidden fields: rename CppName to __own and update IRFieldAccess
         // For type-compatible hidden fields: remove own field (inherited one suffices in flat struct)
         DetectFieldHiding();
+
+        // Extract BCL resource strings from loaded assemblies, filtered to referenced keys.
+        // These replace the hardcoded SR string table in the runtime.
+        var referencedLiterals = new HashSet<string>(_module.StringLiterals.Keys);
+        var resourceStrings = IL.ResourceExtractor.ExtractReferencedResources(_assemblySet, referencedLiterals);
+        foreach (var (key, value) in resourceStrings)
+            _module.ResourceStrings[key] = value;
+        Console.Error.WriteLine($"[perf] Resource strings: {resourceStrings.Count} extracted from assemblies");
 
         var totalMethods = _module.Types.Sum(t => t.Methods.Count);
         Console.Error.WriteLine($"[perf] IRBuilder total: types={_module.Types.Count}, methods={totalMethods}");
@@ -996,6 +1031,7 @@ public partial class IRBuilder
     /// </summary>
     private void RecoverSkippedSpecializedMethods()
     {
+        int recovered = 0;
         for (int i = _skippedSpecializedMethods.Count - 1; i >= 0; i--)
         {
             var (specKey, cecilMethod, irMethod, typeParamMap) = _skippedSpecializedMethods[i];
@@ -1006,6 +1042,7 @@ public partial class IRBuilder
                     GenerateStubBody(irMethod);
                 else
                     _deferredGenericBodies.Add((cecilMethod, irMethod, typeParamMap));
+                recovered++;
             }
         }
     }

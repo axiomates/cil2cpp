@@ -141,12 +141,47 @@ void reflection_patch_property_vtables(TypeInfo* prop_ti, TypeInfo* runtime_prop
     patch(runtime_prop_ti, "RuntimePropertyInfo");
 }
 
+// Forward declarations for MethodBase Equals/GetHashCode in core_methods.cpp
+extern "C" bool System_Reflection_MethodBase_Equals(void*, void*);
+extern "C" int32_t System_Reflection_MethodBase_GetHashCode(void*);
+
+void reflection_patch_method_vtables(TypeInfo* methodbase_ti, TypeInfo* methodinfo_ti) {
+    // Patch vtable slots 1 (Equals) and 2 (GetHashCode) for MethodBase/MethodInfo.
+    // MethodBase is ReflectionAliased → Equals/GetHashCode overrides never compiled
+    // → vtable retains Object defaults (pointer equality). We patch in the semantic
+    // implementations that compare native_info pointers.
+    auto patch = [](TypeInfo* ti) {
+        if (!ti || !ti->vtable) return;
+        auto** m = ti->vtable->methods;
+        auto count = ti->vtable->method_count;
+        // Slot 1 = Equals (Object vtable layout)
+        if (count > 1 && !m[1]) m[1] = (void*)System_Reflection_MethodBase_Equals;
+        // Slot 2 = GetHashCode (Object vtable layout)
+        if (count > 2 && !m[2]) m[2] = (void*)System_Reflection_MethodBase_GetHashCode;
+    };
+    patch(methodbase_ti);
+    patch(methodinfo_ti);
+}
+
 // ===== Helper: Create managed wrappers =====
 
+// Cache managed MethodInfo wrappers so the same native MethodInfo always
+// returns the same managed object. Critical for reference-equality checks
+// in Expression.CheckMethod (System.Linq.Expressions).
+static constexpr size_t METHODINFO_CACHE_SIZE = 128;
+static MethodInfo* s_methodinfo_cache_keys[METHODINFO_CACHE_SIZE] = {};
+static ManagedMethodInfo* s_methodinfo_cache_values[METHODINFO_CACHE_SIZE] = {};
+
 ManagedMethodInfo* create_managed_method_info(MethodInfo* native) {
+    auto slot = reinterpret_cast<uintptr_t>(native) / sizeof(void*) % METHODINFO_CACHE_SIZE;
+    if (s_methodinfo_cache_keys[slot] == native && s_methodinfo_cache_values[slot]) {
+        return s_methodinfo_cache_values[slot];
+    }
     auto* mi = static_cast<ManagedMethodInfo*>(
         gc::alloc(sizeof(ManagedMethodInfo), s_methodinfo_ti));
     mi->native_info = native;
+    s_methodinfo_cache_keys[slot] = native;
+    s_methodinfo_cache_values[slot] = mi;
     return mi;
 }
 

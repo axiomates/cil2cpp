@@ -66,14 +66,23 @@ static cil2cpp::Object* get_singleton_module() {
 static cil2cpp::ManagedAssembly* s_singleton_assembly = nullptr;
 static std::once_flag s_assembly_once;
 
+// RuntimeAssembly TypeInfo is defined in generated code (base_type = Assembly_TypeInfo).
+// BCL code casts Assembly → RuntimeAssembly, so the singleton must use this TypeInfo.
+static cil2cpp::TypeInfo* s_runtime_assembly_ti = nullptr;
+
 static cil2cpp::ManagedAssembly* get_singleton_assembly() {
     std::call_once(s_assembly_once, []() {
+        auto* ti = s_runtime_assembly_ti ? s_runtime_assembly_ti
+                                         : &cil2cpp::System_Reflection_Assembly_TypeInfo;
         s_singleton_assembly = static_cast<cil2cpp::ManagedAssembly*>(
-            cil2cpp::gc::alloc(sizeof(cil2cpp::ManagedAssembly),
-                               &cil2cpp::System_Reflection_Assembly_TypeInfo));
+            cil2cpp::gc::alloc(sizeof(cil2cpp::ManagedAssembly), ti));
         s_singleton_assembly->name = cil2cpp::string_create_utf8("AOTAssembly");
     });
     return s_singleton_assembly;
+}
+
+extern "C" void cil2cpp_set_runtime_assembly_type_info(cil2cpp::TypeInfo* ti) {
+    s_runtime_assembly_ti = ti;
 }
 
 // SafeHandle field layout — struct access instead of raw pointer arithmetic
@@ -748,6 +757,30 @@ extern "C" bool System_Reflection_MethodBase_get_IsStatic(void* __this) {
 extern "C" bool System_Reflection_MethodBase_get_IsFinal(void* __this) {
     auto* ni = _get_native_mi(__this);
     return ni && cil2cpp::metadata::method_is_final(ni->flags);
+}
+extern "C" bool System_Reflection_MethodBase_get_IsSpecialName(void* __this) {
+    auto* ni = _get_native_mi(__this);
+    return ni && cil2cpp::metadata::method_is_special_name(ni->flags);
+}
+extern "C" bool System_Reflection_MethodBase_get_IsHideBySig(void* __this) {
+    auto* ni = _get_native_mi(__this);
+    return ni && cil2cpp::metadata::method_is_hide_by_sig(ni->flags);
+}
+extern "C" bool System_Reflection_MethodBase_get_IsPrivate(void* __this) {
+    auto* ni = _get_native_mi(__this);
+    return ni && cil2cpp::metadata::method_is_private(ni->flags);
+}
+extern "C" bool System_Reflection_MethodBase_get_IsFamily(void* __this) {
+    auto* ni = _get_native_mi(__this);
+    return ni && cil2cpp::metadata::method_is_family(ni->flags);
+}
+extern "C" bool System_Reflection_MethodBase_get_IsFamilyOrAssembly(void* __this) {
+    auto* ni = _get_native_mi(__this);
+    return ni && cil2cpp::metadata::method_is_family_or_assembly(ni->flags);
+}
+extern "C" bool System_Reflection_MethodBase_get_IsFamilyAndAssembly(void* __this) {
+    auto* ni = _get_native_mi(__this);
+    return ni && cil2cpp::metadata::method_is_family_and_assembly(ni->flags);
 }
 extern "C" System_RuntimeMethodHandle System_Reflection_MethodBase_get_MethodHandle(void* __this) {
     auto* ni = _get_native_mi(__this);
@@ -2366,7 +2399,9 @@ extern "C" void* System_Type_MakeGenericType(void* __this, cil2cpp::Array* typeA
     auto arg_count = cil2cpp::array_length(typeArguments);
     auto** args = reinterpret_cast<cil2cpp::Type**>(cil2cpp::array_data(typeArguments));
 
-    // Determine if full_name is in C++ format (underscores) or IL format (dots with backtick)
+    // Determine if full_name is in C++ format (underscores) or IL format (dots with backtick).
+    // The compiler emits the open generic definition's TypeInfo for ldtoken typeof(IList<>),
+    // so full_name is already the open type name (e.g., "System.Collections.Generic.IList`1").
     std::string base_name;
     if (std::strchr(def_name, '.') != nullptr || std::strchr(def_name, '`') != nullptr) {
         base_name = def_name; // Already in IL format

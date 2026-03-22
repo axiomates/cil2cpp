@@ -1059,9 +1059,11 @@ public class ReachabilityAnalyzer
         // LINQ Expression trees — the tree node types (LambdaExpression, MemberExpression,
         // etc.) are data structures that work in AOT. Libraries like FluentValidation use
         // them to inspect lambda structure (member names, property paths) without JIT.
-        // Only the Interpreter and Compiler sub-namespaces are JIT-dependent.
-        if (typeFullName.StartsWith("System.Linq.Expressions.Interpreter.")
-            || typeFullName.StartsWith("System.Linq.Expressions.Compiler."))
+        // The Compiler sub-namespace (LambdaCompiler) uses Reflection.Emit — JIT-only.
+        // The Interpreter sub-namespace (LightCompiler, LightDelegateCreator) provides
+        // AOT-compatible expression tree interpretation via EmitMethodCall redirect
+        // (LambdaCompiler.Compile → LightCompiler.CompileTop → CreateDelegate).
+        if (typeFullName.StartsWith("System.Linq.Expressions.Compiler."))
             return true;
 
         // REMOVED: System.Xml.Serialization — not AOT-incompatible, NativeAOT supports it.
@@ -1078,9 +1080,15 @@ public class ReachabilityAnalyzer
         // DynamicObject, ExpandoObject, CallSite etc. are JIT-only.
         // Exception: IDynamicMetaObjectProvider is used by Newtonsoft.Json for type checking
         // in CreateContract (isinst check to decide contract type, not actual DLR usage).
+        // Exception: System.Dynamic.Utils.* are expression tree utilities (TypeExtensions,
+        // ExpressionUtils, ContractUtils, etc.) used by System.Linq.Expressions internals.
+        // They are NOT DLR-dependent — filtering them cascades to 247+ stubbed Expression
+        // tree methods, breaking libraries like FluentValidation.
         if (typeFullName.StartsWith("System.Dynamic."))
         {
             if (typeFullName == "System.Dynamic.IDynamicMetaObjectProvider")
+                return false;
+            if (typeFullName.StartsWith("System.Dynamic.Utils."))
                 return false;
             return true;
         }

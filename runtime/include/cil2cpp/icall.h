@@ -95,6 +95,12 @@ Boolean MethodBase_get_IsConstructor(void* __this);
 Object* MethodInfo_CreateDelegate(void* __this, void* delegateType);
 Boolean MethodBase_get_IsAssembly(void* __this);
 Boolean MethodBase_get_IsFinal(void* __this);
+Boolean MethodBase_get_IsSpecialName(void* __this);
+Boolean MethodBase_get_IsHideBySig(void* __this);
+Boolean MethodBase_get_IsPrivate(void* __this);
+Boolean MethodBase_get_IsFamily(void* __this);
+Boolean MethodBase_get_IsFamilyOrAssembly(void* __this);
+Boolean MethodBase_get_IsFamilyAndAssembly(void* __this);
 Boolean FieldInfo_get_IsPublic(void* __this);
 Boolean FieldInfo_get_IsPrivate(void* __this);
 Boolean FieldInfo_get_IsInitOnly(void* __this);
@@ -234,6 +240,10 @@ Boolean RuntimeHelpers_ObjectHasComponentSize(Object* obj);
 // System.Runtime.CompilerServices.RuntimeFeature (AOT: no dynamic code)
 Boolean RuntimeFeature_get_IsDynamicCodeSupported();
 Boolean RuntimeFeature_get_IsDynamicCodeCompiled();
+
+// System.Dynamic.Utils.DelegateHelpers — AOT-compatible object array delegate creation
+Boolean DelegateHelpers_get_CanEmitObjectArrayDelegate();
+void* DelegateHelpers_CreateObjectArrayDelegateRefEmit(void* delegate_type, void* handler);
 
 // System.Runtime.InteropServices.GCHandle
 intptr_t GCHandle_InternalAlloc(void* obj, Int32 type);

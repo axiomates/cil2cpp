@@ -789,6 +789,7 @@ public partial class IRBuilder
                 // Use ResolveTypeForDecl (not GetCppTypeForDecl) to leverage _typeCache
                 // for correct value type detection, especially for ref parameters (& → *)
                 ReturnTypeCpp = ResolveTypeForDecl(returnTypeName),
+                ReturnType = _typeCache.GetValueOrDefault(returnTypeName),
                 IsStatic = cecilMethod.IsStatic,
                 IsVirtual = cecilMethod.IsVirtual,
                 IsAbstract = cecilMethod.IsAbstract,
@@ -2324,6 +2325,7 @@ public partial class IRBuilder
                 CppName = methodCppName,
                 DeclaringType = irType,
                 ReturnTypeCpp = ResolveTypeForDecl(returnTypeName),
+                ReturnType = _typeCache.GetValueOrDefault(returnTypeName),
                 IsStatic = methodDef.IsStatic,
                 IsVirtual = methodDef.IsVirtual,
                 IsAbstract = methodDef.IsAbstract,
@@ -2331,6 +2333,9 @@ public partial class IRBuilder
                 IsStaticConstructor = methodDef.IsConstructor && methodDef.IsStatic,
                 DeadCodeCategory = ClassifyMethodDeadCode(methodDef),
             };
+
+            // Propagate raw ECMA-335 MethodAttributes for reflection
+            irMethod.Attributes = (uint)methodDef.Attributes;
 
             // Propagate explicit interface overrides (.override directive)
             if (methodDef.HasOverrides)
@@ -2429,7 +2434,7 @@ public partial class IRBuilder
 
                 if (shouldCompile)
                 {
-                    if (HasClrInternalDependencies(methodDef))
+                    if (HasClrInternalDependencies(methodDef, out var clrDepReason))
                     {
                         GenerateStubBody(irMethod);
                     }
@@ -2439,13 +2444,16 @@ public partial class IRBuilder
                             new Dictionary<string, string>(typeParamMap)));
                     }
                 }
-                else if (!methodDef.IsConstructor && !methodDef.IsAbstract
-                         && !HasClrInternalDependencies(methodDef))
+                else if (!methodDef.IsConstructor && !methodDef.IsAbstract)
                 {
                     // Include both reachable and non-reachable methods for recovery.
                     // Non-reachable private methods (e.g., AddWithResize, Grow) may be
                     // discovered as needed by EnsureBodyReferencedTypesExist during the
                     // fixpoint loop in ConvertDeferredGenericBodies.
+                    // NOTE: Methods with CLR internal deps are also tracked — when recovered,
+                    // RecoverSkippedSpecializedMethods generates a stub for them. Without
+                    // tracking, they'd have no body at all (not even a stub), causing
+                    // FindFirstUndeclaredCall cascades when callers reference them.
                     var skipKey = GetSpecializedMethodKey(
                         info.OpenTypeName, info.TypeArguments, methodDef);
                     _skippedSpecializedMethods.Add((skipKey, methodDef, irMethod,
@@ -3099,6 +3107,23 @@ public partial class IRBuilder
         var declaringType = elementMethod.DeclaringType.FullName;
         var methodName = elementMethod.Name;
 
+        // Resolve the declaring type's generic parameters when it contains unresolved params.
+        // E.g., AbstractValidator`1<T>::<RuleFor>b__24_0<TProperty> called from RuleFor<string>
+        // on AbstractValidator<Person>: resolve T→Person to get AbstractValidator`1<Person>
+        // so ProcessGenericMethodSpecialization can find it in _typeCache.
+        if (elementMethod.DeclaringType is GenericInstanceType declGit
+            && declGit.GenericArguments.Any(ContainsGenericParameter))
+        {
+            var resolvedDeclArgs = new List<string>();
+            foreach (var da in declGit.GenericArguments)
+            {
+                var resolved = ResolveTypeArgument(da, nameMap);
+                if (resolved == null) return; // Can't fully resolve
+                resolvedDeclArgs.Add(resolved);
+            }
+            declaringType = $"{declGit.ElementType.FullName}<{string.Join(",", resolvedDeclArgs)}>";
+        }
+
         // Build resolved typeParamMap for param sig resolution.
         // This ensures the key matches what EmitMethodCall computes (which also resolves via _activeTypeParamMap).
         var resolvedTypeParamMap = new Dictionary<string, string>(nameMap);
@@ -3134,14 +3159,19 @@ public partial class IRBuilder
         // Disambiguate mangled name if another overload already uses it
         if (_genericMethodInstantiations.Values.Any(v => v.MangledName == mangledName))
         {
-            var typeParamMap = new Dictionary<string, string>();
+            // Start from nameMap which has resolved type params (e.g., TResult=HealthCheckResult).
+            // Raw Cecil GenericInstanceType args may still be unresolved GenericParameter names.
+            var typeParamMap = new Dictionary<string, string>(nameMap);
 
-            // Add declaring type's generic params from Cecil's GenericInstanceType
+            // Add declaring type's generic params from Cecil's GenericInstanceType (if not already in nameMap)
             if (elementMethod.DeclaringType is GenericInstanceType git2 && cecilMethod.DeclaringType.HasGenericParameters)
             {
                 var typeGenericParams = cecilMethod.DeclaringType.GenericParameters;
                 for (int i = 0; i < typeGenericParams.Count && i < git2.GenericArguments.Count; i++)
-                    typeParamMap[typeGenericParams[i].Name] = git2.GenericArguments[i].FullName;
+                {
+                    if (!typeParamMap.ContainsKey(typeGenericParams[i].Name))
+                        typeParamMap[typeGenericParams[i].Name] = git2.GenericArguments[i].FullName;
+                }
             }
 
             // Add method-level generic params
@@ -3930,6 +3960,94 @@ public partial class IRBuilder
                 // (e.g., "_TKey_" → "_System_String_" in "Dictionary_2_Entry_1_TKey_TValue")
                 if (mangledResolvedMap.Count > 0)
                     ResolveMangledGenericParams(instr, mangledResolvedMap);
+            }
+        }
+
+        // Post-pass: fix Nullable<T> box/unbox.any instructions that were originally
+        // compiled as generic (box !!T / unbox.any !!T) and now resolved to Nullable types.
+        // ECMA-335 III.4.1: box Nullable<T> → hasValue ? box(inner T) : null
+        // ECMA-335 III.4.33: unbox.any Nullable<T> → null ? default : { hasValue=true, value=unbox<T>(obj) }
+        FixNullableBoxUnboxInSpecialization(irMethod);
+    }
+
+    /// <summary>
+    /// Mangled C++ names for primitives used in Nullable box/unbox template arguments.
+    /// Maps mangled IL name → C++ box template type. Non-primitives use their mangled name as-is.
+    /// </summary>
+    private static readonly Dictionary<string, string> MangledPrimitiveBoxType = new()
+    {
+        ["System_Boolean"] = "bool",
+        ["System_Byte"] = "uint8_t",
+        ["System_SByte"] = "int8_t",
+        ["System_Int16"] = "int16_t",
+        ["System_UInt16"] = "uint16_t",
+        ["System_Int32"] = "int32_t",
+        ["System_UInt32"] = "uint32_t",
+        ["System_Int64"] = "int64_t",
+        ["System_UInt64"] = "uint64_t",
+        ["System_Single"] = "float",
+        ["System_Double"] = "double",
+        ["System_Char"] = "char16_t",
+        ["System_IntPtr"] = "intptr_t",
+        ["System_UIntPtr"] = "uintptr_t",
+    };
+
+    private const string NullableMangledPrefix = "System_Nullable_1_";
+
+    /// <summary>
+    /// After generic param resolution, IRBox/IRUnbox instructions that were originally
+    /// "box !!T" / "unbox.any !!T" may now target Nullable&lt;U&gt;. The CLR has special
+    /// semantics for these (ECMA-335 III.4.1 / III.4.33) that weren't applied during
+    /// initial IL compilation because T was still a generic parameter.
+    /// This post-pass detects resolved Nullable types and replaces the instructions.
+    /// </summary>
+    private static void FixNullableBoxUnboxInSpecialization(IRMethod irMethod)
+    {
+        foreach (var block in irMethod.BasicBlocks)
+        {
+            for (int i = 0; i < block.Instructions.Count; i++)
+            {
+                switch (block.Instructions[i])
+                {
+                    case IRBox box when box.ValueTypeCppName.StartsWith(NullableMangledPrefix):
+                    {
+                        // ECMA-335 III.4.1: box Nullable<T> → hasValue ? box(inner T) : null
+                        var innerMangled = box.ValueTypeCppName[NullableMangledPrefix.Length..];
+                        var innerBoxType = MangledPrimitiveBoxType.TryGetValue(innerMangled, out var prim)
+                            ? prim : innerMangled;
+                        block.Instructions[i] = new IRRawCpp
+                        {
+                            Code = $"{box.ResultVar} = {box.ValueExpr}.f_hasValue"
+                                + $" ? (cil2cpp::Object*)cil2cpp::box<{innerBoxType}>({box.ValueExpr}.f_value, &{innerMangled}_TypeInfo)"
+                                + $" : nullptr;",
+                            ResultVar = box.ResultVar,
+                            ResultTypeCpp = "cil2cpp::Object*",
+                        };
+                        break;
+                    }
+
+                    case IRUnbox unbox when unbox.IsUnboxAny
+                        && unbox.ValueTypeCppName.StartsWith(NullableMangledPrefix):
+                    {
+                        // ECMA-335 III.4.33: unbox.any Nullable<T> →
+                        //   null → Nullable<T>{ hasValue=false, value=default }
+                        //   boxed T → Nullable<T>{ hasValue=true, value=unbox<T>(obj) }
+                        var innerMangled = unbox.ValueTypeCppName[NullableMangledPrefix.Length..];
+                        var innerUnboxType = MangledPrimitiveBoxType.TryGetValue(innerMangled, out var prim)
+                            ? prim : innerMangled;
+                        var nullableCpp = unbox.ValueTypeCppName;
+                        block.Instructions[i] = new IRRawCpp
+                        {
+                            Code = $"{nullableCpp} {unbox.ResultVar} = {{0}}; "
+                                + $"if ({unbox.ObjectExpr}) {{ {unbox.ResultVar}.f_hasValue = true; "
+                                + $"{unbox.ResultVar}.f_value = cil2cpp::unbox<{innerUnboxType}>"
+                                + $"(reinterpret_cast<cil2cpp::Object*>({unbox.ObjectExpr})); }}",
+                            ResultVar = unbox.ResultVar,
+                            ResultTypeCpp = nullableCpp,
+                        };
+                        break;
+                    }
+                }
             }
         }
     }

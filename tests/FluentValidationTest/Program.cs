@@ -1,4 +1,5 @@
 using System;
+using System.Globalization;
 using FluentValidation;
 
 // Simple model classes
@@ -24,6 +25,11 @@ class Program
 {
     static void Main()
     {
+        // Force invariant culture so FluentValidation's LanguageManager uses English
+        // default messages regardless of system locale. AOT runtime doesn't detect
+        // system UI culture, so C++ always produces English — match that here.
+        CultureInfo.DefaultThreadCurrentUICulture = CultureInfo.InvariantCulture;
+
         var validator = new PersonValidator();
 
         // [1] Valid person

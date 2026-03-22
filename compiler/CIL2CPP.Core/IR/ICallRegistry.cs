@@ -389,6 +389,15 @@ public static class ICallRegistry
         RegisterICall("System.Runtime.CompilerServices.RuntimeFeature", "get_IsDynamicCodeCompiled", 0,
             "cil2cpp::icall::RuntimeFeature_get_IsDynamicCodeCompiled");
 
+        // ===== System.Dynamic.Utils.DelegateHelpers =====
+        // Desktop BCL hardcodes CanEmitObjectArrayDelegate=true (#if FEATURE_COMPILE).
+        // We keep TRUE so the DynamicDelegateLightup lambda path is taken.
+        // CreateObjectArrayDelegateRefEmit is replaced by our AOT-compatible ICall implementation.
+        RegisterICall("System.Dynamic.Utils.DelegateHelpers", "get_CanEmitObjectArrayDelegate", 0,
+            "cil2cpp::icall::DelegateHelpers_get_CanEmitObjectArrayDelegate"); // returns true
+        RegisterICall("System.Dynamic.Utils.DelegateHelpers", "CreateObjectArrayDelegateRefEmit", 2,
+            "cil2cpp::icall::DelegateHelpers_CreateObjectArrayDelegateRefEmit");
+
         // ===== System.Text.Unicode.Utf8Utility =====
         // These BCL methods use SIMD intrinsics (SSE2/AVX2) which our codegen can't compile.
         // Scalar C++ implementations provided in runtime/src/icall/unicode_utility.cpp.
@@ -809,6 +818,18 @@ public static class ICallRegistry
             "cil2cpp::icall::MethodBase_get_IsConstructor");
         RegisterICall("System.Reflection.MethodBase", "get_IsAssembly", 0,
             "cil2cpp::icall::MethodBase_get_IsAssembly");
+        RegisterICall("System.Reflection.MethodBase", "get_IsSpecialName", 0,
+            "cil2cpp::icall::MethodBase_get_IsSpecialName");
+        RegisterICall("System.Reflection.MethodBase", "get_IsHideBySig", 0,
+            "cil2cpp::icall::MethodBase_get_IsHideBySig");
+        RegisterICall("System.Reflection.MethodBase", "get_IsPrivate", 0,
+            "cil2cpp::icall::MethodBase_get_IsPrivate");
+        RegisterICall("System.Reflection.MethodBase", "get_IsFamily", 0,
+            "cil2cpp::icall::MethodBase_get_IsFamily");
+        RegisterICall("System.Reflection.MethodBase", "get_IsFamilyOrAssembly", 0,
+            "cil2cpp::icall::MethodBase_get_IsFamilyOrAssembly");
+        RegisterICall("System.Reflection.MethodBase", "get_IsFamilyAndAssembly", 0,
+            "cil2cpp::icall::MethodBase_get_IsFamilyAndAssembly");
         RegisterICall("System.Reflection.MethodInfo", "CreateDelegate", 1,
             "cil2cpp::icall::MethodInfo_CreateDelegate");
         RegisterICall("System.Type", "get_IsNestedAssembly", 0,

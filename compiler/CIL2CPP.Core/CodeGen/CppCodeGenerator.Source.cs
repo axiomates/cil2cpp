@@ -385,6 +385,14 @@ public partial class CppCodeGenerator
         // This is standard IL2CPP architecture — runtime provides struct layout, codegen provides vtables.
         EmitRuntimeVTablePatching(sb, needsStringAlias, needsObjectAlias);
 
+        // BCL resource strings extracted from assembly embedded resources at compile time.
+        // Registered with the runtime so SR.GetResourceString can look them up.
+        EmitResourceStringTable(sb);
+
+        // Compiler-generated trampolines for CreateObjectArrayDelegate (expression tree interpreter).
+        // Each Func<>/Action<> delegate type gets a trampoline registered at init time.
+        EmitObjectArrayDelegateTrampolines(sb);
+
         return new GeneratedFile
         {
             FileName = $"{_module.Name}_data.cpp",
@@ -815,13 +823,6 @@ public partial class CppCodeGenerator
 
     private void GenerateTypeInfo(StringBuilder sb, IRType type)
     {
-        // For delegate types skipped by EmitReflectionMetadata, emit type-level custom attrs
-        // (Enum types now go through EmitReflectionMetadata for full field metadata)
-        if (type.IsDelegate && type.CustomAttributes.Count > 0)
-        {
-            EmitAttributeInfoArray(sb, $"{type.CppName}_custom_attrs", type.CustomAttributes);
-        }
-
         var baseName = type.BaseType != null ? $"&{type.BaseType.CppName}_TypeInfo" : "nullptr";
 
         // Flags (needed by both full and minimal)
@@ -963,12 +964,12 @@ public partial class CppCodeGenerator
         var reflectableProperties = type.Properties;
         var reflectionTargets = _module.ReflectionTargetTypes;
         // Field/method metadata: gated by reflection targets + enum types
-        var skipFieldMethodReflection = type.IsDelegate || type.IsRuntimeProvided
+        var skipFieldMethodReflection = type.IsRuntimeProvided
             || CppNameMapper.IsRuntimeExceptionType(type.ILFullName)
             || (allFields.Count == 0 && reflectableMethods.Count == 0)
-            || (!type.IsEnum && reflectionTargets.Count > 0 && !reflectionTargets.Contains(type.ILFullName));
+            || (!type.IsEnum && !type.IsDelegate && reflectionTargets.Count > 0 && !reflectionTargets.Contains(type.ILFullName));
         // Property metadata: always emitted for non-runtime types with properties
-        var skipPropertyReflection = type.IsDelegate || type.IsRuntimeProvided
+        var skipPropertyReflection = type.IsRuntimeProvided
             || CppNameMapper.IsRuntimeExceptionType(type.ILFullName)
             || reflectableProperties.Count == 0;
         var skipReflection = skipFieldMethodReflection && skipPropertyReflection;
@@ -2428,13 +2429,14 @@ public partial class CppCodeGenerator
 
         foreach (var type in userTypes)
         {
-            if (type.IsRuntimeProvided || type.IsDelegate) continue;
+            if (type.IsRuntimeProvided) continue;
             if (CppNameMapper.IsRuntimeExceptionType(type.ILFullName)) continue;
             // Deduplicate — BCL proxies may appear multiple times
             if (!emittedReflection.Add(type.CppName)) continue;
 
             // Field/method metadata: gated by reflection targets + enum types
-            var skipFieldMethod = !type.IsEnum
+            // Delegate types always get method metadata (Invoke needed for expression trees)
+            var skipFieldMethod = !type.IsEnum && !type.IsDelegate
                 && reflectionTargets.Count > 0 && !reflectionTargets.Contains(type.ILFullName);
             // Property metadata: always emitted for types with properties
             var reflectableProperties = type.Properties;
@@ -3268,6 +3270,175 @@ public partial class CppCodeGenerator
         cppType is "cil2cpp::String*";
 
     /// <summary>
+    /// Emit the resource string table and __init_resource_strings() registration.
+    /// The table contains BCL resource key-value pairs extracted from assembly embedded resources
+    /// at compile time. The runtime SR_GetResourceString uses this table for lookups.
+    /// </summary>
+    private void EmitResourceStringTable(StringBuilder sb)
+    {
+        sb.AppendLine("// ===== BCL Resource Strings (compiler-extracted) =====");
+        sb.AppendLine("extern \"C\" void cil2cpp_register_resource_strings(const char* const (*entries)[2], int count);");
+
+        if (_module.ResourceStrings.Count > 0)
+        {
+            sb.AppendLine($"static const char* const __resource_strings[][2] = {{");
+            foreach (var (key, value) in _module.ResourceStrings.OrderBy(kv => kv.Key))
+            {
+                var escapedKey = EscapeCppString(key);
+                var escapedValue = EscapeCppString(value);
+                sb.AppendLine($"    {{\"{escapedKey}\", \"{escapedValue}\"}},");
+            }
+            sb.AppendLine("};");
+            sb.AppendLine($"void __init_resource_strings() {{ cil2cpp_register_resource_strings(__resource_strings, {_module.ResourceStrings.Count}); }}");
+        }
+        else
+        {
+            sb.AppendLine("void __init_resource_strings() {}");
+        }
+        sb.AppendLine();
+    }
+
+    /// <summary>
+    /// Emit compiler-generated trampolines for CreateObjectArrayDelegate and
+    /// __init_delegate_trampolines() registration. Each trampoline converts typed
+    /// delegate parameters to object[] and invokes a Func&lt;object[], object&gt; handler.
+    /// Grouped by signature shape to avoid duplicate trampoline functions.
+    /// </summary>
+    private void EmitObjectArrayDelegateTrampolines(StringBuilder sb)
+    {
+        // Collect all Func<>/Action<> delegate types that have an Invoke method
+        var delegateTypes = _userTypes
+            .Where(t => t.IsDelegate && (
+                t.ILFullName.StartsWith("System.Func`") ||
+                t.ILFullName.StartsWith("System.Action`") ||
+                t.ILFullName == "System.Action"))
+            .Select(t => (Type: t, Invoke: t.Methods.FirstOrDefault(m => m.Name == "Invoke")))
+            .Where(x => x.Invoke != null)
+            .ToList();
+
+        sb.AppendLine("// ===== Object Array Delegate Trampolines (compiler-generated) =====");
+        sb.AppendLine("extern \"C\" void cil2cpp_register_delegate_trampoline(cil2cpp::TypeInfo*, void*);");
+
+        if (delegateTypes.Count == 0)
+        {
+            sb.AppendLine("void __init_delegate_trampolines() {}");
+            sb.AppendLine();
+            return;
+        }
+
+        // Helper: invoke handler delegate with object[] args
+        sb.AppendLine("static void* __invoke_oa_handler(cil2cpp::Object* handler, cil2cpp::Array* args) {");
+        sb.AppendLine("    auto* hdel = reinterpret_cast<cil2cpp::Delegate*>(handler);");
+        sb.AppendLine("    auto fn = reinterpret_cast<void*(*)(void*, cil2cpp::Array*)>(hdel->method_ptr);");
+        sb.AppendLine("    return fn(hdel->target, args);");
+        sb.AppendLine("}");
+        sb.AppendLine();
+
+        // Group by signature shape: ref-type params use "ref", value types use CppName
+        var trampolineGroups = new Dictionary<string, (string FuncName, IRMethod Invoke)>();
+        var typeToTrampoline = new List<(IRType Type, string FuncName)>();
+        int trampolineIndex = 0;
+
+        foreach (var (dt, invoke) in delegateTypes)
+        {
+            var sigKey = BuildTrampolineSignatureKey(invoke!);
+
+            if (!trampolineGroups.ContainsKey(sigKey))
+            {
+                var funcName = $"__delegate_trampoline_{trampolineIndex++}";
+                trampolineGroups[sigKey] = (funcName, invoke!);
+                EmitSingleTrampoline(sb, funcName, invoke!);
+            }
+            typeToTrampoline.Add((dt, trampolineGroups[sigKey].FuncName));
+        }
+
+        // Registration function
+        sb.AppendLine("void __init_delegate_trampolines() {");
+        foreach (var (dt, funcName) in typeToTrampoline)
+        {
+            sb.AppendLine($"    cil2cpp_register_delegate_trampoline(&{dt.CppName}_TypeInfo, (void*){funcName});");
+        }
+        sb.AppendLine("}");
+        sb.AppendLine();
+    }
+
+    /// <summary>
+    /// Build a signature key for grouping delegate trampolines.
+    /// Ref-type params share "ref", value-type params use their CppName (for correct boxing TypeInfo).
+    /// Return type is always "void" or "ptr" — the handler returns raw values for value types
+    /// (not boxed), so all non-void trampolines return void* to pass the raw value through.
+    /// </summary>
+    private static string BuildTrampolineSignatureKey(IRMethod invoke)
+    {
+        var parts = new List<string>();
+        foreach (var p in invoke.Parameters)
+        {
+            bool isVT = p.ParameterType?.IsValueType == true;
+            parts.Add(isVT ? (p.ParameterType!.CppName ?? p.CppTypeName) : "ref");
+        }
+        string retKey = invoke.ReturnTypeCpp == "void" ? "void" : "ptr";
+        return $"({string.Join(",", parts)})=>{retKey}";
+    }
+
+    /// <summary>
+    /// Emit a single trampoline function that packs typed delegate args into object[],
+    /// invokes the Func&lt;object[], object&gt; handler, and returns the result.
+    /// All non-void trampolines return void* because the LightLambda interpreter returns
+    /// raw values for value types (not boxed). The delegate invoke code handles the
+    /// return value interpretation through register truncation (RAX → EAX for int32, etc.).
+    /// </summary>
+    private static void EmitSingleTrampoline(StringBuilder sb, string funcName, IRMethod invoke)
+    {
+        // Build parameter list: first param is handler (Object*), rest are delegate params
+        // All reference-type params use void* since they're all pointer-sized and ABI-compatible
+        var paramList = new List<string> { "cil2cpp::Object* __handler" };
+        for (int i = 0; i < invoke.Parameters.Count; i++)
+        {
+            var p = invoke.Parameters[i];
+            bool isVT = p.ParameterType?.IsValueType == true;
+            string paramType = isVT ? p.CppTypeName : "void*";
+            paramList.Add($"{paramType} __arg{i}");
+        }
+
+        bool returnIsVoid = invoke.ReturnTypeCpp == "void";
+        string returnType = returnIsVoid ? "void" : "void*";
+
+        sb.AppendLine($"static {returnType} {funcName}({string.Join(", ", paramList)}) {{");
+        sb.AppendLine($"    auto* __arr = cil2cpp::array_create(&System_Object_TypeInfo, {invoke.Parameters.Count});");
+
+        if (invoke.Parameters.Count > 0)
+        {
+            sb.AppendLine("    auto** __data = static_cast<cil2cpp::Object**>(cil2cpp::array_data(__arr));");
+            for (int i = 0; i < invoke.Parameters.Count; i++)
+            {
+                var p = invoke.Parameters[i];
+                bool isVT = p.ParameterType?.IsValueType == true;
+                if (isVT)
+                {
+                    var tiName = p.ParameterType!.CppName + "_TypeInfo";
+                    sb.AppendLine($"    __data[{i}] = static_cast<cil2cpp::Object*>(cil2cpp::box<{p.CppTypeName}>(__arg{i}, &{tiName}));");
+                }
+                else
+                {
+                    sb.AppendLine($"    __data[{i}] = static_cast<cil2cpp::Object*>(__arg{i});");
+                }
+            }
+        }
+
+        if (returnIsVoid)
+        {
+            sb.AppendLine("    __invoke_oa_handler(__handler, __arr);");
+        }
+        else
+        {
+            sb.AppendLine("    return __invoke_oa_handler(__handler, __arr);");
+        }
+
+        sb.AppendLine("}");
+        sb.AppendLine();
+    }
+
+    /// <summary>
     /// Emit __init_runtime_vtables() — patches runtime built-in TypeInfos with codegen VTable
     /// and interface data. Must be emitted AFTER all VTable/interface data in the data file
     /// so that static variables are visible.
@@ -3284,6 +3455,10 @@ public partial class CppCodeGenerator
         if (!hasStringVTable && !needsStringAlias) return;
 
         sb.AppendLine("// ===== Runtime TypeInfo VTable Patching =====");
+        // Forward-declare extern "C" functions at file scope (MSVC disallows inside function bodies)
+        var runtimeAssemblyType = _userTypes.FirstOrDefault(t => t.ILFullName == "System.Reflection.RuntimeAssembly");
+        if (runtimeAssemblyType != null)
+            sb.AppendLine("extern \"C\" void cil2cpp_set_runtime_assembly_type_info(cil2cpp::TypeInfo*);");
         sb.AppendLine("void __init_runtime_vtables() {");
 
         // Register Task TypeInfo so runtime-created tasks (task_delay, etc.) have proper vtable
@@ -3345,6 +3520,25 @@ public partial class CppCodeGenerator
                 sb.Append(runtimePropInfoType != null ? $"&{runtimePropInfoType.CppName}_TypeInfo" : "nullptr");
                 sb.AppendLine(");");
             }
+
+            // Patch MethodBase/MethodInfo vtable slots for Equals/GetHashCode.
+            // MethodBase is ReflectionAliased — Equals/GetHashCode overrides never compiled.
+            var methodBaseType = _userTypes.FirstOrDefault(t => t.ILFullName == "System.Reflection.MethodBase");
+            if (methodBaseType != null || methodInfoType != null)
+            {
+                sb.Append("    cil2cpp::reflection_patch_method_vtables(");
+                sb.Append(methodBaseType != null ? $"&{methodBaseType.CppName}_TypeInfo" : "nullptr");
+                sb.Append(", ");
+                sb.Append(methodInfoType != null ? $"&{methodInfoType.CppName}_TypeInfo" : "nullptr");
+                sb.AppendLine(");");
+            }
+        }
+
+        // Set RuntimeAssembly TypeInfo for the singleton assembly object.
+        // BCL code casts Assembly → RuntimeAssembly; the singleton must use RuntimeAssembly's TypeInfo.
+        if (runtimeAssemblyType != null)
+        {
+            sb.AppendLine($"    cil2cpp_set_runtime_assembly_type_info(&{runtimeAssemblyType.CppName}_TypeInfo);");
         }
 
         // Patch exception TypeInfos with generated VTables.

@@ -590,6 +590,47 @@ void* RuntimeHelpers_GetObjectMethodTablePointer(Object* obj) {
 Boolean RuntimeFeature_get_IsDynamicCodeSupported() { return 0; }
 Boolean RuntimeFeature_get_IsDynamicCodeCompiled() { return 0; }
 
+// CanEmitObjectArrayDelegate returns true so the DynamicDelegateLightup lambda path is taken.
+// CreateObjectArrayDelegateRefEmit is then intercepted by our AOT implementation below.
+Boolean DelegateHelpers_get_CanEmitObjectArrayDelegate() { return 1; }
+
+// ===== Compiler-registered delegate trampolines =====
+// The compiler generates per-signature trampolines for all Func<>/Action<> delegate types
+// and registers them via cil2cpp_register_delegate_trampoline() at startup.
+// This replaces hardcoded runtime trampolines with compile-time generated ones.
+struct DelegateTrampolineEntry {
+    TypeInfo* type;
+    void* trampoline;
+};
+static DelegateTrampolineEntry* g_delegate_trampolines = nullptr;
+static int g_delegate_trampoline_count = 0;
+static int g_delegate_trampoline_capacity = 0;
+
+static void* lookup_delegate_trampoline(TypeInfo* ti) {
+    for (int i = 0; i < g_delegate_trampoline_count; i++) {
+        if (g_delegate_trampolines[i].type == ti)
+            return g_delegate_trampolines[i].trampoline;
+    }
+    return nullptr;
+}
+
+// AOT replacement for DelegateHelpers.CreateObjectArrayDelegateRefEmit.
+// Creates a typed delegate that wraps a Func<object[], object> handler.
+// The trampoline is looked up from the compiler-generated registration table.
+void* DelegateHelpers_CreateObjectArrayDelegateRefEmit(void* delegate_type_raw, void* handler_raw)
+{
+    auto* delegate_type = static_cast<cil2cpp::Type*>(delegate_type_raw);
+    auto* handler = static_cast<Delegate*>(handler_raw);
+    if (!delegate_type || !handler) return nullptr;
+    auto* ti = delegate_type->type_info;
+    if (!ti) return nullptr;
+
+    void* trampoline = lookup_delegate_trampoline(ti);
+    if (!trampoline) return nullptr;
+
+    return cil2cpp::delegate_create(ti, reinterpret_cast<Object*>(handler), trampoline);
+}
+
 Boolean RuntimeHelpers_ObjectHasComponentSize(Object* obj) {
     // In CLR, arrays and strings have "component size" > 0 in MethodTable.
     // We don't have MethodTable — detect arrays and strings structurally.
@@ -1018,6 +1059,36 @@ Boolean MethodBase_get_IsAssembly(void* __this) {
 Boolean MethodBase_get_IsFinal(void* __this) {
     auto* ni = get_native_method_info(__this);
     return ni && metadata::method_is_final(ni->flags);
+}
+
+Boolean MethodBase_get_IsSpecialName(void* __this) {
+    auto* ni = get_native_method_info(__this);
+    return ni && metadata::method_is_special_name(ni->flags);
+}
+
+Boolean MethodBase_get_IsHideBySig(void* __this) {
+    auto* ni = get_native_method_info(__this);
+    return ni && metadata::method_is_hide_by_sig(ni->flags);
+}
+
+Boolean MethodBase_get_IsPrivate(void* __this) {
+    auto* ni = get_native_method_info(__this);
+    return ni && metadata::method_is_private(ni->flags);
+}
+
+Boolean MethodBase_get_IsFamily(void* __this) {
+    auto* ni = get_native_method_info(__this);
+    return ni && metadata::method_is_family(ni->flags);
+}
+
+Boolean MethodBase_get_IsFamilyOrAssembly(void* __this) {
+    auto* ni = get_native_method_info(__this);
+    return ni && metadata::method_is_family_or_assembly(ni->flags);
+}
+
+Boolean MethodBase_get_IsFamilyAndAssembly(void* __this) {
+    auto* ni = get_native_method_info(__this);
+    return ni && metadata::method_is_family_and_assembly(ni->flags);
 }
 
 Boolean FieldInfo_get_IsPublic(void* __this) {
@@ -1482,3 +1553,20 @@ void* reflection_create_default_ctor(void* /*__this*/, void* type) {
 
 } // namespace icall
 } // namespace cil2cpp
+
+// Registration function called from generated __init_delegate_trampolines().
+// Each call registers one (TypeInfo* → trampoline) mapping for CreateObjectArrayDelegate.
+extern "C" void cil2cpp_register_delegate_trampoline(cil2cpp::TypeInfo* ti, void* trampoline) {
+    auto& count = cil2cpp::icall::g_delegate_trampoline_count;
+    auto& cap = cil2cpp::icall::g_delegate_trampoline_capacity;
+    auto*& table = cil2cpp::icall::g_delegate_trampolines;
+    if (count >= cap) {
+        int new_cap = cap == 0 ? 256 : cap * 2;
+        auto* new_table = static_cast<cil2cpp::icall::DelegateTrampolineEntry*>(
+            std::realloc(table, new_cap * sizeof(cil2cpp::icall::DelegateTrampolineEntry)));
+        if (!new_table) return;
+        table = new_table;
+        cap = new_cap;
+    }
+    table[count++] = {ti, trampoline};
+}

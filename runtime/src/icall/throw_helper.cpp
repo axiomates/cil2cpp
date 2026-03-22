@@ -10,6 +10,7 @@
 #include <cil2cpp/exception.h>
 #include <cil2cpp/string.h>
 #include <cil2cpp/gc.h>
+#include <cstring>
 
 namespace cil2cpp {
 
@@ -252,10 +253,31 @@ cil2cpp::Object* ThrowHelper_GetInvalidOperationException(Int32 resource) {
     return reinterpret_cast<Object*>(ex);
 }
 
-// AOT: SR.GetResourceString / SR.InternalGetResourceString — return the key directly
-// instead of going through ResourceManager which triggers CultureInfo initialization cycles.
+// ===== SR resource string lookup =====
+// The resource string table is compiler-generated from assembly embedded resources and
+// registered at startup via cil2cpp_register_resource_strings(). This replaces the old
+// hardcoded table — the compiler extracts only the keys actually referenced in compiled code.
+static const char* const (*g_sr_strings)[2] = nullptr;
+static int g_sr_strings_count = 0;
+
+// AOT: SR.GetResourceString / SR.InternalGetResourceString — look up BCL resource keys
+// in the compiler-generated table. Falls back to returning the key itself if not found.
 cil2cpp::String* SR_GetResourceString(cil2cpp::String* key) {
-    return key;
+    if (!key) return key;
+    auto key_len = string_length(key);
+    // Convert to narrow string for comparison (resource keys are ASCII)
+    char narrow[256];
+    int narrow_len = key_len < 255 ? key_len : 255;
+    for (int i = 0; i < narrow_len; i++)
+        narrow[i] = static_cast<char>(key->chars[i]);
+    narrow[narrow_len] = '\0';
+    // Linear scan (table is small, called infrequently)
+    for (int i = 0; i < g_sr_strings_count; i++) {
+        if (std::strcmp(narrow, g_sr_strings[i][0]) == 0) {
+            return string_create_utf8(g_sr_strings[i][1]);
+        }
+    }
+    return key; // Fallback: return the key name itself
 }
 
 cil2cpp::String* ThrowHelper_GetResourceString(Int32 resource) {
@@ -274,3 +296,10 @@ cil2cpp::String* ThrowHelper_GetArgumentName(Int32 argument) {
 
 } // namespace icall
 } // namespace cil2cpp
+
+// Registration function called from generated __init_resource_strings().
+// Receives the compiler-extracted resource string table.
+extern "C" void cil2cpp_register_resource_strings(const char* const (*entries)[2], int count) {
+    cil2cpp::icall::g_sr_strings = entries;
+    cil2cpp::icall::g_sr_strings_count = count;
+}

@@ -2536,32 +2536,10 @@ def cmd_integration(args):
         if r.returncode != 0:
             raise RuntimeError(f"TodoManager exited with code {r.returncode}\nstderr: {r.stderr}")
         got = r.stdout.strip()
-        # Known BCL limitations cause 3 diffs vs .NET reference:
-        #   - Test [6]: resource string loading → "(unknown resource)" (4 lines collapsed to 1)
-        #   - Test [9]: DateTime custom format string not applied
-        #   - Test [10]: DateTime custom format string not applied
-        # Verify: exit code 0, starts with test [1], ends with completion marker,
-        # and key test outputs are present.
-        if "=== TodoManager complete ===" not in got:
-            raise RuntimeError(f"Missing completion marker in output:\n{got[-200:]}")
-        # Count how many tests produced output (tests [1]-[20])
-        import re
-        test_nums = set(int(m.group(1)) for m in re.finditer(r'^\[(\d+)\]', got, re.MULTILINE))
-        if len(test_nums) < 18:
-            raise RuntimeError(f"Only {len(test_nums)} test outputs found (expected ≥18): {sorted(test_nums)}")
-        # Verify key outputs from various test categories
-        checks = [
-            ("[1] Created 10 todos: PASS", "Test 1 creation"),
-            ("Guard validation", "Test 2 guard clauses"),
-            ("Custom exceptions", "Test 3 custom exceptions"),
-            ("Priority map:", "Test 15 priority map (EnumComparer fix)"),
-            ("Manual serial:", "Test 20 manual serialization"),
-            ("=== TodoManager complete ===", "Completion marker"),
-        ]
-        for pattern, desc in checks:
-            if pattern not in got:
-                raise RuntimeError(f"Missing output for {desc}: '{pattern}' not found")
-        print(f"    Output OK: {len(test_nums)} tests, {len(got.splitlines())} lines")
+        expected = dotnet_todo_output.strip()
+        if got != expected:
+            raise RuntimeError(
+                f"Output mismatch!\n  Got:      {repr(got[:200])}\n  Expected: {repr(expected[:200])}")
 
     runner.step("Get .NET reference output", todo_dotnet_run)
     runner.step("Codegen TodoManager", todo_codegen)
@@ -2626,6 +2604,63 @@ def cmd_integration(args):
     runner.step("CMake configure", hc_cmake_configure)
     runner.step(f"CMake build ({config})", hc_cmake_build)
     runner.step("Run and compare C++ vs .NET output", hc_run_verify)
+
+    # ===== Phase 33: FluentValidationTest (FluentValidation NuGet — expression tree compilation) =====
+    header("Phase 33: FluentValidationTest (FluentValidation 11.11.0 - expression trees)")
+    runner.begin_phase("FluentValidationTest")
+
+    fv_sample = TESTPROJECTS_DIR / "FluentValidationTest" / "FluentValidationTest.csproj"
+    fv_output = temp_dir / "fv_output"
+    fv_build = temp_dir / "fv_build"
+
+    dotnet_fv_output = None
+
+    def fv_dotnet_run():
+        nonlocal dotnet_fv_output
+        dotnet_fv_output = _get_dotnet_output(fv_sample)
+        print(f"    .NET output: {repr(dotnet_fv_output[:200])}")
+
+    def fv_codegen():
+        run(["dotnet", "run", "--project", str(CLI_PROJECT), "--",
+             "codegen", "-i", str(fv_sample), "-o", str(fv_output)],
+            capture=True)
+
+    def fv_files_exist():
+        for f in ["FluentValidationTest.h", "FluentValidationTest_data.cpp",
+                   "FluentValidationTest_stubs.cpp", "main.cpp", "CMakeLists.txt"]:
+            if not (fv_output / f).exists():
+                raise RuntimeError(f"Missing: {f}")
+        runner.record_metric("lines", count_cpp_lines(fv_output))
+
+    def fv_cmake_configure():
+        run(["cmake", "-B", str(fv_build), "-S", str(fv_output),
+             "-G", generator, *cmake_arch,
+             f"-DCMAKE_PREFIX_PATH={runtime_prefix}"],
+            capture=True)
+
+    def fv_cmake_build():
+        return _cmake_build_with_diagnostics(fv_build, config)
+
+    def fv_run_verify():
+        exe = _exe_path(fv_build, config, "FluentValidationTest")
+        if not exe.exists():
+            raise RuntimeError(f"Executable not found: {exe}")
+        r = subprocess.run([str(exe)], capture_output=True, text=True, check=False,
+                           encoding="utf-8", errors="replace")
+        if r.returncode != 0:
+            raise RuntimeError(f"FluentValidationTest exited with code {r.returncode}\nstderr: {r.stderr}")
+        got = r.stdout.strip()
+        expected = dotnet_fv_output.strip()
+        if got != expected:
+            raise RuntimeError(
+                f"Output mismatch:\n  Got:      {repr(got[:300])}\n  Expected: {repr(expected[:300])}")
+
+    runner.step("Get .NET reference output", fv_dotnet_run)
+    runner.step("Codegen FluentValidationTest", fv_codegen)
+    runner.step("Generated files exist", fv_files_exist)
+    runner.step("CMake configure", fv_cmake_configure)
+    runner.step(f"CMake build ({config})", fv_cmake_build)
+    runner.step("Run and compare C++ vs .NET output", fv_run_verify)
 
     # ===== Cleanup =====
     header("Cleanup")

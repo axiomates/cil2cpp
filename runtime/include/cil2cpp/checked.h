@@ -56,7 +56,7 @@ auto checked_mul(T1 a_, T2 b_) {
             if (a < std::numeric_limits<T>::max() / b) throw_overflow();
         }
     }
-    return a * b;
+    return static_cast<T>(a * b);
 }
 
 // Unsigned checked arithmetic

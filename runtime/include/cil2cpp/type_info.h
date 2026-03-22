@@ -169,6 +169,28 @@ inline bool method_is_abstract(UInt32 flags) {
 inline bool method_is_final(UInt32 flags) {
     return (flags & static_cast<UInt32>(MethodAttributeFlags::Final)) != 0;
 }
+inline bool method_is_special_name(UInt32 flags) {
+    return (flags & static_cast<UInt32>(MethodAttributeFlags::SpecialName)) != 0;
+}
+inline bool method_is_hide_by_sig(UInt32 flags) {
+    return (flags & static_cast<UInt32>(MethodAttributeFlags::HideBySig)) != 0;
+}
+inline bool method_is_private(UInt32 flags) {
+    return (flags & static_cast<UInt32>(MethodAttributeFlags::MemberAccessMask))
+        == static_cast<UInt32>(MethodAttributeFlags::Private);
+}
+inline bool method_is_family(UInt32 flags) {
+    return (flags & static_cast<UInt32>(MethodAttributeFlags::MemberAccessMask))
+        == static_cast<UInt32>(MethodAttributeFlags::Family);
+}
+inline bool method_is_family_or_assembly(UInt32 flags) {
+    return (flags & static_cast<UInt32>(MethodAttributeFlags::MemberAccessMask))
+        == static_cast<UInt32>(MethodAttributeFlags::FamORAssem);
+}
+inline bool method_is_family_and_assembly(UInt32 flags) {
+    return (flags & static_cast<UInt32>(MethodAttributeFlags::MemberAccessMask))
+        == static_cast<UInt32>(MethodAttributeFlags::FamANDAssem);
+}
 
 // FieldAttributes helpers (ECMA-335 II.23.1.5)
 inline bool field_is_public(UInt32 flags) {
