@@ -246,6 +246,7 @@ struct CustomAttributeInfo {
     const char* attribute_type_name;
     CustomAttributeArg* args;
     UInt32 arg_count;
+    TypeInfo* attribute_type;       // TypeInfo for attribute class (for constructing instances)
 };
 
 /**
@@ -274,6 +275,8 @@ struct PropertyInfo {
     void* getter;               // Function pointer to get method (nullptr if write-only)
     void* setter;               // Function pointer to set method (nullptr if read-only)
     UInt32 flags;               // ECMA-335 PropertyAttributes
+    CustomAttributeInfo* custom_attributes;
+    UInt32 custom_attribute_count;
 };
 
 /**

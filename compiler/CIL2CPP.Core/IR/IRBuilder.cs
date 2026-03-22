@@ -797,6 +797,7 @@ public partial class IRBuilder
 
         // Pass 5.5: Collect custom attributes from Cecil metadata
         PopulateCustomAttributes();
+
         pass45sw.Stop();
         Console.Error.WriteLine($"[perf] Pass 4-5.5 VTable+InterfaceImpls+Attrs: {pass45sw.ElapsedMilliseconds}ms");
 
@@ -888,6 +889,14 @@ public partial class IRBuilder
         // for generic specializations (e.g., SafeCrypt32Handle<T>.BaseType → SafeHandle instead
         // of SafeHandleZeroOrMinusOneIsInvalid). Fills abstract slots from sibling types.
         FixupAbstractVTableSlots();
+
+        // Pass 6.9: Ensure attribute constructors are compiled.
+        // Attribute constructors are never called from IL (CLR invokes them at metadata-time),
+        // so the reachability analyzer doesn't mark them. We need them for runtime attribute
+        // construction via find_method_info + method_pointer.
+        // Must run after Pass 6 so HasClrInternalDependencies checks and ConvertMethodBody
+        // infrastructure are fully set up.
+        EnsureAttributeConstructorsCompiled();
 
         pass6sw.Stop();
         Console.Error.WriteLine($"[perf] Pass 6 MethodBodies+GenericMethodSpecs+MissingCallees: {pass6sw.ElapsedMilliseconds}ms");

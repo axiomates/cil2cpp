@@ -364,6 +364,8 @@ bool SpanHelpers_Negate_NegateIfNeeded(bool equals);
 
 // System.Type property ICalls — wrapper functions that cast void* to Type*.
 Boolean Type_get_IsClass(void* thisPtr);
+Boolean Type_get_IsEnum(void* thisPtr);
+Boolean Type_IsValueTypeImpl(void* thisPtr);
 void* Type_get_BaseType(void* thisPtr);
 void* Type_get_FullName(void* thisPtr);
 void* Type_get_Namespace(void* thisPtr);

@@ -221,6 +221,5 @@ python tools/dev.py integration
 
 | Usage | Path | Description |
 |-------|------|-------------|
-| Development | `C:/cil2cpp` | Manual cmake --install |
-| Integration tests | `C:/cil2cpp_test` | dev.py integration auto-installs |
+| All (dev + tests) | `C:/cil2cpp` | cmake --install / dev.py compile/integration |
 | Consumer | Custom | `find_package(cil2cpp REQUIRED)` → `cil2cpp::runtime` |

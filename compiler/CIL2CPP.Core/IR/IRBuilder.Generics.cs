@@ -589,6 +589,28 @@ public partial class IRBuilder
                     "System.Collections.Generic.EnumComparer`1", typeArgs);
             }
         }
+
+        // For Nullable<T> type arguments, also generate NullableComparer<T> / NullableEqualityComparer<T>.
+        // The BCL's CreateDefaultComparer unwraps Nullable<T> → T and creates NullableComparer<T>
+        // via CreateInstanceForAnotherGenericParameter. The companion type uses the unwrapped inner type.
+        if (typeArgs.Count == 1 && typeArgs[0].StartsWith("System.Nullable`1<"))
+        {
+            var innerType = typeArgs[0].Substring("System.Nullable`1<".Length);
+            if (innerType.EndsWith(">"))
+                innerType = innerType.Substring(0, innerType.Length - 1);
+            var unwrappedArgs = new List<string> { innerType };
+
+            if (openTypeName == "System.Collections.Generic.Comparer`1")
+            {
+                EnsureGenericCompanionInstantiation(
+                    "System.Collections.Generic.NullableComparer`1", unwrappedArgs);
+            }
+            else if (openTypeName == "System.Collections.Generic.EqualityComparer`1")
+            {
+                EnsureGenericCompanionInstantiation(
+                    "System.Collections.Generic.NullableEqualityComparer`1", unwrappedArgs);
+            }
+        }
     }
 
     private void EnsureGenericCompanionInstantiation(string companionOpenName, List<string> typeArgs)
@@ -2225,6 +2247,7 @@ public partial class IRBuilder
         if (openType.HasGenericParameters)
         {
             irType.GenericDefinitionCppName = CppNameMapper.MangleTypeName(info.OpenTypeName);
+            irType.GenericDefinitionILName = info.OpenTypeName;
             foreach (var gp in openType.GenericParameters)
             {
                 var variance = (gp.Attributes & Mono.Cecil.GenericParameterAttributes.VarianceMask) switch
@@ -2240,6 +2263,7 @@ public partial class IRBuilder
                  && openIrType.GenericParameterVariances.Count > 0)
         {
             irType.GenericDefinitionCppName = openIrType.CppName;
+            irType.GenericDefinitionILName = openIrType.ILFullName;
             irType.GenericParameterVariances.AddRange(openIrType.GenericParameterVariances);
         }
 
@@ -2696,6 +2720,7 @@ public partial class IRBuilder
             if (openType.HasGenericParameters)
             {
                 irType.GenericDefinitionCppName = CppNameMapper.MangleTypeName(info.OpenTypeName);
+                irType.GenericDefinitionILName = info.OpenTypeName;
                 foreach (var gp in openType.GenericParameters)
                 {
                     var variance = (gp.Attributes & Mono.Cecil.GenericParameterAttributes.VarianceMask) switch

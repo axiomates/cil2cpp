@@ -3257,7 +3257,9 @@ public partial class IRBuilder
     {
         // Idempotent: skip if already built (enables incremental VTable building
         // across multiple passes — first in Pass 3.3b for early types, then Pass 4 for late types)
-        if (irType.VTable.Count > 0) return;
+        if (irType.VTable.Count > 0)
+            return;
+
 
         // Defer vtable building for types whose base type is not yet resolved.
         // Building now would create an incomplete vtable, causing method index mismatches

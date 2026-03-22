@@ -101,6 +101,8 @@ public static class ICallRegistry
         // Type methods with runtime implementations that access TypeInfo directly.
         // Prevents IL compilation from conflicting with core_methods.cpp.
         RegisterICall("System.Type", "get_IsClass", 0, "cil2cpp::icall::Type_get_IsClass");
+        RegisterICall("System.Type", "get_IsEnum", 0, "cil2cpp::icall::Type_get_IsEnum");
+        RegisterICall("System.Type", "IsValueTypeImpl", 0, "cil2cpp::icall::Type_IsValueTypeImpl");
         RegisterICall("System.Type", "get_BaseType", 0, "cil2cpp::icall::Type_get_BaseType");
         RegisterICall("System.Type", "get_FullName", 0, "cil2cpp::icall::Type_get_FullName");
         RegisterICall("System.Type", "get_Namespace", 0, "cil2cpp::icall::Type_get_Namespace");

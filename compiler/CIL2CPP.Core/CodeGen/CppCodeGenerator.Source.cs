@@ -837,6 +837,7 @@ public partial class CppCodeGenerator
         if (type.IsNotPublic) flagParts.Add("cil2cpp::TypeFlags::NotPublic");
         if (type.IsNestedAssembly) flagParts.Add("cil2cpp::TypeFlags::NestedAssembly");
         if (type.IsByRefLike) flagParts.Add("cil2cpp::TypeFlags::IsByRefLike");
+        if (type.IsGenericInstance) flagParts.Add("cil2cpp::TypeFlags::Generic");
         // Nullable<T> detection: open generic "System.Nullable`1" or closed "System.Nullable`1<...>"
         if (type.ILFullName.StartsWith("System.Nullable`1"))
             flagParts.Add("cil2cpp::TypeFlags::Nullable");
@@ -865,14 +866,17 @@ public partial class CppCodeGenerator
         // CorElementType (needed by both full and minimal)
         var corElementType = GetCorElementType(type);
 
-        // Generic variance data (needed by both full and minimal for assignability)
+        // Generic argument data (needed for Type.GetGenericArguments + variance assignability)
         var typeInfoLookup = BuildTypeInfoExprLookup();
         var hasGenericArgs = type.IsGenericInstance && type.GenericArguments.Count > 0
-                             && type.GenericParameterVariances.Count > 0
-                             && !type.GenericParameterVariances.All(v => v == 0) // invariant types don't need variance data
                              && type.GenericArguments.All(arg => typeInfoLookup.ContainsKey(arg));
+        var hasVariance = hasGenericArgs && type.GenericParameterVariances.Count > 0
+                          && !type.GenericParameterVariances.All(v => v == 0);
 
-        // Interfaces (pointer array, needed by both tiers for assignability)
+        // Interfaces (pointer array, needed by both tiers for assignability).
+        // Only use directly-declared Interfaces, not InterfaceImpls (which includes inherited interfaces
+        // from base types). Using InterfaceImpls would add interfaces with nullptr method implementations
+        // (e.g., enum types inheriting IComparable from System.Enum), causing dispatch crashes.
         var interfacesExpr = (!type.IsInterface && type.Interfaces.Count > 0) ? $"{type.CppName}_interfaces" : "nullptr";
         var interfaceCount = type.IsInterface ? 0 : type.Interfaces.Count;
 
@@ -924,13 +928,12 @@ public partial class CppCodeGenerator
             }
             if (hasGenericArgs)
             {
-                // Tier 2 types still need full generic variance data for runtime
-                // assignability checks (e.g., ICovariant<string> vs ICovariant<object>).
                 sb.AppendLine($"    .generic_arguments = {type.CppName}_generic_args,");
-                sb.AppendLine($"    .generic_variances = {type.CppName}_generic_variances,");
+                if (hasVariance)
+                    sb.AppendLine($"    .generic_variances = {type.CppName}_generic_variances,");
                 sb.AppendLine($"    .generic_argument_count = {type.GenericArguments.Count},");
-                var minGenDefName = type.GenericDefinitionCppName != null
-                    ? $"\"{type.GenericDefinitionCppName}\"" : "nullptr";
+                var minGenDefName = type.GenericDefinitionILName != null
+                    ? $"\"{type.GenericDefinitionILName}\"" : "nullptr";
                 sb.AppendLine($"    .generic_definition_name = {minGenDefName},");
             }
             // Element type info (for array types)
@@ -972,24 +975,37 @@ public partial class CppCodeGenerator
         var skipPropertyReflection = type.IsRuntimeProvided
             || CppNameMapper.IsRuntimeExceptionType(type.ILFullName)
             || reflectableProperties.Count == 0;
-        // When properties are emitted, their getter/setter methods must be in the methods array
-        // so the runtime can match function pointers to MethodInfo objects.
-        if (!skipPropertyReflection && skipFieldMethodReflection && reflectableProperties.Count > 0)
+        // When field/method reflection is skipped, still include constructors and property accessors.
+        // Constructors are essential for runtime activation (serializers, DI, Activator.CreateInstance).
+        // Property accessors must match function pointers to MethodInfo objects.
+        // Skip for RuntimeProvided/exception types — their metadata is provided by the runtime.
+        if (skipFieldMethodReflection && !type.IsRuntimeProvided
+            && !CppNameMapper.IsRuntimeExceptionType(type.ILFullName))
         {
-            var accessorNames = new HashSet<string>();
-            foreach (var prop in reflectableProperties)
+            var requiredNames = new HashSet<string>();
+            // Always include constructors
+            foreach (var m in type.Methods)
             {
-                if (prop.Getter != null && _declaredFunctionNames.Contains(prop.Getter.CppName))
-                    accessorNames.Add(prop.Getter.CppName);
-                if (prop.Setter != null && _declaredFunctionNames.Contains(prop.Setter.CppName))
-                    accessorNames.Add(prop.Setter.CppName);
+                if (m.Name == ".ctor" && _declaredFunctionNames.Contains(m.CppName))
+                    requiredNames.Add(m.CppName);
             }
-            if (accessorNames.Count > 0)
+            // Include property accessors when properties are emitted
+            if (!skipPropertyReflection && reflectableProperties.Count > 0)
+            {
+                foreach (var prop in reflectableProperties)
+                {
+                    if (prop.Getter != null && _declaredFunctionNames.Contains(prop.Getter.CppName))
+                        requiredNames.Add(prop.Getter.CppName);
+                    if (prop.Setter != null && _declaredFunctionNames.Contains(prop.Setter.CppName))
+                        requiredNames.Add(prop.Setter.CppName);
+                }
+            }
+            if (requiredNames.Count > 0)
             {
                 reflectableMethods = type.Methods
-                    .Where(m => accessorNames.Contains(m.CppName))
+                    .Where(m => requiredNames.Contains(m.CppName))
                     .ToList();
-                allFields = new(); // Only emit accessor methods, not fields
+                allFields = new(); // Only emit required methods, not fields
                 skipFieldMethodReflection = false;
             }
         }
@@ -1030,10 +1046,10 @@ public partial class CppCodeGenerator
             }
         }
         var genArgsExpr = hasGenericArgs ? $"{type.CppName}_generic_args" : "nullptr";
-        var genVarExpr = hasGenericArgs ? $"{type.CppName}_generic_variances" : "nullptr";
+        var genVarExpr = hasVariance ? $"{type.CppName}_generic_variances" : "nullptr";
         var genCount = hasGenericArgs ? type.GenericArguments.Count : 0;
-        var genDefName = type.GenericDefinitionCppName != null
-            ? $"\"{type.GenericDefinitionCppName}\"" : "nullptr";
+        var genDefName = type.GenericDefinitionILName != null
+            ? $"\"{type.GenericDefinitionILName}\"" : "nullptr";
 
         // Emit full TypeInfo with compaction: skip null/0 fields (C++20 zero-inits omitted fields)
         sb.AppendLine($"cil2cpp::TypeInfo {type.CppName}_TypeInfo = {{");
@@ -2300,15 +2316,7 @@ public partial class CppCodeGenerator
         foreach (var type in userTypes)
         {
             if (type.IsRuntimeProvided) continue;
-            if (!type.IsGenericInstance || type.GenericArguments.Count == 0
-                || type.GenericParameterVariances.Count == 0) continue;
-
-            // Skip types where all generic parameters are invariant — no variance checks needed
-            if (type.GenericParameterVariances.All(v => v == 0)) continue;
-
-            // All generic types with non-trivial variance need their data emitted,
-            // even Tier 2 types — runtime variance checks (type_is_variant_assignable)
-            // access generic_arguments/generic_variances on interface vtable entries.
+            if (!type.IsGenericInstance || type.GenericArguments.Count == 0) continue;
 
             // Verify all generic arguments have TypeInfo available
             bool allArgsResolvable = type.GenericArguments.All(arg =>
@@ -2317,17 +2325,22 @@ public partial class CppCodeGenerator
 
             if (!any)
             {
-                sb.AppendLine("// ===== Generic Variance Data =====");
+                sb.AppendLine("// ===== Generic Argument Data =====");
                 any = true;
             }
 
-            // Emit TypeInfo pointer array for generic arguments
+            // Emit TypeInfo pointer array for generic arguments (needed by Type.GetGenericArguments)
             var argRefs = type.GenericArguments.Select(arg => typeInfoLookup[arg]);
             sb.AppendLine($"static cil2cpp::TypeInfo* {type.CppName}_generic_args[] = {{ {string.Join(", ", argRefs)} }};");
 
-            // Emit variance array
-            var variances = type.GenericParameterVariances.Select(v => ((byte)v).ToString());
-            sb.AppendLine($"static uint8_t {type.CppName}_generic_variances[] = {{ {string.Join(", ", variances)} }};");
+            // Emit variance array only for types with non-trivial variance
+            bool isVariant = type.GenericParameterVariances.Count > 0
+                             && !type.GenericParameterVariances.All(v => v == 0);
+            if (isVariant)
+            {
+                var variances = type.GenericParameterVariances.Select(v => ((byte)v).ToString());
+                sb.AppendLine($"static uint8_t {type.CppName}_generic_variances[] = {{ {string.Join(", ", variances)} }};");
+            }
         }
         if (any) sb.AppendLine();
     }
@@ -2467,22 +2480,31 @@ public partial class CppCodeGenerator
             var reflectableMethods = skipFieldMethod ? new List<IRMethod>()
                 : type.Methods.Where(m => !CppNameMapper.IsCompilerGeneratedType(m.Name)).ToList();
 
-            // When properties are emitted, their getter/setter methods must be in the methods array
-            // so the runtime can match function pointers to MethodInfo objects.
-            if (skipFieldMethod && reflectableProperties.Count > 0)
+            // When field/method reflection is skipped, still include constructors and property accessors.
+            if (skipFieldMethod)
             {
-                var accessorNames = new HashSet<string>();
-                foreach (var prop in reflectableProperties)
+                var requiredNames = new HashSet<string>();
+                // Always include constructors
+                foreach (var m in type.Methods)
                 {
-                    if (prop.Getter != null && _declaredFunctionNames.Contains(prop.Getter.CppName))
-                        accessorNames.Add(prop.Getter.CppName);
-                    if (prop.Setter != null && _declaredFunctionNames.Contains(prop.Setter.CppName))
-                        accessorNames.Add(prop.Setter.CppName);
+                    if (m.Name == ".ctor" && _declaredFunctionNames.Contains(m.CppName))
+                        requiredNames.Add(m.CppName);
                 }
-                if (accessorNames.Count > 0)
+                // Include property accessors when properties are emitted
+                if (reflectableProperties.Count > 0)
+                {
+                    foreach (var prop in reflectableProperties)
+                    {
+                        if (prop.Getter != null && _declaredFunctionNames.Contains(prop.Getter.CppName))
+                            requiredNames.Add(prop.Getter.CppName);
+                        if (prop.Setter != null && _declaredFunctionNames.Contains(prop.Setter.CppName))
+                            requiredNames.Add(prop.Setter.CppName);
+                    }
+                }
+                if (requiredNames.Count > 0)
                 {
                     reflectableMethods = type.Methods
-                        .Where(m => accessorNames.Contains(m.CppName))
+                        .Where(m => requiredNames.Contains(m.CppName))
                         .ToList();
                 }
             }
@@ -2498,13 +2520,13 @@ public partial class CppCodeGenerator
             // Emit custom attribute arrays for type and fields
             // Type-level attributes
             if (type.CustomAttributes.Count > 0)
-                EmitAttributeInfoArray(sb, $"{type.CppName}_custom_attrs", type.CustomAttributes);
+                EmitAttributeInfoArray(sb, $"{type.CppName}_custom_attrs", type.CustomAttributes, typeInfoLookup);
 
             // Field-level attributes
             foreach (var field in allFields)
             {
                 if (field.CustomAttributes.Count > 0)
-                    EmitAttributeInfoArray(sb, $"{type.CppName}_{field.CppName}_attrs", field.CustomAttributes);
+                    EmitAttributeInfoArray(sb, $"{type.CppName}_{field.CppName}_attrs", field.CustomAttributes, typeInfoLookup);
             }
 
             // Method-level attributes — use index suffix to disambiguate overloaded methods
@@ -2512,7 +2534,7 @@ public partial class CppCodeGenerator
             {
                 var method = reflectableMethods[mi];
                 if (method.CustomAttributes.Count > 0)
-                    EmitAttributeInfoArray(sb, $"{type.CppName}_m{mi}_attrs", method.CustomAttributes);
+                    EmitAttributeInfoArray(sb, $"{type.CppName}_m{mi}_attrs", method.CustomAttributes, typeInfoLookup);
             }
 
             // Emit FieldInfo array
@@ -2596,12 +2618,21 @@ public partial class CppCodeGenerator
                 sb.AppendLine("};");
             }
 
+            // Property-level attributes
+            for (int pi = 0; pi < reflectableProperties.Count; pi++)
+            {
+                var prop = reflectableProperties[pi];
+                if (prop.CustomAttributes.Count > 0)
+                    EmitAttributeInfoArray(sb, $"{type.CppName}_p{pi}_attrs", prop.CustomAttributes, typeInfoLookup);
+            }
+
             // Emit PropertyInfo array
             if (reflectableProperties.Count > 0)
             {
                 sb.AppendLine($"static cil2cpp::PropertyInfo {type.CppName}_properties[] = {{");
-                foreach (var prop in reflectableProperties)
+                for (int pi = 0; pi < reflectableProperties.Count; pi++)
                 {
+                    var prop = reflectableProperties[pi];
                     var propTypeExpr = typeInfoLookup.GetValueOrDefault(prop.PropertyTypeName, "nullptr");
                     var getterExpr = "nullptr";
                     var setterExpr = "nullptr";
@@ -2609,12 +2640,16 @@ public partial class CppCodeGenerator
                         getterExpr = $"(void*){prop.Getter.CppName}";
                     if (prop.Setter != null && _declaredFunctionNames.Contains(prop.Setter.CppName))
                         setterExpr = $"(void*){prop.Setter.CppName}";
+                    var propAttrsExpr = prop.CustomAttributes.Count > 0
+                        ? $"{type.CppName}_p{pi}_attrs" : "nullptr";
                     sb.AppendLine($"    {{ .name = \"{prop.Name}\", " +
                         $".declaring_type = &{type.CppName}_TypeInfo, " +
                         $".property_type = {propTypeExpr}, " +
                         $".getter = {getterExpr}, " +
                         $".setter = {setterExpr}, " +
-                        $".flags = 0x{prop.Attributes:X4} }},");
+                        $".flags = 0x{prop.Attributes:X4}, " +
+                        $".custom_attributes = {propAttrsExpr}, " +
+                        $".custom_attribute_count = {prop.CustomAttributes.Count} }},");
                 }
                 sb.AppendLine("};");
             }
@@ -2625,7 +2660,8 @@ public partial class CppCodeGenerator
     /// <summary>
     /// Emit a single CustomAttributeInfo array and its argument arrays.
     /// </summary>
-    private void EmitAttributeInfoArray(StringBuilder sb, string arrayName, List<IRCustomAttribute> attrs)
+    private void EmitAttributeInfoArray(StringBuilder sb, string arrayName, List<IRCustomAttribute> attrs,
+        Dictionary<string, string>? typeInfoLookup = null)
     {
         // First, emit argument arrays (including nested array element arrays)
         for (int i = 0; i < attrs.Count; i++)
@@ -2662,9 +2698,14 @@ public partial class CppCodeGenerator
             var attr = attrs[i];
             var argsExpr = attr.ConstructorArgs.Count > 0
                 ? $"{arrayName}_{i}_args" : "nullptr";
+            // Resolve attribute TypeInfo pointer for runtime attribute construction
+            var attrTypeExpr = "nullptr";
+            if (typeInfoLookup != null && typeInfoLookup.TryGetValue(attr.AttributeTypeName, out var tiExpr))
+                attrTypeExpr = tiExpr;
             sb.AppendLine($"    {{ .attribute_type_name = \"{attr.AttributeTypeName}\", " +
                 $".args = {argsExpr}, " +
-                $".arg_count = {attr.ConstructorArgs.Count} }},");
+                $".arg_count = {attr.ConstructorArgs.Count}, " +
+                $".attribute_type = {attrTypeExpr} }},");
         }
         sb.AppendLine("};");
     }
@@ -3688,6 +3729,12 @@ public partial class CppCodeGenerator
         {
             if (!string.IsNullOrEmpty(type.ILFullName))
                 sb.AppendLine($"    cil2cpp::type_register(&{type.CppName}_TypeInfo);");
+        }
+        // Also register auto-discovered TypeInfos (open generic types, ldtoken targets, etc.)
+        // These are not in _userTypes but have valid TypeInfo with full_name for runtime lookup.
+        foreach (var typeName in _autoTypeInfoDecls)
+        {
+            sb.AppendLine($"    cil2cpp::type_register(&{typeName}_TypeInfo);");
         }
 
         sb.AppendLine("}");

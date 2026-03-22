@@ -307,5 +307,4 @@ target_link_libraries(MyApp PRIVATE cil2cpp::runtime)
 ```
 
 安装路径约定：
-- 开发环境：`C:/cil2cpp`
-- 集成测试：`C:/cil2cpp_test`
+- 全部（开发+测试）：`C:/cil2cpp`

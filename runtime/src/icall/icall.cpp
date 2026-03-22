@@ -545,6 +545,18 @@ void* Type_get_Namespace(void* thisPtr) {
     return reinterpret_cast<void*>(type_get_namespace(reinterpret_cast<Type*>(thisPtr)));
 }
 
+Boolean Type_get_IsEnum(void* thisPtr) {
+    auto* t = reinterpret_cast<Type*>(thisPtr);
+    if (!t || !t->type_info) return false;
+    return t->type_info->flags & TypeFlags::Enum;
+}
+
+Boolean Type_IsValueTypeImpl(void* thisPtr) {
+    auto* t = reinterpret_cast<Type*>(thisPtr);
+    if (!t || !t->type_info) return false;
+    return t->type_info->flags & TypeFlags::ValueType;
+}
+
 // ===== System.RuntimeType =====
 
 Object* RuntimeType_AllocateValueType(void* thisType, Object* value) {

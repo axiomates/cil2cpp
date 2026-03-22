@@ -400,7 +400,7 @@ class Program
 
         // 3. Default paths
         string[] defaultPaths = OperatingSystem.IsWindows()
-            ? ["C:/cil2cpp", "C:/cil2cpp_test"]
+            ? ["C:/cil2cpp"]
             : ["/usr/local", "/opt/cil2cpp"];
 
         foreach (var path in defaultPaths)

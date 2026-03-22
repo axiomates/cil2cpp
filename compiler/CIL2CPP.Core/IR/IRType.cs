@@ -106,6 +106,9 @@ public class IRType
     /// <summary>For generic instances: the open generic type's CppName (e.g., "System_IEnumerable_1").</summary>
     public string? GenericDefinitionCppName { get; set; }
 
+    /// <summary>For generic instances: the open generic type's IL full name (e.g., "System.Collections.Generic.IEnumerable`1").</summary>
+    public string? GenericDefinitionILName { get; set; }
+
     /// <summary>Underlying integer type for enums (e.g., "System.Int32")</summary>
     public string? EnumUnderlyingType { get; set; }
 
@@ -211,6 +214,7 @@ public class IRProperty
     public IRMethod? Setter { get; set; }
     public uint Attributes { get; set; }
     public IRType? DeclaringType { get; set; }
+    public List<IRCustomAttribute> CustomAttributes { get; } = new();
 }
 
 /// <summary>

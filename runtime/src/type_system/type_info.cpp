@@ -329,11 +329,11 @@ Boolean object_is_instance_of(Object* obj, TypeInfo* type) {
                 && type->generic_arguments && type->generic_arguments[0]) {
                 const char* genDef = type->generic_definition_name;
                 bool isArrayInterface =
-                    std::strcmp(genDef, "System_Collections_Generic_IList_1") == 0 ||
-                    std::strcmp(genDef, "System_Collections_Generic_ICollection_1") == 0 ||
-                    std::strcmp(genDef, "System_Collections_Generic_IEnumerable_1") == 0 ||
-                    std::strcmp(genDef, "System_Collections_Generic_IReadOnlyList_1") == 0 ||
-                    std::strcmp(genDef, "System_Collections_Generic_IReadOnlyCollection_1") == 0;
+                    std::strcmp(genDef, "System.Collections.Generic.IList`1") == 0 ||
+                    std::strcmp(genDef, "System.Collections.Generic.ICollection`1") == 0 ||
+                    std::strcmp(genDef, "System.Collections.Generic.IEnumerable`1") == 0 ||
+                    std::strcmp(genDef, "System.Collections.Generic.IReadOnlyList`1") == 0 ||
+                    std::strcmp(genDef, "System.Collections.Generic.IReadOnlyCollection`1") == 0;
                 if (isArrayInterface) {
                     auto* elemType = as_arr->element_type;
                     auto* interfaceArgType = type->generic_arguments[0];

@@ -635,17 +635,143 @@ extern "C" void* System_Reflection_MemberInfo_get_ReflectedType(void* __this) {
     // ReflectedType == DeclaringType for our purposes
     return cil2cpp::memberinfo_get_declaring_type(reinterpret_cast<cil2cpp::Object*>(__this));
 }
-extern "C" void* System_Reflection_MemberInfo_GetCustomAttributes__System_Boolean(void* /*__this*/, bool /*inherit*/) {
-    // Return empty Object[] — creating managed attribute objects from CustomAttributeInfo is complex
-    return cil2cpp::gc::alloc_array(&cil2cpp::System_Object_TypeInfo, 0);
+// Helper: extract custom_attributes/count from a member based on its runtime type
+static bool _get_member_custom_attrs(void* __this, cil2cpp::CustomAttributeInfo*& attrs, uint32_t& count) {
+    attrs = nullptr;
+    count = 0;
+    if (!__this) return false;
+    auto* obj = reinterpret_cast<cil2cpp::Object*>(__this);
+    auto* ti = obj->__type_info;
+    if (!ti || !ti->full_name) return false;
+    std::string typeName(ti->full_name);
+    if (typeName.find("PropertyInfo") != std::string::npos) {
+        auto* pi = reinterpret_cast<cil2cpp::ManagedPropertyInfo*>(__this);
+        if (pi->native_info) {
+            attrs = pi->native_info->custom_attributes;
+            count = pi->native_info->custom_attribute_count;
+        }
+    } else if (typeName.find("FieldInfo") != std::string::npos) {
+        auto* fi = reinterpret_cast<cil2cpp::ManagedFieldInfo*>(__this);
+        if (fi->native_info) { attrs = fi->native_info->custom_attributes; count = fi->native_info->custom_attribute_count; }
+    } else if (typeName.find("MethodInfo") != std::string::npos || typeName.find("ConstructorInfo") != std::string::npos) {
+        auto* mi = reinterpret_cast<cil2cpp::ManagedMethodInfo*>(__this);
+        if (mi->native_info) { attrs = mi->native_info->custom_attributes; count = mi->native_info->custom_attribute_count; }
+    } else if (typeName.find("Type") != std::string::npos || typeName.find("RuntimeType") != std::string::npos) {
+        auto* type = reinterpret_cast<cil2cpp::Type*>(__this);
+        if (type->type_info) { attrs = type->type_info->custom_attributes; count = type->type_info->custom_attribute_count; }
+    }
+    return count > 0 && attrs != nullptr;
 }
-extern "C" void* System_Reflection_MemberInfo_GetCustomAttributes__System_Type_System_Boolean(void* /*__this*/, void* attributeType, bool /*inherit*/) {
-    // Return empty array typed with the requested attribute type.
-    // .NET's GetCustomAttributes(Type, bool) returns T[] (not Object[]),
-    // enabling IEnumerable<T> casts via array covariance.
+
+// Helper: construct a managed attribute instance from CustomAttributeInfo
+static void* _construct_attribute(cil2cpp::CustomAttributeInfo& ai) {
+    if (!ai.attribute_type) return nullptr;
+    auto* attrTi = ai.attribute_type;
+    if (!attrTi->instance_size) return nullptr;
+
+    // Allocate instance
+    auto* instance = cil2cpp::gc::alloc(attrTi->instance_size, attrTi);
+    if (!instance) return nullptr;
+
+    // Find matching .ctor
+    auto* ctor = cil2cpp::find_method_info(attrTi, ".ctor", ai.arg_count);
+    if (!ctor || !ctor->method_pointer) {
+        // No matching constructor — try parameterless .ctor as fallback
+        if (ai.arg_count > 0)
+            ctor = cil2cpp::find_method_info(attrTi, ".ctor", 0);
+        if (!ctor || !ctor->method_pointer)
+            return instance; // Return uninitialized instance (best effort)
+    }
+
+    // Call constructor based on arg count
+    if (ctor->parameter_count == 0) {
+        auto fn = reinterpret_cast<void(*)(void*)>(ctor->method_pointer);
+        fn(instance);
+    } else if (ctor->parameter_count == 1) {
+        // Determine argument type and convert
+        auto& arg = ai.args[0];
+        if (arg.type_name && std::strcmp(arg.type_name, "System.String") == 0) {
+            auto* str = cil2cpp::string_literal(arg.string_val ? arg.string_val : "");
+            auto fn = reinterpret_cast<void(*)(void*, void*)>(ctor->method_pointer);
+            fn(instance, str);
+        } else {
+            // Integer/enum/bool argument
+            auto fn = reinterpret_cast<void(*)(void*, int64_t)>(ctor->method_pointer);
+            fn(instance, arg.int_val);
+        }
+    } else if (ctor->parameter_count == 2) {
+        // Two-arg constructor: determine types
+        void* args[2] = {};
+        for (int i = 0; i < 2; i++) {
+            auto& arg = ai.args[i];
+            if (arg.type_name && std::strcmp(arg.type_name, "System.String") == 0)
+                args[i] = cil2cpp::string_literal(arg.string_val ? arg.string_val : "");
+            else
+                args[i] = reinterpret_cast<void*>(static_cast<intptr_t>(arg.int_val));
+        }
+        auto fn = reinterpret_cast<void(*)(void*, void*, void*)>(ctor->method_pointer);
+        fn(instance, args[0], args[1]);
+    }
+    // For 3+ args, return instance with parameterless ctor called
+    return instance;
+}
+
+extern "C" void* System_Reflection_MemberInfo_GetCustomAttributes__System_Boolean(void* __this, bool /*inherit*/) {
+    cil2cpp::CustomAttributeInfo* attrs;
+    uint32_t count;
+    if (!_get_member_custom_attrs(__this, attrs, count)) {
+        return cil2cpp::gc::alloc_array(&cil2cpp::System_Object_TypeInfo, 0);
+    }
+    // Construct all attributes
+    auto* arr = cil2cpp::gc::alloc_array(&cil2cpp::System_Object_TypeInfo, count);
+    auto** data = reinterpret_cast<void**>(reinterpret_cast<char*>(arr) + sizeof(cil2cpp::Array));
+    uint32_t filled = 0;
+    for (uint32_t i = 0; i < count; i++) {
+        auto* obj = _construct_attribute(attrs[i]);
+        if (obj) data[filled++] = obj;
+    }
+    // If some failed, return shorter array
+    if (filled < count) {
+        auto* result = cil2cpp::gc::alloc_array(&cil2cpp::System_Object_TypeInfo, filled);
+        auto** rdata = reinterpret_cast<void**>(reinterpret_cast<char*>(result) + sizeof(cil2cpp::Array));
+        std::memcpy(rdata, data, filled * sizeof(void*));
+        return result;
+    }
+    return arr;
+}
+extern "C" void* System_Reflection_MemberInfo_GetCustomAttributes__System_Type_System_Boolean(void* __this, void* attributeType, bool /*inherit*/) {
     auto* typeObj = reinterpret_cast<cil2cpp::Type*>(attributeType);
     auto* elemTypeInfo = (typeObj && typeObj->type_info) ? typeObj->type_info : &cil2cpp::System_Object_TypeInfo;
-    return cil2cpp::gc::alloc_array(elemTypeInfo, 0);
+
+    cil2cpp::CustomAttributeInfo* attrs;
+    uint32_t count;
+    if (!_get_member_custom_attrs(__this, attrs, count)) {
+        return cil2cpp::gc::alloc_array(elemTypeInfo, 0);
+    }
+
+    // Count matching attributes
+    const char* targetName = elemTypeInfo->full_name;
+    uint32_t matchCount = 0;
+    for (uint32_t i = 0; i < count; i++) {
+        if (attrs[i].attribute_type_name && targetName &&
+            std::strcmp(attrs[i].attribute_type_name, targetName) == 0)
+            matchCount++;
+    }
+    if (matchCount == 0)
+        return cil2cpp::gc::alloc_array(elemTypeInfo, 0);
+
+    // Construct matching attribute instances
+    auto* arr = cil2cpp::gc::alloc_array(elemTypeInfo, matchCount);
+    auto** data = reinterpret_cast<void**>(reinterpret_cast<char*>(arr) + sizeof(cil2cpp::Array));
+    uint32_t idx = 0;
+    for (uint32_t i = 0; i < count && idx < matchCount; i++) {
+        if (attrs[i].attribute_type_name && targetName &&
+            std::strcmp(attrs[i].attribute_type_name, targetName) == 0) {
+            auto* obj = _construct_attribute(attrs[i]);
+            data[idx++] = obj ? obj : cil2cpp::gc::alloc(elemTypeInfo->instance_size, elemTypeInfo);
+        }
+    }
+    return arr;
 }
 extern "C" void* System_Reflection_MemberInfo_GetCustomAttributesData(void* /*__this*/) {
     return cil2cpp::gc::alloc_array(&cil2cpp::System_Object_TypeInfo, 0);
@@ -679,30 +805,13 @@ extern "C" bool System_Reflection_MemberInfo_HasSameMetadataDefinitionAsCore_Sys
 }
 extern "C" bool System_Reflection_MemberInfo_IsDefined(void* __this, void* attributeType, bool /*inherit*/) {
     if (!__this || !attributeType) return false;
-    // Get the attribute type's full_name for comparison
     auto* attrType = reinterpret_cast<cil2cpp::Type*>(attributeType);
     if (!attrType || !attrType->type_info || !attrType->type_info->full_name) return false;
     const char* targetName = attrType->type_info->full_name;
 
-    // Dispatch based on the member's TypeInfo to find the right custom_attributes
-    auto* obj = reinterpret_cast<cil2cpp::Object*>(__this);
-    auto* ti = obj->__type_info;
-    if (!ti || !ti->full_name) return false;
-
     cil2cpp::CustomAttributeInfo* attrs = nullptr;
     uint32_t count = 0;
-
-    std::string typeName(ti->full_name);
-    if (typeName.find("FieldInfo") != std::string::npos) {
-        auto* fi = reinterpret_cast<cil2cpp::ManagedFieldInfo*>(__this);
-        if (fi->native_info) { attrs = fi->native_info->custom_attributes; count = fi->native_info->custom_attribute_count; }
-    } else if (typeName.find("MethodInfo") != std::string::npos || typeName.find("ConstructorInfo") != std::string::npos) {
-        auto* mi = reinterpret_cast<cil2cpp::ManagedMethodInfo*>(__this);
-        if (mi->native_info) { attrs = mi->native_info->custom_attributes; count = mi->native_info->custom_attribute_count; }
-    } else if (typeName.find("Type") != std::string::npos || typeName.find("RuntimeType") != std::string::npos) {
-        auto* type = reinterpret_cast<cil2cpp::Type*>(__this);
-        if (type->type_info) { attrs = type->type_info->custom_attributes; count = type->type_info->custom_attribute_count; }
-    }
+    if (!_get_member_custom_attrs(__this, attrs, count)) return false;
 
     for (uint32_t i = 0; i < count; i++) {
         if (attrs[i].attribute_type_name && std::strcmp(attrs[i].attribute_type_name, targetName) == 0)
@@ -1296,8 +1405,8 @@ extern "C" void System_RuntimeTypeHandle__ctor(void* __this, void* type) {
     *reinterpret_cast<void**>(__this) = type;
 }
 extern "C" void* System_RuntimeTypeHandle_GetRuntimeType(void* __this) {
-    // RuntimeTypeHandle wraps a RuntimeType* — return it
-    return __this;
+    // __this is RuntimeTypeHandle* — field 0 is RuntimeType* (f_m_type).
+    return *reinterpret_cast<void**>(__this);
 }
 extern "C" bool System_RuntimeTypeHandle_IsNullHandle(void* /*__this*/) { return true; }
 struct TypeHandle_Stub { void* m_asTAddr; };
@@ -1400,7 +1509,8 @@ extern "C" bool System_RuntimeTypeHandle_ContainsGenericVariables(void* /*__this
 extern "C" System_ReadOnlySpan_1_System_IntPtr System_RuntimeTypeHandle_CopyRuntimeTypeHandles__System_RuntimeTypeHandle___System_Span_1_System_IntPtr_(void* /*inHandles*/, System_Span_1_System_IntPtr /*stackScratch*/) { return {}; }
 extern "C" void* System_RuntimeTypeHandle_CopyRuntimeTypeHandles__System_Type___System_Int32Ref(void* /*inHandles*/, void* /*length*/) { return nullptr; }
 extern "C" bool System_RuntimeTypeHandle_Equals__System_Object(void* __this, void* obj) {
-    return __this == obj;
+    // __this is RuntimeTypeHandle* — field 0 is RuntimeType* (f_m_type).
+    return *reinterpret_cast<void**>(__this) == obj;
 }
 extern "C" bool System_RuntimeTypeHandle_Equals__System_RuntimeTypeHandle(System_RuntimeTypeHandle* __this, System_RuntimeTypeHandle other) {
     return __this->f_m_type == other.f_m_type;
@@ -1425,10 +1535,13 @@ extern "C" int32_t System_RuntimeTypeHandle_GetGenericVariableIndex(void* /*__th
     return -1; // No open generic parameters in AOT
 }
 extern "C" int32_t System_RuntimeTypeHandle_GetHashCode(void* __this) {
-    return static_cast<int32_t>(reinterpret_cast<uintptr_t>(__this) >> 3);
+    // __this is RuntimeTypeHandle* — field 0 is RuntimeType* (f_m_type).
+    auto* rt = *reinterpret_cast<void**>(__this);
+    return static_cast<int32_t>(reinterpret_cast<uintptr_t>(rt) >> 3);
 }
 extern "C" void* System_RuntimeTypeHandle_GetInstantiationInternal(void* __this) {
-    auto* t = reinterpret_cast<cil2cpp::Type*>(__this);
+    // __this is RuntimeTypeHandle* — field 0 is RuntimeType* (f_m_type).
+    auto* t = *reinterpret_cast<cil2cpp::Type**>(__this);
     if (!t || !t->type_info || !t->type_info->generic_arguments || t->type_info->generic_argument_count == 0)
         return nullptr;
     auto count = static_cast<int32_t>(t->type_info->generic_argument_count);
@@ -1451,7 +1564,8 @@ extern "C" System_RuntimeTypeHandle System_RuntimeTypeHandle_GetNativeHandle(voi
     return { reinterpret_cast<void*>(__this) };
 }
 extern "C" void* System_RuntimeTypeHandle_GetTypeChecked(void* __this) {
-    return __this; // RuntimeTypeHandle wraps RuntimeType — return it
+    // __this is RuntimeTypeHandle* — field 0 is RuntimeType* (f_m_type).
+    return *reinterpret_cast<void**>(__this);
 }
 extern "C" System_MdUtf8String System_RuntimeTypeHandle_GetUtf8Name(void* type) {
     auto* t = reinterpret_cast<cil2cpp::Type*>(type);
@@ -1555,9 +1669,9 @@ extern "C" bool System_RuntimeTypeHandle__IsVisible(System_Runtime_CompilerServi
     return (ti->flags & cil2cpp::TypeFlags::Public) || (ti->flags & cil2cpp::TypeFlags::NestedPublic);
 }
 extern "C" intptr_t System_RuntimeTypeHandle_get_Value(void* __this) {
-    // RuntimeTypeHandle.Value returns IntPtr to the RuntimeType/MethodTable
-    // __this is RuntimeType* (== cil2cpp::Type*)
-    return reinterpret_cast<intptr_t>(__this);
+    // __this is RuntimeTypeHandle* — field 0 is RuntimeType* (f_m_type).
+    // RuntimeTypeHandle.Value returns IntPtr to the RuntimeType.
+    return reinterpret_cast<intptr_t>(*reinterpret_cast<void**>(__this));
 }
 extern "C" int32_t System_RuntimeTypeHandle___IsVisible_g____PInvoke_67_0(System_Runtime_CompilerServices_QCallTypeHandle __typeHandle_native) {
     return System_RuntimeTypeHandle__IsVisible(__typeHandle_native) ? 1 : 0;
@@ -2415,7 +2529,9 @@ extern "C" void* System_Type_MakeGenericType(void* __this, cil2cpp::Array* typeA
     for (int32_t i = 0; i < arg_count; i++) {
         if (i > 0) name += ", ";
         if (!args[i] || !args[i]->type_info || !args[i]->type_info->full_name) {
-            cil2cpp::throw_null_reference();
+            // Type argument not available at runtime — can't construct this generic type.
+            // Return nullptr instead of throwing; callers check for null (TryMakeGenericType, etc.)
+            return nullptr;
         }
         name += args[i]->type_info->full_name;
     }

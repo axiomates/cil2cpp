@@ -29,7 +29,7 @@ RUNTIME_TESTS_DIR = RUNTIME_DIR / "tests"
 TESTPROJECTS_DIR = REPO_ROOT / "tests"
 
 IS_WINDOWS = platform.system() == "Windows"
-DEFAULT_PREFIX = "C:/cil2cpp_test" if IS_WINDOWS else "/usr/local/cil2cpp"
+DEFAULT_PREFIX = "C:/cil2cpp" if IS_WINDOWS else "/usr/local/cil2cpp"
 DEFAULT_GENERATOR = "Visual Studio 17 2022" if IS_WINDOWS else "Ninja"
 EXE_EXT = ".exe" if IS_WINDOWS else ""
 
@@ -2671,6 +2671,63 @@ def cmd_integration(args):
     runner.step("CMake configure", fv_cmake_configure)
     runner.step(f"CMake build ({config})", fv_cmake_build)
     runner.step("Run and compare C++ vs .NET output", fv_run_verify)
+
+    # ===== Phase 34: MiniServiceApp (multi-package composition — DI+Config+Serilog+Humanizer+LINQ) =====
+    header("Phase 34: MiniServiceApp (DI + Config + Serilog + Humanizer + LINQ composition)")
+    runner.begin_phase("MiniServiceApp")
+
+    ms_sample = TESTPROJECTS_DIR / "MiniServiceApp" / "MiniServiceApp.csproj"
+    ms_output = temp_dir / "ms_output"
+    ms_build = temp_dir / "ms_build"
+
+    dotnet_ms_output = None
+
+    def ms_dotnet_run():
+        nonlocal dotnet_ms_output
+        dotnet_ms_output = _get_dotnet_output(ms_sample)
+        print(f"    .NET output: {repr(dotnet_ms_output[:200])}")
+
+    def ms_codegen():
+        run(["dotnet", "run", "--project", str(CLI_PROJECT), "--",
+             "codegen", "-i", str(ms_sample), "-o", str(ms_output)],
+            capture=True)
+
+    def ms_files_exist():
+        for f in ["MiniServiceApp.h", "MiniServiceApp_data.cpp", "MiniServiceApp_stubs.cpp",
+                   "main.cpp", "CMakeLists.txt"]:
+            if not (ms_output / f).exists():
+                raise RuntimeError(f"Missing: {f}")
+        runner.record_metric("lines", count_cpp_lines(ms_output))
+
+    def ms_cmake_configure():
+        run(["cmake", "-B", str(ms_build), "-S", str(ms_output),
+             "-G", generator, *cmake_arch,
+             f"-DCMAKE_PREFIX_PATH={runtime_prefix}"],
+            capture=True)
+
+    def ms_cmake_build():
+        return _cmake_build_with_diagnostics(ms_build, config)
+
+    def ms_run_verify():
+        exe = _exe_path(ms_build, config, "MiniServiceApp")
+        if not exe.exists():
+            raise RuntimeError(f"Executable not found: {exe}")
+        r = subprocess.run([str(exe)], capture_output=True, text=True, check=False,
+                           encoding="utf-8", errors="replace")
+        if r.returncode != 0:
+            raise RuntimeError(f"MiniServiceApp exited with code {r.returncode}\nstderr: {r.stderr}")
+        got = r.stdout.strip()
+        expected = dotnet_ms_output.strip()
+        if got != expected:
+            raise RuntimeError(
+                f"Output mismatch!\n  Got:      {repr(got[:300])}\n  Expected: {repr(expected[:300])}")
+
+    runner.step("Get .NET reference output", ms_dotnet_run)
+    runner.step("Codegen MiniServiceApp", ms_codegen)
+    runner.step("Generated files exist", ms_files_exist)
+    runner.step("CMake configure", ms_cmake_configure)
+    runner.step(f"CMake build ({config})", ms_cmake_build)
+    runner.step("Run and compare C++ vs .NET output", ms_run_verify)
 
     # ===== Cleanup =====
     header("Cleanup")

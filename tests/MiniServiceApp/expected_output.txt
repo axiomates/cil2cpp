@@ -1,0 +1,30 @@
+=== MiniServiceApp ===
+
+[1] Config: MiniCatalog v1.0.0, maxItems=5
+[2] DI: resolved OK
+[INF] Service started: MiniCatalog v1.0.0
+[3] Serilog: initialized
+[4] Electronics: Keyboard, Laptop, Monitor, Mouse (4 items)
+[4] Cheapest stationery: Pen ($1.99)
+[5] Catalog: 10 total, 9 active
+[5] Stock: 1940, avg price: $213.99
+[5] Most expensive: Laptop
+[5] Categories: Electronics=4, Furniture=2, Stationery=3
+[6] Order: ORD-0001 for Alice
+[6] Items: 3, total: $1109.87
+[6]   Laptop: 1x $999.99 = $999.99
+[6]   Mouse: 2x $29.99 = $59.98
+[6]   Notebook: 10x $4.99 = $49.90
+[7] All active: Chair, Desk, Keyboard, Laptop, Monitor, Mouse, Notebook, Pen, Stapler
+[7] Inventory: Laptop=$14999.85, Mouse=$2999.00, Monitor=$8749.75, Keyboard=$3999.50
+[INF] Order ORD-0001 created for Alice, total=1109.87
+[8] Humanize: 3 items, 1st order
+[8] ToWords: forty-two
+[9] Missing product: OK (Product 99 not found)
+[9] Inactive product: OK (Product 'Bookshelf' is inactive)
+[10] Top 3: Laptop($999.99), Monitor($349.99), Desk($249.99)
+[10] High stock: Mouse:100, Notebook:500, Pen:1000, Stapler:200
+[10]   Electronics: $30748.10
+[10]   Furniture: $10999.50
+[10]   Stationery: $6283.00
+=== Done ===

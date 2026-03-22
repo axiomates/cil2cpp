@@ -114,6 +114,11 @@ extern "C" void* System_Reflection_RuntimePropertyInfo_GetSetMethod(void*, bool)
 extern "C" void* System_Reflection_RuntimePropertyInfo_GetValue_5(void*, void*, int32_t, void*, void*, void*);
 extern "C" void  System_Reflection_RuntimePropertyInfo_SetValue_6(void*, void*, void*, int32_t, void*, void*, void*);
 
+// Forward declarations for MemberInfo ICalls used in ICustomAttributeProvider interface patching
+extern "C" void* System_Reflection_MemberInfo_GetCustomAttributes__System_Boolean(void*, bool);
+extern "C" void* System_Reflection_MemberInfo_GetCustomAttributes__System_Type_System_Boolean(void*, void*, bool);
+extern "C" bool System_Reflection_MemberInfo_IsDefined(void*, void*, bool);
+
 void reflection_patch_property_vtables(TypeInfo* prop_ti, TypeInfo* runtime_prop_ti) {
     // Patch null vtable slots for RuntimePropertyInfo methods.
     // Since RuntimePropertyInfo is ReflectionAliased, the codegen blocks all instance methods,
@@ -136,6 +141,24 @@ void reflection_patch_property_vtables(TypeInfo* prop_ti, TypeInfo* runtime_prop
         if (count > 27 && !m[27]) m[27] = (void*)System_Reflection_RuntimePropertyInfo_GetSetMethod;
         if (count > 32 && !m[32]) m[32] = (void*)System_Reflection_RuntimePropertyInfo_GetValue_5;
         if (count > 36 && !m[36]) m[36] = (void*)System_Reflection_RuntimePropertyInfo_SetValue_6;
+
+        // Patch ICustomAttributeProvider interface vtable.
+        // RuntimePropertyInfo is blanket-gated, leaving ICustomAttributeProvider methods as nullptr.
+        // Patch them to use the MemberInfo ICalls which support attribute construction.
+        if (ti->interface_vtables) {
+            for (UInt32 i = 0; i < ti->interface_count; i++) {
+                auto& ivt = ti->interface_vtables[i];
+                if (ivt.interface_type && ivt.interface_type->full_name &&
+                    std::strcmp(ivt.interface_type->full_name, "System.Reflection.ICustomAttributeProvider") == 0) {
+                    if (ivt.method_count >= 3) {
+                        if (!ivt.methods[0]) ivt.methods[0] = (void*)System_Reflection_MemberInfo_GetCustomAttributes__System_Boolean;
+                        if (!ivt.methods[1]) ivt.methods[1] = (void*)System_Reflection_MemberInfo_GetCustomAttributes__System_Type_System_Boolean;
+                        if (!ivt.methods[2]) ivt.methods[2] = (void*)System_Reflection_MemberInfo_IsDefined;
+                    }
+                    break;
+                }
+            }
+        }
     };
     patch(prop_ti, "PropertyInfo");
     patch(runtime_prop_ti, "RuntimePropertyInfo");

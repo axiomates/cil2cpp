@@ -312,5 +312,4 @@ Installed directory structure:
 ```
 
 Install path conventions:
-- Development: `C:/cil2cpp`
-- Integration tests: `C:/cil2cpp_test`
+- All (dev + tests): `C:/cil2cpp`
