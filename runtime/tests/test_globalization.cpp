@@ -438,3 +438,167 @@ TEST_F(GlobalizationTest, String_Compare_TurkishI) {
     // (ICU u_toupper of İ → İ, u_toupper of i → I)
     EXPECT_NE(globalization::string_compare_3(a, b, 5), 0);  // OrdinalIgnoreCase
 }
+
+// ===== interop_globalization_get_locale_info_string =====
+
+// Helper to read char16_t buffer as std::string (ASCII only, for test comparison)
+static std::string buf_to_string(const char16_t* buf) {
+    std::string result;
+    while (*buf) { result += static_cast<char>(*buf); ++buf; }
+    return result;
+}
+
+TEST_F(GlobalizationTest, LocaleInfoString_DecimalSeparator_EnUS) {
+    auto* locale = S("en-US");
+    char16_t buf[64] = {};
+    auto ok = interop_globalization_get_locale_info_string(locale, 0x0E, buf, 64, nullptr);
+    EXPECT_EQ(ok, 1);
+    EXPECT_EQ(buf_to_string(buf), ".");
+}
+
+TEST_F(GlobalizationTest, LocaleInfoString_ThousandSeparator_EnUS) {
+    auto* locale = S("en-US");
+    char16_t buf[64] = {};
+    auto ok = interop_globalization_get_locale_info_string(locale, 0x0F, buf, 64, nullptr);
+    EXPECT_EQ(ok, 1);
+    // en-US uses ',' as thousands separator
+    EXPECT_FALSE(buf_to_string(buf).empty());
+}
+
+TEST_F(GlobalizationTest, LocaleInfoString_DecimalSeparator_DeDE) {
+    auto* locale = S("de-DE");
+    char16_t buf[64] = {};
+    auto ok = interop_globalization_get_locale_info_string(locale, 0x0E, buf, 64, nullptr);
+    EXPECT_EQ(ok, 1);
+    EXPECT_EQ(buf_to_string(buf), ",");
+}
+
+TEST_F(GlobalizationTest, LocaleInfoString_CurrencySymbol_EnUS) {
+    auto* locale = S("en-US");
+    char16_t buf[64] = {};
+    auto ok = interop_globalization_get_locale_info_string(locale, 0x14, buf, 64, nullptr);
+    EXPECT_EQ(ok, 1);
+    EXPECT_EQ(buf_to_string(buf), "$");
+}
+
+TEST_F(GlobalizationTest, LocaleInfoString_CurrencySymbol_ZhCN) {
+    auto* locale = S("zh-CN");
+    char16_t buf[64] = {};
+    auto ok = interop_globalization_get_locale_info_string(locale, 0x14, buf, 64, nullptr);
+    EXPECT_EQ(ok, 1);
+    // zh-CN currency symbol is ¥ (U+00A5) or ￥ (U+FFE5)
+    EXPECT_FALSE(buf_to_string(buf).empty());
+}
+
+TEST_F(GlobalizationTest, LocaleInfoString_Iso639Language_EnUS) {
+    auto* locale = S("en-US");
+    char16_t buf[64] = {};
+    auto ok = interop_globalization_get_locale_info_string(locale, 0x59, buf, 64, nullptr);
+    EXPECT_EQ(ok, 1);
+    EXPECT_EQ(buf_to_string(buf), "en");
+}
+
+TEST_F(GlobalizationTest, LocaleInfoString_Iso639Language_ZhCN) {
+    auto* locale = S("zh-CN");
+    char16_t buf[64] = {};
+    auto ok = interop_globalization_get_locale_info_string(locale, 0x59, buf, 64, nullptr);
+    EXPECT_EQ(ok, 1);
+    EXPECT_EQ(buf_to_string(buf), "zh");
+}
+
+TEST_F(GlobalizationTest, LocaleInfoString_Iso3166Country_EnUS) {
+    auto* locale = S("en-US");
+    char16_t buf[64] = {};
+    auto ok = interop_globalization_get_locale_info_string(locale, 0x5A, buf, 64, nullptr);
+    EXPECT_EQ(ok, 1);
+    EXPECT_EQ(buf_to_string(buf), "US");
+}
+
+TEST_F(GlobalizationTest, LocaleInfoString_Iso3166Country_ZhCN) {
+    auto* locale = S("zh-CN");
+    char16_t buf[64] = {};
+    auto ok = interop_globalization_get_locale_info_string(locale, 0x5A, buf, 64, nullptr);
+    EXPECT_EQ(ok, 1);
+    EXPECT_EQ(buf_to_string(buf), "CN");
+}
+
+TEST_F(GlobalizationTest, LocaleInfoString_ParentName_ZhCN) {
+    auto* locale = S("zh-CN");
+    char16_t buf[64] = {};
+    auto ok = interop_globalization_get_locale_info_string(locale, 0x6D, buf, 64, nullptr);
+    EXPECT_EQ(ok, 1);
+    EXPECT_EQ(buf_to_string(buf), "zh");
+}
+
+TEST_F(GlobalizationTest, LocaleInfoString_ParentName_EnUS) {
+    auto* locale = S("en-US");
+    char16_t buf[64] = {};
+    auto ok = interop_globalization_get_locale_info_string(locale, 0x6D, buf, 64, nullptr);
+    EXPECT_EQ(ok, 1);
+    EXPECT_EQ(buf_to_string(buf), "en");
+}
+
+TEST_F(GlobalizationTest, LocaleInfoString_EnglishLanguageName_ZhCN) {
+    auto* locale = S("zh-CN");
+    char16_t buf[128] = {};
+    auto ok = interop_globalization_get_locale_info_string(locale, 0x1001, buf, 128, nullptr);
+    EXPECT_EQ(ok, 1);
+    EXPECT_EQ(buf_to_string(buf), "Chinese");
+}
+
+TEST_F(GlobalizationTest, LocaleInfoString_EnglishCountryName_ZhCN) {
+    auto* locale = S("zh-CN");
+    char16_t buf[128] = {};
+    auto ok = interop_globalization_get_locale_info_string(locale, 0x1002, buf, 128, nullptr);
+    EXPECT_EQ(ok, 1);
+    EXPECT_EQ(buf_to_string(buf), "China");
+}
+
+TEST_F(GlobalizationTest, LocaleInfoString_AMDesignator_EnUS) {
+    auto* locale = S("en-US");
+    char16_t buf[32] = {};
+    auto ok = interop_globalization_get_locale_info_string(locale, 0x28, buf, 32, nullptr);
+    EXPECT_EQ(ok, 1);
+    EXPECT_EQ(buf_to_string(buf), "AM");
+}
+
+TEST_F(GlobalizationTest, LocaleInfoString_PMDesignator_EnUS) {
+    auto* locale = S("en-US");
+    char16_t buf[32] = {};
+    auto ok = interop_globalization_get_locale_info_string(locale, 0x29, buf, 32, nullptr);
+    EXPECT_EQ(ok, 1);
+    EXPECT_EQ(buf_to_string(buf), "PM");
+}
+
+TEST_F(GlobalizationTest, LocaleInfoString_NaNSymbol) {
+    auto* locale = S("en-US");
+    char16_t buf[32] = {};
+    auto ok = interop_globalization_get_locale_info_string(locale, 0x69, buf, 32, nullptr);
+    EXPECT_EQ(ok, 1);
+    EXPECT_EQ(buf_to_string(buf), "NaN");
+}
+
+TEST_F(GlobalizationTest, LocaleInfoString_PercentSymbol) {
+    auto* locale = S("en-US");
+    char16_t buf[32] = {};
+    auto ok = interop_globalization_get_locale_info_string(locale, 0x76, buf, 32, nullptr);
+    EXPECT_EQ(ok, 1);
+    EXPECT_EQ(buf_to_string(buf), "%");
+}
+
+TEST_F(GlobalizationTest, LocaleInfoString_ListSeparator_EnUS) {
+    auto* locale = S("en-US");
+    char16_t buf[32] = {};
+    auto ok = interop_globalization_get_locale_info_string(locale, 0x0C, buf, 32, nullptr);
+    EXPECT_EQ(ok, 1);
+    EXPECT_EQ(buf_to_string(buf), ",");
+}
+
+TEST_F(GlobalizationTest, LocaleInfoString_ListSeparator_DeDE) {
+    auto* locale = S("de-DE");
+    char16_t buf[32] = {};
+    auto ok = interop_globalization_get_locale_info_string(locale, 0x0C, buf, 32, nullptr);
+    EXPECT_EQ(ok, 1);
+    // de-DE uses ',' as decimal → list separator should be ';'
+    EXPECT_EQ(buf_to_string(buf), ";");
+}

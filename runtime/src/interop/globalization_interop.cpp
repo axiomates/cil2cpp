@@ -22,6 +22,7 @@
 #include <unicode/udat.h>
 #include <unicode/ucal.h>
 #include <unicode/ulocdata.h>
+#include <unicode/ucurr.h>
 
 #include <cstring>
 #include <mutex>
@@ -473,40 +474,252 @@ int32_t interop_globalization_get_locale_name(
     return 1;
 }
 
-int32_t interop_globalization_get_locale_info_string(
-    String* /*localeName*/, uint32_t type, char16_t* buffer,
-    int32_t /*bufferLength*/, String* /*uiCultureName*/)
-{
-    // Helper: write a null-terminated char16_t string from ASCII
-    auto write = [&](const char* s) -> int32_t {
-        int i = 0;
-        while (s[i]) { buffer[i] = static_cast<char16_t>(s[i]); i++; }
-        buffer[i] = 0;
-        return 1;
-    };
+// LocaleStringData enum — matches System.Globalization.CultureData.LocaleStringData
+enum LocaleStringData : uint32_t {
+    LSD_LocalizedDisplayName       = 0x02,
+    LSD_NativeLanguageName         = 0x04,
+    LSD_NativeCountryName          = 0x08,
+    LSD_ListSeparator              = 0x0C,  // 12
+    LSD_DecimalSeparator           = 0x0E,  // 14
+    LSD_ThousandSeparator          = 0x0F,  // 15
+    LSD_Digits                     = 0x13,  // 19
+    LSD_MonetarySymbol             = 0x14,  // 20
+    LSD_Iso4217MonetarySymbol      = 0x15,  // 21
+    LSD_MonetaryDecimalSeparator   = 0x16,  // 22
+    LSD_MonetaryThousandSeparator  = 0x17,  // 23
+    LSD_AMDesignator               = 0x28,  // 40
+    LSD_PMDesignator               = 0x29,  // 41
+    LSD_PositiveSign               = 0x50,  // 80
+    LSD_NegativeSign               = 0x51,  // 81
+    LSD_Iso639LanguageTwoLetterName   = 0x59,  // 89
+    LSD_Iso3166CountryName            = 0x5A,  // 90
+    LSD_Iso639LanguageThreeLetterName = 0x67,  // 103
+    LSD_NaNSymbol                  = 0x69,  // 105
+    LSD_PositiveInfinitySymbol     = 0x6A,  // 106
+    LSD_NegativeInfinitySymbol     = 0x6B,  // 107
+    LSD_ParentName                 = 0x6D,  // 109
+    LSD_LocalizedLanguageName      = 0x6F,  // 111
+    LSD_EnglishDisplayName         = 0x72,  // 114
+    LSD_NativeDisplayName          = 0x73,  // 115
+    LSD_PercentSymbol              = 0x76,  // 118
+    LSD_PerMilleSymbol             = 0x77,  // 119
+    LSD_EnglishLanguageName        = 0x1001,
+    LSD_EnglishCountryName         = 0x1002,
+    LSD_CurrencyEnglishName        = 0x1007,
+    LSD_CurrencyNativeName         = 0x1008,
+};
 
-    switch (type) {
-    // Number formatting
-    case 14:  return write(".");   // NumberDecimalSeparator
-    case 15:  return write(",");   // NumberGroupSeparator
-    case 80:  return write("+");   // PositiveSign
-    case 81:  return write("-");   // NegativeSign
-    case 105: return write("NaN"); // NaNSymbol
-    case 106: buffer[0] = 0x221E; buffer[1] = 0; return 1;   // PositiveInfinitySymbol (U+221E = ∞)
-    case 107: buffer[0] = u'-'; buffer[1] = 0x221E; buffer[2] = 0; return 1; // NegativeInfinitySymbol
-    // Currency
-    case 20:  return write("$");   // CurrencySymbol
-    case 22:  return write(".");   // CurrencyDecimalSeparator
-    case 23:  return write(",");   // CurrencyGroupSeparator
-    // Percent
-    case 19:  return write("%");   // PercentSymbol
-    case 89:  return write("+");   // PercentPositivePattern (string rep)
-    case 90:  return write("-");   // PercentNegativePattern (string rep)
-    case 118: return write("%");   // PerMilleSymbol
-    case 119: return write("+");   // (additional locale data)
-    // List/misc
-    case 40:  return write("AM");  // AMDesignator
-    case 41:  return write("PM");  // PMDesignator
+/// Get a UNumberFormat symbol for the given locale and write to buffer.
+/// Returns 1 on success, 0 on failure.
+static int32_t get_number_symbol(const char* locale, UNumberFormatStyle style,
+    UNumberFormatSymbol symbol, char16_t* buffer, int32_t bufferLength)
+{
+    UErrorCode err = U_ZERO_ERROR;
+    UNumberFormat* fmt = unum_open(style, nullptr, 0, locale, nullptr, &err);
+    if (U_FAILURE(err) || !fmt) return 0;
+    UChar sym[64] = {};
+    int32_t len = unum_getSymbol(fmt, symbol, sym, 64, &err);
+    unum_close(fmt);
+    if (U_FAILURE(err) || len <= 0) return 0;
+    return write_uchar_to_buffer(sym, len, buffer, bufferLength) > 0 ? 1 : 0;
+}
+
+/// Write an ASCII string to a char16_t buffer.
+static int32_t write_ascii_to_buffer(const char* s, char16_t* buffer, int32_t bufferLength) {
+    int i = 0;
+    while (s[i] && i < bufferLength - 1) {
+        buffer[i] = static_cast<char16_t>(static_cast<unsigned char>(s[i]));
+        i++;
+    }
+    buffer[i] = 0;
+    return (i > 0) ? 1 : 0;
+}
+
+/// Get a display name from ICU (language, country, or full display name).
+/// displayLocale controls the language of the output (e.g., "en" for English names).
+/// Returns 1 on success, 0 on failure.
+static int32_t get_display_name(const char* locale, const char* displayLocale,
+    int mode, char16_t* buffer, int32_t bufferLength)
+{
+    UErrorCode err = U_ZERO_ERROR;
+    UChar result[256] = {};
+    int32_t len = 0;
+    switch (mode) {
+    case 0: // full display name
+        len = uloc_getDisplayName(locale, displayLocale, result, 256, &err);
+        break;
+    case 1: // language name
+        len = uloc_getDisplayLanguage(locale, displayLocale, result, 256, &err);
+        break;
+    case 2: // country name
+        len = uloc_getDisplayCountry(locale, displayLocale, result, 256, &err);
+        break;
+    }
+    if (U_FAILURE(err) || len <= 0) return 0;
+    return write_uchar_to_buffer(result, len, buffer, bufferLength) > 0 ? 1 : 0;
+}
+
+int32_t interop_globalization_get_locale_info_string(
+    String* localeName, uint32_t type, char16_t* buffer,
+    int32_t bufferLength, String* uiCultureName)
+{
+    if (!buffer || bufferLength <= 0) return 0;
+
+    std::string locale = locale_to_icu(localeName);
+    // Use root locale "" for empty/null locale (system default behavior)
+    const char* loc = locale.empty() ? "" : locale.c_str();
+
+    // UI culture for display names (e.g., show "Chinese" in English vs "中文" in Chinese)
+    std::string uiLocale = locale_to_icu(uiCultureName);
+    const char* uiLoc = uiLocale.empty() ? loc : uiLocale.c_str();
+
+    UErrorCode err = U_ZERO_ERROR;
+
+    switch (static_cast<LocaleStringData>(type)) {
+
+    // ===== Number formatting symbols =====
+    case LSD_DecimalSeparator:
+        return get_number_symbol(loc, UNUM_DECIMAL, UNUM_DECIMAL_SEPARATOR_SYMBOL, buffer, bufferLength);
+    case LSD_ThousandSeparator:
+        return get_number_symbol(loc, UNUM_DECIMAL, UNUM_GROUPING_SEPARATOR_SYMBOL, buffer, bufferLength);
+    case LSD_PositiveSign:
+        return get_number_symbol(loc, UNUM_DECIMAL, UNUM_PLUS_SIGN_SYMBOL, buffer, bufferLength);
+    case LSD_NegativeSign:
+        return get_number_symbol(loc, UNUM_DECIMAL, UNUM_MINUS_SIGN_SYMBOL, buffer, bufferLength);
+    case LSD_NaNSymbol:
+        return get_number_symbol(loc, UNUM_DECIMAL, UNUM_NAN_SYMBOL, buffer, bufferLength);
+    case LSD_PositiveInfinitySymbol:
+        return get_number_symbol(loc, UNUM_DECIMAL, UNUM_INFINITY_SYMBOL, buffer, bufferLength);
+    case LSD_NegativeInfinitySymbol: {
+        // NegativeInfinity = NegativeSign + Infinity (BCL composes this in IL)
+        char16_t neg[16] = {};
+        get_number_symbol(loc, UNUM_DECIMAL, UNUM_MINUS_SIGN_SYMBOL, neg, 16);
+        char16_t inf[16] = {};
+        get_number_symbol(loc, UNUM_DECIMAL, UNUM_INFINITY_SYMBOL, inf, 16);
+        int ni = 0;
+        while (neg[ni] && ni < bufferLength - 1) { buffer[ni] = neg[ni]; ni++; }
+        int ii = 0;
+        while (inf[ii] && ni < bufferLength - 1) { buffer[ni++] = inf[ii++]; }
+        buffer[ni] = 0;
+        return 1;
+    }
+    case LSD_PercentSymbol:
+        return get_number_symbol(loc, UNUM_DECIMAL, UNUM_PERCENT_SYMBOL, buffer, bufferLength);
+    case LSD_PerMilleSymbol:
+        return get_number_symbol(loc, UNUM_DECIMAL, UNUM_PERMILL_SYMBOL, buffer, bufferLength);
+
+    // ===== Currency symbols =====
+    case LSD_MonetarySymbol:
+        return get_number_symbol(loc, UNUM_CURRENCY, UNUM_CURRENCY_SYMBOL, buffer, bufferLength);
+    case LSD_Iso4217MonetarySymbol:
+        return get_number_symbol(loc, UNUM_CURRENCY, UNUM_INTL_CURRENCY_SYMBOL, buffer, bufferLength);
+    case LSD_MonetaryDecimalSeparator:
+        return get_number_symbol(loc, UNUM_CURRENCY, UNUM_MONETARY_SEPARATOR_SYMBOL, buffer, bufferLength);
+    case LSD_MonetaryThousandSeparator:
+        return get_number_symbol(loc, UNUM_CURRENCY, UNUM_MONETARY_GROUPING_SEPARATOR_SYMBOL, buffer, bufferLength);
+
+    // ===== AM/PM designators =====
+    case LSD_AMDesignator:
+    case LSD_PMDesignator: {
+        UDateFormat* df = udat_open(UDAT_DEFAULT, UDAT_DEFAULT, loc, nullptr, 0, nullptr, 0, &err);
+        if (U_FAILURE(err) || !df) {
+            return write_ascii_to_buffer(type == LSD_AMDesignator ? "AM" : "PM", buffer, bufferLength);
+        }
+        int32_t idx = (type == LSD_AMDesignator) ? 0 : 1;
+        UChar sym[32] = {};
+        int32_t len = udat_getSymbols(df, UDAT_AM_PMS, idx, sym, 32, &err);
+        udat_close(df);
+        if (U_FAILURE(err) || len <= 0) {
+            return write_ascii_to_buffer(type == LSD_AMDesignator ? "AM" : "PM", buffer, bufferLength);
+        }
+        return write_uchar_to_buffer(sym, len, buffer, bufferLength) > 0 ? 1 : 0;
+    }
+
+    // ===== ISO language/country codes =====
+    case LSD_Iso639LanguageTwoLetterName: {
+        char lang[16] = {};
+        uloc_getLanguage(loc, lang, 16, &err);
+        if (U_FAILURE(err) || lang[0] == 0) return 0;
+        return write_ascii_to_buffer(lang, buffer, bufferLength);
+    }
+    case LSD_Iso3166CountryName: {
+        char country[16] = {};
+        uloc_getCountry(loc, country, 16, &err);
+        if (U_FAILURE(err) || country[0] == 0) return 0;
+        return write_ascii_to_buffer(country, buffer, bufferLength);
+    }
+    case LSD_Iso639LanguageThreeLetterName: {
+        const char* iso3 = uloc_getISO3Language(loc);
+        if (!iso3 || iso3[0] == 0) return 0;
+        return write_ascii_to_buffer(iso3, buffer, bufferLength);
+    }
+
+    // ===== Display names =====
+    case LSD_LocalizedDisplayName:
+        return get_display_name(loc, uiLoc, 0, buffer, bufferLength);
+    case LSD_EnglishDisplayName:
+        return get_display_name(loc, "en", 0, buffer, bufferLength);
+    case LSD_NativeDisplayName:
+        return get_display_name(loc, loc, 0, buffer, bufferLength);
+    case LSD_LocalizedLanguageName:
+        return get_display_name(loc, uiLoc, 1, buffer, bufferLength);
+    case LSD_EnglishLanguageName:
+        return get_display_name(loc, "en", 1, buffer, bufferLength);
+    case LSD_NativeLanguageName:
+        return get_display_name(loc, loc, 1, buffer, bufferLength);
+    case LSD_EnglishCountryName:
+        return get_display_name(loc, "en", 2, buffer, bufferLength);
+    case LSD_NativeCountryName:
+        return get_display_name(loc, loc, 2, buffer, bufferLength);
+
+    // ===== Currency display names =====
+    case LSD_CurrencyEnglishName:
+    case LSD_CurrencyNativeName: {
+        // Get currency code first, then get display name
+        UChar code[8] = {};
+        get_number_symbol(loc, UNUM_CURRENCY, UNUM_INTL_CURRENCY_SYMBOL, code, 8);
+        if (code[0] == 0) return 0;
+        const char* dispLoc = (type == LSD_CurrencyEnglishName) ? "en" : loc;
+        UBool isChoice = false;
+        int32_t len = 0;
+        const UChar* currName = ucurr_getName(code, dispLoc, UCURR_LONG_NAME, &isChoice, &len, &err);
+        if (U_FAILURE(err) || !currName || len <= 0) return 0;
+        return write_uchar_to_buffer(currName, len, buffer, bufferLength);
+    }
+
+    // ===== Parent locale =====
+    case LSD_ParentName: {
+        char parent[64] = {};
+        uloc_getParent(loc, parent, 64, &err);
+        if (U_FAILURE(err)) return 0;
+        // Convert ICU format back to BCP47: '_' → '-'
+        for (int i = 0; parent[i]; i++) {
+            if (parent[i] == '_') parent[i] = '-';
+        }
+        return write_ascii_to_buffer(parent, buffer, bufferLength);
+    }
+
+    // ===== List separator =====
+    case LSD_ListSeparator: {
+        // Heuristic: if decimal separator is ',', list separator is ';'; otherwise ','
+        char16_t dec[8] = {};
+        get_number_symbol(loc, UNUM_DECIMAL, UNUM_DECIMAL_SEPARATOR_SYMBOL, dec, 8);
+        return write_ascii_to_buffer(dec[0] == u',' ? ";" : ",", buffer, bufferLength);
+    }
+
+    // ===== Native digits =====
+    case LSD_Digits: {
+        // Return the native zero digit for the locale's numbering system
+        UChar zero[8] = {};
+        int32_t len = get_number_symbol(loc, UNUM_DECIMAL, UNUM_ZERO_DIGIT_SYMBOL, zero, 8);
+        if (!len || zero[0] == 0) return write_ascii_to_buffer("0123456789", buffer, bufferLength);
+        // Build string of digits 0-9 from the zero digit base
+        char16_t digits[11] = {};
+        for (int i = 0; i < 10; i++) digits[i] = static_cast<char16_t>(zero[0] + i);
+        digits[10] = 0;
+        return write_uchar_to_buffer(digits, 10, buffer, bufferLength);
+    }
+
     default:
         return 0;
     }
