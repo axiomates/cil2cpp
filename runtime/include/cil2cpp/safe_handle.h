@@ -12,6 +12,7 @@
 #include "type_info.h"
 #include <atomic>
 #include <cstring>
+#include <mutex>
 
 namespace cil2cpp {
 
@@ -32,6 +33,25 @@ struct SafeHandleLayout {
     bool f__ownsHandle;
     bool f__fullyInitialized;
 };
+
+/// Find the vtable slot for ReleaseHandle on a SafeHandle-derived type.
+/// The slot is constant for all subtypes (ReleaseHandle is declared on SafeHandle),
+/// so we cache it after the first lookup. Thread-safe via std::call_once.
+inline int32_t find_release_handle_slot(TypeInfo* ti) {
+    static int32_t cached_slot = -1;
+    static std::once_flag flag;
+    std::call_once(flag, [&]() {
+        for (UInt32 i = 0; i < ti->method_count; i++) {
+            if (ti->methods[i].name &&
+                std::strcmp(ti->methods[i].name, "ReleaseHandle") == 0 &&
+                ti->methods[i].vtable_slot >= 0) {
+                cached_slot = ti->methods[i].vtable_slot;
+                return;
+            }
+        }
+    });
+    return cached_slot;
+}
 
 /// SafeHandle internal call implementations
 namespace icall {
@@ -99,18 +119,10 @@ inline void SafeHandle_DangerousRelease(void* self) {
         if (atomic_state->compare_exchange_weak(old_state, new_state,
                 std::memory_order_acq_rel, std::memory_order_relaxed)) {
             if (releasing) {
-                // Call ReleaseHandle() via vtable
+                // Call ReleaseHandle() via vtable (slot cached after first lookup)
                 auto* ti = sh->__type_info;
                 if (ti && ti->vtable && sh->f_handle != 0 && sh->f_handle != -1) {
-                    int32_t releaseSlot = -1;
-                    for (UInt32 i = 0; i < ti->method_count; i++) {
-                        if (ti->methods[i].name &&
-                            std::strcmp(ti->methods[i].name, "ReleaseHandle") == 0 &&
-                            ti->methods[i].vtable_slot >= 0) {
-                            releaseSlot = ti->methods[i].vtable_slot;
-                            break;
-                        }
-                    }
+                    int32_t releaseSlot = find_release_handle_slot(ti);
                     if (releaseSlot >= 0 &&
                         static_cast<UInt32>(releaseSlot) < ti->vtable->method_count &&
                         ti->vtable->methods[releaseSlot] != nullptr) {
@@ -153,16 +165,8 @@ inline void SafeHandle_Dispose(void* self, bool disposing) {
     if (sh->f_handle != 0 && sh->f_handle != -1) {
         auto* ti = sh->__type_info;
         if (ti && ti->vtable) {
-            // Look up ReleaseHandle vtable slot by name from MethodInfo metadata
-            int32_t releaseSlot = -1;
-            for (UInt32 i = 0; i < ti->method_count; i++) {
-                if (ti->methods[i].name &&
-                    std::strcmp(ti->methods[i].name, "ReleaseHandle") == 0 &&
-                    ti->methods[i].vtable_slot >= 0) {
-                    releaseSlot = ti->methods[i].vtable_slot;
-                    break;
-                }
-            }
+            // ReleaseHandle vtable slot (cached after first lookup)
+            int32_t releaseSlot = find_release_handle_slot(ti);
             if (releaseSlot >= 0 &&
                 static_cast<UInt32>(releaseSlot) < ti->vtable->method_count &&
                 ti->vtable->methods[releaseSlot] != nullptr) {

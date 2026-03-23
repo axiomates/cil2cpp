@@ -973,8 +973,7 @@ public class ReachabilityAnalyzer
     private bool IsBclBoundaryType(TypeDefinition type)
     {
         // Non-BCL types always pass through
-        var assemblyName = type.Module.Assembly.Name.Name;
-        if (!IsBclAssembly(assemblyName))
+        if (!IsBclAssembly(type.Module.Assembly))
             return false;
 
         // Primitive types pass through — methods compile from BCL IL,
@@ -1115,13 +1114,17 @@ public class ReachabilityAnalyzer
         return false;
     }
 
-    private static bool IsBclAssembly(string assemblyName)
+    private static bool IsBclAssembly(AssemblyDefinition assembly)
     {
-        return assemblyName.StartsWith("System.") ||
-               assemblyName == "System" ||
-               assemblyName == "mscorlib" ||
-               assemblyName == "netstandard" ||
-               assemblyName.StartsWith("Microsoft.");
+        // Use public key token comparison (same as IRBuilder.IsFrameworkAssembly).
+        // String prefix matching on assembly name is fragile — NuGet packages like
+        // System.Text.Json or Microsoft.Extensions.* have "System."/"Microsoft." prefix
+        // but are NOT framework assemblies.
+        if (IRBuilder.IsFrameworkAssembly(assembly))
+            return true;
+        // Also match unsigned well-known assemblies (netstandard has no public key token in some configs)
+        var name = assembly.Name.Name;
+        return name == "netstandard";
     }
 
     private void ProcessMethod(MethodDefinition method)

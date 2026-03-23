@@ -3,6 +3,7 @@
  */
 
 #include <cil2cpp/type_info.h>
+#include <cil2cpp/array_interfaces.h>
 #include <cil2cpp/object.h>
 #include <cil2cpp/array.h>
 #include <cil2cpp/gc.h>
@@ -90,11 +91,11 @@ static Boolean type_is_variant_assignable(TypeInfo* target, TypeInfo* source) {
         auto* s_arg = source->generic_arguments[i];
         if (t_arg == s_arg) continue;
 
-        uint8_t variance = target->generic_variances ? target->generic_variances[i] : 0;
-        if (variance == 1) {
+        uint8_t variance = target->generic_variances ? target->generic_variances[i] : generic_variance::kInvariant;
+        if (variance == generic_variance::kCovariant) {
             // Covariant (out T): source arg must be assignable TO target arg
             if (!type_is_assignable_from(t_arg, s_arg)) return false;
-        } else if (variance == 2) {
+        } else if (variance == generic_variance::kContravariant) {
             // Contravariant (in T): target arg must be assignable TO source arg
             if (!type_is_assignable_from(s_arg, t_arg)) return false;
         } else {
@@ -313,12 +314,12 @@ Boolean object_is_instance_of(Object* obj, TypeInfo* type) {
             if (type->full_name) {
                 const char* name = type->full_name;
                 // Non-generic interfaces
-                if (std::strcmp(name, "System.Collections.IList") == 0 ||
-                    std::strcmp(name, "System.Collections.ICollection") == 0 ||
-                    std::strcmp(name, "System.Collections.IEnumerable") == 0 ||
-                    std::strcmp(name, "System.Collections.IStructuralComparable") == 0 ||
-                    std::strcmp(name, "System.Collections.IStructuralEquatable") == 0 ||
-                    std::strcmp(name, "System.ICloneable") == 0) {
+                if (std::strcmp(name, array_interfaces::kIList) == 0 ||
+                    std::strcmp(name, array_interfaces::kICollection) == 0 ||
+                    std::strcmp(name, array_interfaces::kIEnumerable) == 0 ||
+                    std::strcmp(name, array_interfaces::kIStructuralComparable) == 0 ||
+                    std::strcmp(name, array_interfaces::kIStructuralEquatable) == 0 ||
+                    std::strcmp(name, array_interfaces::kICloneable) == 0) {
                     return true;
                 }
             }
@@ -329,11 +330,11 @@ Boolean object_is_instance_of(Object* obj, TypeInfo* type) {
                 && type->generic_arguments && type->generic_arguments[0]) {
                 const char* genDef = type->generic_definition_name;
                 bool isArrayInterface =
-                    std::strcmp(genDef, "System.Collections.Generic.IList`1") == 0 ||
-                    std::strcmp(genDef, "System.Collections.Generic.ICollection`1") == 0 ||
-                    std::strcmp(genDef, "System.Collections.Generic.IEnumerable`1") == 0 ||
-                    std::strcmp(genDef, "System.Collections.Generic.IReadOnlyList`1") == 0 ||
-                    std::strcmp(genDef, "System.Collections.Generic.IReadOnlyCollection`1") == 0;
+                    std::strcmp(genDef, array_interfaces::kIList_1) == 0 ||
+                    std::strcmp(genDef, array_interfaces::kICollection_1) == 0 ||
+                    std::strcmp(genDef, array_interfaces::kIEnumerable_1) == 0 ||
+                    std::strcmp(genDef, array_interfaces::kIReadOnlyList_1) == 0 ||
+                    std::strcmp(genDef, array_interfaces::kIReadOnlyCollection_1) == 0;
                 if (isArrayInterface) {
                     auto* elemType = as_arr->element_type;
                     auto* interfaceArgType = type->generic_arguments[0];
@@ -348,11 +349,11 @@ Boolean object_is_instance_of(Object* obj, TypeInfo* type) {
             if (type->full_name) {
                 const char* fn = type->full_name;
                 static const char* prefixes[] = {
-                    "System.Collections.Generic.IList`1<",
-                    "System.Collections.Generic.ICollection`1<",
-                    "System.Collections.Generic.IEnumerable`1<",
-                    "System.Collections.Generic.IReadOnlyList`1<",
-                    "System.Collections.Generic.IReadOnlyCollection`1<",
+                    array_interfaces::kIList_1_prefix,
+                    array_interfaces::kICollection_1_prefix,
+                    array_interfaces::kIEnumerable_1_prefix,
+                    array_interfaces::kIReadOnlyList_1_prefix,
+                    array_interfaces::kIReadOnlyCollection_1_prefix,
                 };
                 for (auto* prefix : prefixes) {
                     size_t plen = std::strlen(prefix);

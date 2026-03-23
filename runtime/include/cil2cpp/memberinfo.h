@@ -55,19 +55,39 @@ struct ManagedParameterInfo : Object {
 void reflection_set_typeinfos(TypeInfo* method_ti, TypeInfo* field_ti, TypeInfo* param_ti, TypeInfo* prop_ti);
 
 /**
+ * Vtable slot indices for RuntimePropertyInfo methods, computed by the compiler
+ * from the VTable layout. Eliminates hardcoded magic numbers in runtime code.
+ */
+struct PropertyVtableSlots {
+    int get_PropertyType;
+    int GetIndexParameters;
+    int get_CanRead;
+    int get_CanWrite;
+    int GetGetMethod;
+    int GetSetMethod;
+    int GetValue;
+    int SetValue;
+    int icap_iface_index;       // ICustomAttributeProvider interface vtable index (-1 if absent)
+};
+
+/**
  * Patch PropertyInfo/RuntimePropertyInfo vtable slots that are null because
  * RuntimePropertyInfo is ReflectionAliased (all methods blocked at codegen).
+ * Slot indices are computed by the compiler from the VTable layout.
  * Called from __init_runtime_vtables() in generated code.
  */
-void reflection_patch_property_vtables(TypeInfo* prop_ti, TypeInfo* runtime_prop_ti);
+void reflection_patch_property_vtables(TypeInfo* prop_ti, TypeInfo* runtime_prop_ti,
+                                       const PropertyVtableSlots& slots);
 
 /**
  * Patch MethodBase/MethodInfo vtable slots for Equals/GetHashCode.
  * MethodBase is ReflectionAliased (all instance methods blocked at codegen),
  * so Equals/GetHashCode overrides are never compiled → vtable retains Object defaults.
+ * Slot indices are computed by the compiler from the VTable layout.
  * Called from __init_runtime_vtables() in generated code.
  */
-void reflection_patch_method_vtables(TypeInfo* methodbase_ti, TypeInfo* methodinfo_ti);
+void reflection_patch_method_vtables(TypeInfo* methodbase_ti, TypeInfo* methodinfo_ti,
+                                     int slot_Equals, int slot_GetHashCode);
 
 // ===== Type → GetMethods/GetFields API =====
 

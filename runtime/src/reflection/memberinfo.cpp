@@ -119,68 +119,65 @@ extern "C" void* System_Reflection_MemberInfo_GetCustomAttributes__System_Boolea
 extern "C" void* System_Reflection_MemberInfo_GetCustomAttributes__System_Type_System_Boolean(void*, void*, bool);
 extern "C" bool System_Reflection_MemberInfo_IsDefined(void*, void*, bool);
 
-void reflection_patch_property_vtables(TypeInfo* prop_ti, TypeInfo* runtime_prop_ti) {
+void reflection_patch_property_vtables(TypeInfo* prop_ti, TypeInfo* runtime_prop_ti,
+                                       const PropertyVtableSlots& slots) {
     // Patch null vtable slots for RuntimePropertyInfo methods.
     // Since RuntimePropertyInfo is ReflectionAliased, the codegen blocks all instance methods,
-    // leaving these vtable slots as nullptr. We patch them at runtime.
-    // Slot mapping (from generated vtable order):
-    //   18: get_PropertyType      21: get_CanRead           25: GetGetMethod(bool)
-    //   19: GetIndexParameters     22: get_CanWrite          27: GetSetMethod(bool)
-    //   32: GetValue(5-param)      36: SetValue(6-param)
-    auto patch = [](TypeInfo* ti, const char* label) {
-        if (!ti || !ti->vtable) {
-            return;
-        }
+    // leaving these vtable slots as nullptr. We patch them at runtime using slot indices
+    // computed by the compiler from the VTable layout.
+    auto try_patch = [](void** m, UInt32 count, int slot, void* fn) {
+        if (slot >= 0 && static_cast<UInt32>(slot) < count && !m[slot])
+            m[slot] = fn;
+    };
+    auto patch = [&](TypeInfo* ti) {
+        if (!ti || !ti->vtable) return;
         auto** m = ti->vtable->methods;
         auto count = ti->vtable->method_count;
-        if (count > 18 && !m[18]) m[18] = (void*)System_Reflection_RuntimePropertyInfo_get_PropertyType;
-        if (count > 19 && !m[19]) m[19] = (void*)System_Reflection_RuntimePropertyInfo_GetIndexParameters;
-        if (count > 21 && !m[21]) m[21] = (void*)System_Reflection_RuntimePropertyInfo_get_CanRead;
-        if (count > 22 && !m[22]) m[22] = (void*)System_Reflection_RuntimePropertyInfo_get_CanWrite;
-        if (count > 25 && !m[25]) m[25] = (void*)System_Reflection_RuntimePropertyInfo_GetGetMethod;
-        if (count > 27 && !m[27]) m[27] = (void*)System_Reflection_RuntimePropertyInfo_GetSetMethod;
-        if (count > 32 && !m[32]) m[32] = (void*)System_Reflection_RuntimePropertyInfo_GetValue_5;
-        if (count > 36 && !m[36]) m[36] = (void*)System_Reflection_RuntimePropertyInfo_SetValue_6;
+        try_patch(m, count, slots.get_PropertyType, (void*)System_Reflection_RuntimePropertyInfo_get_PropertyType);
+        try_patch(m, count, slots.GetIndexParameters, (void*)System_Reflection_RuntimePropertyInfo_GetIndexParameters);
+        try_patch(m, count, slots.get_CanRead, (void*)System_Reflection_RuntimePropertyInfo_get_CanRead);
+        try_patch(m, count, slots.get_CanWrite, (void*)System_Reflection_RuntimePropertyInfo_get_CanWrite);
+        try_patch(m, count, slots.GetGetMethod, (void*)System_Reflection_RuntimePropertyInfo_GetGetMethod);
+        try_patch(m, count, slots.GetSetMethod, (void*)System_Reflection_RuntimePropertyInfo_GetSetMethod);
+        try_patch(m, count, slots.GetValue, (void*)System_Reflection_RuntimePropertyInfo_GetValue_5);
+        try_patch(m, count, slots.SetValue, (void*)System_Reflection_RuntimePropertyInfo_SetValue_6);
 
         // Patch ICustomAttributeProvider interface vtable.
-        // RuntimePropertyInfo is blanket-gated, leaving ICustomAttributeProvider methods as nullptr.
-        // Patch them to use the MemberInfo ICalls which support attribute construction.
-        if (ti->interface_vtables) {
-            for (UInt32 i = 0; i < ti->interface_count; i++) {
-                auto& ivt = ti->interface_vtables[i];
-                if (ivt.interface_type && ivt.interface_type->full_name &&
-                    std::strcmp(ivt.interface_type->full_name, "System.Reflection.ICustomAttributeProvider") == 0) {
-                    if (ivt.method_count >= 3) {
-                        if (!ivt.methods[0]) ivt.methods[0] = (void*)System_Reflection_MemberInfo_GetCustomAttributes__System_Boolean;
-                        if (!ivt.methods[1]) ivt.methods[1] = (void*)System_Reflection_MemberInfo_GetCustomAttributes__System_Type_System_Boolean;
-                        if (!ivt.methods[2]) ivt.methods[2] = (void*)System_Reflection_MemberInfo_IsDefined;
-                    }
-                    break;
-                }
+        // The interface vtable index is computed by the compiler from InterfaceImpls ordering.
+        // Method positions within the interface follow ECMA-335 declaration order:
+        //   0: GetCustomAttributes(bool), 1: GetCustomAttributes(Type,bool), 2: IsDefined(Type,bool)
+        if (slots.icap_iface_index >= 0 && ti->interface_vtables
+            && static_cast<UInt32>(slots.icap_iface_index) < ti->interface_count) {
+            auto& ivt = ti->interface_vtables[slots.icap_iface_index];
+            if (ivt.method_count >= 3) {
+                if (!ivt.methods[0]) ivt.methods[0] = (void*)System_Reflection_MemberInfo_GetCustomAttributes__System_Boolean;
+                if (!ivt.methods[1]) ivt.methods[1] = (void*)System_Reflection_MemberInfo_GetCustomAttributes__System_Type_System_Boolean;
+                if (!ivt.methods[2]) ivt.methods[2] = (void*)System_Reflection_MemberInfo_IsDefined;
             }
         }
     };
-    patch(prop_ti, "PropertyInfo");
-    patch(runtime_prop_ti, "RuntimePropertyInfo");
+    patch(prop_ti);
+    patch(runtime_prop_ti);
 }
 
 // Forward declarations for MethodBase Equals/GetHashCode in core_methods.cpp
 extern "C" bool System_Reflection_MethodBase_Equals(void*, void*);
 extern "C" int32_t System_Reflection_MethodBase_GetHashCode(void*);
 
-void reflection_patch_method_vtables(TypeInfo* methodbase_ti, TypeInfo* methodinfo_ti) {
-    // Patch vtable slots 1 (Equals) and 2 (GetHashCode) for MethodBase/MethodInfo.
-    // MethodBase is ReflectionAliased → Equals/GetHashCode overrides never compiled
-    // → vtable retains Object defaults (pointer equality). We patch in the semantic
-    // implementations that compare native_info pointers.
-    auto patch = [](TypeInfo* ti) {
+void reflection_patch_method_vtables(TypeInfo* methodbase_ti, TypeInfo* methodinfo_ti,
+                                     int slot_Equals, int slot_GetHashCode) {
+    // Patch vtable slots for MethodBase/MethodInfo Equals/GetHashCode overrides.
+    // MethodBase is ReflectionAliased → overrides never compiled → vtable retains Object defaults.
+    // We patch in semantic implementations that compare native_info pointers.
+    // Slot indices are computed by the compiler from the VTable layout.
+    auto patch = [&](TypeInfo* ti) {
         if (!ti || !ti->vtable) return;
         auto** m = ti->vtable->methods;
         auto count = ti->vtable->method_count;
-        // Slot 1 = Equals (Object vtable layout)
-        if (count > 1 && !m[1]) m[1] = (void*)System_Reflection_MethodBase_Equals;
-        // Slot 2 = GetHashCode (Object vtable layout)
-        if (count > 2 && !m[2]) m[2] = (void*)System_Reflection_MethodBase_GetHashCode;
+        if (slot_Equals >= 0 && static_cast<UInt32>(slot_Equals) < count && !m[slot_Equals])
+            m[slot_Equals] = (void*)System_Reflection_MethodBase_Equals;
+        if (slot_GetHashCode >= 0 && static_cast<UInt32>(slot_GetHashCode) < count && !m[slot_GetHashCode])
+            m[slot_GetHashCode] = (void*)System_Reflection_MethodBase_GetHashCode;
     };
     patch(methodbase_ti);
     patch(methodinfo_ti);

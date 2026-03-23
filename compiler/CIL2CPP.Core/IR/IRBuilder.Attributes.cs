@@ -246,13 +246,15 @@ public partial class IRBuilder
                 m.IsConstructor && !m.IsStatic && m.Parameters.Count == argCount && m.HasBody);
             if (cecilCtor == null) continue;
 
-            // Skip constructors with CLR internal dependencies
+            // Skip constructors with CLR internal dependencies (references types
+            // like MethodTable, EEType, etc. that don't exist in AOT)
             if (HasClrInternalDependencies(cecilCtor)) continue;
 
-            // Skip BCL attribute types — their constructors may trigger unsafe cctor chains
-            // at startup. Only compile constructors for non-BCL attributes (NuGet libraries, user code).
-            // TODO: investigate root cause of crash with BCL attribute constructors
-            if (IsBclAttributeType(attrTypeName)) continue;
+            // Skip attribute types defined in .NET framework assemblies.
+            // Framework attribute constructors (e.g., [Obsolete], [EditorBrowsable]) may trigger
+            // cctor chains on framework types that reference uninitialized TypeInfos at startup.
+            // Only compile constructors for attributes from user code and NuGet libraries.
+            if (IsFrameworkAssembly(cecilTypeDef.Module.Assembly)) continue;
 
             // Set up locals
             ctorMethod.Locals.Clear();
@@ -278,9 +280,6 @@ public partial class IRBuilder
             // Compile transitive callees (e.g., property setters called from the constructor)
             CompileTransitiveUnreachableCallees(cecilCtor);
         }
-
-        if (compiled > 0)
-            Console.Error.WriteLine($"[attr] Compiled {compiled} attribute constructors");
     }
 
     private static void CollectAttributeCtorNeeds(
@@ -294,12 +293,34 @@ public partial class IRBuilder
     }
 
     /// <summary>
-    /// BCL attribute types whose constructors should NOT be compiled for runtime construction.
-    /// These constructors may trigger complex cctor chains or reference CLR-internal types
-    /// that cause crashes. BCL attributes are metadata-only — user code reads NuGet/user
-    /// attributes through GetCustomAttributes, not BCL ones like [Flags] or [Obsolete].
+    /// Check if a Cecil assembly is a .NET framework/runtime assembly by public key token.
+    /// All framework assemblies use well-known Microsoft/ECMA public key tokens.
+    /// Framework attribute constructors may trigger unsafe cctor chains at startup,
+    /// so only user code and NuGet library attribute constructors are compiled.
     /// </summary>
-    private static bool IsBclAttributeType(string attrTypeName) =>
-        attrTypeName.StartsWith("System.") ||
-        attrTypeName.StartsWith("Microsoft.");
+    internal static bool IsFrameworkAssembly(Mono.Cecil.AssemblyDefinition assembly)
+    {
+        var token = assembly.Name.PublicKeyToken;
+        if (token == null || token.Length == 0) return false;
+
+        // .NET framework public key tokens (hex):
+        // b03f5f7f11d50a3a — ECMA key (System.Runtime, System.Collections, etc.)
+        // 7cec85d7bea7798e — System.Private.CoreLib
+        // b77a5c561934e089 — mscorlib, System.*
+        // 31bf3856ad364e35 — Microsoft.Extensions.*, System.ComponentModel.*
+        // cc7b13ffcd2ddd51 — .NET platform assemblies
+        return IsKnownFrameworkToken(token);
+    }
+
+    private static bool IsKnownFrameworkToken(byte[] token)
+    {
+        if (token.Length != 8) return false;
+        // Compare against known tokens as byte arrays
+        ReadOnlySpan<byte> t = token;
+        return t.SequenceEqual(stackalloc byte[] { 0xb0, 0x3f, 0x5f, 0x7f, 0x11, 0xd5, 0x0a, 0x3a })  // ECMA
+            || t.SequenceEqual(stackalloc byte[] { 0x7c, 0xec, 0x85, 0xd7, 0xbe, 0xa7, 0x79, 0x8e })  // CoreLib
+            || t.SequenceEqual(stackalloc byte[] { 0xb7, 0x7a, 0x5c, 0x56, 0x19, 0x34, 0xe0, 0x89 })  // mscorlib
+            || t.SequenceEqual(stackalloc byte[] { 0x31, 0xbf, 0x38, 0x56, 0xad, 0x36, 0x4e, 0x35 })  // MS Extensions
+            || t.SequenceEqual(stackalloc byte[] { 0xcc, 0x7b, 0x13, 0xff, 0xcd, 0x2d, 0xdd, 0x51 }); // Platform
+    }
 }

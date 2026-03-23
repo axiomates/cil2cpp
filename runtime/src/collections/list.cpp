@@ -198,12 +198,12 @@ Boolean element_equals(const void* a, const void* b, TypeInfo* type) {
         if (objA == objB) return true;
         if (!objA || !objB) return false;
 
-        // Use vtable Equals (slot 1) if available
+        // Use vtable Equals if available
         if (objA->__type_info && objA->__type_info->vtable &&
-            objA->__type_info->vtable->method_count > 1) {
+            objA->__type_info->vtable->method_count > object_vtable::kEquals) {
             using EqualsFn = Boolean(*)(Object*, Object*);
             auto fn = reinterpret_cast<EqualsFn>(
-                objA->__type_info->vtable->methods[1]);
+                objA->__type_info->vtable->methods[object_vtable::kEquals]);
             return fn(objA, objB);
         }
         // Fallback to reference equality
@@ -217,15 +217,15 @@ Boolean element_equals(const void* a, const void* b, TypeInfo* type) {
 
 Int32 element_hash(const void* element, TypeInfo* type) {
     if (!is_value_type(type)) {
-        // Reference type: vtable GetHashCode (slot 2) if available
+        // Reference type: vtable GetHashCode if available
         Object* obj = *static_cast<Object* const*>(element);
         if (!obj) return 0;
 
         if (obj->__type_info && obj->__type_info->vtable &&
-            obj->__type_info->vtable->method_count > 2) {
+            obj->__type_info->vtable->method_count > object_vtable::kGetHashCode) {
             using HashFn = Int32(*)(Object*);
             auto fn = reinterpret_cast<HashFn>(
-                obj->__type_info->vtable->methods[2]);
+                obj->__type_info->vtable->methods[object_vtable::kGetHashCode]);
             return fn(obj);
         }
         return object_get_hash_code(obj);

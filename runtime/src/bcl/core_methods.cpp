@@ -48,17 +48,19 @@
 static cil2cpp::Object* s_singleton_module = nullptr;
 static std::once_flag s_module_once;
 
-// RuntimeModule field area size for singleton allocation.
-// RuntimeModule has ~6 reference-type fields (ScopeName, FullyQualifiedName, etc.),
-// all zero-initialized. 48 = 6 pointers × 8 bytes on x64.
-// Must be >= the generated RuntimeModule struct's field area (excluding Object header).
-static constexpr size_t kRuntimeModuleFieldsSize = 48;
-
 static cil2cpp::Object* get_singleton_module() {
     std::call_once(s_module_once, []() {
+        // Use RuntimeModule TypeInfo's instance_size for correct allocation.
+        // If RuntimeModule hasn't been registered yet, fall back to Assembly TypeInfo's size.
+        auto* module_ti = cil2cpp::type_get_by_name("System.Reflection.RuntimeModule");
+        auto* ti = module_ti ? module_ti : &cil2cpp::System_Reflection_Assembly_TypeInfo;
+        size_t alloc_size = ti->instance_size;
+        if (alloc_size == 0) {
+            cil2cpp::stub_called("get_singleton_module: TypeInfo has zero instance_size");
+            alloc_size = sizeof(cil2cpp::Object) * 4;
+        }
         s_singleton_module = static_cast<cil2cpp::Object*>(
-            cil2cpp::gc::alloc(sizeof(cil2cpp::Object) + kRuntimeModuleFieldsSize,
-                               &cil2cpp::System_Reflection_Assembly_TypeInfo));
+            cil2cpp::gc::alloc(alloc_size, ti));
     });
     return s_singleton_module;
 }
@@ -596,30 +598,69 @@ extern "C" void* System_Reflection_MemberInfo_get_DeclaringType(void* __this) {
 extern "C" bool System_Reflection_MemberInfo_get_IsCollectible(void* /*__this*/) {
     return false; // AOT types are never collectible
 }
+// MemberTypes enum constants (ECMA-335)
+namespace member_types {
+    constexpr int32_t kConstructor = 1;
+    constexpr int32_t kEvent       = 2;
+    constexpr int32_t kField       = 4;
+    constexpr int32_t kMethod      = 8;
+    constexpr int32_t kProperty    = 16;
+    constexpr int32_t kTypeInfo    = 32;
+}
+
+// Check if ti's full_name matches any of the given names.
+// Used instead of TypeInfo pointer comparison because runtime-defined externs and
+// generated TypeInfos can be different symbols for the same logical type.
+static bool ti_name_matches(cil2cpp::TypeInfo* ti, std::initializer_list<const char*> names) {
+    if (!ti || !ti->full_name) return false;
+    for (auto* name : names) {
+        if (std::strcmp(ti->full_name, name) == 0) return true;
+    }
+    return false;
+}
+
+static bool ti_is_field_info(cil2cpp::TypeInfo* ti) {
+    return ti_name_matches(ti, {"System.Reflection.FieldInfo", "System.Reflection.RuntimeFieldInfo"});
+}
+static bool ti_is_constructor_info(cil2cpp::TypeInfo* ti) {
+    return ti_name_matches(ti, {"System.Reflection.ConstructorInfo", "System.Reflection.RuntimeConstructorInfo"});
+}
+static bool ti_is_method_info(cil2cpp::TypeInfo* ti) {
+    return ti_name_matches(ti, {"System.Reflection.MethodInfo", "System.Reflection.RuntimeMethodInfo",
+                                "System.Reflection.MethodBase"});
+}
+static bool ti_is_event_info(cil2cpp::TypeInfo* ti) {
+    return ti_name_matches(ti, {"System.Reflection.EventInfo", "System.Reflection.RuntimeEventInfo"});
+}
+static bool ti_is_property_info(cil2cpp::TypeInfo* ti) {
+    return ti_name_matches(ti, {"System.Reflection.PropertyInfo", "System.Reflection.RuntimePropertyInfo"});
+}
+static bool ti_is_type(cil2cpp::TypeInfo* ti) {
+    return ti_name_matches(ti, {"System.Type", "System.RuntimeType"});
+}
+
 extern "C" System_Reflection_MemberTypes System_Reflection_MemberInfo_get_MemberType(void* __this) {
     if (!__this) return {};
     auto* obj = reinterpret_cast<cil2cpp::Object*>(__this);
     auto* ti = obj->__type_info;
-    if (!ti || !ti->full_name) return {};
-    // Dispatch by runtime TypeInfo to determine MemberType enum value
-    // MemberTypes: Constructor=1, Event=2, Field=4, Method=8, Property=16, TypeInfo=32, NestedType=128
-    std::string name(ti->full_name);
-    if (name.find("FieldInfo") != std::string::npos) return 4;    // Field
-    if (name.find("ConstructorInfo") != std::string::npos) return 1; // Constructor
-    if (name.find("MethodInfo") != std::string::npos || name.find("MethodBase") != std::string::npos) return 8; // Method
-    if (name.find("PropertyInfo") != std::string::npos) return 16; // Property
-    if (name.find("EventInfo") != std::string::npos) return 2;    // Event
-    if (name.find("Type") != std::string::npos) return 32;        // TypeInfo
+    if (!ti) return {};
+    // Dispatch by full_name exact match (not fragile substring matching).
+    // ConstructorInfo must be checked before MethodInfo (both share MethodBase ancestry).
+    if (ti_is_field_info(ti)) return member_types::kField;
+    if (ti_is_constructor_info(ti)) return member_types::kConstructor;
+    if (ti_is_method_info(ti)) return member_types::kMethod;
+    if (ti_is_property_info(ti)) return member_types::kProperty;
+    if (ti_is_event_info(ti)) return member_types::kEvent;
+    if (ti_is_type(ti)) return member_types::kTypeInfo;
     return 0;
 }
 extern "C" int32_t System_Reflection_MemberInfo_get_MetadataToken(void* __this) {
     if (!__this) return 0;
-    // Try to get metadata token from the underlying native info
     auto* obj = reinterpret_cast<cil2cpp::Object*>(__this);
     auto* ti = obj->__type_info;
     if (!ti) return 0;
     // For Type objects, return the type's metadata token
-    if (ti == &cil2cpp::System_Type_TypeInfo || (ti->full_name && std::string(ti->full_name).find("RuntimeType") != std::string::npos)) {
+    if (ti_is_type(ti)) {
         auto* type = reinterpret_cast<cil2cpp::Type*>(__this);
         if (type->type_info) return static_cast<int32_t>(type->type_info->metadata_token);
     }
@@ -642,28 +683,36 @@ static bool _get_member_custom_attrs(void* __this, cil2cpp::CustomAttributeInfo*
     if (!__this) return false;
     auto* obj = reinterpret_cast<cil2cpp::Object*>(__this);
     auto* ti = obj->__type_info;
-    if (!ti || !ti->full_name) return false;
-    std::string typeName(ti->full_name);
-    if (typeName.find("PropertyInfo") != std::string::npos) {
+    if (!ti) return false;
+    if (ti_is_property_info(ti)) {
         auto* pi = reinterpret_cast<cil2cpp::ManagedPropertyInfo*>(__this);
         if (pi->native_info) {
             attrs = pi->native_info->custom_attributes;
             count = pi->native_info->custom_attribute_count;
         }
-    } else if (typeName.find("FieldInfo") != std::string::npos) {
+    } else if (ti_is_field_info(ti)) {
         auto* fi = reinterpret_cast<cil2cpp::ManagedFieldInfo*>(__this);
         if (fi->native_info) { attrs = fi->native_info->custom_attributes; count = fi->native_info->custom_attribute_count; }
-    } else if (typeName.find("MethodInfo") != std::string::npos || typeName.find("ConstructorInfo") != std::string::npos) {
+    } else if (ti_is_method_info(ti)) {
         auto* mi = reinterpret_cast<cil2cpp::ManagedMethodInfo*>(__this);
         if (mi->native_info) { attrs = mi->native_info->custom_attributes; count = mi->native_info->custom_attribute_count; }
-    } else if (typeName.find("Type") != std::string::npos || typeName.find("RuntimeType") != std::string::npos) {
+    } else if (ti_is_type(ti)) {
         auto* type = reinterpret_cast<cil2cpp::Type*>(__this);
         if (type->type_info) { attrs = type->type_info->custom_attributes; count = type->type_info->custom_attribute_count; }
     }
     return count > 0 && attrs != nullptr;
 }
 
-// Helper: construct a managed attribute instance from CustomAttributeInfo
+// Marshal a CustomAttributeArg to a void*-sized value for constructor invocation.
+// String args → managed String*; integer/enum/bool → reinterpret to pointer-sized.
+static void* _marshal_attr_arg(const cil2cpp::CustomAttributeArg& arg) {
+    if (arg.type_name && std::strcmp(arg.type_name, "System.String") == 0)
+        return cil2cpp::string_literal(arg.string_val ? arg.string_val : "");
+    return reinterpret_cast<void*>(static_cast<intptr_t>(arg.int_val));
+}
+
+// Helper: construct a managed attribute instance from CustomAttributeInfo.
+// Supports constructors with 0-8 parameters (covers all standard .NET attributes).
 static void* _construct_attribute(cil2cpp::CustomAttributeInfo& ai) {
     if (!ai.attribute_type) return nullptr;
     auto* attrTi = ai.attribute_type;
@@ -683,36 +732,25 @@ static void* _construct_attribute(cil2cpp::CustomAttributeInfo& ai) {
             return instance; // Return uninitialized instance (best effort)
     }
 
-    // Call constructor based on arg count
-    if (ctor->parameter_count == 0) {
-        auto fn = reinterpret_cast<void(*)(void*)>(ctor->method_pointer);
-        fn(instance);
-    } else if (ctor->parameter_count == 1) {
-        // Determine argument type and convert
-        auto& arg = ai.args[0];
-        if (arg.type_name && std::strcmp(arg.type_name, "System.String") == 0) {
-            auto* str = cil2cpp::string_literal(arg.string_val ? arg.string_val : "");
-            auto fn = reinterpret_cast<void(*)(void*, void*)>(ctor->method_pointer);
-            fn(instance, str);
-        } else {
-            // Integer/enum/bool argument
-            auto fn = reinterpret_cast<void(*)(void*, int64_t)>(ctor->method_pointer);
-            fn(instance, arg.int_val);
-        }
-    } else if (ctor->parameter_count == 2) {
-        // Two-arg constructor: determine types
-        void* args[2] = {};
-        for (int i = 0; i < 2; i++) {
-            auto& arg = ai.args[i];
-            if (arg.type_name && std::strcmp(arg.type_name, "System.String") == 0)
-                args[i] = cil2cpp::string_literal(arg.string_val ? arg.string_val : "");
-            else
-                args[i] = reinterpret_cast<void*>(static_cast<intptr_t>(arg.int_val));
-        }
-        auto fn = reinterpret_cast<void(*)(void*, void*, void*)>(ctor->method_pointer);
-        fn(instance, args[0], args[1]);
+    // Marshal all arguments to pointer-sized values.
+    // args[] is zero-initialized — unused trailing slots are nullptr.
+    constexpr uint32_t kMaxAttrArgs = 8;
+    void* args[kMaxAttrArgs] = {};
+    uint32_t argc = ctor->parameter_count < kMaxAttrArgs ? ctor->parameter_count : kMaxAttrArgs;
+    if (ctor->parameter_count > kMaxAttrArgs) {
+        cil2cpp::stub_called("_construct_attribute: constructor has >8 parameters (unsupported)");
     }
-    // For 3+ args, return instance with parameterless ctor called
+    for (uint32_t i = 0; i < argc && i < ai.arg_count; i++) {
+        args[i] = _marshal_attr_arg(ai.args[i]);
+    }
+
+    // On x64, all parameter types (int32, int64, pointer) fit in 8-byte register/stack slots.
+    // Calling with extra void* args beyond what the callee declares is safe on x64 ABI —
+    // the callee only reads its declared parameters, ignoring extras on the stack/in registers.
+    // This avoids a parameter-count-specific switch and handles any argc <= kMaxAttrArgs.
+    auto fn = reinterpret_cast<void(*)(void*, void*, void*, void*, void*, void*, void*, void*, void*)>(
+        ctor->method_pointer);
+    fn(instance, args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7]);
     return instance;
 }
 
@@ -1378,12 +1416,9 @@ extern "C" bool System_RuntimeType_get_IsActualEnum(void* __this) {
     return t->type_info->flags & cil2cpp::TypeFlags::Enum;
 }
 extern "C" bool System_RuntimeType_IsDelegate(void* __this) {
-    // Check if base_type is System.MulticastDelegate by name comparison.
-    // All delegate types inherit from MulticastDelegate.
     auto* t = reinterpret_cast<cil2cpp::Type*>(__this);
-    if (!t || !t->type_info || !t->type_info->base_type) return false;
-    auto* base_name = t->type_info->base_type->full_name;
-    return base_name && std::strcmp(base_name, "System.MulticastDelegate") == 0;
+    if (!t || !t->type_info) return false;
+    return t->type_info->flags & cil2cpp::TypeFlags::Delegate;
 }
 
 extern "C" bool System_RuntimeType_get_IsNullableOfT(void* __this) {

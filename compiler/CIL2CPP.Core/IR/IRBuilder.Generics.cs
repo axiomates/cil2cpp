@@ -595,9 +595,18 @@ public partial class IRBuilder
         // via CreateInstanceForAnotherGenericParameter. The companion type uses the unwrapped inner type.
         if (typeArgs.Count == 1 && typeArgs[0].StartsWith("System.Nullable`1<"))
         {
-            var innerType = typeArgs[0].Substring("System.Nullable`1<".Length);
-            if (innerType.EndsWith(">"))
-                innerType = innerType.Substring(0, innerType.Length - 1);
+            // Extract inner type using balanced bracket parsing to handle nested generics
+            // e.g., "System.Nullable`1<System.Collections.Generic.KeyValuePair`2<Int32,String>>"
+            var arg = typeArgs[0];
+            int startIdx = "System.Nullable`1<".Length;
+            int depth = 1;
+            int endIdx = startIdx;
+            for (; endIdx < arg.Length && depth > 0; endIdx++)
+            {
+                if (arg[endIdx] == '<') depth++;
+                else if (arg[endIdx] == '>') depth--;
+            }
+            var innerType = arg.Substring(startIdx, endIdx - startIdx - 1);
             var unwrappedArgs = new List<string> { innerType };
 
             if (openTypeName == "System.Collections.Generic.Comparer`1")

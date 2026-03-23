@@ -81,6 +81,7 @@ enum class TypeFlags : UInt32 {
     MultiDimensionalArray = 1 << 12,
     NotPublic = 1 << 13,
     NestedAssembly = 1 << 14,
+    Delegate = 1 << 15,
 };
 
 inline TypeFlags operator|(TypeFlags a, TypeFlags b) {
@@ -215,6 +216,22 @@ inline bool field_is_special_name(UInt32 flags) {
 }
 
 } // namespace metadata
+
+// ECMA-335 II.23.1.18 — Generic parameter variance flags
+namespace generic_variance {
+    constexpr uint8_t kInvariant     = 0;
+    constexpr uint8_t kCovariant     = 1;  // out T
+    constexpr uint8_t kContravariant = 2;  // in T
+} // namespace generic_variance
+
+// Object vtable slot layout — ECMA-335 mandated order for System.Object virtual methods.
+// These are the compiler's own output; named constants for readability.
+namespace object_vtable {
+    constexpr uint32_t kToString    = 0;
+    constexpr uint32_t kEquals      = 1;
+    constexpr uint32_t kGetHashCode = 2;
+    constexpr uint32_t kFinalize    = 3;
+} // namespace object_vtable
 
 // ---- System.Reflection.BindingFlags constants ----
 namespace binding_flags {
@@ -372,7 +389,7 @@ struct TypeInfo {
     // Generic variance data (for variance-aware type assignability)
     // For generic instances: concrete argument TypeInfos + variance flags from open type
     TypeInfo** generic_arguments;        // nullptr for non-generic types
-    uint8_t* generic_variances;           // 0=invariant, 1=covariant, 2=contravariant
+    uint8_t* generic_variances;           // generic_variance::kInvariant/kCovariant/kContravariant
     UInt32 generic_argument_count;
     const char* generic_definition_name; // Open type's full_name, or nullptr
 

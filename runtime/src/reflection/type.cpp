@@ -107,10 +107,10 @@ static void patch_runtime_type_vtable() {
     if (patched) return;
     patched = true;
     auto* vt = ::System_RuntimeType_TypeInfo.vtable;
-    if (vt && vt->method_count >= 3) {
-        vt->methods[0] = reinterpret_cast<void*>(&Type_ToString_vtable);
-        vt->methods[1] = reinterpret_cast<void*>(&Type_Equals_vtable);
-        vt->methods[2] = reinterpret_cast<void*>(&Type_GetHashCode_vtable);
+    if (vt && vt->method_count > cil2cpp::object_vtable::kGetHashCode) {
+        vt->methods[cil2cpp::object_vtable::kToString]    = reinterpret_cast<void*>(&Type_ToString_vtable);
+        vt->methods[cil2cpp::object_vtable::kEquals]      = reinterpret_cast<void*>(&Type_Equals_vtable);
+        vt->methods[cil2cpp::object_vtable::kGetHashCode] = reinterpret_cast<void*>(&Type_GetHashCode_vtable);
     }
 }
 

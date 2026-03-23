@@ -3,6 +3,7 @@
  */
 
 #include <cil2cpp/array.h>
+#include <cil2cpp/array_interfaces.h>
 #include <cil2cpp/mdarray.h>
 #include <cil2cpp/gc.h>
 #include <cil2cpp/exception.h>
@@ -575,19 +576,19 @@ bool is_array_generic_collection_interface(cil2cpp::TypeInfo* iface_type, void**
     if (!iface_type || !iface_type->full_name) return false;
 
     const char* name = iface_type->full_name;
-    if (std::strncmp(name, "System.Collections.Generic.ICollection`1<", 41) == 0) {
+    if (std::strncmp(name, cil2cpp::array_interfaces::kICollection_1_prefix, cil2cpp::array_interfaces::kICollection_1_prefix_len) == 0) {
         methods = g_array_icollection_methods; count = 7; return true;
     }
-    if (std::strncmp(name, "System.Collections.Generic.IList`1<", 35) == 0) {
+    if (std::strncmp(name, cil2cpp::array_interfaces::kIList_1_prefix, cil2cpp::array_interfaces::kIList_1_prefix_len) == 0) {
         methods = g_array_ilist_methods; count = 5; return true;
     }
-    if (std::strncmp(name, "System.Collections.Generic.IReadOnlyCollection`1<", 49) == 0) {
+    if (std::strncmp(name, cil2cpp::array_interfaces::kIReadOnlyCollection_1_prefix, cil2cpp::array_interfaces::kIReadOnlyCollection_1_prefix_len) == 0) {
         methods = g_array_ireadonlycollection_methods; count = 1; return true;
     }
-    if (std::strncmp(name, "System.Collections.Generic.IReadOnlyList`1<", 43) == 0) {
+    if (std::strncmp(name, cil2cpp::array_interfaces::kIReadOnlyList_1_prefix, cil2cpp::array_interfaces::kIReadOnlyList_1_prefix_len) == 0) {
         methods = g_array_ireadonlylist_methods; count = 1; return true;
     }
-    if (std::strncmp(name, "System.Collections.Generic.IEnumerable`1<", 41) == 0) {
+    if (std::strncmp(name, cil2cpp::array_interfaces::kIEnumerable_1_prefix, cil2cpp::array_interfaces::kIEnumerable_1_prefix_len) == 0) {
         methods = g_array_ienumerable_methods; count = 1; return true;
     }
     return false;
@@ -598,16 +599,16 @@ bool is_array_nongeneric_collection_interface(cil2cpp::TypeInfo* iface_type, voi
     if (!iface_type || !iface_type->full_name) return false;
 
     const char* name = iface_type->full_name;
-    if (std::strcmp(name, "System.Collections.ICollection") == 0) {
+    if (std::strcmp(name, cil2cpp::array_interfaces::kICollection) == 0) {
         methods = g_array_nongeric_icollection_methods; count = 4; return true;
     }
-    if (std::strcmp(name, "System.Collections.IEnumerable") == 0) {
+    if (std::strcmp(name, cil2cpp::array_interfaces::kIEnumerable) == 0) {
         methods = g_array_nongeneric_ienumerable_methods; count = 1; return true;
     }
-    if (std::strcmp(name, "System.Collections.IList") == 0) {
+    if (std::strcmp(name, cil2cpp::array_interfaces::kIList) == 0) {
         methods = g_array_nongeneric_ilist_methods; count = 11; return true;
     }
-    if (std::strcmp(name, "System.ICloneable") == 0) {
+    if (std::strcmp(name, cil2cpp::array_interfaces::kICloneable) == 0) {
         methods = g_array_icloneable_methods; count = 1; return true;
     }
     return false;

@@ -838,6 +838,7 @@ public partial class CppCodeGenerator
         if (type.IsNestedAssembly) flagParts.Add("cil2cpp::TypeFlags::NestedAssembly");
         if (type.IsByRefLike) flagParts.Add("cil2cpp::TypeFlags::IsByRefLike");
         if (type.IsGenericInstance) flagParts.Add("cil2cpp::TypeFlags::Generic");
+        if (type.IsDelegate) flagParts.Add("cil2cpp::TypeFlags::Delegate");
         // Nullable<T> detection: open generic "System.Nullable`1" or closed "System.Nullable`1<...>"
         if (type.ILFullName.StartsWith("System.Nullable`1"))
             flagParts.Add("cil2cpp::TypeFlags::Nullable");
@@ -3593,26 +3594,57 @@ public partial class CppCodeGenerator
             // Patch PropertyInfo/RuntimePropertyInfo vtable slots for get_PropertyType and GetIndexParameters.
             // These are abstract on PropertyInfo, overridden by RuntimePropertyInfo which is ReflectionAliased
             // (all instance methods blocked at codegen), leaving null vtable slots.
+            // Slot indices are computed from RuntimePropertyInfo's VTable layout (no hardcoded magic numbers).
             var runtimePropInfoType = _userTypes.FirstOrDefault(t => t.ILFullName == "System.Reflection.RuntimePropertyInfo");
             if (propInfoType != null || runtimePropInfoType != null)
             {
+                // Compute vtable slot indices from the VTable entries by method name
+                var slotSource = runtimePropInfoType ?? propInfoType!;
+                int FindSlot(string name) =>
+                    slotSource.VTable.FirstOrDefault(e => e.MethodName == name)?.Slot ?? -1;
+                // Compute ICustomAttributeProvider interface vtable index from InterfaceImpls
+                int icapIndex = -1;
+                for (int i = 0; i < slotSource.InterfaceImpls.Count; i++)
+                {
+                    if (slotSource.InterfaceImpls[i].Interface.ILFullName == "System.Reflection.ICustomAttributeProvider")
+                    {
+                        icapIndex = i;
+                        break;
+                    }
+                }
+                var s = new {
+                    PropertyType = FindSlot("get_PropertyType"),
+                    IndexParams = FindSlot("GetIndexParameters"),
+                    CanRead = FindSlot("get_CanRead"),
+                    CanWrite = FindSlot("get_CanWrite"),
+                    GetMethod = FindSlot("GetGetMethod"),
+                    SetMethod = FindSlot("GetSetMethod"),
+                    GetValue = FindSlot("GetValue"),
+                    SetValue = FindSlot("SetValue"),
+                    IcapIndex = icapIndex,
+                };
                 sb.Append("    cil2cpp::reflection_patch_property_vtables(");
                 sb.Append(propInfoType != null ? $"&{propInfoType.CppName}_TypeInfo" : "nullptr");
                 sb.Append(", ");
                 sb.Append(runtimePropInfoType != null ? $"&{runtimePropInfoType.CppName}_TypeInfo" : "nullptr");
-                sb.AppendLine(");");
+                sb.AppendLine(",");
+                sb.AppendLine($"        {{{s.PropertyType}, {s.IndexParams}, {s.CanRead}, {s.CanWrite}, {s.GetMethod}, {s.SetMethod}, {s.GetValue}, {s.SetValue}, {s.IcapIndex}}});");
             }
 
             // Patch MethodBase/MethodInfo vtable slots for Equals/GetHashCode.
             // MethodBase is ReflectionAliased — Equals/GetHashCode overrides never compiled.
+            // Slot indices are computed from the VTable layout (no hardcoded magic numbers).
             var methodBaseType = _userTypes.FirstOrDefault(t => t.ILFullName == "System.Reflection.MethodBase");
             if (methodBaseType != null || methodInfoType != null)
             {
+                var mbSlotSource = methodBaseType ?? methodInfoType!;
+                int equalsSlot = mbSlotSource.VTable.FirstOrDefault(e => e.MethodName == "Equals")?.Slot ?? -1;
+                int hashCodeSlot = mbSlotSource.VTable.FirstOrDefault(e => e.MethodName == "GetHashCode")?.Slot ?? -1;
                 sb.Append("    cil2cpp::reflection_patch_method_vtables(");
                 sb.Append(methodBaseType != null ? $"&{methodBaseType.CppName}_TypeInfo" : "nullptr");
                 sb.Append(", ");
                 sb.Append(methodInfoType != null ? $"&{methodInfoType.CppName}_TypeInfo" : "nullptr");
-                sb.AppendLine(");");
+                sb.AppendLine($", {equalsSlot}, {hashCodeSlot});");
             }
         }
 
