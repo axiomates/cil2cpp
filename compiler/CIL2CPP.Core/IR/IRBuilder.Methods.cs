@@ -3789,53 +3789,32 @@ public partial class IRBuilder
 
     /// <summary>
     /// Classify a method as known dead code based on Cecil metadata (namespace, declaring type, method name).
-    /// This replaces the fragile CppCodeGenerator.ClassifyDeadCode which matched on rendered C++ function names.
+    /// Uses the shared DeadCodePatterns table for type-level classification, with method-level
+    /// refinements for types where only specific methods are dead code.
     /// </summary>
     internal static DeadCodeCategory ClassifyMethodDeadCode(Mono.Cecil.MethodDefinition cecilMethod)
     {
         var declType = cecilMethod.DeclaringType;
-        var ns = declType.Namespace ?? "";
         var typeName = declType.FullName;
         var methodName = cecilMethod.Name;
 
-        // ── SIMD: hardware intrinsics (X86/Arm/Wasm) + Vector types + Scalar<T> ──
-        if (ns.StartsWith("System.Runtime.Intrinsics"))
-            return DeadCodeCategory.Simd;
-
-        // ── SIMD: System.Numerics.Vector<T> generic container ──
-        if (typeName.StartsWith("System.Numerics.Vector`"))
-            return DeadCodeCategory.Simd;
-
-        // ── SIMD: BCL helper classes behind SIMD guards ──
-        // IndexOfAnyAsciiSearcher has both SIMD-only and scalar fallback methods.
-        // Only SIMD-only inner helpers are classified — scalar-interface methods compile from IL
-        // with SIMD branches eliminated by compile-time constant branch elimination.
-        if (typeName == "System.Buffers.IndexOfAnyAsciiSearcher")
+        // Check shared type-level patterns
+        foreach (var (ilPrefix, category, isAllMethods) in DeadCodePatterns.TypePatterns)
         {
-            if (methodName.StartsWith("AsciiState") || methodName.StartsWith("ComputeAsciiState")
-                || methodName.StartsWith("IndexOfAnyLookup") // covers IndexOfAnyLookup and IndexOfAnyLookupCore
-                || methodName.StartsWith("TryIndexOfAny"))
-                return DeadCodeCategory.Simd;
-            // Nested interface dispatch stubs on SIMD code path
-            if (methodName.Contains("INegator") || methodName.Contains("IResultMapper"))
-                return DeadCodeCategory.Simd;
-            // IndexOfAnyCore with AsciiState: no internal SIMD guard, dead code.
-            // AnyByteState variants have internal guards and are safe.
-            if (methodName.StartsWith("IndexOfAnyCore"))
-            {
-                // Check if any parameter type contains "AnyByteState" — if so, it's safe
-                bool hasAnyByteState = false;
-                foreach (var p in cecilMethod.Parameters)
-                {
-                    if (p.ParameterType.Name.Contains("AnyByteState"))
-                    {
-                        hasAnyByteState = true;
-                        break;
-                    }
-                }
-                if (!hasAnyByteState)
-                    return DeadCodeCategory.Simd;
-            }
+            if (!typeName.StartsWith(ilPrefix)
+                && !(declType.Namespace ?? "").StartsWith(ilPrefix))
+                continue;
+
+            // All methods in this type are dead code
+            if (isAllMethods)
+                return category;
+
+            // Method-level refinements for types where only specific methods are dead.
+            // If the method-level check returns None, continue checking other patterns
+            // (e.g., nested types whose full name starts with the parent's prefix).
+            var result = ClassifyMethodInPartialDeadType(typeName, methodName, cecilMethod, category);
+            if (result != DeadCodeCategory.None)
+                return result;
         }
 
         // Nested types within IndexOfAnyAsciiSearcher (INegator, IResultMapper implementations)
@@ -3847,33 +3826,63 @@ public partial class IRBuilder
                 return DeadCodeCategory.Simd;
         }
 
-        if (typeName == "System.PackedSpanHelpers")
-            return DeadCodeCategory.Simd;
+        return DeadCodeCategory.None;
+    }
 
-        if (typeName == "System.SpanHelpers"
-            && (methodName.StartsWith("ComputeFirstIndex") || methodName.StartsWith("ComputeLastIndex")))
-            return DeadCodeCategory.Simd;
+    /// <summary>
+    /// Method-level dead code classification for types that have a mix of live and dead methods.
+    /// Only called when the type matches a DeadCodePatterns entry with IsAllMethods=false.
+    /// </summary>
+    private static DeadCodeCategory ClassifyMethodInPartialDeadType(
+        string typeName, string methodName, Mono.Cecil.MethodDefinition cecilMethod,
+        DeadCodeCategory category)
+    {
+        // IndexOfAnyAsciiSearcher: SIMD-only inner helpers are dead, scalar methods compile from IL
+        if (typeName == "System.Buffers.IndexOfAnyAsciiSearcher")
+        {
+            if (methodName.StartsWith("AsciiState") || methodName.StartsWith("ComputeAsciiState")
+                || methodName.StartsWith("IndexOfAnyLookup")
+                || methodName.StartsWith("TryIndexOfAny"))
+                return category;
+            if (methodName.Contains("INegator") || methodName.Contains("IResultMapper"))
+                return category;
+            if (methodName.StartsWith("IndexOfAnyCore"))
+            {
+                bool hasAnyByteState = false;
+                foreach (var p in cecilMethod.Parameters)
+                {
+                    if (p.ParameterType.Name.Contains("AnyByteState"))
+                    { hasAnyByteState = true; break; }
+                }
+                if (!hasAnyByteState)
+                    return category;
+            }
+            return DeadCodeCategory.None;
+        }
 
-        if (typeName == "System.Text.Ascii"
-            && (methodName.StartsWith("AllCharsInVectorAreAscii")
+        // SpanHelpers: only SIMD-specific compute methods
+        if (typeName == "System.SpanHelpers")
+        {
+            if (methodName.StartsWith("ComputeFirstIndex") || methodName.StartsWith("ComputeLastIndex"))
+                return category;
+            return DeadCodeCategory.None;
+        }
+
+        // System.Text.Ascii: only SIMD-specific vector methods
+        if (typeName == "System.Text.Ascii")
+        {
+            if (methodName.StartsWith("AllCharsInVectorAreAscii")
                 || methodName.StartsWith("ChangeWidthAndWriteTo")
                 || methodName.StartsWith("SignedLessThan")
-                || methodName.StartsWith("VectorContainsNonAsciiChar")))
-            return DeadCodeCategory.Simd;
+                || methodName.StartsWith("VectorContainsNonAsciiChar"))
+                return category;
+            return DeadCodeCategory.None;
+        }
 
+        // ThrowHelper: only the SIMD-specific throw method
         if (typeName == "System.ThrowHelper"
             && methodName == "ThrowForUnsupportedNumericsVectorBaseType")
-            return DeadCodeCategory.Simd;
-
-        // ── EventSource: diagnostic logging, always behind IsEnabled()=false ──
-        if (typeName == "System.Diagnostics.Tracing.NativeRuntimeEventSource"
-            || typeName == "System.Net.NetEventSource"
-            || typeName == "System.Net.Sockets.NetEventSource")
-            return DeadCodeCategory.EventSource;
-
-        // ── AOT-incompatible: no runtime assembly loading ──
-        if (typeName == "System.Runtime.Loader.AssemblyLoadContext")
-            return DeadCodeCategory.AotIncompatible;
+            return category;
 
         return DeadCodeCategory.None;
     }

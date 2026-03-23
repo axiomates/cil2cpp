@@ -273,6 +273,13 @@ extern TypeInfo IOException_TypeInfo;
 extern TypeInfo FileNotFoundException_TypeInfo;
 extern TypeInfo DirectoryNotFoundException_TypeInfo;
 
+/// System.Exception.ExceptionMessageKind enum values
+/// Used by GetMessageFromNativeResources to select a generic error message.
+enum class ExceptionMessageKind : Int32 {
+    OutOfMemory = 1,
+    Arithmetic  = 2,
+    General     = 3,
+};
 
 } // namespace cil2cpp
 

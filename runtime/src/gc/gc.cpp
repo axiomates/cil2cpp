@@ -122,6 +122,14 @@ void unregister_thread() {
     GC_unregister_my_thread();
 }
 
+void* alloc_uncollectable(size_t size) {
+    return GC_MALLOC_UNCOLLECTABLE(size);
+}
+
+void free_uncollectable(void* ptr) {
+    GC_FREE(ptr);
+}
+
 void add_root(void**) {
     // No-op: BoehmGC conservatively scans globals and stack
 }

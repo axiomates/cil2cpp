@@ -10,6 +10,8 @@
 #include <cil2cpp/type_info.h>
 #include <cil2cpp/unicode.h>
 
+#include <cil2cpp/gc_allocator.h>
+
 #include <unordered_map>
 #include <mutex>
 #include <string>
@@ -19,7 +21,11 @@
 namespace cil2cpp {
 
 // String interning pool — protected by mutex for thread safety
-static std::unordered_map<std::string, String*> g_string_pool;
+// GC-safe: gc_allocator ensures BoehmGC scans map buckets for String* GC pointers.
+static std::unordered_map<std::string, String*,
+    std::hash<std::string>, std::equal_to<std::string>,
+    cil2cpp::gc_allocator<std::pair<const std::string, String*>>>
+    g_string_pool;
 static std::mutex g_string_pool_mutex;
 
 namespace System {

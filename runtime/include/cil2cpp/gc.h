@@ -75,6 +75,18 @@ void register_thread();
 void unregister_thread();
 
 /**
+ * Allocate memory that the GC scans for pointers but never collects.
+ * Use for native containers (std::unordered_map etc.) that store GC-allocated pointers.
+ * BoehmGC's GC_MALLOC_UNCOLLECTABLE: scanned for roots, manually freed.
+ */
+void* alloc_uncollectable(size_t size);
+
+/**
+ * Free memory allocated by alloc_uncollectable.
+ */
+void free_uncollectable(void* ptr);
+
+/**
  * Add a root reference (no-op -BoehmGC scans roots automatically).
  */
 void add_root(void** root);

@@ -10,6 +10,7 @@
 #include <cil2cpp/array.h>
 #include <cil2cpp/type_info.h>
 #include <cil2cpp/gc.h>
+#include <cil2cpp/gc_allocator.h>
 #include <cil2cpp/exception.h>
 #include <cil2cpp/threading.h>
 #include <cil2cpp/reflection.h>
@@ -56,6 +57,10 @@ extern cil2cpp::TypeInfo System_AttributeUsageAttribute_TypeInfo;
 extern cil2cpp::TypeInfo System_RuntimeType_TypeInfo;
 
 namespace cil2cpp {
+
+// Mask to ensure thread ID hash is non-negative (Int32 range)
+static constexpr Int32 kPositiveHashMask = 0x7FFFFFFF;
+
 namespace icall {
 
 // ===== System.Environment =====
@@ -87,7 +92,7 @@ Int32 Environment_get_ProcessorCount() {
 
 Int32 Environment_get_CurrentManagedThreadId() {
     // Return a hash of the native thread ID as a managed thread ID
-    return static_cast<Int32>(std::hash<std::thread::id>{}(std::this_thread::get_id()) & 0x7FFFFFFF);
+    return static_cast<Int32>(std::hash<std::thread::id>{}(std::this_thread::get_id()) & kPositiveHashMask);
 }
 
 void Environment_Exit(Int32 exitCode) {
@@ -247,19 +252,28 @@ uint64_t Marvin_GenerateSeed() {
     return HashCode_GenerateGlobalSeed();
 }
 
-// ===== System.Runtime.InteropServices.NativeLibrary =====
+// ===== String conversion helpers =====
 
-intptr_t NativeLibrary_GetSymbol(intptr_t handle, Object* name, bool throwOnError) {
-#ifdef _WIN32
-    if (!name) return 0;
-    auto* s = reinterpret_cast<String*>(name);
-    // Convert managed string to narrow string for GetProcAddress
+/// Convert managed UTF-16 string to narrow ASCII string.
+/// Truncates to ASCII — correct for Win32 GetProcAddress (ASCII by spec).
+/// TODO: Linux dlopen needs proper UTF-8 conversion for non-ASCII paths.
+static std::string managed_string_to_ascii(String* s) {
     auto len = string_length(s);
     auto* chars = string_get_raw_data(s);
     std::string narrow;
     narrow.reserve(static_cast<size_t>(len));
     for (int32_t i = 0; i < len; i++)
         narrow.push_back(static_cast<char>(reinterpret_cast<const char16_t*>(chars)[i]));
+    return narrow;
+}
+
+// ===== System.Runtime.InteropServices.NativeLibrary =====
+
+intptr_t NativeLibrary_GetSymbol(intptr_t handle, Object* name, bool throwOnError) {
+#ifdef _WIN32
+    if (!name) return 0;
+    auto* s = reinterpret_cast<String*>(name);
+    auto narrow = managed_string_to_ascii(s);
     auto* result = GetProcAddress(reinterpret_cast<HMODULE>(handle), narrow.c_str());
     if (!result && throwOnError) {
         cil2cpp::throw_missing_method();
@@ -289,12 +303,7 @@ intptr_t NativeLibrary_LoadFromPath(Object* libraryName, int32_t throwOnError) {
         return 0;
     }
     auto* s = reinterpret_cast<String*>(libraryName);
-    auto len = string_length(s);
-    auto* chars = string_get_raw_data(s);
-    std::string narrow;
-    narrow.reserve(static_cast<size_t>(len));
-    for (int32_t i = 0; i < len; i++)
-        narrow.push_back(static_cast<char>(reinterpret_cast<const char16_t*>(chars)[i]));
+    auto narrow = managed_string_to_ascii(s);
     auto* handle = dlopen(narrow.c_str(), RTLD_LAZY);
     if (!handle && throwOnError) cil2cpp::throw_dll_not_found(s);
     return reinterpret_cast<intptr_t>(handle);
@@ -474,16 +483,7 @@ Int32 Thread_GetPriorityNative(void* __this) {
 void Thread_SetPriorityNative(void* __this, Int32 priority) {
     (void)__this;
 #ifdef _WIN32
-    // Map .NET ThreadPriority (0-4) to Win32 thread priority constants
-    int win32Priority;
-    switch (priority) {
-        case 0: win32Priority = THREAD_PRIORITY_LOWEST; break;        // Lowest
-        case 1: win32Priority = THREAD_PRIORITY_BELOW_NORMAL; break;  // BelowNormal
-        case 2: win32Priority = THREAD_PRIORITY_NORMAL; break;        // Normal
-        case 3: win32Priority = THREAD_PRIORITY_ABOVE_NORMAL; break;  // AboveNormal
-        case 4: win32Priority = THREAD_PRIORITY_HIGHEST; break;       // Highest
-        default: win32Priority = THREAD_PRIORITY_NORMAL; break;
-    }
+    int win32Priority = managed_priority_to_win32(static_cast<ManagedThreadPriority>(priority));
     auto* t = static_cast<ManagedThread*>(__this);
     if (t && t->native_handle != nullptr) {
         auto* stdThread = static_cast<std::thread*>(t->native_handle);
@@ -500,7 +500,7 @@ Int32 Thread_get_ManagedThreadId(void* __this) {
     auto* t = static_cast<ManagedThread*>(__this);
     if (t) return t->managed_id;
     // Fallback for unexpected null
-    return static_cast<Int32>(Thread_GetCurrentOSThreadId() & 0x7FFFFFFF);
+    return static_cast<Int32>(Thread_GetCurrentOSThreadId() & kPositiveHashMask);
 }
 
 void Thread_InternalFinalize(void* __this) {
@@ -1424,7 +1424,10 @@ namespace icall {
 // ... (rest is zeroed)
 
 static std::mutex g_type_cache_mutex;
-static std::unordered_map<TypeInfo*, Object*> g_type_cache_map;
+static std::unordered_map<TypeInfo*, Object*,
+    std::hash<TypeInfo*>, std::equal_to<TypeInfo*>,
+    cil2cpp::gc_allocator<std::pair<TypeInfo* const, Object*>>>
+    g_type_cache_map;
 
 void* RuntimeType_get_Cache(void* __this) {
     auto* type = reinterpret_cast<Type*>(__this);

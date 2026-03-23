@@ -150,6 +150,51 @@ Int32 get_managed_id(ManagedThread* t);
 
 } // namespace thread
 
+// ===== Thread Priority Mapping =====
+
+/// .NET System.Threading.ThreadPriority enum values
+enum class ManagedThreadPriority : Int32 {
+    Lowest      = 0,
+    BelowNormal = 1,
+    Normal      = 2,
+    AboveNormal = 3,
+    Highest     = 4,
+};
+
+/// Win32 thread priority constants (from WinBase.h).
+/// Defined here to avoid #include <windows.h> in a public header.
+namespace win32_priority {
+    static constexpr int Lowest      = -2; // THREAD_PRIORITY_LOWEST
+    static constexpr int BelowNormal = -1; // THREAD_PRIORITY_BELOW_NORMAL
+    static constexpr int Normal      =  0; // THREAD_PRIORITY_NORMAL
+    static constexpr int AboveNormal =  1; // THREAD_PRIORITY_ABOVE_NORMAL
+    static constexpr int Highest     =  2; // THREAD_PRIORITY_HIGHEST
+} // namespace win32_priority
+
+/// Map .NET ThreadPriority → Win32 THREAD_PRIORITY_* constant.
+inline int managed_priority_to_win32(ManagedThreadPriority p) {
+    switch (p) {
+        case ManagedThreadPriority::Lowest:      return win32_priority::Lowest;
+        case ManagedThreadPriority::BelowNormal: return win32_priority::BelowNormal;
+        case ManagedThreadPriority::Normal:      return win32_priority::Normal;
+        case ManagedThreadPriority::AboveNormal: return win32_priority::AboveNormal;
+        case ManagedThreadPriority::Highest:     return win32_priority::Highest;
+        default:                                 return win32_priority::Normal;
+    }
+}
+
+/// Map Win32 THREAD_PRIORITY_* → .NET ThreadPriority enum.
+inline ManagedThreadPriority win32_priority_to_managed(int p) {
+    switch (p) {
+        case win32_priority::Lowest:      return ManagedThreadPriority::Lowest;
+        case win32_priority::BelowNormal: return ManagedThreadPriority::BelowNormal;
+        case win32_priority::Normal:      return ManagedThreadPriority::Normal;
+        case win32_priority::AboveNormal: return ManagedThreadPriority::AboveNormal;
+        case win32_priority::Highest:     return ManagedThreadPriority::Highest;
+        default:                          return ManagedThreadPriority::Normal;
+    }
+}
+
 } // namespace cil2cpp
 
 // Type alias for generated code

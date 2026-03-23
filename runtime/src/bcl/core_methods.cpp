@@ -344,11 +344,12 @@ extern "C" void* System_Exception_GetClassName(void* __this) {
 }
 extern "C" void System_Exception_GetMessageFromNativeResources__System_Exception_ExceptionMessageKind_System_Runtime_CompilerServices_StringHandleOnStack(System_Exception_ExceptionMessageKind kind, System_Runtime_CompilerServices_StringHandleOnStack retMesg) {
     // Native resource strings are not available in AOT. Return a generic message based on kind.
+    using EMK = cil2cpp::ExceptionMessageKind;
     const char* msg = "";
-    switch (kind) {
-        case 1: msg = "Out of memory."; break;           // OutOfMemory
-        case 2: msg = "Arithmetic operation resulted in an overflow."; break; // Arithmetic
-        case 3: msg = "An error occurred during execution."; break; // General
+    switch (static_cast<EMK>(kind)) {
+        case EMK::OutOfMemory: msg = "Out of memory."; break;
+        case EMK::Arithmetic:  msg = "Arithmetic operation resulted in an overflow."; break;
+        case EMK::General:     msg = "An error occurred during execution."; break;
         default: msg = "An exception occurred."; break;
     }
     if (retMesg.f__ptr) {
@@ -712,7 +713,7 @@ static void* _marshal_attr_arg(const cil2cpp::CustomAttributeArg& arg) {
 }
 
 // Helper: construct a managed attribute instance from CustomAttributeInfo.
-// Supports constructors with 0-8 parameters (covers all standard .NET attributes).
+// Dispatches by exact parameter count (0-10+) with portable function pointer casts.
 static void* _construct_attribute(cil2cpp::CustomAttributeInfo& ai) {
     if (!ai.attribute_type) return nullptr;
     auto* attrTi = ai.attribute_type;
@@ -732,25 +733,54 @@ static void* _construct_attribute(cil2cpp::CustomAttributeInfo& ai) {
             return instance; // Return uninitialized instance (best effort)
     }
 
-    // Marshal all arguments to pointer-sized values.
-    // args[] is zero-initialized — unused trailing slots are nullptr.
-    constexpr uint32_t kMaxAttrArgs = 8;
+    // Marshal arguments to pointer-sized values.
+    constexpr uint32_t kMaxAttrArgs = 16;
     void* args[kMaxAttrArgs] = {};
     uint32_t argc = ctor->parameter_count < kMaxAttrArgs ? ctor->parameter_count : kMaxAttrArgs;
-    if (ctor->parameter_count > kMaxAttrArgs) {
-        cil2cpp::stub_called("_construct_attribute: constructor has >8 parameters (unsupported)");
-    }
     for (uint32_t i = 0; i < argc && i < ai.arg_count; i++) {
         args[i] = _marshal_attr_arg(ai.args[i]);
     }
 
-    // On x64, all parameter types (int32, int64, pointer) fit in 8-byte register/stack slots.
-    // Calling with extra void* args beyond what the callee declares is safe on x64 ABI —
-    // the callee only reads its declared parameters, ignoring extras on the stack/in registers.
-    // This avoids a parameter-count-specific switch and handles any argc <= kMaxAttrArgs.
-    auto fn = reinterpret_cast<void(*)(void*, void*, void*, void*, void*, void*, void*, void*, void*)>(
-        ctor->method_pointer);
-    fn(instance, args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7]);
+    // Dispatch by exact parameter count with correctly-typed function pointer casts.
+    // Portable across all ABIs (no reliance on extra-argument ignoring).
+    // Covers F0-F16, matching kMaxAttrArgs limit.
+    using F0  = void(*)(void*);
+    using F1  = void(*)(void*, void*);
+    using F2  = void(*)(void*, void*, void*);
+    using F3  = void(*)(void*, void*, void*, void*);
+    using F4  = void(*)(void*, void*, void*, void*, void*);
+    using F5  = void(*)(void*, void*, void*, void*, void*, void*);
+    using F6  = void(*)(void*, void*, void*, void*, void*, void*, void*);
+    using F7  = void(*)(void*, void*, void*, void*, void*, void*, void*, void*);
+    using F8  = void(*)(void*, void*, void*, void*, void*, void*, void*, void*, void*);
+    using F9  = void(*)(void*, void*, void*, void*, void*, void*, void*, void*, void*, void*);
+    using F10 = void(*)(void*, void*, void*, void*, void*, void*, void*, void*, void*, void*, void*);
+    using F11 = void(*)(void*, void*, void*, void*, void*, void*, void*, void*, void*, void*, void*, void*);
+    using F12 = void(*)(void*, void*, void*, void*, void*, void*, void*, void*, void*, void*, void*, void*, void*);
+    using F13 = void(*)(void*, void*, void*, void*, void*, void*, void*, void*, void*, void*, void*, void*, void*, void*);
+    using F14 = void(*)(void*, void*, void*, void*, void*, void*, void*, void*, void*, void*, void*, void*, void*, void*, void*);
+    using F15 = void(*)(void*, void*, void*, void*, void*, void*, void*, void*, void*, void*, void*, void*, void*, void*, void*, void*);
+    using F16 = void(*)(void*, void*, void*, void*, void*, void*, void*, void*, void*, void*, void*, void*, void*, void*, void*, void*, void*);
+    auto fp = ctor->method_pointer;
+    switch (ctor->parameter_count) {
+    case 0:  reinterpret_cast<F0>(fp)(instance); break;
+    case 1:  reinterpret_cast<F1>(fp)(instance, args[0]); break;
+    case 2:  reinterpret_cast<F2>(fp)(instance, args[0], args[1]); break;
+    case 3:  reinterpret_cast<F3>(fp)(instance, args[0], args[1], args[2]); break;
+    case 4:  reinterpret_cast<F4>(fp)(instance, args[0], args[1], args[2], args[3]); break;
+    case 5:  reinterpret_cast<F5>(fp)(instance, args[0], args[1], args[2], args[3], args[4]); break;
+    case 6:  reinterpret_cast<F6>(fp)(instance, args[0], args[1], args[2], args[3], args[4], args[5]); break;
+    case 7:  reinterpret_cast<F7>(fp)(instance, args[0], args[1], args[2], args[3], args[4], args[5], args[6]); break;
+    case 8:  reinterpret_cast<F8>(fp)(instance, args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7]); break;
+    case 9:  reinterpret_cast<F9>(fp)(instance, args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7], args[8]); break;
+    case 10: reinterpret_cast<F10>(fp)(instance, args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7], args[8], args[9]); break;
+    case 11: reinterpret_cast<F11>(fp)(instance, args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7], args[8], args[9], args[10]); break;
+    case 12: reinterpret_cast<F12>(fp)(instance, args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7], args[8], args[9], args[10], args[11]); break;
+    case 13: reinterpret_cast<F13>(fp)(instance, args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7], args[8], args[9], args[10], args[11], args[12]); break;
+    case 14: reinterpret_cast<F14>(fp)(instance, args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7], args[8], args[9], args[10], args[11], args[12], args[13]); break;
+    case 15: reinterpret_cast<F15>(fp)(instance, args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7], args[8], args[9], args[10], args[11], args[12], args[13], args[14]); break;
+    default: reinterpret_cast<F16>(fp)(instance, args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7], args[8], args[9], args[10], args[11], args[12], args[13], args[14], args[15]); break;
+    }
     return instance;
 }
 
@@ -2157,19 +2187,13 @@ extern "C" System_Threading_ThreadPriority System_Threading_Thread_get_Priority(
         auto* stdThread = static_cast<std::thread*>(t->native_handle);
         HANDLE hThread = static_cast<HANDLE>(stdThread->native_handle());
         int p = GetThreadPriority(hThread);
-        switch (p) {
-            case THREAD_PRIORITY_LOWEST: return 0;
-            case THREAD_PRIORITY_BELOW_NORMAL: return 1;
-            case THREAD_PRIORITY_NORMAL: return 2;
-            case THREAD_PRIORITY_ABOVE_NORMAL: return 3;
-            case THREAD_PRIORITY_HIGHEST: return 4;
-            default: return 2;
-        }
+        return static_cast<System_Threading_ThreadPriority>(
+            cil2cpp::win32_priority_to_managed(p));
     }
 #else
     (void)__this;
 #endif
-    return 2; // Normal
+    return static_cast<System_Threading_ThreadPriority>(cil2cpp::ManagedThreadPriority::Normal);
 }
 extern "C" uint64_t System_Threading_Thread_GetCurrentOSThreadId() {
 #ifdef _WIN32
@@ -2214,15 +2238,8 @@ extern "C" void System_Threading_Thread_set_Priority(void* __this, System_Thread
 #ifdef _WIN32
     auto* t = reinterpret_cast<cil2cpp::ManagedThread*>(__this);
     if (t && t->native_handle) {
-        int win32Priority;
-        switch (value) {
-            case 0: win32Priority = THREAD_PRIORITY_LOWEST; break;
-            case 1: win32Priority = THREAD_PRIORITY_BELOW_NORMAL; break;
-            case 2: win32Priority = THREAD_PRIORITY_NORMAL; break;
-            case 3: win32Priority = THREAD_PRIORITY_ABOVE_NORMAL; break;
-            case 4: win32Priority = THREAD_PRIORITY_HIGHEST; break;
-            default: win32Priority = THREAD_PRIORITY_NORMAL; break;
-        }
+        int win32Priority = cil2cpp::managed_priority_to_win32(
+            static_cast<cil2cpp::ManagedThreadPriority>(value));
         auto* stdThread = static_cast<std::thread*>(t->native_handle);
         HANDLE hThread = static_cast<HANDLE>(stdThread->native_handle());
         SetThreadPriority(hThread, win32Priority);

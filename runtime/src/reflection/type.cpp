@@ -7,6 +7,7 @@
 
 #include <cil2cpp/reflection.h>
 #include <cil2cpp/gc.h>
+#include <cil2cpp/gc_allocator.h>
 #include <cil2cpp/string.h>
 #include <cil2cpp/exception.h>
 
@@ -97,7 +98,11 @@ TypeInfo System_Type_TypeInfo = {
 };
 
 // Thread-safe Type object cache: TypeInfo* → Type*
-static std::unordered_map<TypeInfo*, Type*> g_type_cache;
+// GC-safe: gc_allocator ensures BoehmGC scans map buckets for Type* GC pointers.
+static std::unordered_map<TypeInfo*, Type*,
+    std::hash<TypeInfo*>, std::equal_to<TypeInfo*>,
+    cil2cpp::gc_allocator<std::pair<TypeInfo* const, Type*>>>
+    g_type_cache;
 static std::mutex g_type_cache_mutex;
 
 // Patch RuntimeType's generated vtable so ToString/Equals/GetHashCode

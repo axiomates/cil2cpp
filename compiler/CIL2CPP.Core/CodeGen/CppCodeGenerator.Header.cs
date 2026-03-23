@@ -719,10 +719,14 @@ public partial class CppCodeGenerator
                 var field = type.Fields[0];
                 var cppType = SanitizeFieldType(field.FieldTypeName, definedTypes);
                 int elemSize = GetPrimitiveSize(cppType);
-                // Reference types (pointers) have pointer-sized elements
-                if (elemSize <= 0 && cppType.EndsWith("*"))
-                    elemSize = 8; // sizeof(void*) on 64-bit
-                if (elemSize > 0 && type.ExplicitSize >= elemSize)
+                bool isPointerElement = elemSize <= 0 && cppType.EndsWith("*");
+                if (isPointerElement)
+                {
+                    // Pointer elements: emit compile-time expression so C++ computes correct
+                    // array count for both 32-bit and 64-bit targets.
+                    sb.AppendLine($"    {cppType} {field.CppName}[{type.ExplicitSize} / sizeof(void*)];");
+                }
+                else if (elemSize > 0 && type.ExplicitSize >= elemSize)
                 {
                     int count = type.ExplicitSize / elemSize;
                     sb.AppendLine($"    {cppType} {field.CppName}[{count}];");

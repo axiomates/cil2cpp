@@ -17,6 +17,48 @@ public enum DeadCodeCategory : byte
 }
 
 /// <summary>
+/// Shared dead-code classification patterns. Single source of truth used by both:
+/// - IRBuilder.ClassifyMethodDeadCode (IL namespace/type matching with Cecil metadata)
+/// - CppCodeGenerator.ClassifyDeadCodeByName (C++ name prefix matching for out-of-module functions)
+/// </summary>
+public static class DeadCodePatterns
+{
+    /// <summary>
+    /// Type-level dead code patterns. Each entry: (ILPrefix, Category, IsAllMethods).
+    /// IsAllMethods=true: ALL methods in matching types are dead code.
+    /// IsAllMethods=false: only specific methods are dead (IR classifier applies method-level refinements).
+    /// </summary>
+    public static readonly (string ILPrefix, DeadCodeCategory Category, bool IsAllMethods)[] TypePatterns =
+    {
+        // SIMD: hardware intrinsics namespaces (all methods dead)
+        ("System.Runtime.Intrinsics", DeadCodeCategory.Simd, true),
+        // SIMD: System.Numerics.Vector<T> generic container
+        ("System.Numerics.Vector`", DeadCodeCategory.Simd, true),
+        // SIMD: BCL helpers (all methods or method-level refinement)
+        ("System.Buffers.IndexOfAnyAsciiSearcher", DeadCodeCategory.Simd, false),
+        ("System.PackedSpanHelpers", DeadCodeCategory.Simd, true),
+        ("System.SpanHelpers", DeadCodeCategory.Simd, false),
+        ("System.Text.Ascii", DeadCodeCategory.Simd, false),
+        ("System.ThrowHelper", DeadCodeCategory.Simd, false),
+        // EventSource: diagnostic logging (all methods dead)
+        ("System.Diagnostics.Tracing.NativeRuntimeEventSource", DeadCodeCategory.EventSource, true),
+        ("System.Net.NetEventSource", DeadCodeCategory.EventSource, true),
+        ("System.Net.Sockets.NetEventSource", DeadCodeCategory.EventSource, true),
+        // AOT-incompatible: no runtime assembly loading
+        ("System.Runtime.Loader.AssemblyLoadContext", DeadCodeCategory.AotIncompatible, true),
+        // AOT-incompatible: LambdaCompiler uses Reflection.Emit (JIT-only)
+        ("System.Linq.Expressions.Compiler.", DeadCodeCategory.AotIncompatible, true),
+    };
+
+    /// <summary>
+    /// Convert an IL type prefix to the corresponding C++ mangled name prefix.
+    /// Uses the same mangling rules as CppNameMapper: . → _, ` → _, etc.
+    /// </summary>
+    public static string ToCppPrefix(string ilPrefix)
+        => ilPrefix.Replace(".", "_").Replace("`", "_");
+}
+
+/// <summary>
 /// Represents a method in the IR.
 /// </summary>
 public class IRMethod

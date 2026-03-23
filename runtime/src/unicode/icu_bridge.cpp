@@ -233,37 +233,38 @@ Int32 char_get_unicode_category(Char c) {
     int32_t type = u_charType(static_cast<UChar32>(c));
     // ICU UCharCategory → .NET UnicodeCategory mapping
     // Both follow Unicode General Category, but with different enum values.
+    using UC = cil2cpp::UnicodeCategory;
     switch (type) {
-        case U_UPPERCASE_LETTER:        return 0;  // UppercaseLetter
-        case U_LOWERCASE_LETTER:        return 1;  // LowercaseLetter
-        case U_TITLECASE_LETTER:        return 2;  // TitlecaseLetter
-        case U_MODIFIER_LETTER:         return 3;  // ModifierLetter
-        case U_OTHER_LETTER:            return 4;  // OtherLetter
-        case U_NON_SPACING_MARK:        return 5;  // NonSpacingMark
-        case U_COMBINING_SPACING_MARK:  return 6;  // SpacingCombiningMark
-        case U_ENCLOSING_MARK:          return 7;  // EnclosingMark
-        case U_DECIMAL_DIGIT_NUMBER:    return 8;  // DecimalDigitNumber
-        case U_LETTER_NUMBER:           return 9;  // LetterNumber
-        case U_OTHER_NUMBER:            return 10; // OtherNumber
-        case U_SPACE_SEPARATOR:         return 11; // SpaceSeparator
-        case U_LINE_SEPARATOR:          return 12; // LineSeparator
-        case U_PARAGRAPH_SEPARATOR:     return 13; // ParagraphSeparator
-        case U_CONTROL_CHAR:            return 14; // Control
-        case U_FORMAT_CHAR:             return 15; // Format
-        case U_SURROGATE:               return 16; // Surrogate
-        case U_PRIVATE_USE_CHAR:        return 17; // PrivateUse
-        case U_CONNECTOR_PUNCTUATION:   return 18; // ConnectorPunctuation
-        case U_DASH_PUNCTUATION:        return 19; // DashPunctuation
-        case U_START_PUNCTUATION:       return 20; // OpenPunctuation
-        case U_END_PUNCTUATION:         return 21; // ClosePunctuation
-        case U_INITIAL_PUNCTUATION:     return 22; // InitialQuotePunctuation
-        case U_FINAL_PUNCTUATION:       return 23; // FinalQuotePunctuation
-        case U_OTHER_PUNCTUATION:       return 24; // OtherPunctuation
-        case U_MATH_SYMBOL:             return 25; // MathSymbol
-        case U_CURRENCY_SYMBOL:         return 26; // CurrencySymbol
-        case U_MODIFIER_SYMBOL:         return 27; // ModifierSymbol
-        case U_OTHER_SYMBOL:            return 28; // OtherSymbol
-        default:                        return 29; // OtherNotAssigned
+        case U_UPPERCASE_LETTER:        return static_cast<Int32>(UC::UppercaseLetter);
+        case U_LOWERCASE_LETTER:        return static_cast<Int32>(UC::LowercaseLetter);
+        case U_TITLECASE_LETTER:        return static_cast<Int32>(UC::TitlecaseLetter);
+        case U_MODIFIER_LETTER:         return static_cast<Int32>(UC::ModifierLetter);
+        case U_OTHER_LETTER:            return static_cast<Int32>(UC::OtherLetter);
+        case U_NON_SPACING_MARK:        return static_cast<Int32>(UC::NonSpacingMark);
+        case U_COMBINING_SPACING_MARK:  return static_cast<Int32>(UC::SpacingCombiningMark);
+        case U_ENCLOSING_MARK:          return static_cast<Int32>(UC::EnclosingMark);
+        case U_DECIMAL_DIGIT_NUMBER:    return static_cast<Int32>(UC::DecimalDigitNumber);
+        case U_LETTER_NUMBER:           return static_cast<Int32>(UC::LetterNumber);
+        case U_OTHER_NUMBER:            return static_cast<Int32>(UC::OtherNumber);
+        case U_SPACE_SEPARATOR:         return static_cast<Int32>(UC::SpaceSeparator);
+        case U_LINE_SEPARATOR:          return static_cast<Int32>(UC::LineSeparator);
+        case U_PARAGRAPH_SEPARATOR:     return static_cast<Int32>(UC::ParagraphSeparator);
+        case U_CONTROL_CHAR:            return static_cast<Int32>(UC::Control);
+        case U_FORMAT_CHAR:             return static_cast<Int32>(UC::Format);
+        case U_SURROGATE:               return static_cast<Int32>(UC::Surrogate);
+        case U_PRIVATE_USE_CHAR:        return static_cast<Int32>(UC::PrivateUse);
+        case U_CONNECTOR_PUNCTUATION:   return static_cast<Int32>(UC::ConnectorPunctuation);
+        case U_DASH_PUNCTUATION:        return static_cast<Int32>(UC::DashPunctuation);
+        case U_START_PUNCTUATION:       return static_cast<Int32>(UC::OpenPunctuation);
+        case U_END_PUNCTUATION:         return static_cast<Int32>(UC::ClosePunctuation);
+        case U_INITIAL_PUNCTUATION:     return static_cast<Int32>(UC::InitialQuotePunctuation);
+        case U_FINAL_PUNCTUATION:       return static_cast<Int32>(UC::FinalQuotePunctuation);
+        case U_OTHER_PUNCTUATION:       return static_cast<Int32>(UC::OtherPunctuation);
+        case U_MATH_SYMBOL:             return static_cast<Int32>(UC::MathSymbol);
+        case U_CURRENCY_SYMBOL:         return static_cast<Int32>(UC::CurrencySymbol);
+        case U_MODIFIER_SYMBOL:         return static_cast<Int32>(UC::ModifierSymbol);
+        case U_OTHER_SYMBOL:            return static_cast<Int32>(UC::OtherSymbol);
+        default:                        return static_cast<Int32>(UC::OtherNotAssigned);
     }
 }
 

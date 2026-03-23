@@ -8,6 +8,7 @@
 #include <cil2cpp/assembly.h>
 #include <cil2cpp/reflection.h>
 #include <cil2cpp/gc.h>
+#include <cil2cpp/gc_allocator.h>
 #include <cil2cpp/string.h>
 #include <cil2cpp/array.h>
 #include <cil2cpp/exception.h>
@@ -15,6 +16,7 @@
 
 #include <cstring>
 #include <string>
+#include <unordered_map>
 
 // Generated code defines System_RuntimeType_TypeInfo in global namespace.
 extern cil2cpp::TypeInfo System_RuntimeType_TypeInfo;
@@ -188,20 +190,20 @@ void reflection_patch_method_vtables(TypeInfo* methodbase_ti, TypeInfo* methodin
 // Cache managed MethodInfo wrappers so the same native MethodInfo always
 // returns the same managed object. Critical for reference-equality checks
 // in Expression.CheckMethod (System.Linq.Expressions).
-static constexpr size_t METHODINFO_CACHE_SIZE = 128;
-static MethodInfo* s_methodinfo_cache_keys[METHODINFO_CACHE_SIZE] = {};
-static ManagedMethodInfo* s_methodinfo_cache_values[METHODINFO_CACHE_SIZE] = {};
+// GC-safe: gc_allocator ensures BoehmGC scans map buckets for GC pointers.
+static std::unordered_map<MethodInfo*, ManagedMethodInfo*,
+    std::hash<MethodInfo*>, std::equal_to<MethodInfo*>,
+    cil2cpp::gc_allocator<std::pair<MethodInfo* const, ManagedMethodInfo*>>>
+    s_methodinfo_cache;
 
 ManagedMethodInfo* create_managed_method_info(MethodInfo* native) {
-    auto slot = reinterpret_cast<uintptr_t>(native) / sizeof(void*) % METHODINFO_CACHE_SIZE;
-    if (s_methodinfo_cache_keys[slot] == native && s_methodinfo_cache_values[slot]) {
-        return s_methodinfo_cache_values[slot];
-    }
+    auto it = s_methodinfo_cache.find(native);
+    if (it != s_methodinfo_cache.end())
+        return it->second;
     auto* mi = static_cast<ManagedMethodInfo*>(
         gc::alloc(sizeof(ManagedMethodInfo), s_methodinfo_ti));
     mi->native_info = native;
-    s_methodinfo_cache_keys[slot] = native;
-    s_methodinfo_cache_values[slot] = mi;
+    s_methodinfo_cache[native] = mi;
     return mi;
 }
 
@@ -213,26 +215,22 @@ static ManagedFieldInfo* create_managed_field_info(FieldInfo* native) {
 }
 
 // Cache managed PropertyInfo wrappers so the same native PropertyInfo always
-// returns the same managed object. This is critical for reference-equality checks
+// returns the same managed object. Critical for reference-equality checks
 // in List<MemberInfo>.Contains() used by Newtonsoft.Json's GetSerializableMembers.
-static constexpr size_t PROPINFO_CACHE_SIZE = 64;
-static PropertyInfo* s_propinfo_cache_keys[PROPINFO_CACHE_SIZE] = {};
-static ManagedPropertyInfo* s_propinfo_cache_values[PROPINFO_CACHE_SIZE] = {};
+// GC-safe: gc_allocator ensures BoehmGC scans map buckets for GC pointers.
+static std::unordered_map<PropertyInfo*, ManagedPropertyInfo*,
+    std::hash<PropertyInfo*>, std::equal_to<PropertyInfo*>,
+    cil2cpp::gc_allocator<std::pair<PropertyInfo* const, ManagedPropertyInfo*>>>
+    s_propinfo_cache;
 
 static ManagedPropertyInfo* create_managed_property_info(PropertyInfo* native) {
-    // Check cache first
-    auto slot = reinterpret_cast<uintptr_t>(native) / sizeof(void*) % PROPINFO_CACHE_SIZE;
-    if (s_propinfo_cache_keys[slot] == native && s_propinfo_cache_values[slot]) {
-        return s_propinfo_cache_values[slot];
-    }
-
+    auto it = s_propinfo_cache.find(native);
+    if (it != s_propinfo_cache.end())
+        return it->second;
     auto* pi = static_cast<ManagedPropertyInfo*>(
         gc::alloc(sizeof(ManagedPropertyInfo), s_propertyinfo_ti));
     pi->native_info = native;
-
-    // Store in cache
-    s_propinfo_cache_keys[slot] = native;
-    s_propinfo_cache_values[slot] = pi;
+    s_propinfo_cache[native] = pi;
     return pi;
 }
 
@@ -467,8 +465,6 @@ Object* methodinfo_invoke(ManagedMethodInfo* mi, Object* obj, Array* parameters)
     if (!native->method_pointer)
         throw_invalid_operation();
 
-    // For simplicity, support up to 4 parameters for now
-    // This covers the vast majority of reflection invocation use cases
     UInt32 param_count = native->parameter_count;
     bool is_static = metadata::method_is_static(native->flags);
 
@@ -478,42 +474,43 @@ Object* methodinfo_invoke(ManagedMethodInfo* mi, Object* obj, Array* parameters)
         args = static_cast<Object**>(array_data(parameters));
     }
 
-    // Dispatch based on parameter count
-    // Instance methods get 'obj' as first C++ parameter
+    // Helper to get argument N safely
+    auto arg = [&](UInt32 i) -> Object* { return (args && i < param_count) ? args[i] : nullptr; };
+
+    // Dispatch based on parameter count (supports 0-10 parameters).
+    // Instance methods get 'obj' as first C++ parameter.
+    // Static function pointer types: SF0 = Object*(*)(), SF1 = Object*(*)(O*), ...
+    // Instance function pointer types: IF0 = Object*(*)(O*), IF1 = Object*(*)(O*, O*), ...
     if (is_static) {
         switch (param_count) {
-            case 0: {
-                auto fn = reinterpret_cast<Object*(*)()>(native->method_pointer);
-                return fn();
-            }
-            case 1: {
-                auto fn = reinterpret_cast<Object*(*)(Object*)>(native->method_pointer);
-                return fn(args ? args[0] : nullptr);
-            }
-            case 2: {
-                auto fn = reinterpret_cast<Object*(*)(Object*, Object*)>(native->method_pointer);
-                return fn(args ? args[0] : nullptr, args ? args[1] : nullptr);
-            }
-            default:
-                throw_invalid_operation();
+            case 0:  return reinterpret_cast<Object*(*)()>(native->method_pointer)();
+            case 1:  return reinterpret_cast<Object*(*)(Object*)>(native->method_pointer)(arg(0));
+            case 2:  return reinterpret_cast<Object*(*)(Object*, Object*)>(native->method_pointer)(arg(0), arg(1));
+            case 3:  return reinterpret_cast<Object*(*)(Object*, Object*, Object*)>(native->method_pointer)(arg(0), arg(1), arg(2));
+            case 4:  return reinterpret_cast<Object*(*)(Object*, Object*, Object*, Object*)>(native->method_pointer)(arg(0), arg(1), arg(2), arg(3));
+            case 5:  return reinterpret_cast<Object*(*)(Object*, Object*, Object*, Object*, Object*)>(native->method_pointer)(arg(0), arg(1), arg(2), arg(3), arg(4));
+            case 6:  return reinterpret_cast<Object*(*)(Object*, Object*, Object*, Object*, Object*, Object*)>(native->method_pointer)(arg(0), arg(1), arg(2), arg(3), arg(4), arg(5));
+            case 7:  return reinterpret_cast<Object*(*)(Object*, Object*, Object*, Object*, Object*, Object*, Object*)>(native->method_pointer)(arg(0), arg(1), arg(2), arg(3), arg(4), arg(5), arg(6));
+            case 8:  return reinterpret_cast<Object*(*)(Object*, Object*, Object*, Object*, Object*, Object*, Object*, Object*)>(native->method_pointer)(arg(0), arg(1), arg(2), arg(3), arg(4), arg(5), arg(6), arg(7));
+            case 9:  return reinterpret_cast<Object*(*)(Object*, Object*, Object*, Object*, Object*, Object*, Object*, Object*, Object*)>(native->method_pointer)(arg(0), arg(1), arg(2), arg(3), arg(4), arg(5), arg(6), arg(7), arg(8));
+            case 10: return reinterpret_cast<Object*(*)(Object*, Object*, Object*, Object*, Object*, Object*, Object*, Object*, Object*, Object*)>(native->method_pointer)(arg(0), arg(1), arg(2), arg(3), arg(4), arg(5), arg(6), arg(7), arg(8), arg(9));
+            default: throw_not_supported(); // >10 parameters not supported in reflection invoke
         }
     } else {
         if (!obj) throw_null_reference();
         switch (param_count) {
-            case 0: {
-                auto fn = reinterpret_cast<Object*(*)(Object*)>(native->method_pointer);
-                return fn(obj);
-            }
-            case 1: {
-                auto fn = reinterpret_cast<Object*(*)(Object*, Object*)>(native->method_pointer);
-                return fn(obj, args ? args[0] : nullptr);
-            }
-            case 2: {
-                auto fn = reinterpret_cast<Object*(*)(Object*, Object*, Object*)>(native->method_pointer);
-                return fn(obj, args ? args[0] : nullptr, args ? args[1] : nullptr);
-            }
-            default:
-                throw_invalid_operation();
+            case 0:  return reinterpret_cast<Object*(*)(Object*)>(native->method_pointer)(obj);
+            case 1:  return reinterpret_cast<Object*(*)(Object*, Object*)>(native->method_pointer)(obj, arg(0));
+            case 2:  return reinterpret_cast<Object*(*)(Object*, Object*, Object*)>(native->method_pointer)(obj, arg(0), arg(1));
+            case 3:  return reinterpret_cast<Object*(*)(Object*, Object*, Object*, Object*)>(native->method_pointer)(obj, arg(0), arg(1), arg(2));
+            case 4:  return reinterpret_cast<Object*(*)(Object*, Object*, Object*, Object*, Object*)>(native->method_pointer)(obj, arg(0), arg(1), arg(2), arg(3));
+            case 5:  return reinterpret_cast<Object*(*)(Object*, Object*, Object*, Object*, Object*, Object*)>(native->method_pointer)(obj, arg(0), arg(1), arg(2), arg(3), arg(4));
+            case 6:  return reinterpret_cast<Object*(*)(Object*, Object*, Object*, Object*, Object*, Object*, Object*)>(native->method_pointer)(obj, arg(0), arg(1), arg(2), arg(3), arg(4), arg(5));
+            case 7:  return reinterpret_cast<Object*(*)(Object*, Object*, Object*, Object*, Object*, Object*, Object*, Object*)>(native->method_pointer)(obj, arg(0), arg(1), arg(2), arg(3), arg(4), arg(5), arg(6));
+            case 8:  return reinterpret_cast<Object*(*)(Object*, Object*, Object*, Object*, Object*, Object*, Object*, Object*, Object*)>(native->method_pointer)(obj, arg(0), arg(1), arg(2), arg(3), arg(4), arg(5), arg(6), arg(7));
+            case 9:  return reinterpret_cast<Object*(*)(Object*, Object*, Object*, Object*, Object*, Object*, Object*, Object*, Object*, Object*)>(native->method_pointer)(obj, arg(0), arg(1), arg(2), arg(3), arg(4), arg(5), arg(6), arg(7), arg(8));
+            case 10: return reinterpret_cast<Object*(*)(Object*, Object*, Object*, Object*, Object*, Object*, Object*, Object*, Object*, Object*, Object*)>(native->method_pointer)(obj, arg(0), arg(1), arg(2), arg(3), arg(4), arg(5), arg(6), arg(7), arg(8), arg(9));
+            default: throw_not_supported(); // >10 parameters not supported in reflection invoke
         }
     }
 }

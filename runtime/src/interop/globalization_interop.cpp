@@ -554,6 +554,8 @@ static int32_t get_display_name(const char* locale, const char* displayLocale,
     case 2: // country name
         len = uloc_getDisplayCountry(locale, displayLocale, result, 256, &err);
         break;
+    default:
+        return 0; // Unknown mode
     }
     if (U_FAILURE(err) || len <= 0) return 0;
     return write_uchar_to_buffer(result, len, buffer, bufferLength) > 0 ? 1 : 0;

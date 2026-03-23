@@ -16,6 +16,7 @@ namespace cil2cpp {
 
 // ===== ExceptionArgument enum → name table =====
 // Mirrors System.ExceptionArgument from dotnet/runtime ThrowHelper.cs
+// Source: src/libraries/System.Private.CoreLib/src/System/ThrowHelper.cs (.NET 8)
 static const char* const g_argument_names[] = {
     "obj",              // 0
     "dictionary",       // 1
@@ -120,9 +121,12 @@ static const char* const g_argument_names[] = {
 };
 static constexpr int g_argument_names_count =
     static_cast<int>(sizeof(g_argument_names) / sizeof(g_argument_names[0]));
+static_assert(g_argument_names_count == 100,
+    "ExceptionArgument count mismatch — update from dotnet/runtime ThrowHelper.cs");
 
 // ===== ExceptionResource enum → message table =====
 // Mirrors System.ExceptionResource from dotnet/runtime ThrowHelper.cs
+// Source: src/libraries/System.Private.CoreLib/src/System/ThrowHelper.cs (.NET 8)
 static const char* const g_resource_strings[] = {
     "Index was out of range. Must be non-negative and less than or equal to the size of the collection.", // 0
     "Index was out of range. Must be non-negative and less than the size of the collection.",             // 1
@@ -157,6 +161,8 @@ static const char* const g_resource_strings[] = {
 };
 static constexpr int g_resource_strings_count =
     static_cast<int>(sizeof(g_resource_strings) / sizeof(g_resource_strings[0]));
+static_assert(g_resource_strings_count == 30,
+    "ExceptionResource count mismatch — update from dotnet/runtime ThrowHelper.cs");
 
 namespace icall {
 
