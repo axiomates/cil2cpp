@@ -933,13 +933,14 @@ public partial class IRBuilder
                     // _typeCache for virtual dispatch resolution in EmitMethodCall.
                     EnsureBodyReferencedTypesExist(bodyMethod, typeParamMap);
 
-                    // Build VTables for types that haven't been processed yet.
+                    // Build VTables for newly-added types that haven't been processed yet.
                     // Types created by earlier specializations may not have vtables yet
                     // (e.g., Iterator<T> created by a previous method's EnsureBody scan).
-                    // Check _vtableBuilt.Count vs _module.Types.Count as a fast guard.
-                    if (_vtableBuilt.Count < _module.Types.Count)
+                    if (_pendingVTableTypes.Count > 0)
                     {
-                        foreach (var irType2 in _module.Types)
+                        var batch = new List<IRType>(_pendingVTableTypes);
+                        _pendingVTableTypes.Clear();
+                        foreach (var irType2 in batch)
                             BuildVTableRecursive(irType2, _vtableBuilt);
                     }
 
@@ -1782,7 +1783,7 @@ public partial class IRBuilder
         irType.HasCctor = cecilTypeDef.Methods.Any(m => m.IsConstructor && m.IsStatic && m.HasBody);
 
         CalculateInstanceSize(irType);
-        _module.Types.Add(irType);
+        AddTypeToModule(irType);
         _typeCache[typeName] = irType;
 
         Console.Error.WriteLine($"[demand-driven] Created non-generic type: {typeName}");
@@ -1885,7 +1886,7 @@ public partial class IRBuilder
         }
 
         CalculateInstanceSize(irType);
-        _module.Types.Add(irType);
+        AddTypeToModule(irType);
         _typeCache[resolvedTypeName] = irType;
 
         return irType;
@@ -2063,7 +2064,10 @@ public partial class IRBuilder
                         // If vtable was already built, do NOT allow rebuild (method bodies
                         // may reference the existing vtable indices).
                         if (_deferredVtableTypes.Remove(irType))
+                        {
                             _vtableBuilt.Remove(irType);
+                            _pendingVTableTypes.Add(irType);
+                        }
                     }
                 }
                 // Re-check interfaces — some may have been created after initial resolution
@@ -2175,7 +2179,10 @@ public partial class IRBuilder
                         // If vtable was deferred (never built), allow the first build.
                         // If vtable was already built, do NOT allow rebuild.
                         if (_deferredVtableTypes.Remove(prevIrType))
+                        {
                             _vtableBuilt.Remove(prevIrType);
+                            _pendingVTableTypes.Add(prevIrType);
+                        }
                     }
                     else
                     {
@@ -2330,7 +2337,7 @@ public partial class IRBuilder
         CalculateInstanceSize(irType);
 
         // Register type early so self-referencing static field accesses work
-        _module.Types.Add(irType);
+        AddTypeToModule(irType);
         _typeCache[key] = irType;
 
         // Create method specializations from Cecil definition.
@@ -2399,22 +2406,6 @@ public partial class IRBuilder
                 });
             }
 
-            // Local variables
-            if (methodDef.HasBody)
-            {
-                var localParamMap = BuildMethodLevelGenericParamMap(methodDef, typeParamMap);
-                foreach (var localDef in methodDef.Body.Variables)
-                {
-                    var localTypeName = ResolveGenericTypeName(localDef.VariableType, localParamMap);
-                    irMethod.Locals.Add(new IRLocal
-                    {
-                        Index = localDef.Index,
-                        CppName = $"loc_{localDef.Index}",
-                        CppTypeName = ResolveTypeForDecl(localTypeName),
-                    });
-                }
-            }
-
             if (HasUnresolvedSignature(irMethod))
                 continue;
             irType.Methods.Add(irMethod);
@@ -2465,8 +2456,13 @@ public partial class IRBuilder
                     shouldCompile = _calledSpecializedMethods.Contains(specKey);
                 }
 
+                // Defer local variable resolution: only resolve locals for methods that will
+                // compile now. Skipped methods get locals populated when recovered
+                // (RecoverSkippedSpecializedMethods → ConvertDeferredGenericBodies).
                 if (shouldCompile)
                 {
+                    PopulateMethodLocals(irMethod, methodDef, typeParamMap);
+
                     if (HasClrInternalDependencies(methodDef, out var clrDepReason))
                     {
                         GenerateStubBody(irMethod);
@@ -2487,6 +2483,7 @@ public partial class IRBuilder
                     // RecoverSkippedSpecializedMethods generates a stub for them. Without
                     // tracking, they'd have no body at all (not even a stub), causing
                     // FindFirstUndeclaredCall cascades when callers reference them.
+                    // Locals deferred — populated in PopulateMethodLocals when body is compiled.
                     var skipKey = GetSpecializedMethodKey(
                         info.OpenTypeName, info.TypeArguments, methodDef);
                     _skippedSpecializedMethods.Add((skipKey, methodDef, irMethod,
@@ -2535,6 +2532,28 @@ public partial class IRBuilder
                 _calledMethodsByOpenType[openTypeName] = set;
             }
             set.Add(methodPart);
+        }
+    }
+
+    /// <summary>
+    /// Populate local variables for a method from Cecil metadata.
+    /// Deferred from shell creation to body compilation time — avoids resolving
+    /// locals for methods that will never be compiled (77% of generic methods).
+    /// </summary>
+    private void PopulateMethodLocals(IRMethod irMethod, MethodDefinition methodDef,
+        Dictionary<string, string> typeParamMap)
+    {
+        if (!methodDef.HasBody || irMethod.Locals.Count > 0) return;
+        var localParamMap = BuildMethodLevelGenericParamMap(methodDef, typeParamMap);
+        foreach (var localDef in methodDef.Body.Variables)
+        {
+            var localTypeName = ResolveGenericTypeName(localDef.VariableType, localParamMap);
+            irMethod.Locals.Add(new IRLocal
+            {
+                Index = localDef.Index,
+                CppName = $"loc_{localDef.Index}",
+                CppTypeName = ResolveTypeForDecl(localTypeName),
+            });
         }
     }
 
@@ -2791,7 +2810,7 @@ public partial class IRBuilder
 
             CalculateInstanceSize(irType);
 
-            _module.Types.Add(irType);
+            AddTypeToModule(irType);
             _typeCache[nestedKey] = irType;
 
             // Create method shells + defer body conversion for nested type methods.
@@ -3772,6 +3791,8 @@ public partial class IRBuilder
                 if (_calledSpecializedMethods.Contains(specKey) && irMethod.BasicBlocks.Count == 0)
                 {
                     _skippedSpecializedMethods.RemoveAt(i);
+                    // Populate locals deferred from shell creation (P5 optimization)
+                    PopulateMethodLocals(irMethod, cecilMethod, typeParamMap);
                     if (HasClrInternalDependencies(cecilMethod))
                         GenerateStubBody(irMethod);
                     else
@@ -3803,19 +3824,33 @@ public partial class IRBuilder
     }
 
     /// <summary>
-    /// Build VTables for all types, repeating until no more deferred types are resolved.
-    /// Uses a progress flag (set by BuildVTableRecursive on un-deferral) instead of count
-    /// comparison, because new transitive deferrals added during a sweep can offset resolved
-    /// types, making count-based termination unreliable.
+    /// Build VTables incrementally: process only newly-added types (from _pendingVTableTypes)
+    /// instead of scanning all _module.Types. Falls back to full scan if no pending types
+    /// (first call, or when deferred types need re-evaluation).
+    /// Uses a progress flag (set by BuildVTableRecursive on un-deferral) to drive fixpoint.
     /// </summary>
     private void BuildVTablesFixpoint()
     {
         do
         {
             _vtableDeferralProgress = false;
-            foreach (var irType in _module.Types)
-                BuildVTableRecursive(irType, _vtableBuilt);
-        } while (_vtableDeferralProgress);
+            if (_pendingVTableTypes.Count > 0)
+            {
+                // Snapshot and clear: BuildVTableRecursive may trigger AddTypeToModule
+                // (e.g., demand-driven types), which appends to _pendingVTableTypes.
+                var batch = new List<IRType>(_pendingVTableTypes);
+                _pendingVTableTypes.Clear();
+                foreach (var irType in batch)
+                    BuildVTableRecursive(irType, _vtableBuilt);
+            }
+            else
+            {
+                // No pending types but deferral progress — re-scan deferred types only.
+                // This happens when a base type was resolved, unblocking deferred children.
+                foreach (var irType in _module.Types)
+                    BuildVTableRecursive(irType, _vtableBuilt);
+            }
+        } while (_vtableDeferralProgress || _pendingVTableTypes.Count > 0);
     }
 
     /// <summary>
@@ -3824,6 +3859,9 @@ public partial class IRBuilder
     private void ConvertMethodBodyWithGenerics(IL.MethodInfo methodDef, IRMethod irMethod,
         Dictionary<string, string> typeParamMap)
     {
+        // Ensure locals are populated (may have been deferred by P5 optimization)
+        PopulateMethodLocals(irMethod, methodDef.GetCecilMethod(), typeParamMap);
+
         _activeTypeParamMap = typeParamMap;
         try
         {

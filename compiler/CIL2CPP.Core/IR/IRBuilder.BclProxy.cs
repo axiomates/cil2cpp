@@ -235,7 +235,7 @@ public partial class IRBuilder
             irType.Methods.Add(CreateProxyMethod(irType, methodSpec));
         }
 
-        _module.Types.Add(irType);
+        AddTypeToModule(irType);
         _typeCache[ilFullName] = irType;
     }
 
@@ -264,7 +264,7 @@ public partial class IRBuilder
             irType.Methods.Add(CreateProxyMethod(irType, methodSpec, typeArgs));
         }
 
-        _module.Types.Add(irType);
+        AddTypeToModule(irType);
         _typeCache[ilFullName] = irType;
 
         // Resolve parent interfaces for well-known generic interfaces

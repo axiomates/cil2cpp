@@ -8,6 +8,7 @@ public partial class CppCodeGenerator
 {
     /// <summary>
     /// Emit common source file header (includes, assembly info).
+    /// All common includes are in pch.h (precompiled header).
     /// </summary>
     private void EmitSourceFileHeader(StringBuilder sb, string description)
     {
@@ -17,14 +18,7 @@ public partial class CppCodeGenerator
         if (_config.IsDebug)
             sb.AppendLine("// DEBUG BUILD - contains #line directives and IL offset comments");
         sb.AppendLine();
-        sb.AppendLine($"#include \"{_module.Name}.h\"");
-        sb.AppendLine();
-        sb.AppendLine("#include <cstdio>");
-        sb.AppendLine("#include <cmath>");
-        sb.AppendLine("#include <cstring>");
-        sb.AppendLine("#include <algorithm>");
-        sb.AppendLine("#include <limits>");
-        sb.AppendLine("#include <atomic>");
+        sb.AppendLine("#include \"pch.h\"");
         sb.AppendLine();
     }
 
@@ -1571,79 +1565,9 @@ public partial class CppCodeGenerator
                     types.TryAdd(binOp.ResultVar, resultType);
                     break;
                 }
-                // Fallback: infer type from IRRawCpp code patterns
-                case IRRawCpp raw2 when raw2.ResultVar == null || raw2.ResultTypeCpp == null:
-                    InferTypeFromRawCpp(raw2.Code, types);
-                    break;
             }
         }
         return types;
-    }
-
-    /// <summary>
-    /// Infer temp variable types from IRRawCpp code patterns.
-    /// Handles cases where ResultVar/ResultTypeCpp aren't set on the instruction.
-    /// </summary>
-    private static void InferTypeFromRawCpp(string code, Dictionary<string, string> types)
-    {
-        // Match: __tN = (type)expr; or __tN = (type*)expr;
-        if (!code.StartsWith("__t") || code.StartsWith("__this")) return;
-        var eqIdx = code.IndexOf(" = ");
-        if (eqIdx <= 0) return;
-        var varName = code[..eqIdx].Trim();
-        if (!varName.StartsWith("__t") || !varName.Skip(3).All(char.IsDigit)) return;
-        if (types.ContainsKey(varName)) return;
-
-        var rhs = code[(eqIdx + 3)..].TrimEnd(';').Trim();
-
-        // (type)expr or (type*)expr — extract the cast type
-        if (rhs.StartsWith("(") && !rhs.StartsWith("(&"))
-        {
-            var closeIdx = rhs.IndexOf(')');
-            if (closeIdx > 1)
-            {
-                var castType = rhs[1..closeIdx];
-                // Only accept simple type names (no nested parens, no operators)
-                if (!castType.Contains("(") && !castType.Contains(" ") || castType.EndsWith("*"))
-                {
-                    types.TryAdd(varName, castType);
-                    return;
-                }
-            }
-        }
-
-        // Comparison operators → bool
-        if (rhs.Contains(" == ") || rhs.Contains(" != ") ||
-            rhs.Contains(" < ") || rhs.Contains(" > ") ||
-            rhs.Contains(" <= ") || rhs.Contains(" >= "))
-        {
-            types.TryAdd(varName, "bool");
-            return;
-        }
-
-        // Arithmetic/bitwise operators on non-pointer values → int32_t (safe default)
-        if ((rhs.Contains(" + ") || rhs.Contains(" - ") || rhs.Contains(" * ") ||
-             rhs.Contains(" / ") || rhs.Contains(" % ") || rhs.Contains(" | ") ||
-             rhs.Contains(" & ") || rhs.Contains(" ^ ") || rhs.Contains(" << ") ||
-             rhs.Contains(" >> ")) && !rhs.Contains("->") && !rhs.Contains("*)"))
-        {
-            types.TryAdd(varName, "intptr_t"); // intptr_t is safe for both 32/64-bit arithmetic
-            return;
-        }
-
-        // Negation: -expr → numeric
-        if (rhs.StartsWith("-") && !rhs.Contains("->"))
-        {
-            types.TryAdd(varName, "intptr_t");
-            return;
-        }
-
-        // ~expr (bitwise NOT) → numeric
-        if (rhs.StartsWith("~"))
-        {
-            types.TryAdd(varName, "intptr_t");
-            return;
-        }
     }
 
     /// <summary>

@@ -384,6 +384,9 @@ public partial class IRBuilder
     // Types already processed by DisambiguateOverloadedMethods — prevents re-disambiguation
     private readonly HashSet<IRType> _disambiguatedTypes = new();
     private readonly HashSet<IRType> _vtableBuilt = new();
+    // Incremental VTable tracking: types added since the last BuildVTablesFixpoint call.
+    // Avoids re-scanning all _module.Types when only a few new types were added.
+    private readonly List<IRType> _pendingVTableTypes = new();
     // Set to true by BuildVTableRecursive when a type is un-deferred — drives fixpoint loop
     private bool _vtableDeferralProgress;
 
@@ -401,6 +404,16 @@ public partial class IRBuilder
         _config = config ?? BuildConfiguration.Release;
         _featureSwitchResolver = new FeatureSwitchResolver(_config.FeatureSwitches);
         _module = new IRModule { Name = reader.AssemblyName };
+    }
+
+    /// <summary>
+    /// Add a type to the module and mark it as pending for VTable building.
+    /// All callers that previously used _module.Types.Add should use this instead.
+    /// </summary>
+    private void AddTypeToModule(IRType irType)
+    {
+        _module.Types.Add(irType);
+        _pendingVTableTypes.Add(irType);
     }
 
     /// <summary>
@@ -509,7 +522,7 @@ public partial class IRBuilder
             irType.IsRuntimeProvided = RuntimeProvidedTypes.Contains(typeDef.FullName);
             irType.IsPrimitiveType = ReachabilityAnalyzer.PrimitiveTypeNames.Contains(typeDef.FullName);
 
-            _module.Types.Add(irType);
+            AddTypeToModule(irType);
             _typeCache[typeDef.FullName] = irType;
         }
 
@@ -1047,6 +1060,8 @@ public partial class IRBuilder
             if (_calledSpecializedMethods.Contains(specKey) && irMethod.BasicBlocks.Count == 0)
             {
                 _skippedSpecializedMethods.RemoveAt(i);
+                // Populate locals deferred from shell creation (P5 optimization)
+                PopulateMethodLocals(irMethod, cecilMethod, typeParamMap);
                 if (HasClrInternalDependencies(cecilMethod))
                     GenerateStubBody(irMethod);
                 else
@@ -1111,6 +1126,8 @@ public partial class IRBuilder
         {
             if (skippedByMethod.TryGetValue(method, out var entry))
             {
+                // Populate locals deferred from shell creation (P5 optimization)
+                PopulateMethodLocals(method, entry.CecilMethod, entry.TypeParamMap);
                 if (HasClrInternalDependencies(entry.CecilMethod))
                 {
                     GenerateStubBody(method);

@@ -4031,7 +4031,7 @@ public partial class IRBuilder
             IsPublic = true, // BCL delegates are always public
         };
         _typeCache[ilFullName] = bclDelegate;
-        _module.Types.Add(bclDelegate);
+        AddTypeToModule(bclDelegate);
     }
 
     private string GetArgName(IRMethod method, int index)

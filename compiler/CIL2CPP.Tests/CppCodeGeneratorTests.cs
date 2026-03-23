@@ -729,7 +729,9 @@ public class CppCodeGeneratorTests
         var gen = new CppCodeGenerator(module);
         var output = gen.Generate();
 
-        Assert.Contains("#include <limits>", output.SourceFile.Content);
+        // <limits> is now in pch.h (precompiled header), source files include pch.h
+        Assert.Contains("#include <limits>", output.PchFile.Content);
+        Assert.Contains("#include \"pch.h\"", output.SourceFile.Content);
     }
 
     // ===== Library without main =====

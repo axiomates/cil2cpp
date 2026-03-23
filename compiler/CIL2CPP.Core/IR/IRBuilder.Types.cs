@@ -698,7 +698,7 @@ public partial class IRBuilder
             irType.SourceKind = _assemblySet.ClassifyAssembly(assemblyName);
             irType.IsRuntimeProvided = RuntimeProvidedTypes.Contains(cecilType.FullName);
 
-            _module.Types.Add(irType);
+            AddTypeToModule(irType);
             _typeCache[cecilType.FullName] = irType;
 
             // Populate fields/base types
