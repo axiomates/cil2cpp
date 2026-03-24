@@ -124,6 +124,10 @@ public static class ICallRegistry
         RegisterICall("System.RuntimeType", "GetPropertyImpl", 6,
             "cil2cpp::icall::RuntimeType_GetPropertyImpl");
 
+        // ===== System.Reflection.Assembly =====
+        // AOT: cannot load assemblies at runtime — throw NotSupportedException.
+        RegisterICall("System.Reflection.Assembly", "LoadFile", 1, "System_Reflection_Assembly_LoadFile");
+
         // ===== System.Reflection.RuntimeAssembly =====
         // Satellite assemblies don't exist in AOT — always return nullptr.
         RegisterICall("System.Reflection.RuntimeAssembly", "InternalGetSatelliteAssembly", 3, "cil2cpp::icall::RuntimeAssembly_InternalGetSatelliteAssembly");
