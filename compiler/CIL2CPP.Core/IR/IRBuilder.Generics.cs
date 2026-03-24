@@ -2852,14 +2852,8 @@ public partial class IRBuilder
     }
 
     /// <summary>
-    /// Auto-create specializations for nested types of generic types.
-    /// When Dictionary&lt;String,Object&gt; is specialized, also create:
-    ///   - Dictionary&lt;String,Object&gt;.Entry (used by Dictionary method bodies)
-    ///   - Dictionary&lt;String,Object&gt;.Enumerator (returned by GetEnumerator)
-    ///   - List&lt;T&gt;.Enumerator, etc.
-    /// </summary>
-    /// <summary>
     /// Create nested type specializations only for the given parent keys (not all _genericInstantiations).
+    /// E.g., Dictionary&lt;String,Object&gt; → Entry, Enumerator; List&lt;T&gt; → Enumerator.
     /// Returns the list of newly created keys (for fixpoint iteration on nested-nested types).
     /// </summary>
     private List<string> CreateNestedGenericSpecializationsFor(List<string> parentKeys)

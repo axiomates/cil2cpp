@@ -8,9 +8,8 @@ namespace CIL2CPP.Core.IR;
 public static class CppNameMapper
 {
     // User-defined value types (structs and enums) registered during IR build.
-    // Copy-on-write: reads are lock-free via volatile reference; writes copy + swap.
-    private static volatile HashSet<string> _userValueTypes = new();
-    private static readonly object _vtWriteLock = new();
+    // ConcurrentDictionary for thread-safe O(1) add + read (no copy-on-write overhead).
+    private static readonly ConcurrentDictionary<string, byte> _userValueTypes = new();
 
     // Caches for pure string transformations (no external state dependencies).
     // ConcurrentDictionary for thread-safe parallel method body compilation.
@@ -19,17 +18,12 @@ public static class CppNameMapper
 
     public static void RegisterValueType(string ilTypeName)
     {
-        lock (_vtWriteLock)
-        {
-            if (_userValueTypes.Contains(ilTypeName)) return;
-            var newSet = new HashSet<string>(_userValueTypes) { ilTypeName };
-            _userValueTypes = newSet;
-        }
+        _userValueTypes.TryAdd(ilTypeName, 0);
     }
 
     public static void ClearValueTypes()
     {
-        lock (_vtWriteLock) _userValueTypes = new();
+        _userValueTypes.Clear();
     }
 
     /// <summary>
@@ -43,7 +37,7 @@ public static class CppNameMapper
 
     internal static bool IsRegisteredValueType(string typeName)
     {
-        return _userValueTypes.Contains(typeName);
+        return _userValueTypes.ContainsKey(typeName);
     }
 
     /// <summary>
@@ -145,9 +139,7 @@ public static class CppNameMapper
             "System.Int64" or "System.UInt64" or "System.Single" or "System.Double" or
             "System.Char" or "System.IntPtr" or "System.UIntPtr")
             return true;
-        // Lock-free read via volatile reference (copy-on-write pattern)
-        var vt = _userValueTypes;
-        if (vt.Contains(ilTypeName))
+        if (_userValueTypes.ContainsKey(ilTypeName))
             return true;
         // For generic instantiations (e.g. "System.Span`1<System.Byte>"),
         // check if the open generic type is a registered value type.
@@ -157,7 +149,7 @@ public static class CppNameMapper
         if (backtick > 0)
         {
             var angleBracket = ilTypeName.IndexOf('<', backtick);
-            if (angleBracket > 0 && vt.Contains(ilTypeName[..angleBracket]))
+            if (angleBracket > 0 && _userValueTypes.ContainsKey(ilTypeName[..angleBracket]))
                 return true;
         }
         return false;
