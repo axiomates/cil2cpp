@@ -45,7 +45,7 @@ CIL2CPP 借鉴了 Unity IL2CPP 的核心架构思路——**将 BCL (Base Class 
 
 ### 1. Unity IL2CPP 架构：BCL IL 全编译
 
-所有有 IL 方法体的 BCL 方法**直接从 IL 编译为 C++**，与用户代码走完全相同的编译路径。仅在最底层保留 `[InternalCall]` 方法的 C++ 手写实现（约 484 个 icall 映射）。
+所有有 IL 方法体的 BCL 方法**直接从 IL 编译为 C++**，与用户代码走完全相同的编译路径。仅在最底层保留 `[InternalCall]` 方法的 C++ 手写实现（约 395 个 icall 映射）。
 
 ```
 方法调用

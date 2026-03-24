@@ -8,18 +8,18 @@
 
 ## Overview
 
-CIL2CPP is a C# → C++ AOT compiler (similar to Unity IL2CPP). Currently supports complete C# syntax (100% IL opcode coverage), BCL compiled from IL (Unity IL2CPP architecture), ~490 ICall entries. 1,291 C# + 576 C++ + 177 integration tests all passing. 14 NuGet packages validated (Newtonsoft.Json, DI+Logging+Console, Humanizer, Polly, Serilog+Console, Configuration+Binder, Hashids.net, GuardClauses, Slugify.Core, Stateless). Regex, DateTime, Decimal BCL features validated.
+CIL2CPP is a C# → C++ AOT compiler (similar to Unity IL2CPP). Currently supports complete C# syntax (100% IL opcode coverage), BCL compiled from IL (Unity IL2CPP architecture), ~395 ICall entries. 1,291 C# + 595 C++ + 204 integration tests all passing. 15 NuGet packages validated (Newtonsoft.Json, DI+Logging+Console, Humanizer, Polly, Serilog+Console, Configuration+Binder, Hashids.net, GuardClauses, Slugify.Core, Stateless, FluentValidation). Regex, DateTime, Decimal BCL features validated. 3 real project validations (MiniCsvTool, TodoManager, HealthChecker).
 
 ## Key Metrics
 
 | Metric | Count |
 |--------|-------|
 | IL opcode coverage | **100%** (all ~230 ECMA-335 opcodes) |
-| ICallRegistry entries | **~490** (covering 30+ categories) |
+| ICallRegistry entries | **~395** (covering 30+ categories) |
 | C# compiler tests | **1,291** (xUnit) |
-| C++ runtime tests | **576** (Google Test, 17 test files) |
-| End-to-end integration tests | **177** (29 test projects) |
-| Runtime headers | **32** |
+| C++ runtime tests | **595** (Google Test, 18 test files) |
+| End-to-end integration tests | **204** (34 test projects) |
+| Runtime headers | **37** |
 
 ---
 
@@ -138,7 +138,7 @@ CIL2CPP is a C# → C++ AOT compiler (similar to Unity IL2CPP). Currently suppor
 
 ---
 
-## ICallRegistry Breakdown (~490 entries)
+## ICallRegistry Breakdown (~395 entries)
 
 | Category | Count | Description |
 |----------|-------|-------------|
@@ -299,30 +299,30 @@ FileStream / StreamReader / StreamWriter compile from BCL IL and work end-to-end
 
 ## Test Coverage
 
-### C++ Runtime Tests (576, 17 files)
+### C++ Runtime Tests (595, 18 files)
 
 | Module | Test Count |
 |--------|-----------|
 | Exception | 71 |
+| Globalization | 66 |
+| Reflection | 53 |
 | String | 52 |
 | Type System | 48 |
-| Checked | 47 |
-| Reflection | 46 |
-| Unicode | 40 |
-| IO | 34 |
+| Checked | 34 |
 | Array | 31 |
 | Collections | 31 |
+| MemberInfo | 29 |
 | Object | 28 |
-| MemberInfo | 28 |
 | Boxing | 26 |
-| Globalization | 24 |
-| Async | 23 |
+| Async | 24 |
+| Unicode | 40 |
 | Delegate | 18 |
 | Threading | 17 |
 | GC | 16 |
 | TypedReference | 11 |
-| **Total** | **576** |
+| Stubs | 0 |
+| **Total** | **595** |
 
-### End-to-End Integration Tests (93)
+### End-to-End Integration Tests (204)
 
-Full compilation pipeline: C# `.csproj` → codegen → CMake configure → C++ build → run → verify output. Covers 29 test projects: HelloWorld, ArrayTest, FeatureTest, ArglistTest, MultiAssemblyTest, SystemIOTest, FileStreamTest, SocketTest, HttpGetTest, HttpTest, HttpsGetTest, DirTest, JsonSGTest, NuGetSimpleTest (Newtonsoft.Json), DITest (DI+Logging+Console), HumanizerTest, PollyTest, PInvokeTest, SerilogTest, ConfigTest, CompressionTest, ValidationApp, RegexTest, DateTimeTest, DecimalTest, HashidsTest, GuardClausesTest, SlugifyTest, StatelessTest (Stateless). Also includes Debug configuration and library project tests.
+Full compilation pipeline: C# `.csproj` → codegen → CMake configure → C++ build → run → verify output. Parallel execution via ThreadPoolExecutor (default DOP=4, ~7 min; sequential ~21 min). Covers 34 test projects: HelloWorld, ArrayTest, FeatureTest, ArglistTest, MultiAssemblyTest, SystemIOTest, FileStreamTest, SocketTest, HttpGetTest, HttpTest, HttpsGetTest, DirTest, JsonSGTest, NuGetSimpleTest (Newtonsoft.Json), DITest (DI+Logging+Console), HumanizerTest, PollyTest, PInvokeTest, SerilogTest, ConfigTest, CompressionTest, ValidationApp, RegexTest, DateTimeTest, DecimalTest, HashidsTest, GuardClausesTest, SlugifyTest, StatelessTest (Stateless), MiniCsvTool, TodoManager, HealthChecker, FluentValidationTest (FluentValidation), MiniServiceApp.

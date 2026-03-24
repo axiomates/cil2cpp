@@ -44,25 +44,19 @@ cil2cpp/
 │   │       └── CppCodeGenerator.Utils.cs        # 工具辅助
 │   └── CIL2CPP.Tests/          #   编译器单元测试 (xUnit)
 │       └── Fixtures/           #     测试 fixture 缓存
-├── tests/                      # 测试用 C# 项目（编译器输入，14 个项目）
-│   ├── HelloWorld/
-│   ├── ArrayTest/
-│   ├── FeatureTest/
-│   ├── ArglistTest/
-│   ├── MultiAssemblyTest/ + MathLib/
-│   ├── SystemIOTest/
-│   ├── FileStreamTest/
-│   ├── SocketTest/
-│   ├── HttpGetTest/
-│   ├── HttpTest/
-│   ├── HttpsGetTest/
-│   ├── DirTest/
-│   ├── JsonSGTest/
-│   └── NuGetSimpleTest/        # 首个 NuGet 包（Newtonsoft.Json 13.0.3）
+├── tests/                      # 测试用 C# 项目（编译器输入，34 个项目）
+│   ├── HelloWorld/ ... HttpsGetTest/   # 基础→网络（阶段 1-11）
+│   ├── DirTest/ ... CompressionTest/   # IO + 压缩（阶段 12-21）
+│   ├── ValidationApp/                  # 功能组合压力测试
+│   ├── RegexTest/ ... DecimalTest/     # BCL 功能（阶段 23-25）
+│   ├── HashidsTest/ ... StatelessTest/ # NuGet 包（阶段 26-29）
+│   ├── MiniCsvTool/ ... HealthChecker/ # 真实项目验证（阶段 30-32）
+│   ├── FluentValidationTest/           # 表达式树编译（阶段 33）
+│   └── MiniServiceApp/                 # 多包组合（阶段 34）
 ├── runtime/                    # C++ 运行时库 (CMake)
 │   ├── CMakeLists.txt
 │   ├── cmake/                  #   CMake 包配置模板
-│   ├── include/cil2cpp/        #   头文件（32 个）
+│   ├── include/cil2cpp/        #   头文件（37 个）
 │   ├── src/                    #   源码（GC、类型系统、异常、BCL icall）
 │   │   ├── gc/
 │   │   ├── exception/
@@ -71,7 +65,9 @@ cil2cpp/
 │   │   └── bcl/
 │   └── tests/                  #   运行时单元测试 (Google Test)
 ├── tools/
-│   └── dev.py                  # 开发者 CLI
+│   ├── dev.py                  # 开发者 CLI
+│   ├── integration_defs.py     # 数据驱动集成测试定义
+│   └── integration_runner.py   # 并行/顺序测试执行器
 └── docs/                       # 项目文档
 ```
 
@@ -135,7 +131,7 @@ CIL2CPP 采用与 Unity IL2CPP 相同的策略：**所有有 IL 方法体的 BCL
 ```
 方法调用
   ↓
-ICallRegistry 查找 (~490 个映射)
+ICallRegistry 查找 (~395 个映射)
   ├─ 命中 → [InternalCall] 方法，无 IL 方法体
   │         GC / Monitor / Interlocked / Buffer / Math / IO / Globalization 等
   │         → 调用 C++ 运行时实现
@@ -193,7 +189,7 @@ ICallRegistry 查找 (~490 个映射)
 │  这一层决定: 哪些标准库方法可用                           │
 ├─────────────────────────────────────────────────────────┤
 │  Layer 3: 运行时 icall                                  │
-│  ~490 个 [InternalCall] 方法 → C++ 运行时实现            │
+│  ~395 个 [InternalCall] 方法 → C++ 运行时实现            │
 │  限制: 未实现的 icall → 功能不可用                        │
 │  这一层决定: GC、线程、字符串布局、IO 等底层能力           │
 └─────────────────────────────────────────────────────────┘
@@ -226,7 +222,7 @@ output/
 └── CMakeLists.txt            ← 自动列出所有源文件 + /MP 编译选项
 ```
 
-分区策略：按 IR 指令数均匀分割（`MinInstructionsPerPartition = 20000`），每个 `.cpp` 文件约 13k-17k 行 C++ 代码。
+分区策略：按 IR 指令数均匀分割（`MinInstructionsPerPartition = 35000`），每个 `.cpp` 文件约 20k-30k 行 C++ 代码。
 
 ### 自动 stub 机制
 
@@ -238,6 +234,23 @@ BCL 中部分方法的 IL 引用了 CLR 内部类型，无法编译为 C++。编
 > **历史**：此前有 4 层（包括 HasKnownBrokenPatterns 和 RenderedBodyHasErrors）。这些中间门控在 Phase X 清理中移除（删除约 5,500 行）— 问题现在表现为 C++ 编译错误，从根因修复而非被门控掩盖。
 
 每次 codegen 生成 `stubbed_methods.txt` 报告，列出所有被 stub 化的方法及原因。
+
+## 编译器优化
+
+编译器包含多个优化阶段，以减少代码生成时间和生成代码量：
+
+| 优化 | 作用 | 影响 |
+|------|------|------|
+| __Canon 泛型共享 | 引用类型泛型特化共享单一规范方法体 | 减少重复方法体 |
+| 并行 Pass 6 | 方法体编译通过 `Parallel.ForEach` 并行执行 | 代码生成快约 5-6% |
+| 并行泛型体编译 | 延迟泛型体分 3 阶段：顺序预扫描→并行编译→顺序后处理 | NuGetSimpleTest 快约 21% |
+| 并行头文件生成 | `ComputeTypeReferences`、struct 定义、stub 收集并行化 | 头文件生成快约 7-13% |
+| 预编译头 (PCH) | 生成的 CMakeLists.txt 使用 `target_precompile_headers()` | C++ 编译更快 |
+| 增量 VTable | `_pendingVTableTypes` 仅追踪新类型 | 避免 O(n) 全扫描 |
+| SIMD 死代码消除 | 4 层：编译时常量传播→容器类型泄漏修复→方法级跳过→渲染时替换 | 消除约 300+ SIMD 错误 |
+| 特化方法可达性 | 追踪泛型特化中实际被调用的方法 | 77% 泛型方法被跳过 |
+| 接口分派感知特化 | 仅物化实际被分派的泛型接口 | -7.5% 类型，-13.6% TypeInfo |
+| O(n²) fixpoint 优化 | 泛型特化 fixpoint 使用增量处理 | NuGetSimpleTest 196s → 89s |
 
 ## 垃圾收集器 (GC)
 
@@ -294,7 +307,7 @@ target_link_libraries(MyApp PRIVATE cil2cpp::runtime)
 
 ```
 <prefix>/
-├── include/cil2cpp/    # 32 个头文件
+├── include/cil2cpp/    # 37 个头文件
 ├── lib/
 │   ├── cil2cpp_runtime.lib   # Release
 │   ├── cil2cpp_runtimed.lib  # Debug (DEBUG_POSTFIX "d")

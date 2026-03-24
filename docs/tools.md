@@ -148,7 +148,10 @@ python tools/dev.py codegen HelloWorld     # Quick code generation test
 python tools/dev.py compile HelloWorld     # One-step compile: codegen → cmake → build
 python tools/dev.py compile HelloWorld --run  # Compile and run
 python tools/dev.py compile -i myapp.csproj   # Compile arbitrary project
-python tools/dev.py integration            # Integration tests
+python tools/dev.py integration            # Integration tests (parallel, default DOP=4)
+python tools/dev.py integration -j 2      # 2 parallel workers
+python tools/dev.py integration --sequential  # Sequential mode
+python tools/dev.py integration --filter Hello  # Run only matching tests
 python tools/dev.py setup                  # Check prerequisites + install optional deps
 ```
 
@@ -187,7 +190,7 @@ dotnet test compiler/CIL2CPP.Tests
 
 > **Important**: When adding tests, you must use `GetXxxReleaseContext()` / `GetXxxReleaseModule()` to access cached compilation results. Never directly `new AssemblySet()` + `new ReachabilityAnalyzer()` in test methods (~12 seconds each).
 
-### C++ Runtime Tests (576, Google Test)
+### C++ Runtime Tests (595, Google Test)
 
 ```bash
 cmake -B runtime/tests/build -S runtime/tests
@@ -195,12 +198,17 @@ cmake --build runtime/tests/build --config Debug
 ctest --test-dir runtime/tests/build -C Debug --output-on-failure
 ```
 
-### End-to-End Integration Tests (93)
+### End-to-End Integration Tests (204, 34 projects)
 
-Full compilation pipeline: C# `.csproj` → codegen → CMake configure → C++ build → run → verify output. Covers 15 test projects including NuGet + DI ecosystem validation.
+Full compilation pipeline: C# `.csproj` → codegen → CMake configure → C++ build → run → verify output. Covers 34 test projects including NuGet ecosystem validation, real project validation, and multi-package composition.
+
+Data-driven test framework with parallel execution via `ThreadPoolExecutor` (default DOP=4, ~7 min wall clock; sequential ~21 min).
 
 ```bash
-python tools/dev.py integration
+python tools/dev.py integration                    # parallel (default)
+python tools/dev.py integration --sequential       # sequential
+python tools/dev.py integration -j 2               # 2 parallel workers
+python tools/dev.py integration --filter HelloWorld # run matching tests
 ```
 
 ### All Tests

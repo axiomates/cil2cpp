@@ -44,25 +44,19 @@ cil2cpp/
 │   │       └── CppCodeGenerator.Utils.cs        # Utility helpers
 │   └── CIL2CPP.Tests/          #   Compiler unit tests (xUnit)
 │       └── Fixtures/           #     Test fixture caching
-├── tests/                      # Test C# projects (compiler input, 14 projects)
-│   ├── HelloWorld/
-│   ├── ArrayTest/
-│   ├── FeatureTest/
-│   ├── ArglistTest/
-│   ├── MultiAssemblyTest/ + MathLib/
-│   ├── SystemIOTest/
-│   ├── FileStreamTest/
-│   ├── SocketTest/
-│   ├── HttpGetTest/
-│   ├── HttpTest/
-│   ├── HttpsGetTest/
-│   ├── DirTest/
-│   ├── JsonSGTest/
-│   └── NuGetSimpleTest/        # First NuGet package (Newtonsoft.Json 13.0.3)
+├── tests/                      # Test C# projects (compiler input, 34 projects)
+│   ├── HelloWorld/ ... HttpsGetTest/   # Basic → networking (phases 1-11)
+│   ├── DirTest/ ... CompressionTest/   # IO + compression (phases 12-21)
+│   ├── ValidationApp/                  # Feature composition stress test
+│   ├── RegexTest/ ... DecimalTest/     # BCL features (phases 23-25)
+│   ├── HashidsTest/ ... StatelessTest/ # NuGet packages (phases 26-29)
+│   ├── MiniCsvTool/ ... HealthChecker/ # Real project validation (phases 30-32)
+│   ├── FluentValidationTest/           # Expression tree compilation (phase 33)
+│   └── MiniServiceApp/                 # Multi-package composition (phase 34)
 ├── runtime/                    # C++ runtime library (CMake)
 │   ├── CMakeLists.txt
 │   ├── cmake/                  #   CMake package config template
-│   ├── include/cil2cpp/        #   Headers (32 files)
+│   ├── include/cil2cpp/        #   Headers (37 files)
 │   ├── src/                    #   Source (GC, type system, exception, BCL icall)
 │   │   ├── gc/
 │   │   ├── exception/
@@ -71,7 +65,9 @@ cil2cpp/
 │   │   └── bcl/
 │   └── tests/                  #   Runtime unit tests (Google Test)
 ├── tools/
-│   └── dev.py                  # Developer CLI
+│   ├── dev.py                  # Developer CLI
+│   ├── integration_defs.py     # Data-driven integration test definitions
+│   └── integration_runner.py   # Parallel/sequential test executor
 └── docs/                       # Project documentation
 ```
 
@@ -136,7 +132,7 @@ CIL2CPP adopts the same strategy as Unity IL2CPP: **all BCL methods with IL bodi
 ```
 Method call
   ↓
-ICallRegistry lookup (~490 mappings)
+ICallRegistry lookup (~395 mappings)
   ├─ Hit → [InternalCall] method, no IL body
   │         GC / Monitor / Interlocked / Buffer / Math / IO / Globalization etc.
   │         → Call C++ runtime implementation
@@ -196,7 +192,7 @@ A few JIT intrinsic methods are inlined by the compiler (not going through ICall
 │  are available                                           │
 ├─────────────────────────────────────────────────────────┤
 │  Layer 3: Runtime ICall                                  │
-│  ~490 [InternalCall] methods → C++ runtime               │
+│  ~395 [InternalCall] methods → C++ runtime               │
 │  implementation                                          │
 │  Limitation: unimplemented icall → feature unavailable   │
 │  This layer determines: GC, threading, string layout,    │
@@ -231,7 +227,7 @@ output/
 └── CMakeLists.txt            ← Auto-lists all source files + /MP compile options
 ```
 
-Partitioning strategy: evenly split by IR instruction count (`MinInstructionsPerPartition = 20000`), each `.cpp` file is approximately 13k-17k lines of C++ code.
+Partitioning strategy: evenly split by IR instruction count (`MinInstructionsPerPartition = 35000`), each `.cpp` file is approximately 20k-30k lines of C++ code.
 
 ### Auto Stub Mechanism
 
@@ -243,6 +239,23 @@ Some BCL methods' IL references CLR internal types that cannot be compiled to C+
 > **History**: Previously had 4 layers (including HasKnownBrokenPatterns and RenderedBodyHasErrors). These intermediate gates were removed in Phase X cleanup (~5,500 lines deleted) — problems now surface as C++ compilation errors and are fixed at the root cause rather than masked by gates.
 
 Each codegen run produces a `stubbed_methods.txt` report listing all stubbed methods and their reasons.
+
+## Compiler Optimizations
+
+The compiler includes several optimization passes to reduce codegen time and generated code size:
+
+| Optimization | What it does | Impact |
+|-------------|-------------|--------|
+| __Canon generic sharing | Reference-type generic specializations share a single canonical method body | Reduces duplicate method bodies |
+| Parallel Pass 6 | Method body compilation via `Parallel.ForEach` with thread-safe disambiguation | ~5-6% faster codegen |
+| Parallel generic body compilation | Deferred generic bodies compiled in parallel (pre-scan → parallel compile → post-process) | ~21% faster for NuGetSimpleTest |
+| Parallel header generation | `ComputeTypeReferences`, struct definitions, and stub collection parallelized | ~7-13% faster header generation |
+| Precompiled headers (PCH) | Generated CMakeLists.txt uses `target_precompile_headers()` for the unified header | Faster C++ compilation |
+| Incremental VTable | `_pendingVTableTypes` tracks only new types needing VTable construction | Avoids O(n) full-scan fixpoint |
+| SIMD dead-code elimination | 4-layer: compile-time constant propagation → container type leak fix → method-level skip → render-time replacement | Eliminates ~300+ SIMD errors |
+| Specialized method reachability | Tracks which generic specialization methods are actually called | 77% generic methods skipped |
+| Interface-dispatch-aware specialization | Only materializes generic interfaces that are actually dispatched on | -7.5% types, -13.6% TypeInfo |
+| O(n²) fixpoint optimization | Generic specialization fixpoint uses incremental processing | NuGetSimpleTest 196s → 89s |
 
 ## Garbage Collector (GC)
 
@@ -299,7 +312,7 @@ Installed directory structure:
 
 ```
 <prefix>/
-├── include/cil2cpp/    # 32 headers
+├── include/cil2cpp/    # 37 headers
 ├── lib/
 │   ├── cil2cpp_runtime.lib   # Release
 │   ├── cil2cpp_runtimed.lib  # Debug (DEBUG_POSTFIX "d")

@@ -148,7 +148,10 @@ python tools/dev.py codegen HelloWorld     # 快速代码生成测试
 python tools/dev.py compile HelloWorld     # 一步编译：codegen → cmake → build
 python tools/dev.py compile HelloWorld --run  # 编译并运行
 python tools/dev.py compile -i myapp.csproj   # 编译任意项目
-python tools/dev.py integration            # 集成测试
+python tools/dev.py integration            # 集成测试（并行，默认 DOP=4）
+python tools/dev.py integration -j 2      # 2 个并行工作线程
+python tools/dev.py integration --sequential  # 顺序模式
+python tools/dev.py integration --filter Hello  # 仅运行匹配的测试
 python tools/dev.py setup                  # 检查前置 + 安装可选依赖
 ```
 
@@ -187,7 +190,7 @@ dotnet test compiler/CIL2CPP.Tests
 
 > **重要**：新增测试时必须使用 `GetXxxReleaseContext()` / `GetXxxReleaseModule()` 获取缓存的编译结果，禁止在测试方法中直接 `new AssemblySet()` + `new ReachabilityAnalyzer()`（每次约 12 秒）。
 
-### C++ 运行时测试（576 个，Google Test）
+### C++ 运行时测试（595 个，Google Test）
 
 ```bash
 cmake -B runtime/tests/build -S runtime/tests
@@ -195,12 +198,17 @@ cmake --build runtime/tests/build --config Debug
 ctest --test-dir runtime/tests/build -C Debug --output-on-failure
 ```
 
-### 端到端集成测试（93 个）
+### 端到端集成测试（204 个，34 个项目）
 
-完整编译流水线：C# `.csproj` → codegen → CMake configure → C++ build → run → 验证输出。覆盖 15 个测试项目，包括 NuGet + DI 生态验证。
+完整编译流水线：C# `.csproj` → codegen → CMake configure → C++ build → run → 验证输出。覆盖 34 个测试项目，包括 NuGet 生态验证、真实项目验证和多包组合。
+
+数据驱动测试框架，通过 `ThreadPoolExecutor` 并行执行（默认 DOP=4，约 7 分钟；顺序约 21 分钟）。
 
 ```bash
-python tools/dev.py integration
+python tools/dev.py integration                    # 并行（默认）
+python tools/dev.py integration --sequential       # 顺序模式
+python tools/dev.py integration -j 2               # 2 个并行工作线程
+python tools/dev.py integration --filter HelloWorld # 仅运行匹配的测试
 ```
 
 ### 全部测试

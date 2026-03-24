@@ -2,7 +2,7 @@
 
 将 .NET/C# 程序编译为原生 C++ 代码的 AOT 编译工具，类似于 Unity IL2CPP。
 
-**定位**：通用 AOT 编译器，对标 .NET NativeAOT 覆盖范围。采用 Unity IL2CPP 架构——所有 BCL IL 方法体直接编译为 C++，仅在最底层保留 `[InternalCall]` 的 C++ 实现（~490 个 icall）。
+**定位**：通用 AOT 编译器，对标 .NET NativeAOT 覆盖范围。采用 Unity IL2CPP 架构——所有 BCL IL 方法体直接编译为 C++，仅在最底层保留 `[InternalCall]` 的 C++ 实现（~395 个 icall）。
 
 ```
 .csproj → dotnet build → .NET DLL (IL) → Mono.Cecil → IR (8 遍) → C++ 源码 + CMakeLists.txt → 原生可执行文件
@@ -111,11 +111,11 @@ void Program_Main() {
 | 指标 | 数量 |
 |------|------|
 | IL 操作码覆盖率 | 100%（全部 ~230 种 ECMA-335 操作码） |
-| ICallRegistry 条目 | ~490 个 |
+| ICallRegistry 条目 | ~395 个 |
 | C# 编译器测试 | 1,291 个 (xUnit) |
-| C++ 运行时测试 | 576 个 (Google Test) |
-| 端到端集成测试 | 177 个（29 个测试项目） |
-| 已验证 NuGet 包 | 14 个（Newtonsoft.Json、DI、Serilog、Polly、Humanizer、Stateless 等） |
+| C++ 运行时测试 | 595 个 (Google Test) |
+| 端到端集成测试 | 204 个（34 个测试项目） |
+| 已验证 NuGet 包 | 15 个（Newtonsoft.Json、DI、Serilog、Polly、Humanizer、Stateless、FluentValidation 等） |
 
 ## 项目文档
 
@@ -137,9 +137,9 @@ cil2cpp/
 │   ├── CIL2CPP.Core/           #   核心：IL 解析 → IR → C++ 代码生成
 │   └── CIL2CPP.Tests/          #   编译器测试 (xUnit, 1,291 tests)
 ├── runtime/                    # C++ 运行时 (C++20, CMake)
-│   ├── include/cil2cpp/        #   头文件（32 个）
+│   ├── include/cil2cpp/        #   头文件（37 个）
 │   ├── src/                    #   GC / 类型系统 / 异常 / BCL icall
-│   └── tests/                  #   运行时测试 (GTest, 576 tests)
+│   └── tests/                  #   运行时测试 (GTest, 595 tests)
 ├── tests/                      # 测试用 C# 项目
 ├── tools/dev.py                # 开发者 CLI
 └── docs/                       # 项目文档

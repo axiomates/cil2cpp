@@ -2,7 +2,7 @@
 
 An AOT compiler that compiles .NET/C# programs into native C++ code, similar to Unity IL2CPP.
 
-**Positioning**: General-purpose AOT compiler targeting .NET NativeAOT-level coverage. Uses Unity IL2CPP architecture — all BCL IL method bodies are compiled directly to C++, with only the lowest-level `[InternalCall]` C++ implementations (~490 icalls) retained.
+**Positioning**: General-purpose AOT compiler targeting .NET NativeAOT-level coverage. Uses Unity IL2CPP architecture — all BCL IL method bodies are compiled directly to C++, with only the lowest-level `[InternalCall]` C++ implementations (~395 icalls) retained.
 
 ```
 .csproj → dotnet build → .NET DLL (IL) → Mono.Cecil → IR (8 passes) → C++ source + CMakeLists.txt → native executable
@@ -111,11 +111,11 @@ void Program_Main() {
 | Metric | Count |
 |--------|-------|
 | IL opcode coverage | 100% (all ~230 ECMA-335 opcodes) |
-| ICallRegistry entries | ~490 |
+| ICallRegistry entries | ~395 |
 | C# compiler tests | 1,291 (xUnit) |
-| C++ runtime tests | 576 (Google Test) |
-| End-to-end integration tests | 177 (29 test projects) |
-| NuGet packages validated | 14 (Newtonsoft.Json, DI, Serilog, Polly, Humanizer, Stateless, etc.) |
+| C++ runtime tests | 595 (Google Test) |
+| End-to-end integration tests | 204 (34 test projects) |
+| NuGet packages validated | 15 (Newtonsoft.Json, DI, Serilog, Polly, Humanizer, Stateless, FluentValidation, etc.) |
 
 ## Documentation
 
@@ -137,9 +137,9 @@ cil2cpp/
 │   ├── CIL2CPP.Core/           #   Core: IL parsing → IR → C++ code generation
 │   └── CIL2CPP.Tests/          #   Compiler tests (xUnit, 1,291 tests)
 ├── runtime/                    # C++ runtime (C++20, CMake)
-│   ├── include/cil2cpp/        #   Headers (32 files)
+│   ├── include/cil2cpp/        #   Headers (37 files)
 │   ├── src/                    #   GC / type system / exception / BCL icall
-│   └── tests/                  #   Runtime tests (GTest, 576 tests)
+│   └── tests/                  #   Runtime tests (GTest, 595 tests)
 ├── tests/                      # Test C# projects
 ├── tools/dev.py                # Developer CLI
 └── docs/                       # Project documentation
