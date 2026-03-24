@@ -134,6 +134,13 @@ public class IRMethod
     /// </summary>
     public DeadCodeCategory DeadCodeCategory { get; set; } = DeadCodeCategory.None;
 
+    /// <summary>
+    /// For __Canon sharing: the canonical method whose body this method shares.
+    /// Non-null means this method on a shared type uses the canonical type's method body.
+    /// Codegen skips body emission and declaration; VTable/call sites use CanonicalMethod.CppName.
+    /// </summary>
+    public IRMethod? CanonicalMethod { get; set; }
+
     /// <summary>TypeInfo names referenced by this method's body (e.g., for casts, boxing, interface dispatch).</summary>
     public HashSet<string> ReferencedTypeInfoNames { get; } = new();
 

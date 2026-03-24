@@ -45,6 +45,8 @@ public partial class CppCodeGenerator
         // Types already aliased in runtime headers — skip struct definitions
         foreach (var mangled in RuntimeTypeRegistry.GetHeaderAliasedMangledNames())
             aliasedTypes.Add(mangled);
+        // Note: __Canon shared types get their OWN struct definitions (not using aliases)
+        // because field types differ (e.g., String** vs Object**). Only method bodies are shared.
         foreach (var type in userTypes)
         {
             if (type.IsEnum || type.IsDelegate) continue;
@@ -374,10 +376,11 @@ public partial class CppCodeGenerator
 
         // Static field storage declarations
         // Note: RuntimeProvided types still need statics (e.g., String.Empty)
+        var emittedStaticsStructs = new HashSet<string>();
         foreach (var type in userTypes)
         {
             if (type.IsEnum || type.IsDelegate) continue;
-            if (type.StaticFields.Count > 0)
+            if (type.StaticFields.Count > 0 && emittedStaticsStructs.Add(type.CppName))
             {
                 sb.AppendLine($"// Static fields for {type.ILFullName}");
                 sb.AppendLine($"struct {type.CppName}_Statics {{");
@@ -431,7 +434,9 @@ public partial class CppCodeGenerator
             foreach (var method in type.Methods)
             {
                 if (method.IsAbstract || method.IsInternalCall) continue;
-                if (method.BasicBlocks.Count == 0 && !method.IsPInvoke) continue;
+                if (method.BasicBlocks.Count == 0 && !method.IsPInvoke
+                    && (method.CanonicalMethod == null
+                        || method.CanonicalMethod.BasicBlocks.Count == 0)) continue;
                 // CoreRuntimeTypes: selectively skip instance methods that are provided by runtime.
                 // Must match Source.cs EmitMethodsForType() logic exactly.
                 if (!method.IsStatic && isCoreRuntime

@@ -1,3 +1,5 @@
+using System.Collections.Concurrent;
+
 namespace CIL2CPP.Core.IR;
 
 /// <summary>
@@ -22,7 +24,7 @@ public class IRModule
 {
     public string Name { get; set; } = "";
     public List<IRType> Types { get; } = new();
-    public Dictionary<string, IRStringLiteral> StringLiterals { get; } = new();
+    public ConcurrentDictionary<string, IRStringLiteral> StringLiterals { get; } = new();
     public IRMethod? EntryPoint { get; set; }
 
     /// <summary>
@@ -44,14 +46,16 @@ public class IRModule
     /// <summary>
     /// Register a string literal and return its ID.
     /// </summary>
+    private int _stringLiteralCounter;
+
     public string RegisterStringLiteral(string value)
     {
-        if (!StringLiterals.ContainsKey(value))
+        var literal = StringLiterals.GetOrAdd(value, v =>
         {
-            var id = $"__str_{StringLiterals.Count}";
-            StringLiterals[value] = new IRStringLiteral { Id = id, Value = value };
-        }
-        return StringLiterals[value].Id;
+            var id = $"__str_{Interlocked.Increment(ref _stringLiteralCounter) - 1}";
+            return new IRStringLiteral { Id = id, Value = v };
+        });
+        return literal.Id;
     }
 
     public List<IRArrayInitData> ArrayInitDataBlobs { get; } = new();
@@ -60,18 +64,23 @@ public class IRModule
     /// Register a static byte blob for array initialization (RuntimeHelpers.InitializeArray).
     /// Returns the C++ identifier for the static data array.
     /// </summary>
+    private readonly object _arrayInitLock = new();
+
     public string RegisterArrayInitData(byte[] data)
     {
-        var id = $"__arr_init_{ArrayInitDataBlobs.Count}";
-        ArrayInitDataBlobs.Add(new IRArrayInitData { Id = id, Data = data });
-        return id;
+        lock (_arrayInitLock)
+        {
+            var id = $"__arr_init_{ArrayInitDataBlobs.Count}";
+            ArrayInitDataBlobs.Add(new IRArrayInitData { Id = id, Data = data });
+            return id;
+        }
     }
 
     /// <summary>
     /// Primitive types that need TypeInfo definitions for array element types.
     /// Key: IL full name (e.g. "System.Int32"), Value: (CppMangled, CppType, ElementSize expression).
     /// </summary>
-    public Dictionary<string, PrimitiveTypeInfoEntry> PrimitiveTypeInfos { get; } = new();
+    public ConcurrentDictionary<string, PrimitiveTypeInfoEntry> PrimitiveTypeInfos { get; } = new();
 
     /// <summary>
     /// Disambiguated method names for overloaded methods whose C++ names would collide.
@@ -112,13 +121,13 @@ public class IRModule
     /// Used by auto-discovered TypeInfo emission to emit correct full_name.
     /// Populated during ldtoken processing when open generic types are referenced.
     /// </summary>
-    public Dictionary<string, string> TypeInfoCppToILMap { get; } = new();
+    public ConcurrentDictionary<string, string> TypeInfoCppToILMap { get; } = new();
 
     /// <summary>
     /// Extra metadata for auto-discovered TypeInfos (flags, generic argument count).
     /// Populated during ldtoken processing to emit proper TypeInfo fields.
     /// </summary>
-    public Dictionary<string, AutoTypeInfoMetadata> TypeInfoAutoMetadata { get; } = new();
+    public ConcurrentDictionary<string, AutoTypeInfoMetadata> TypeInfoAutoMetadata { get; } = new();
 
     /// <summary>
     /// BCL resource strings extracted from assembly embedded resources at compile time.
@@ -133,15 +142,17 @@ public class IRModule
     /// </summary>
     public void RegisterPrimitiveTypeInfo(string ilFullName)
     {
-        if (PrimitiveTypeInfos.ContainsKey(ilFullName)) return;
-        var cppMangled = CppNameMapper.MangleTypeName(ilFullName);
-        var cppType = CppNameMapper.GetCppTypeName(ilFullName);
-        PrimitiveTypeInfos[ilFullName] = new PrimitiveTypeInfoEntry
+        PrimitiveTypeInfos.GetOrAdd(ilFullName, name =>
         {
-            ILFullName = ilFullName,
-            CppMangledName = cppMangled,
-            CppTypeName = cppType
-        };
+            var cppMangled = CppNameMapper.MangleTypeName(name);
+            var cppType = CppNameMapper.GetCppTypeName(name);
+            return new PrimitiveTypeInfoEntry
+            {
+                ILFullName = name,
+                CppMangledName = cppMangled,
+                CppTypeName = cppType
+            };
+        });
     }
 }
 

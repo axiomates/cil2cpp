@@ -73,6 +73,21 @@ public class IRType
     public bool IsDelegate { get; set; }
     public bool IsGenericInstance { get; set; }
     public bool IsRecord { get; set; }
+
+    /// <summary>
+    /// For generic sharing: the canonical type whose sharable methods this type reuses.
+    /// Non-null means this type is a "shared" type (struct is a C++ using alias).
+    /// </summary>
+    public IRType? CanonicalType { get; set; }
+
+    /// <summary>
+    /// True if this type IS the canonical representative for __Canon generic sharing.
+    /// Its sharable method bodies are shared by all types with CanonicalType pointing here.
+    /// </summary>
+    public bool IsCanonicalInstance { get; set; }
+
+    /// <summary>True if this type shares struct layout and sharable methods with a canonical type.</summary>
+    public bool HasCanonicalSharing => CanonicalType != null;
     /// <summary>
     /// True if this type is a CLR primitive (System.Byte, System.Int32, etc.)
     /// that maps to a C++ built-in type. Struct definition is NOT emitted,

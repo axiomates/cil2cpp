@@ -6,13 +6,7 @@ namespace CIL2CPP.Core.IR;
 
 public partial class IRBuilder
 {
-    // Active generic type parameter map (set during ConvertMethodBodyWithGenerics)
-    private Dictionary<string, string>? _activeTypeParamMap;
-
-    // Compile-time constant locals: tracks local variables known to hold compile-time constant values.
-    // Used for dead branch elimination: IsSupported=0 → stloc → ldloc → brfalse eliminates dead SIMD paths.
-    // Cleared at method entry and at control flow merge points (branch target labels).
-    private readonly Dictionary<int, int> _compileTimeConstantLocals = new();
+    // Per-method state (_ctx.Value.ActiveTypeParamMap, _compileTimeConstantLocals) moved to MethodCompilationContext (_ctx)
 
     /// <summary>
     /// Collect ALL generic parameters for a type, including parameters from declaring (parent) types.
@@ -109,6 +103,27 @@ public partial class IRBuilder
     /// </summary>
     private readonly List<(string SpecKey, MethodDefinition CecilMethod, IRMethod IrMethod,
         Dictionary<string, string> TypeParamMap)> _skippedSpecializedMethods = new();
+
+    /// <summary>
+    /// Cache of canonical IRTypes keyed by canonical key (e.g., "List`1&lt;__Canon&gt;").
+    /// Each canonical type is the __Canon representative that shared types point to.
+    /// </summary>
+    private readonly Dictionary<string, IRType> _canonicalTypeCache = new();
+
+    /// <summary>
+    /// Representative type per canonical group. The first concrete shared type whose
+    /// sharable method bodies are compiled and shared by other types via wrappers.
+    /// Avoids compiling canonical (__Canon) method bodies which create transitive
+    /// dependencies on __Canon-specialized types that may lack full compilation.
+    /// </summary>
+    private readonly Dictionary<string, IRType> _representativeType = new();
+
+    /// <summary>
+    /// Cache of non-sharable method names per open generic type.
+    /// Key: Cecil TypeDefinition.FullName. Value: set of MethodDefinition.FullName that are non-sharable.
+    /// Computed once per open type via CanonicalTypeResolver.AnalyzeMethodSharability.
+    /// </summary>
+    private readonly Dictionary<string, HashSet<string>> _nonShareableMethodCache = new();
 
     /// <summary>
     /// Check if any constructed type inherits from or implements the given generic type.
@@ -693,7 +708,7 @@ public partial class IRBuilder
         var mangledName = MangleGenericMethodName(declaringType, methodName, typeArgs);
 
         // Disambiguate mangled name if another overload already uses it
-        if (_genericMethodInstantiations.Values.Any(v => v.MangledName == mangledName))
+        if (_genericMethodMangledNames.Contains(mangledName))
         {
             // Build type parameter map to resolve generic params before mangling.
             // Must include BOTH declaring type's generic params (e.g., T from IndexOfAnyResultMapper<T>)
@@ -716,6 +731,7 @@ public partial class IRBuilder
                     ResolveGenericTypeName(p.ParameterType, typeParamMap))));
             mangledName += $"__{paramSuffix}";
         }
+        _genericMethodMangledNames.Add(mangledName);
 
         _genericMethodInstantiations[key] = new GenericMethodInstantiationInfo(
             declaringType, methodName, typeArgs, mangledName, cecilMethod);
@@ -1578,6 +1594,44 @@ public partial class IRBuilder
     }
 
     /// <summary>
+    /// Check if return types are compatible for __Canon sharing.
+    /// Both void, both pointers, or identical types are compatible.
+    /// Value-type returns that differ are NOT compatible (can't cast structs).
+    /// </summary>
+    private static bool CanonicalReturnTypeCompatible(string? canonReturn, string? sharedReturn)
+    {
+        if (canonReturn == sharedReturn) return true;
+        if (string.IsNullOrEmpty(canonReturn) && string.IsNullOrEmpty(sharedReturn)) return true;
+        if (string.IsNullOrEmpty(canonReturn) || string.IsNullOrEmpty(sharedReturn)) return false;
+        // Both pointers → compatible (ref types canonicalized to Object*)
+        if (canonReturn.EndsWith("*") && sharedReturn.EndsWith("*")) return true;
+        // Different non-pointer types → incompatible value types
+        return false;
+    }
+
+    /// <summary>
+    /// Check if canonical and shared method parameters are compatible for __Canon sharing.
+    /// Value-type parameters must match exactly; reference-type parameters (pointers) are
+    /// compatible regardless of concrete type (all ref types → Object* in canonical form).
+    /// This prevents mismatching overloads with the same param count but different types.
+    /// </summary>
+    private static bool CanonicalParamsMatch(List<IRParameter> canonParams, List<IRParameter> sharedParams)
+    {
+        if (canonParams.Count != sharedParams.Count) return false;
+        for (int i = 0; i < canonParams.Count; i++)
+        {
+            var ct = canonParams[i].CppTypeName;
+            var st = sharedParams[i].CppTypeName;
+            if (ct == st) continue;
+            // Both pointers → compatible (ref type canonicalized to Object*)
+            if (ct.EndsWith("*") && st.EndsWith("*")) continue;
+            // Mismatch: different value types or pointer vs non-pointer
+            return false;
+        }
+        return true;
+    }
+
+    /// <summary>
     /// Check if an IRMethod has unresolved generic parameters in its signature
     /// (CppName, return type, parameter types, or local types). Such methods are
     /// open generics that leaked through the specialization pipeline due to incomplete
@@ -2006,6 +2060,7 @@ public partial class IRBuilder
             }
 
             // First pass: create types for pending entries only
+            var canonicalKeysCreated = new List<string>();
             foreach (var key in batch)
             {
                 // Skip types already created (e.g., by BCL proxy system or reachability)
@@ -2019,10 +2074,48 @@ public partial class IRBuilder
                 // Safety net: skip SIMD container types even if they leaked into _genericInstantiations
                 if (IsSimdContainerType(info.OpenTypeName)) continue;
 
-                CreateGenericTypeFromInfo(key, info);
+                // Delegate types are function pointer aliases, not structs — skip __Canon sharing.
+                // Value types are passed by value, not by pointer — wrapper casts don't work.
+                var isDelegate = info.CecilOpenType.BaseType?.FullName is "System.MulticastDelegate" or "System.Delegate";
+                var skipSharing = isDelegate || info.CecilOpenType.IsValueType;
+
+                // __Canon sharing: check if this type can share with a canonical form
+                var canonicalArgs = skipSharing ? null : CanonicalTypeResolver.Canonicalize(
+                    info.TypeArguments, CppNameMapper.IsValueType);
+
+                if (canonicalArgs != null)
+                {
+                    // This type has reference-type generic args → can share with canonical
+                    var canonicalKey = CanonicalTypeResolver.GetCanonicalKey(
+                        info.OpenTypeName, canonicalArgs);
+
+                    // Ensure the canonical type exists
+                    if (!_typeCache.ContainsKey(canonicalKey) && !_canonicalTypeCache.ContainsKey(canonicalKey))
+                    {
+                        var canonicalMangledName = CppNameMapper.MangleGenericInstanceTypeName(
+                            info.OpenTypeName, canonicalArgs);
+                        var canonicalInfo = new GenericInstantiationInfo(
+                            info.OpenTypeName, canonicalArgs, canonicalMangledName, info.CecilOpenType);
+                        // Register in _genericInstantiations so base type re-resolution passes include it
+                        _genericInstantiations.TryAdd(canonicalKey, canonicalInfo);
+                        canonicalKeysCreated.Add(canonicalKey);
+                        CreateGenericTypeFromInfo(canonicalKey, canonicalInfo, isExplicitCanonical: true);
+                    }
+
+                    // Create the concrete type as shared, passing canonical type so
+                    // CanonicalMethod linking can happen during method shell creation.
+                    _canonicalTypeCache.TryGetValue(canonicalKey, out var canonType);
+                    CreateGenericTypeFromInfo(key, info, canonType);
+                }
+                else
+                {
+                    // All value-type args or no generic args → full compilation, no sharing
+                    CreateGenericTypeFromInfo(key, info);
+                }
             }
 
             allProcessed.AddRange(batch);
+            allProcessed.AddRange(canonicalKeysCreated);
 
             // Auto-create nested type specializations (Entry, Enumerator, etc.)
             // Only process the current batch's entries (not all _genericInstantiations).
@@ -2056,9 +2149,12 @@ public partial class IRBuilder
                 if (irType.BaseType == null && info.CecilOpenType.BaseType != null && !irType.IsValueType)
                 {
                     var baseName2 = ResolveGenericTypeName(info.CecilOpenType.BaseType, typeParamMap2);
-                    if (_typeCache.TryGetValue(baseName2, out var baseType2))
+                    if (!_typeCache.TryGetValue(baseName2, out var baseType2))
+                        baseType2 = _module.FindType(baseName2);
+                    if (baseType2 != null)
                     {
                         irType.BaseType = baseType2;
+                        _typeCache.TryAdd(baseName2, baseType2);
                         CalculateInstanceSize(irType);
                         // If vtable was deferred (never built), allow the first build.
                         // If vtable was already built, do NOT allow rebuild (method bodies
@@ -2090,8 +2186,18 @@ public partial class IRBuilder
                 var baseName = ResolveGenericTypeName(openType.BaseType, typeParamMap);
                 if (_typeCache.TryGetValue(baseName, out var baseType))
                     irType.BaseType = baseType;
-                else if (openType.BaseType is GenericInstanceType)
-                    TryCollectResolvedGenericType(openType.BaseType, typeParamMap);
+                else
+                {
+                    // Fallback: non-generic base types may be in _module.Types but not _typeCache
+                    var moduleBaseType = _module.FindType(baseName);
+                    if (moduleBaseType != null)
+                    {
+                        irType.BaseType = moduleBaseType;
+                        _typeCache[baseName] = moduleBaseType;
+                    }
+                    else if (openType.BaseType is GenericInstanceType)
+                        TryCollectResolvedGenericType(openType.BaseType, typeParamMap);
+                }
 
                 // Track types whose base is still missing for re-check in future calls.
                 if (irType.BaseType == null)
@@ -2172,9 +2278,12 @@ public partial class IRBuilder
                 if (prevIrType.BaseType == null && prevInfo.CecilOpenType.BaseType != null && !prevIrType.IsValueType)
                 {
                     var baseName = ResolveGenericTypeName(prevInfo.CecilOpenType.BaseType, prevTypeParamMap);
-                    if (_typeCache.TryGetValue(baseName, out var baseType))
+                    if (!_typeCache.TryGetValue(baseName, out var baseType))
+                        baseType = _module.FindType(baseName);
+                    if (baseType != null)
                     {
                         prevIrType.BaseType = baseType;
+                        _typeCache.TryAdd(baseName, baseType);
                         CalculateInstanceSize(prevIrType);
                         // If vtable was deferred (never built), allow the first build.
                         // If vtable was already built, do NOT allow rebuild.
@@ -2216,15 +2325,27 @@ public partial class IRBuilder
     /// Create a single generic specialization IRType from its GenericInstantiationInfo.
     /// Extracted from CreateGenericSpecializations for clarity.
     /// </summary>
-    private void CreateGenericTypeFromInfo(string key, GenericInstantiationInfo info)
+    private void CreateGenericTypeFromInfo(string key, GenericInstantiationInfo info,
+        IRType? canonicalType = null, bool isExplicitCanonical = false)
     {
+        // Guard against duplicate creation (canonical types may re-enter through various discovery paths)
+        if (_typeCache.ContainsKey(key)) return;
+
         var openType = info.CecilOpenType!;
 
+        // Only mark as canonical when explicitly created by the canonicalization logic.
+        // Types transitively discovered from canonical method bodies (e.g., __c__3_3<..., __Canon>)
+        // need full TypeInfo, statics, VTable — they're real runtime types used by canonical methods.
+        bool isCanonicalInstance = isExplicitCanonical;
+
         // Build type parameter map
+        // For canonical types: keep __Canon in the map so that method names and type references
+        // use __Canon (e.g., List_1___Canon_Add). CppNameMapper.GetCppTypeName("__Canon") returns
+        // "cil2cpp::Object*" for proper C++ type resolution.
         var typeParamMap = BuildTypeParamMap(openType, info.TypeArguments);
 
-        // Validate generic constraints
-        if (openType.HasGenericParameters)
+        // Validate generic constraints (skip for canonical types — __Canon is synthetic)
+        if (openType.HasGenericParameters && !isCanonicalInstance)
             ValidateGenericConstraints(openType.GenericParameters, info.TypeArguments, key);
 
         var isDelegate = openType.BaseType?.FullName is "System.MulticastDelegate" or "System.Delegate";
@@ -2340,6 +2461,49 @@ public partial class IRBuilder
         AddTypeToModule(irType);
         _typeCache[key] = irType;
 
+        // Register canonical type in cache for sharing lookup
+        if (isCanonicalInstance)
+        {
+            irType.IsCanonicalInstance = true;
+            _canonicalTypeCache[key] = irType;
+        }
+
+        // Link shared type → canonical type BEFORE method shells are created,
+        // so HasCanonicalSharing is true when CanonicalMethod linking runs below.
+        if (canonicalType != null)
+            irType.CanonicalType = canonicalType;
+
+        // Representative type: for shared types (HasCanonicalSharing = true), determine if
+        // this is the first concrete type (representative) or a subsequent type that gets wrappers.
+        // The representative compiles all sharable methods; others link to it.
+        string? canonicalGroupKey = null;
+        bool isRepresentative = false;
+        if (irType.HasCanonicalSharing)
+        {
+            var canonArgs = CanonicalTypeResolver.Canonicalize(info.TypeArguments, CppNameMapper.IsValueType);
+            if (canonArgs != null)
+            {
+                canonicalGroupKey = CanonicalTypeResolver.GetCanonicalKey(info.OpenTypeName, canonArgs);
+                if (!_representativeType.ContainsKey(canonicalGroupKey))
+                {
+                    _representativeType[canonicalGroupKey] = irType;
+                    isRepresentative = true;
+                }
+            }
+        }
+
+        // For shared types (HasCanonicalSharing), skip method body compilation for sharable methods.
+        // They reuse the representative type's method bodies. Only non-sharable methods get compiled.
+        HashSet<string>? nonShareableMethods = null;
+        if (irType.HasCanonicalSharing || isCanonicalInstance)
+        {
+            if (!_nonShareableMethodCache.TryGetValue(openType.FullName, out nonShareableMethods))
+            {
+                nonShareableMethods = CanonicalTypeResolver.AnalyzeMethodSharability(openType);
+                _nonShareableMethodCache[openType.FullName] = nonShareableMethods;
+            }
+        }
+
         // Create method specializations from Cecil definition.
         // Non-reachable SIMD methods are skipped entirely (dead code from eliminated branches).
         // Non-reachable non-SIMD methods still get shells so the fixpoint recovery in
@@ -2415,6 +2579,22 @@ public partial class IRBuilder
 
             if (methodDef.HasBody && !methodDef.IsAbstract)
             {
+                // Canonical types (__Canon): do NOT compile method bodies.
+                // Body compilation with __Canon args creates cascading dependencies on
+                // __Canon-specialized types that may lack full compilation, causing
+                // linker stubs and runtime crashes. Instead, the first concrete shared type
+                // per canonical group becomes the "representative" whose sharable methods
+                // are compiled and shared via wrappers by other shared types.
+                if (isCanonicalInstance)
+                {
+                    // Track for potential recovery (if a representative needs this method)
+                    var skipKey = GetSpecializedMethodKey(
+                        info.OpenTypeName, info.TypeArguments, methodDef);
+                    _skippedSpecializedMethods.Add((skipKey, methodDef, irMethod,
+                        new Dictionary<string, string>(typeParamMap)));
+                    continue;
+                }
+
                 bool shouldCompile;
                 if (!_reachability.IsReachable(methodDef))
                 {
@@ -2456,6 +2636,32 @@ public partial class IRBuilder
                     shouldCompile = _calledSpecializedMethods.Contains(specKey);
                 }
 
+                // __Canon sharing: representative type approach.
+                // The first shared type per canonical group compiles all sharable methods.
+                // Subsequent shared types get wrappers calling the representative's methods.
+                // This avoids compiling __Canon canonical bodies which create cascading
+                // dependencies on __Canon-specialized types.
+                if (shouldCompile && irType.HasCanonicalSharing && nonShareableMethods != null
+                    && !nonShareableMethods.Contains(methodDef.FullName)
+                    && canonicalGroupKey != null && !isRepresentative)
+                {
+                    // Not the representative — link to representative's method via wrapper
+                    if (_representativeType.TryGetValue(canonicalGroupKey, out var representativeType))
+                    {
+                        var representativeMethod = representativeType.Methods.FirstOrDefault(
+                            m => m.Name == irMethod.Name
+                                 && m.Parameters.Count == irMethod.Parameters.Count
+                                 && m.IsStatic == irMethod.IsStatic
+                                 && CanonicalParamsMatch(m.Parameters, irMethod.Parameters)
+                                 && CanonicalReturnTypeCompatible(m.ReturnTypeCpp, irMethod.ReturnTypeCpp));
+                        if (representativeMethod != null)
+                        {
+                            irMethod.CanonicalMethod = representativeMethod;
+                            continue; // Skip body compilation — uses wrapper
+                        }
+                    }
+                }
+
                 // Defer local variable resolution: only resolve locals for methods that will
                 // compile now. Skipped methods get locals populated when recovered
                 // (RecoverSkippedSpecializedMethods → ConvertDeferredGenericBodies).
@@ -2473,7 +2679,7 @@ public partial class IRBuilder
                             new Dictionary<string, string>(typeParamMap)));
                     }
                 }
-                else if (!methodDef.IsConstructor && !methodDef.IsAbstract)
+                else if (!methodDef.IsAbstract && !methodDef.IsConstructor)
                 {
                     // Include both reachable and non-reachable methods for recovery.
                     // Non-reachable private methods (e.g., AddWithResize, Grow) may be
@@ -3178,7 +3384,7 @@ public partial class IRBuilder
         }
 
         // Build resolved typeParamMap for param sig resolution.
-        // This ensures the key matches what EmitMethodCall computes (which also resolves via _activeTypeParamMap).
+        // This ensures the key matches what EmitMethodCall computes (which also resolves via _ctx.Value.ActiveTypeParamMap).
         var resolvedTypeParamMap = new Dictionary<string, string>(nameMap);
         var cecilMethodForSig = elementMethod.Resolve();
         if (cecilMethodForSig != null)
@@ -3210,7 +3416,7 @@ public partial class IRBuilder
         var mangledName = MangleGenericMethodName(declaringType, methodName, resolvedArgs);
 
         // Disambiguate mangled name if another overload already uses it
-        if (_genericMethodInstantiations.Values.Any(v => v.MangledName == mangledName))
+        if (_genericMethodMangledNames.Contains(mangledName))
         {
             // Start from nameMap which has resolved type params (e.g., TResult=HealthCheckResult).
             // Raw Cecil GenericInstanceType args may still be unresolved GenericParameter names.
@@ -3236,6 +3442,7 @@ public partial class IRBuilder
                     ResolveGenericTypeName(p.ParameterType, typeParamMap))));
             mangledName += $"__{paramSuffix}";
         }
+        _genericMethodMangledNames.Add(mangledName);
 
         _genericMethodInstantiations[key] = new GenericMethodInstantiationInfo(
             declaringType, methodName, resolvedArgs, mangledName, cecilMethod);
@@ -3594,8 +3801,8 @@ public partial class IRBuilder
     /// </summary>
     private string ResolveTypeRefOperand(TypeReference typeRef)
     {
-        if (_activeTypeParamMap != null)
-            return ResolveGenericTypeName(typeRef, _activeTypeParamMap);
+        if (_ctx.Value.ActiveTypeParamMap != null)
+            return ResolveGenericTypeName(typeRef, _ctx.Value.ActiveTypeParamMap);
         return typeRef.FullName;
     }
 
@@ -3670,8 +3877,8 @@ public partial class IRBuilder
             {
                 // Build combined map: start with active type param map (if in generic context),
                 // then overlay with declaring type's generic arguments
-                var localMap = _activeTypeParamMap != null
-                    ? new Dictionary<string, string>(_activeTypeParamMap)
+                var localMap = _ctx.Value.ActiveTypeParamMap != null
+                    ? new Dictionary<string, string>(_ctx.Value.ActiveTypeParamMap)
                     : new Dictionary<string, string>();
 
                 // For nested generic types, openType.GenericParameters only has the type's own
@@ -3703,9 +3910,9 @@ public partial class IRBuilder
     private bool IsResolvedValueType(TypeReference typeRef)
     {
         // Resolve generic parameters through the active map
-        if (typeRef is GenericParameter gp && _activeTypeParamMap != null)
+        if (typeRef is GenericParameter gp && _ctx.Value.ActiveTypeParamMap != null)
         {
-            if (_activeTypeParamMap.TryGetValue(gp.Name, out var resolvedILName))
+            if (_ctx.Value.ActiveTypeParamMap.TryGetValue(gp.Name, out var resolvedILName))
             {
                 // Check primitive value types (int, bool, float, etc.)
                 // Note: IsPrimitive includes String/Object which are reference types.
@@ -3776,9 +3983,14 @@ public partial class IRBuilder
                 var prevTypeCount = _module.Types.Count;
                 EnsureBodyReferencedTypesExist(cecilMethod, typeParamMap);
 
-                // If new types were discovered, build their VTables before compiling the body.
+                // If new types were discovered, build their VTables and disambiguate overloaded
+                // methods before compiling the body. Without disambiguation, constructor calls
+                // on newly-created types with overloaded ctors get the wrong function name.
                 if (_module.Types.Count > prevTypeCount)
+                {
                     BuildVTablesFixpoint();
+                    DisambiguateOverloadedMethods();
+                }
 
                 var methodInfo = new IL.MethodInfo(cecilMethod);
                 ConvertMethodBodyWithGenerics(methodInfo, irMethod, typeParamMap);
@@ -3788,7 +4000,8 @@ public partial class IRBuilder
             for (int i = _skippedSpecializedMethods.Count - 1; i >= 0; i--)
             {
                 var (specKey, cecilMethod, irMethod, typeParamMap) = _skippedSpecializedMethods[i];
-                if (_calledSpecializedMethods.Contains(specKey) && irMethod.BasicBlocks.Count == 0)
+                if (_calledSpecializedMethods.Contains(specKey) && irMethod.BasicBlocks.Count == 0
+                    && irMethod.CanonicalMethod == null) // Skip shared methods — they use canonical body
                 {
                     _skippedSpecializedMethods.RemoveAt(i);
                     // Populate locals deferred from shell creation (P5 optimization)
@@ -3862,19 +4075,19 @@ public partial class IRBuilder
         // Ensure locals are populated (may have been deferred by P5 optimization)
         PopulateMethodLocals(irMethod, methodDef.GetCecilMethod(), typeParamMap);
 
-        _activeTypeParamMap = typeParamMap;
+        _ctx.Value.ActiveTypeParamMap = typeParamMap;
         try
         {
             ConvertMethodBody(methodDef, irMethod);
         }
         finally
         {
-            _activeTypeParamMap = null;
+            _ctx.Value.ActiveTypeParamMap = null;
         }
 
         // Post-process: resolve any remaining unresolved generic parameter names
         // in ResultTypeCpp fields of emitted instructions. Some code paths in the
-        // stack simulation don't go through _activeTypeParamMap resolution.
+        // stack simulation don't go through _ctx.Value.ActiveTypeParamMap resolution.
         ResolveRemainingGenericParams(irMethod, typeParamMap);
     }
 
@@ -4332,18 +4545,18 @@ public partial class IRBuilder
             return $"{openTypeName}<{string.Join(",", typeArgs)}>";
         }
 
-        if (typeRef is GenericParameter gp2 && _activeTypeParamMap != null)
-            return _activeTypeParamMap.TryGetValue(gp2.Name, out var resolved) ? resolved : typeRef.FullName;
+        if (typeRef is GenericParameter gp2 && _ctx.Value.ActiveTypeParamMap != null)
+            return _ctx.Value.ActiveTypeParamMap.TryGetValue(gp2.Name, out var resolved) ? resolved : typeRef.FullName;
 
         // Handle open generic type definitions when inside a generic context
         // (e.g., GenericCache`1 inside its own method body with T → System.Int32)
-        if (_activeTypeParamMap != null)
+        if (_ctx.Value.ActiveTypeParamMap != null)
         {
             if (typeRef.HasGenericParameters)
             {
                 var openTypeName = typeRef.FullName;
                 var typeArgs = typeRef.GenericParameters.Select(gp =>
-                    _activeTypeParamMap.TryGetValue(gp.Name, out var r) ? r : gp.FullName
+                    _ctx.Value.ActiveTypeParamMap.TryGetValue(gp.Name, out var r) ? r : gp.FullName
                 ).ToList();
                 return $"{openTypeName}<{string.Join(",", typeArgs)}>";
             }
@@ -4359,7 +4572,7 @@ public partial class IRBuilder
                     if (resolved != null && resolved.HasGenericParameters)
                     {
                         var typeArgs = resolved.GenericParameters.Select(gp =>
-                            _activeTypeParamMap.TryGetValue(gp.Name, out var r) ? r : gp.FullName
+                            _ctx.Value.ActiveTypeParamMap.TryGetValue(gp.Name, out var r) ? r : gp.FullName
                         ).ToList();
                         return $"{fullName}<{string.Join(",", typeArgs)}>";
                     }
@@ -4377,6 +4590,11 @@ public partial class IRBuilder
     private string GetMangledTypeNameForRef(TypeReference typeRef)
     {
         var key = ResolveCacheKey(typeRef);
+        // __Canon is the canonical placeholder for reference-type generic args.
+        // At runtime all ref types are Object*, so __Canon → System_Object
+        // (the mangled struct name, matching TypeInfo/cast targets).
+        if (key == "__Canon")
+            return "System_Object";
         if (_typeCache.TryGetValue(key, out var irType))
             return irType.CppName;
         // For generic instance types, use MangleGenericInstanceTypeName to avoid
@@ -4405,6 +4623,8 @@ public partial class IRBuilder
     /// </summary>
     private string LookupMangledTypeName(string ilTypeName)
     {
+        if (ilTypeName == "__Canon")
+            return "System_Object";
         if (_typeCache.TryGetValue(ilTypeName, out var irType))
             return irType.CppName;
         // For generic instance types, use the same split-and-mangle approach as GetMangledTypeNameForRef
@@ -4680,4 +4900,5 @@ public partial class IRBuilder
 
         return false;
     }
+
 }

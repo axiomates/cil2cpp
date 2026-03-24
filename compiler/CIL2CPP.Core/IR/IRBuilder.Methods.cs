@@ -447,15 +447,7 @@ public partial class IRBuilder
     {
         if (irMethod.BasicBlocks.Count > 0)
             return; // Already compiled (e.g., via CompileTransitiveUnreachableCallees from DIM body)
-        _pendingVolatile = false; // Reset between methods
-        _constrainedType = null;
-        _inFilterRegion = false;
-        _endfilterOffset = -1;
-        _trysWithHandlerEmitted.Clear();
-        _trysWithFilter.Clear();
-        _currentFilterSkipLabel = null;
-        _afterFilterCatchOpen = false;
-        _compileTimeConstantLocals.Clear();
+        _ctx.Value.Reset();
         var block = new IRBasicBlock { Id = 0 };
         irMethod.BasicBlocks.Add(block);
 
@@ -584,8 +576,8 @@ public partial class IRBuilder
         }
 
         // Pre-count filters per try block (for chained filter goto labels)
-        _filterCountPerTry.Clear();
-        _filterIndexPerTry.Clear();
+        _ctx.Value.FilterCountPerTry.Clear();
+        _ctx.Value.FilterIndexPerTry.Clear();
         if (methodDef.HasExceptionHandlers)
         {
             foreach (var handler in methodDef.GetExceptionHandlers())
@@ -594,7 +586,7 @@ public partial class IRBuilder
                     && handler.FilterStart.HasValue)
                 {
                     var key = (handler.TryStart, handler.TryEnd);
-                    _filterCountPerTry[key] = _filterCountPerTry.GetValueOrDefault(key) + 1;
+                    _ctx.Value.FilterCountPerTry[key] = _ctx.Value.FilterCountPerTry.GetValueOrDefault(key) + 1;
                 }
             }
         }
@@ -618,9 +610,9 @@ public partial class IRBuilder
         //   2. Leave from handler body (offset in [HandlerStart,HandlerEnd)) with target >= HandlerEnd
         // Type 1 uses __leave_body_end_ label (falls through if/else to END_TRY).
         // Type 2 uses inline context restore (different if/else branch, can't goto try body label).
-        _leaveCrossingTargets = null;
+        _ctx.Value.LeaveCrossingTargets = null;
         var regionsNeedingLeaveExit = new HashSet<(int TryStart, int TryEnd)>();
-        _regionLeaveDispatch = new Dictionary<(int TryStart, int TryEnd),
+        _ctx.Value.RegionLeaveDispatch = new Dictionary<(int TryStart, int TryEnd),
             List<(int TargetOffset, (int TryStart, int TryEnd)? ChainRegion)>>();
 
         if (tryProtectedRegions.Count > 0)
@@ -668,10 +660,10 @@ public partial class IRBuilder
                     if (!fromHandler)
                         regionsNeedingLeaveExit.Add(rKey);
 
-                    if (!_regionLeaveDispatch.ContainsKey(rKey))
-                        _regionLeaveDispatch[rKey] = new();
+                    if (!_ctx.Value.RegionLeaveDispatch.ContainsKey(rKey))
+                        _ctx.Value.RegionLeaveDispatch[rKey] = new();
 
-                    if (_regionLeaveDispatch[rKey].Any(d => d.TargetOffset == target))
+                    if (_ctx.Value.RegionLeaveDispatch[rKey].Any(d => d.TargetOffset == target))
                         continue;
 
                     // Find innermost enclosing protected region that the target also crosses
@@ -692,13 +684,13 @@ public partial class IRBuilder
                             }
                         }
                     }
-                    _regionLeaveDispatch[rKey].Add((target, chainRegion));
+                    _ctx.Value.RegionLeaveDispatch[rKey].Add((target, chainRegion));
                 }
             }
 
             if (crossings.Count > 0)
             {
-                _leaveCrossingTargets = crossings;
+                _ctx.Value.LeaveCrossingTargets = crossings;
                 block.Instructions.Add(new IRRawCpp { Code = "int __leave_target = 0;" });
             }
         }
@@ -778,20 +770,20 @@ public partial class IRBuilder
                             var catchTypeCpp = evt.CatchTypeName is not null and not "System.Object"
                                 ? CppNameMapper.GetCppTypeName(evt.CatchTypeName)?.TrimEnd('*').TrimEnd() : null;
                             var catchTryKey = (evt.TryStart, evt.TryEnd);
-                            bool afterFilter = _trysWithFilter.Contains(catchTryKey);
-                            _trysWithHandlerEmitted.Add(catchTryKey);
+                            bool afterFilter = _ctx.Value.TrysWithFilter.Contains(catchTryKey);
+                            _ctx.Value.TrysWithHandlerEmitted.Add(catchTryKey);
                             // Close previous after-filter catch scope if open
-                            if (afterFilter && _afterFilterCatchOpen)
+                            if (afterFilter && _ctx.Value.AfterFilterCatchOpen)
                             {
                                 block.Instructions.Add(new IRRawCpp { Code = "}" });
-                                _afterFilterCatchOpen = false;
+                                _ctx.Value.AfterFilterCatchOpen = false;
                             }
                             block.Instructions.Add(new IRCatchBegin
                             {
                                 ExceptionTypeCppName = catchTypeCpp,
                                 AfterFilter = afterFilter
                             });
-                            if (afterFilter) _afterFilterCatchOpen = true;
+                            if (afterFilter) _ctx.Value.AfterFilterCatchOpen = true;
                             // IL pushes exception onto stack at catch entry
                             stack.Push(new StackEntry("__exc_ctx.current_exception", "cil2cpp::Object*"));
                             break;
@@ -799,9 +791,9 @@ public partial class IRBuilder
                         case ExceptionEventKind.FilterBegin:
                         {
                             var filterTryKey = (evt.TryStart, evt.TryEnd);
-                            bool isFirst = !_trysWithHandlerEmitted.Contains(filterTryKey);
-                            _trysWithHandlerEmitted.Add(filterTryKey);
-                            _trysWithFilter.Add(filterTryKey);
+                            bool isFirst = !_ctx.Value.TrysWithHandlerEmitted.Contains(filterTryKey);
+                            _ctx.Value.TrysWithHandlerEmitted.Add(filterTryKey);
+                            _ctx.Value.TrysWithFilter.Add(filterTryKey);
 
                             // Emit leave exit label before first handler (for leave from try body)
                             if (isFirst)
@@ -819,18 +811,18 @@ public partial class IRBuilder
                             }
                             skipUntilOffset = null;
                             stack.Clear();
-                            int curFilterIdx = _filterIndexPerTry.GetValueOrDefault(filterTryKey);
+                            int curFilterIdx = _ctx.Value.FilterIndexPerTry.GetValueOrDefault(filterTryKey);
                             block.Instructions.Add(new IRFilterBegin { IsFirst = isFirst, FilterIndex = curFilterIdx });
                             // Reset for this filter evaluation (declaration is at method scope in codegen)
                             block.Instructions.Add(new IRRawCpp { Code = "__filter_result = 0;" });
                             // IL pushes exception onto stack for filter evaluation
                             stack.Push(new StackEntry("(cil2cpp::Exception*)__exc_ctx.current_exception", "cil2cpp::Exception*"));
                             // Track filter region for endfilter scoping fix
-                            _inFilterRegion = true;
-                            _endfilterOffset = FindEndfilterOffset(instructions, instr.Offset);
-                            _currentFilterTryKey = filterTryKey;
+                            _ctx.Value.InFilterRegion = true;
+                            _ctx.Value.EndfilterOffset = FindEndfilterOffset(instructions, instr.Offset);
+                            _ctx.Value.CurrentFilterTryKey = filterTryKey;
                             // Advance filter index for this try block (for next filter's label)
-                            _filterIndexPerTry[filterTryKey] = curFilterIdx + 1;
+                            _ctx.Value.FilterIndexPerTry[filterTryKey] = curFilterIdx + 1;
                             break;
                         }
                         case ExceptionEventKind.FilterHandlerBegin:
@@ -853,7 +845,7 @@ public partial class IRBuilder
                         case ExceptionEventKind.FaultBegin:
                             skipUntilOffset = null;
                             stack.Clear();
-                            _inFaultHandler = true;
+                            _ctx.Value.InFaultHandler = true;
                             var faultKey = (evt.TryStart, evt.TryEnd);
                             if (regionsNeedingLeaveExit.Contains(faultKey))
                                 block.Instructions.Add(new IRLabel { LabelName = $"__leave_body_end_{evt.TryStart:X4}_{evt.TryEnd:X4}" });
@@ -861,16 +853,16 @@ public partial class IRBuilder
                             break;
                         case ExceptionEventKind.HandlerEnd:
                             // Close filter handler if-scope if we're ending a filter handler
-                            if (_currentFilterSkipLabel != null)
+                            if (_ctx.Value.CurrentFilterSkipLabel != null)
                             {
                                 block.Instructions.Add(new IRFilterHandlerEnd());
-                                _currentFilterSkipLabel = null;
+                                _ctx.Value.CurrentFilterSkipLabel = null;
                             }
                             // Close after-filter catch scope if open
-                            if (_afterFilterCatchOpen)
+                            if (_ctx.Value.AfterFilterCatchOpen)
                             {
                                 block.Instructions.Add(new IRRawCpp { Code = "}" });
-                                _afterFilterCatchOpen = false;
+                                _ctx.Value.AfterFilterCatchOpen = false;
                             }
                             // Don't emit END_TRY if another handler (catch/filter) follows
                             // at the same offset for the SAME try block.
@@ -885,7 +877,7 @@ public partial class IRBuilder
                                 block.Instructions.Add(new IRTryEnd());
                             // After END_TRY for any protected region with crossing leaves, emit dispatch
                             var handlerEndKey = (evt.TryStart, evt.TryEnd);
-                            if (_regionLeaveDispatch.TryGetValue(handlerEndKey, out var dispatches))
+                            if (_ctx.Value.RegionLeaveDispatch.TryGetValue(handlerEndKey, out var dispatches))
                             {
                                 var safeTargets = dispatches.Where(d => d.ChainRegion == null).ToList();
                                 var chainTargets = dispatches.Where(d => d.ChainRegion != null).ToList();
@@ -908,7 +900,7 @@ public partial class IRBuilder
             }
 
             // Save filter result before scope boundary at endfilter label
-            if (_inFilterRegion && instr.Offset == _endfilterOffset
+            if (_ctx.Value.InFilterRegion && instr.Offset == _ctx.Value.EndfilterOffset
                 && branchTargets.Contains(instr.Offset) && stack.Count > 0)
             {
                 block.Instructions.Add(new IRAssign
@@ -937,7 +929,7 @@ public partial class IRBuilder
                 if (shouldResume)
                 {
                     skipUntilOffset = null;
-                    _compileTimeConstantLocals.Clear(); // Reset constants at control flow merge points
+                    _ctx.Value.CompileTimeConstantLocals.Clear(); // Reset constants at control flow merge points
                 }
                 else
                 {
@@ -1290,11 +1282,11 @@ public partial class IRBuilder
                     {
                         // Array types (T[]) need proper SZArray TypeInfo for typeof(T[]).
                         // Use get_szarray_type_info(&Element_TypeInfo) so typeof(T[]) == new T[].GetType().
-                        // GenericParameter element types are resolved via _activeTypeParamMap
+                        // GenericParameter element types are resolved via _ctx.Value.ActiveTypeParamMap
                         // (monomorphized generics). Only truly unresolvable params fall back to System_Array.
                         var elemType = arrayTypeRef.ElementType;
                         bool unresolved = elemType is GenericParameter gp &&
-                            (_activeTypeParamMap == null || !_activeTypeParamMap.ContainsKey(gp.Name));
+                            (_ctx.Value.ActiveTypeParamMap == null || !_ctx.Value.ActiveTypeParamMap.ContainsKey(gp.Name));
 
                         if (unresolved)
                         {
@@ -1316,10 +1308,10 @@ public partial class IRBuilder
                     else
                     {
                         // Open generic type definitions (e.g., typeof(IList<>)) inside a monomorphized
-                        // generic context must NOT resolve through _activeTypeParamMap. The type's formal
+                        // generic context must NOT resolve through _ctx.Value.ActiveTypeParamMap. The type's formal
                         // generic parameters (T, TKey, etc.) are the definition's own params, not the
                         // enclosing specialization's concrete types. Emit the open TypeInfo directly.
-                        if (_activeTypeParamMap != null && !(typeRef is GenericInstanceType) &&
+                        if (_ctx.Value.ActiveTypeParamMap != null && !(typeRef is GenericInstanceType) &&
                             IsOpenGenericTypeRef(typeRef))
                         {
                             typeInfoName = CppNameMapper.MangleTypeName(typeRef.FullName);
@@ -1574,7 +1566,7 @@ public partial class IRBuilder
                 if (ReachabilityAnalyzer.IsOffsetInDeadRange(featureSwitchDeadRanges, target.Offset))
                     break;
                 // Save filter result before branching to endfilter offset
-                if (_inFilterRegion && target.Offset == _endfilterOffset && stack.Count > 0)
+                if (_ctx.Value.InFilterRegion && target.Offset == _ctx.Value.EndfilterOffset && stack.Count > 0)
                 {
                     block.Instructions.Add(new IRAssign
                     {
@@ -1809,10 +1801,10 @@ public partial class IRBuilder
                 var objEntry = stack.PopEntry();
                 var obj = objEntry.Expr.Length > 0 ? objEntry.Expr : "__this";
                 // volatile. prefix: fence before load
-                if (_pendingVolatile)
+                if (_ctx.Value.PendingVolatile)
                 {
                     block.Instructions.Add(new IRRawCpp { Code = "std::atomic_thread_fence(std::memory_order_seq_cst);" });
-                    _pendingVolatile = false;
+                    _ctx.Value.PendingVolatile = false;
                 }
 
                 // Scalar alias interception: types like IntPtr/UIntPtr/Boolean/Char/Utf16Char
@@ -1900,8 +1892,8 @@ public partial class IRBuilder
                 var val = stack.PopExpr();
                 var objEntry = stack.PopEntry();
                 var obj = objEntry.Expr.Length > 0 ? objEntry.Expr : "__this";
-                bool isVolatileStore = _pendingVolatile;
-                _pendingVolatile = false;
+                bool isVolatileStore = _ctx.Value.PendingVolatile;
+                _ctx.Value.PendingVolatile = false;
 
                 // Scalar alias interception: stfld on primitive alias backing field → direct write
                 if ((fieldRef.Name is "m_value" or "_value" or "value")
@@ -2072,10 +2064,10 @@ public partial class IRBuilder
                 var fieldCacheKey = ResolveCacheKey(fieldRef.DeclaringType);
                 EmitCctorGuardIfNeeded(block, fieldCacheKey, typeCppName);
                 // volatile. prefix: fence before load
-                if (_pendingVolatile)
+                if (_ctx.Value.PendingVolatile)
                 {
                     block.Instructions.Add(new IRRawCpp { Code = "std::atomic_thread_fence(std::memory_order_seq_cst);" });
-                    _pendingVolatile = false;
+                    _ctx.Value.PendingVolatile = false;
                 }
                 var tmp = $"__t{tempCounter++}";
                 var sfTypeName = ResolveFieldTypeRef(fieldRef);
@@ -2098,8 +2090,8 @@ public partial class IRBuilder
                 var fieldCacheKey = ResolveCacheKey(fieldRef.DeclaringType);
                 EmitCctorGuardIfNeeded(block, fieldCacheKey, typeCppName);
                 var val = stack.PopExpr();
-                bool isVolatileStore = _pendingVolatile;
-                _pendingVolatile = false;
+                bool isVolatileStore = _ctx.Value.PendingVolatile;
+                _ctx.Value.PendingVolatile = false;
                 // Cast value for reference type static fields (derived→base in flat struct model)
                 var sfieldTypeName = ResolveFieldTypeRef(fieldRef);
                 var sfieldTypeCpp = CppNameMapper.GetCppTypeForDecl(sfieldTypeName);
@@ -2390,8 +2382,8 @@ public partial class IRBuilder
             case Code.Callvirt:
             {
                 var methodRef = (MethodReference)instr.Operand!;
-                var constrainedType = _constrainedType;
-                _constrainedType = null; // Consume the constrained prefix
+                var constrainedType = _ctx.Value.ConstrainedType;
+                _ctx.Value.ConstrainedType = null; // Consume the constrained prefix
                 EmitMethodCall(block, stack, methodRef, instr.OpCode == Code.Callvirt, ref tempCounter, constrainedType);
                 break;
             }
@@ -2531,10 +2523,10 @@ public partial class IRBuilder
             case Code.Readonly:     // readonly. prefix: ldelema advisory, no semantic effect
                 break;
             case Code.Constrained:  // constrained. prefix: next callvirt uses constrained dispatch
-                _constrainedType = (TypeReference)instr.Operand!;
+                _ctx.Value.ConstrainedType = (TypeReference)instr.Operand!;
                 break;
             case Code.Volatile:     // volatile. prefix: emit memory fence on next field access
-                _pendingVolatile = true;
+                _ctx.Value.PendingVolatile = true;
                 break;
             case Code.Unaligned:    // unaligned. prefix: alignment hint
                 break;
@@ -2762,8 +2754,8 @@ public partial class IRBuilder
                 var target = (Instruction)instr.Operand!;
                 stack.Clear(); // leave clears the evaluation stack
 
-                if (_leaveCrossingTargets != null
-                    && _leaveCrossingTargets.TryGetValue(instr.Offset, out var crossInfo))
+                if (_ctx.Value.LeaveCrossingTargets != null
+                    && _ctx.Value.LeaveCrossingTargets.TryGetValue(instr.Offset, out var crossInfo))
                 {
                     if (crossInfo.FromHandlerBody)
                     {
@@ -2776,7 +2768,7 @@ public partial class IRBuilder
                         // Check if there's an enclosing region to chain to
                         var myKey = (crossInfo.InnermostTryStart, crossInfo.InnermostTryEnd);
                         (int TryStart, int TryEnd)? chainRegion = null;
-                        if (_regionLeaveDispatch.TryGetValue(myKey, out var dispatches))
+                        if (_ctx.Value.RegionLeaveDispatch.TryGetValue(myKey, out var dispatches))
                         {
                             var entry = dispatches.FirstOrDefault(d => d.TargetOffset == crossInfo.TargetOffset);
                             chainRegion = entry.ChainRegion;
@@ -2823,10 +2815,10 @@ public partial class IRBuilder
 
             case Code.Endfinally:
                 // For fault handlers, close the conditional guard opened by IRFaultBegin
-                if (_inFaultHandler)
+                if (_ctx.Value.InFaultHandler)
                 {
                     block.Instructions.Add(new IRFaultEnd());
-                    _inFaultHandler = false;
+                    _ctx.Value.InFaultHandler = false;
                 }
                 // For finally handlers, handled by macros, no-op
                 break;
@@ -2836,8 +2828,8 @@ public partial class IRBuilder
                 // ECMA-335 III.3.34: pops result (0 = reject, 1 = accept)
                 // The result was already saved to __filter_result before scope boundaries.
                 if (stack.Count > 0) stack.Pop();
-                int totalFilters = _filterCountPerTry.GetValueOrDefault(_currentFilterTryKey);
-                int nextIdx = _filterIndexPerTry.GetValueOrDefault(_currentFilterTryKey);
+                int totalFilters = _ctx.Value.FilterCountPerTry.GetValueOrDefault(_ctx.Value.CurrentFilterTryKey);
+                int nextIdx = _ctx.Value.FilterIndexPerTry.GetValueOrDefault(_ctx.Value.CurrentFilterTryKey);
                 bool isLast = nextIdx >= totalFilters;
                 block.Instructions.Add(new IREndFilter
                 {
@@ -2845,9 +2837,9 @@ public partial class IRBuilder
                     NextFilterIndex = nextIdx
                 });
                 // Mark that we need to close the filter handler scope at HandlerEnd
-                _currentFilterSkipLabel = "__filter_handler_open";
-                _inFilterRegion = false;
-                _endfilterOffset = -1;
+                _ctx.Value.CurrentFilterSkipLabel = "__filter_handler_open";
+                _ctx.Value.InFilterRegion = false;
+                _ctx.Value.EndfilterOffset = -1;
                 break;
             }
 
@@ -3111,8 +3103,8 @@ public partial class IRBuilder
                     var ldftnDeclType = ResolveTypeRefOperand(elemMethod.DeclaringType);
                     var typeArgs = ldftnGim.GenericArguments.Select(a => ResolveTypeRefOperand(a)).ToList();
                     var paramSig = string.Join(",", elemMethod.Parameters.Select(p =>
-                        _activeTypeParamMap != null
-                            ? ResolveGenericTypeName(p.ParameterType, _activeTypeParamMap)
+                        _ctx.Value.ActiveTypeParamMap != null
+                            ? ResolveGenericTypeName(p.ParameterType, _ctx.Value.ActiveTypeParamMap)
                             : p.ParameterType.FullName));
                     var key = MakeGenericMethodKey(ldftnDeclType, elemMethod.Name, typeArgs, paramSig);
                     if (_genericMethodInstantiations.TryGetValue(key, out var gmInfo))
@@ -3763,7 +3755,7 @@ public partial class IRBuilder
     /// <summary>
     /// Record TypeInfo metadata for an open generic type definition used in ldtoken.
     /// Unlike RecordAutoTypeInfoMetadata, this uses the UNRESOLVED type name (no
-    /// _activeTypeParamMap substitution) so MakeGenericType receives the open definition.
+    /// _ctx.Value.ActiveTypeParamMap substitution) so MakeGenericType receives the open definition.
     /// </summary>
     private void RecordOpenGenericTypeMetadata(TypeReference typeRef, string typeInfoCppName)
     {
@@ -3901,8 +3893,8 @@ public partial class IRBuilder
             return false;
 
         // Generic parameter: resolve through active type param map and check the resolved name
-        if (typeRef is Mono.Cecil.GenericParameter gp && _activeTypeParamMap != null
-            && _activeTypeParamMap.TryGetValue(gp.Name, out var mapped))
+        if (typeRef is Mono.Cecil.GenericParameter gp && _ctx.Value.ActiveTypeParamMap != null
+            && _ctx.Value.ActiveTypeParamMap.TryGetValue(gp.Name, out var mapped))
         {
             if (mapped.EndsWith("[]"))
                 return false;

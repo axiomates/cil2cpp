@@ -13,9 +13,9 @@ public partial class IRBuilder
 
         // Track compile-time constant locals for dead branch elimination
         if (entry.CompileTimeConstant.HasValue)
-            _compileTimeConstantLocals[index] = entry.CompileTimeConstant.Value;
+            _ctx.Value.CompileTimeConstantLocals[index] = entry.CompileTimeConstant.Value;
         else
-            _compileTimeConstantLocals.Remove(index);
+            _ctx.Value.CompileTimeConstantLocals.Remove(index);
 
         // Stack aliasing fix: before modifying a local, check if any remaining stack entry
         // symbolically references that local. If so, materialize those entries into temporaries.
@@ -1659,46 +1659,49 @@ public partial class IRBuilder
             // Include parameter types in key (matches CollectGenericMethod)
             // Resolve param types too — raw Cecil paramSig may contain unresolved generic params
             var paramSig = string.Join(",", elemMethod.Parameters.Select(p =>
-                _activeTypeParamMap != null
-                    ? ResolveGenericTypeName(p.ParameterType, _activeTypeParamMap)
+                _ctx.Value.ActiveTypeParamMap != null
+                    ? ResolveGenericTypeName(p.ParameterType, _ctx.Value.ActiveTypeParamMap)
                     : p.ParameterType.FullName));
             var key = MakeGenericMethodKey(declType, elemMethod.Name, typeArgs, paramSig);
 
-            if (_genericMethodInstantiations.TryGetValue(key, out var gmInfo))
+            // Pre-compute outside lock: mangled name + Cecil resolution
+            var mangledName = MangleGenericMethodName(declType, elemMethod.Name, typeArgs);
+            var cecilMethod = elemMethod.Resolve();
+            bool allResolved = cecilMethod != null
+                && !typeArgs.Any(a => a.Contains("!!") || a.Contains("!0")
+                    || ContainsUnresolvedGenericParam(a));
+
+            // Lock for compound check+register (atomic disambiguation)
+            lock (_genericMethodInstLock)
             {
-                irCall.FunctionName = gmInfo.MangledName;
-            }
-            else
-            {
-                // Transitive generic instantiation: inner generic calls within a specialized
-                // generic method body need to be collected for their own specialization.
-                var mangledName = MangleGenericMethodName(declType, elemMethod.Name, typeArgs);
-                var cecilMethod = elemMethod.Resolve();
-                // Only register if all type args are fully resolved (no !!0/!0 or named generic params)
-                bool allResolved = cecilMethod != null
-                    && !typeArgs.Any(a => a.Contains("!!") || a.Contains("!0")
-                        || ContainsUnresolvedGenericParam(a));
-                if (allResolved)
+                if (_genericMethodInstantiations.TryGetValue(key, out var gmInfo))
                 {
-                    // Check for name collision and disambiguate if needed
-                    if (_genericMethodInstantiations.Values.Any(v => v.MangledName == mangledName))
-                    {
-                        var disambigMap = new Dictionary<string, string>();
-                        for (int gi = 0; gi < cecilMethod.GenericParameters.Count && gi < typeArgs.Count; gi++)
-                            disambigMap[cecilMethod.GenericParameters[gi].Name] = typeArgs[gi];
-                        // Also include type-level params for full resolution of param types like Task<TResult>
-                        if (_activeTypeParamMap != null)
-                            foreach (var (k, v) in _activeTypeParamMap)
-                                disambigMap.TryAdd(k, v);
-                        var disambigSuffix = string.Join("_", cecilMethod.Parameters
-                            .Select(p => CppNameMapper.MangleTypeName(
-                                ResolveGenericTypeName(p.ParameterType, disambigMap))));
-                        mangledName += $"__{disambigSuffix}";
-                    }
-                    _genericMethodInstantiations[key] = new GenericMethodInstantiationInfo(
-                        declType, elemMethod.Name, typeArgs, mangledName, cecilMethod);
+                    irCall.FunctionName = gmInfo.MangledName;
                 }
-                irCall.FunctionName = mangledName;
+                else
+                {
+                    if (allResolved)
+                    {
+                        // Check for name collision and disambiguate if needed
+                        if (_genericMethodMangledNames.Contains(mangledName))
+                        {
+                            var disambigMap = new Dictionary<string, string>();
+                            for (int gi = 0; gi < cecilMethod.GenericParameters.Count && gi < typeArgs.Count; gi++)
+                                disambigMap[cecilMethod.GenericParameters[gi].Name] = typeArgs[gi];
+                            if (_ctx.Value.ActiveTypeParamMap != null)
+                                foreach (var (k, v) in _ctx.Value.ActiveTypeParamMap)
+                                    disambigMap.TryAdd(k, v);
+                            var disambigSuffix = string.Join("_", cecilMethod.Parameters
+                                .Select(p => CppNameMapper.MangleTypeName(
+                                    ResolveGenericTypeName(p.ParameterType, disambigMap))));
+                            mangledName += $"__{disambigSuffix}";
+                        }
+                        _genericMethodMangledNames.Add(mangledName);
+                        _genericMethodInstantiations[key] = new GenericMethodInstantiationInfo(
+                            declType, elemMethod.Name, typeArgs, mangledName, cecilMethod);
+                    }
+                    irCall.FunctionName = mangledName;
+                }
             }
         }
         else
@@ -2219,12 +2222,12 @@ public partial class IRBuilder
                     // generic params. When methodRef.DeclaringType is INumber<T> (resolved to
                     // INumber<Char>), map the interface's own generic params (TSelf) to their
                     // concrete values so parameter types like TSelf resolve to System.Char.
-                    var shellParamMap = _activeTypeParamMap != null
-                        ? new Dictionary<string, string>(_activeTypeParamMap)
+                    var shellParamMap = _ctx.Value.ActiveTypeParamMap != null
+                        ? new Dictionary<string, string>(_ctx.Value.ActiveTypeParamMap)
                         : new Dictionary<string, string>();
                     {
                         var declType = methodRef.DeclaringType;
-                        // Resolve through _activeTypeParamMap first to get concrete generic args
+                        // Resolve through _ctx.Value.ActiveTypeParamMap first to get concrete generic args
                         if (declType is GenericInstanceType git)
                         {
                             var openIface = git.ElementType.Resolve();
@@ -2233,8 +2236,8 @@ public partial class IRBuilder
                                 for (int gi = 0; gi < openIface.GenericParameters.Count && gi < git.GenericArguments.Count; gi++)
                                 {
                                     var gpName = openIface.GenericParameters[gi].Name; // e.g. "TSelf"
-                                    var concreteArg = _activeTypeParamMap != null
-                                        ? ResolveGenericTypeName(git.GenericArguments[gi], _activeTypeParamMap)
+                                    var concreteArg = _ctx.Value.ActiveTypeParamMap != null
+                                        ? ResolveGenericTypeName(git.GenericArguments[gi], _ctx.Value.ActiveTypeParamMap)
                                         : git.GenericArguments[gi].FullName;
                                     shellParamMap.TryAdd(gpName, concreteArg);
                                 }
@@ -2473,8 +2476,8 @@ public partial class IRBuilder
                 // !0 = caller's TSelf but callee's declaring type resolves it to !!0 = TOther.
                 string elemResolved;
                 if (elemType is GenericParameter gpAfterSubst
-                    && _activeTypeParamMap != null
-                    && _activeTypeParamMap.TryGetValue(gpAfterSubst.Name, out var directMapped))
+                    && _ctx.Value.ActiveTypeParamMap != null
+                    && _ctx.Value.ActiveTypeParamMap.TryGetValue(gpAfterSubst.Name, out var directMapped))
                     elemResolved = directMapped;
                 else
                     elemResolved = ResolveGenericTypeRef(elemType, methodRef.DeclaringType);
@@ -3773,7 +3776,7 @@ public partial class IRBuilder
     private List<string> BuildVTableParamTypes(MethodReference methodRef)
     {
         var types = new List<string>();
-        // Resolve the declaring type through _activeTypeParamMap for generic method contexts
+        // Resolve the declaring type through _ctx.Value.ActiveTypeParamMap for generic method contexts
         // (e.g., IArraySortHelper`2<TKey,TValue> → IArraySortHelper`2<Byte,String>)
         var resolvedDeclaringType = ResolveCacheKey(methodRef.DeclaringType);
         types.Add(CppNameMapper.GetCppTypeForDecl(resolvedDeclaringType));
@@ -3837,7 +3840,7 @@ public partial class IRBuilder
                 return ResolveGenericTypeRef(git.GenericArguments[gp.Position], null);
             }
             // Method-level generic param (!!0, !!1) or type-level without declaring type context
-            if (_activeTypeParamMap != null && _activeTypeParamMap.TryGetValue(gp.Name, out var mapped))
+            if (_ctx.Value.ActiveTypeParamMap != null && _ctx.Value.ActiveTypeParamMap.TryGetValue(gp.Name, out var mapped))
                 return mapped;
             // Final fallback: try declaring type by position, but only if owner matches
             if (declaringType is GenericInstanceType git2 && gp.Position < git2.GenericArguments.Count
@@ -3869,7 +3872,7 @@ public partial class IRBuilder
                         continue;
                     }
                     // Method-level param or type-level without declaring type: check method map
-                    if (_activeTypeParamMap != null && _activeTypeParamMap.TryGetValue(gp2.Name, out var mapped2))
+                    if (_ctx.Value.ActiveTypeParamMap != null && _ctx.Value.ActiveTypeParamMap.TryGetValue(gp2.Name, out var mapped2))
                     {
                         argNames.Add(mapped2);
                         anyResolved = true;
@@ -4016,10 +4019,19 @@ public partial class IRBuilder
 
     /// <summary>
     /// Register a BCL delegate type that doesn't exist in _typeCache.
-    /// Creates a minimal IRType so the TypeInfo gets declared and defined.
+    /// During parallel Pass 6 body compilation, writes are deferred to avoid _typeCache
+    /// race conditions. Deferred types are drained into _typeCache + _module after parallel phase.
     /// </summary>
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _deferredBclDelegateKeys = new();
+    private readonly System.Collections.Concurrent.ConcurrentBag<(string IlName, IRType Type)> _deferredBclDelegates = new();
+
     private void RegisterBclDelegateType(string ilFullName, string cppName)
     {
+        // Already in cache from earlier passes
+        if (_typeCache.ContainsKey(ilFullName)) return;
+        // Dedup across threads — TryAdd is atomic
+        if (!_deferredBclDelegateKeys.TryAdd(ilFullName, 0)) return;
+
         var lastDot = ilFullName.LastIndexOf('.');
         var bclDelegate = new IRType
         {
@@ -4030,8 +4042,20 @@ public partial class IRBuilder
             IsDelegate = true,
             IsPublic = true, // BCL delegates are always public
         };
-        _typeCache[ilFullName] = bclDelegate;
-        AddTypeToModule(bclDelegate);
+        _deferredBclDelegates.Add((ilFullName, bclDelegate));
+    }
+
+    /// <summary>
+    /// Apply deferred BCL delegate registrations after parallel Pass 6 body compilation.
+    /// Must be called before Pass 6.1 (VTable construction needs these types).
+    /// </summary>
+    private void DrainDeferredBclDelegates()
+    {
+        foreach (var (ilName, type) in _deferredBclDelegates)
+        {
+            _typeCache[ilName] = type;
+            AddTypeToModule(type);
+        }
     }
 
     private string GetArgName(IRMethod method, int index)
@@ -4176,11 +4200,11 @@ public partial class IRBuilder
 
     /// <summary>
     /// Push a local variable onto the stack, propagating compile-time constant info
-    /// from _compileTimeConstantLocals for dead branch elimination.
+    /// from _ctx.Value.CompileTimeConstantLocals for dead branch elimination.
     /// </summary>
     private void PushLocalWithConstant(Stack<StackEntry> stack, IRMethod method, int index)
     {
-        int? constant = _compileTimeConstantLocals.TryGetValue(index, out var c) ? c : null;
+        int? constant = _ctx.Value.CompileTimeConstantLocals.TryGetValue(index, out var c) ? c : null;
         stack.Push(new StackEntry(GetLocalName(method, index), GetLocalType(method, index), constant));
     }
 
@@ -4323,18 +4347,22 @@ public partial class IRBuilder
             // suffix (e.g., __paramTypes) added by TryCollectResolvedGenericMethod when two
             // overloads produce the same base mangled name (Humanize<String> with 1 vs 3 params).
             var paramSig = string.Join(",", elemMethod.Parameters.Select(p =>
-                _activeTypeParamMap != null
-                    ? ResolveGenericTypeName(p.ParameterType, _activeTypeParamMap)
+                _ctx.Value.ActiveTypeParamMap != null
+                    ? ResolveGenericTypeName(p.ParameterType, _ctx.Value.ActiveTypeParamMap)
                     : p.ParameterType.FullName));
             var key = MakeGenericMethodKey(overrideDeclType.ILFullName, methodName, typeArgs, paramSig);
-            if (_genericMethodInstantiations.TryGetValue(key, out var existingInfo))
+            lock (_genericMethodInstLock)
             {
-                mangledName = existingInfo.MangledName;
-            }
-            else
-            {
-                _genericMethodInstantiations[key] = new GenericMethodInstantiationInfo(
-                    overrideDeclType.ILFullName, methodName, typeArgs, mangledName, overrideCecil);
+                if (_genericMethodInstantiations.TryGetValue(key, out var existingInfo))
+                {
+                    mangledName = existingInfo.MangledName;
+                }
+                else
+                {
+                    _genericMethodMangledNames.Add(mangledName);
+                    _genericMethodInstantiations[key] = new GenericMethodInstantiationInfo(
+                        overrideDeclType.ILFullName, methodName, typeArgs, mangledName, overrideCecil);
+                }
             }
 
             targets.Add((typeInfoName, mangledName, overrideDeclType.CppName));
@@ -4547,15 +4575,15 @@ public partial class IRBuilder
                 && gpOwner.FullName == git.ElementType.FullName)
             {
                 var resolved = git.GenericArguments[gp.Position];
-                if (resolved is GenericParameter gp2 && _activeTypeParamMap != null
-                    && _activeTypeParamMap.TryGetValue(gp2.Name, out var mapped))
+                if (resolved is GenericParameter gp2 && _ctx.Value.ActiveTypeParamMap != null
+                    && _ctx.Value.ActiveTypeParamMap.TryGetValue(gp2.Name, out var mapped))
                     return mapped;
                 // Recursively resolve — the GIT arg may be a GenericInstanceType with
                 // its own unresolved parameters (e.g., StateRepresentation<TState,TTrigger>).
                 return ResolveTypeRefForMatching(resolved, methodRef);
             }
             // Try resolving directly through active type parameter map
-            if (_activeTypeParamMap != null && _activeTypeParamMap.TryGetValue(gp.Name, out var directMapped))
+            if (_ctx.Value.ActiveTypeParamMap != null && _ctx.Value.ActiveTypeParamMap.TryGetValue(gp.Name, out var directMapped))
                 return directMapped;
             return typeRef.FullName;
         }

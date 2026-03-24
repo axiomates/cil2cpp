@@ -478,7 +478,9 @@ public partial class CppCodeGenerator
                     continue;
             }
             if (method.IsAbstract) continue;
-            if (method.BasicBlocks.Count == 0) continue;
+            if (method.BasicBlocks.Count == 0
+                && (method.CanonicalMethod == null
+                    || method.CanonicalMethod.BasicBlocks.Count == 0)) continue;
             if (method.HasICallMapping) continue;
             if (HasInvalidCppSignature(method))
             {
@@ -499,7 +501,6 @@ public partial class CppCodeGenerator
                 continue;
             }
             if (!_emittedMethodSignatures.Add(method.GetCppSignature())) continue;
-            // Direct render — compile from IL
             output.Add(method);
         }
     }
@@ -656,9 +657,16 @@ public partial class CppCodeGenerator
         foreach (var method in type.Methods)
         {
             if (method.IsAbstract || method.IsInternalCall || method.IsPInvoke) continue;
-            if (method.BasicBlocks.Count == 0) continue;
             if (method.HasICallMapping) continue;
-            total += method.BasicBlocks.Sum(b => b.Instructions.Count);
+            if (method.BasicBlocks.Count > 0)
+            {
+                total += method.BasicBlocks.Sum(b => b.Instructions.Count);
+            }
+            else if (method.CanonicalMethod != null && method.CanonicalMethod.BasicBlocks.Count > 0)
+            {
+                // Canonical wrapper: thin inline function (~3 instructions worth)
+                total += 3;
+            }
         }
         return total;
     }
@@ -817,6 +825,8 @@ public partial class CppCodeGenerator
 
     private void GenerateTypeInfo(StringBuilder sb, IRType type)
     {
+        // Canonical (__Canon) types exist only for method body sharing at compile time.
+        // Emit a minimal stub TypeInfo to satisfy any lingering references from non-sharable
         var baseName = type.BaseType != null ? $"&{type.BaseType.CppName}_TypeInfo" : "nullptr";
 
         // Flags (needed by both full and minimal)
@@ -1121,9 +1131,86 @@ public partial class CppCodeGenerator
         sb.AppendLine("};");
     }
 
+    /// <summary>
+    /// Emit a thin inline wrapper for a shared (__Canon) method that delegates to the canonical method.
+    /// Each parameter is cast through (void*) to match the canonical method's signature.
+    /// The C++ compiler trivially inlines these wrappers.
+    /// </summary>
+    private static void EmitCanonicalWrapper(StringBuilder sb, IRMethod method)
+    {
+        var canon = method.CanonicalMethod!;
+        sb.AppendLine($"// {method.DeclaringType?.ILFullName}::{method.Name} [→ canonical wrapper]");
+        sb.Append(method.GetCppSignature());
+        sb.Append(" { ");
+        // Build argument list with casts from shared to canonical parameter types.
+        // Parameters does NOT include 'this' — GetCppSignature() adds it separately.
+        var canonParams = canon.Parameters;
+        var sharedParams = method.Parameters;
+        var args = new List<string>();
+
+        // Instance methods: cast this pointer (shared type* → canonical type*)
+        if (!method.IsStatic && method.DeclaringType != null && canon.DeclaringType != null)
+        {
+            args.Add($"({canon.DeclaringType.CppName}*)(void*)__this");
+        }
+
+        for (int i = 0; i < sharedParams.Count && i < canonParams.Count; i++)
+        {
+            var sharedParam = sharedParams[i];
+            var canonParam = canonParams[i];
+
+            if (sharedParam.CppTypeName == canonParam.CppTypeName)
+            {
+                // Types match — pass directly
+                args.Add(sharedParam.CppName);
+            }
+            else if (sharedParam.CppTypeName.EndsWith("*") && canonParam.CppTypeName.EndsWith("*"))
+            {
+                // Both pointers but different types — cast through void*
+                args.Add($"({canonParam.CppTypeName})(void*){sharedParam.CppName}");
+            }
+            else
+            {
+                // Value types or mixed — should match, pass directly
+                args.Add(sharedParam.CppName);
+            }
+        }
+
+        var argStr = string.Join(", ", args);
+        var hasReturn = !string.IsNullOrEmpty(method.ReturnTypeCpp) && method.ReturnTypeCpp != "void";
+
+        if (hasReturn)
+        {
+            var canonReturn = canon.ReturnTypeCpp ?? "void";
+            if (method.ReturnTypeCpp == canonReturn)
+            {
+                sb.Append($"return {canon.CppName}({argStr});");
+            }
+            else if (method.ReturnTypeCpp!.EndsWith("*") && canonReturn.EndsWith("*"))
+            {
+                sb.Append($"return ({method.ReturnTypeCpp})(void*){canon.CppName}({argStr});");
+            }
+            else
+            {
+                sb.Append($"return {canon.CppName}({argStr});");
+            }
+        }
+        else
+        {
+            sb.Append($"{canon.CppName}({argStr});");
+        }
+
+        sb.AppendLine(" }");
+    }
+
     private void GenerateMethodImpl(StringBuilder sb, IRMethod method,
         List<(string Category, string FunctionName, string InMethod)>? localDeadCode = null)
     {
+        if (method.CanonicalMethod != null && method.CanonicalMethod.BasicBlocks.Count > 0)
+        {
+            EmitCanonicalWrapper(sb, method);
+            return;
+        }
         sb.AppendLine($"// {method.DeclaringType?.ILFullName}::{method.Name}");
         sb.AppendLine($"{method.GetCppSignature()} {{");
 
@@ -1725,7 +1812,11 @@ public partial class CppCodeGenerator
     /// </summary>
     private string GetTypedMethodPointerCast(IRMethod method)
     {
-        if (method.IsAbstract || method.BasicBlocks.Count == 0)
+        if (method.IsAbstract)
+            return "nullptr";
+        // Wrapper methods have BasicBlocks.Count == 0 but are backed by CanonicalMethod
+        if (method.BasicBlocks.Count == 0
+            && (method.CanonicalMethod == null || method.CanonicalMethod.BasicBlocks.Count == 0))
             return "nullptr";
 
         return BuildMethodPointerCast(method);
@@ -1981,6 +2072,12 @@ public partial class CppCodeGenerator
             {
                 if (e.Method != null && !e.Method.IsAbstract)
                 {
+                    // VTable entries always point to the shared type's own method (which may
+                    // be a thin wrapper around the canonical method). Do NOT point directly to
+                    // canonical methods — the canonical body uses __Canon TypeInfos that cause
+                    // runtime mismatches when called on concrete type instances.
+                    var vtableMethod = e.Method;
+
                     // If the method's declaring type is a core runtime type or not in generated types,
                     // check if the function is declared (extern "C" from runtime), otherwise use fallback
                     var declType = e.Method.DeclaringType;
@@ -1988,24 +2085,24 @@ public partial class CppCodeGenerator
                         && IRBuilder.CoreRuntimeTypes.Contains(declType.ILFullName);
                     if (declType != null && (isDeclCoreRuntime || !generatedMethodTypes.Contains(declType.CppName)))
                     {
-                        if (_declaredFunctionNames.Contains(e.Method.CppName))
+                        if (_declaredFunctionNames.Contains(vtableMethod.CppName))
                         {
                             // Blanket-gated CoreRuntimeType methods have no compiled body
                             // (BasicBlocks.Count == 0) but some are provided as extern "C" in
                             // the runtime (core_methods.cpp). Use BuildMethodPointerCast for those
                             // (doesn't check for a compiled body). Currently only Exception's
                             // virtual methods are implemented — expand as needed.
-                            if (isDeclCoreRuntime && e.Method.BasicBlocks.Count == 0
+                            if (isDeclCoreRuntime && vtableMethod.BasicBlocks.Count == 0
                                 && declType.ILFullName == "System.Exception")
-                                return BuildMethodPointerCast(e.Method);
-                            return GetTypedMethodPointerCast(e.Method);
+                                return BuildMethodPointerCast(vtableMethod);
+                            return GetTypedMethodPointerCast(vtableMethod);
                         }
                         if (parentVTableEntries.TryGetValue(idx, out var parentFallback))
                             return parentFallback;
                         return ObjectMethodFallbacks.GetValueOrDefault(e.MethodName, "nullptr");
                     }
                     // Check if the function was actually declared in the header
-                    if (!_declaredFunctionNames.Contains(e.Method.CppName))
+                    if (!_declaredFunctionNames.Contains(vtableMethod.CppName))
                     {
                         // Fallback: inherit from parent vtable if available
                         if (parentVTableEntries.TryGetValue(idx, out var parentMethod))
@@ -2013,9 +2110,9 @@ public partial class CppCodeGenerator
                         return ObjectMethodFallbacks.GetValueOrDefault(e.MethodName, "nullptr");
                     }
                     // Value type vtable methods need unboxing thunks (boxed Object* → value ptr)
-                    if (type.IsValueType && _unboxThunkNames.TryGetValue(e.Method.CppName, out var vtThunk))
+                    if (type.IsValueType && _unboxThunkNames.TryGetValue(vtableMethod.CppName, out var vtThunk))
                         return $"(void*)&{vtThunk}";
-                    return GetTypedMethodPointerCast(e.Method);
+                    return GetTypedMethodPointerCast(vtableMethod);
                 }
 
                 // Abstract or bodyless method on CoreRuntimeType — use the extern "C" function
@@ -2100,13 +2197,14 @@ public partial class CppCodeGenerator
                     if (m != null)
                     {
                         // Non-null: method resolved by Pass 5 but body may not be compiled.
+                        var checkMethod = m;
                         var declType = m.DeclaringType;
                         var isDeclCoreRt = declType != null && declType.IsRuntimeProvided
                             && IRBuilder.CoreRuntimeTypes.Contains(declType.ILFullName);
                         if (declType != null && (isDeclCoreRt || !generatedMethodTypes.Contains(declType.CppName)))
                             continue; // Core runtime types use nullptr (runtime-handled)
-                        if (_declaredFunctionNames.Contains(m.CppName)) continue; // Already declared
-                        if (!emittedIfaceStubs.Add(m.CppName)) continue;
+                        if (_declaredFunctionNames.Contains(checkMethod.CppName)) continue; // Already declared
+                        if (!emittedIfaceStubs.Add(checkMethod.CppName)) continue;
 
                         // Method body not compiled — generate default-return stub.
                         // Root cause: tree-shaking doesn't propagate interface dispatch to
@@ -2192,6 +2290,9 @@ public partial class CppCodeGenerator
                         }
                         return "nullptr";
                     }
+                    // Interface vtable: always use the shared type's own method (wrapper).
+                    // Do NOT use canonical methods — their bodies use __Canon TypeInfos.
+                    var ifaceVtMethod = m;
                     // If the method's declaring type is a core runtime type or not generated, use nullptr
                     var declType = m.DeclaringType;
                     var isDeclCoreRt = declType != null && declType.IsRuntimeProvided
@@ -2199,24 +2300,24 @@ public partial class CppCodeGenerator
                     if (declType != null && (isDeclCoreRt || !generatedMethodTypes.Contains(declType.CppName)))
                         return "nullptr";
                     // Check if the function was actually declared in the header
-                    if (!_declaredFunctionNames.Contains(m.CppName))
+                    if (!_declaredFunctionNames.Contains(ifaceVtMethod.CppName))
                         return "nullptr";
                     // Value type interface methods need unboxing thunks
-                    if (typeRef.IsValueType && !m.IsStatic && _unboxThunkNames.TryGetValue(m.CppName, out var thunkName))
+                    if (typeRef.IsValueType && !ifaceVtMethod.IsStatic && _unboxThunkNames.TryGetValue(ifaceVtMethod.CppName, out var thunkName))
                         return $"(void*)&{thunkName}";
                     // If this method was stubbed by the pre-pass (no basic blocks),
                     // GetTypedMethodPointerCast returns "nullptr". Build cast manually.
-                    if (emittedIfaceStubs.Contains(m.CppName))
+                    if (emittedIfaceStubs.Contains(ifaceVtMethod.CppName))
                     {
-                        var retType = SanitizeFuncPtrType(m.ReturnTypeCpp ?? "void");
+                        var retType = SanitizeFuncPtrType(ifaceVtMethod.ReturnTypeCpp ?? "void");
                         var ptypes = new List<string>();
-                        if (!m.IsStatic && m.DeclaringType != null)
-                            ptypes.Add($"{m.DeclaringType.CppName}*");
-                        foreach (var p in m.Parameters)
+                        if (!ifaceVtMethod.IsStatic && ifaceVtMethod.DeclaringType != null)
+                            ptypes.Add($"{ifaceVtMethod.DeclaringType.CppName}*");
+                        foreach (var p in ifaceVtMethod.Parameters)
                             ptypes.Add(SanitizeFuncPtrType(p.CppTypeName));
-                        return $"(void*)({retType}(*)({string.Join(", ", ptypes)}))&{m.CppName}";
+                        return $"(void*)({retType}(*)({string.Join(", ", ptypes)}))&{ifaceVtMethod.CppName}";
                     }
-                    return GetTypedMethodPointerCast(m);
+                    return GetTypedMethodPointerCast(ifaceVtMethod);
                 }));
                 // MSVC: zero-size arrays are not allowed (C2466)
                 if (string.IsNullOrWhiteSpace(methods))
@@ -3684,7 +3785,15 @@ public partial class CppCodeGenerator
         foreach (var type in _userTypes)
         {
             if (!string.IsNullOrEmpty(type.ILFullName))
+            {
+                // Canonical (__Canon) types exist only for method body sharing.
+                // They must NOT be registered in the runtime type system because:
+                // 1. Their metadata tokens collide with concrete types (same open definition)
+                // 2. They lack generic_arguments data, corrupting reflection queries
+                // 3. Reflection iterating registered types would encounter invalid __Canon entries
+                if (type.IsCanonicalInstance) continue;
                 sb.AppendLine($"    cil2cpp::type_register(&{type.CppName}_TypeInfo);");
+            }
         }
         // Also register auto-discovered TypeInfos (open generic types, ldtoken targets, etc.)
         // These are not in _userTypes but have valid TypeInfo with full_name for runtime lookup.

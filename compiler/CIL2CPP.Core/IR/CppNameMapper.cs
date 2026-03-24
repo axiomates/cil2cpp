@@ -1,3 +1,5 @@
+using System.Collections.Concurrent;
+
 namespace CIL2CPP.Core.IR;
 
 /// <summary>
@@ -11,8 +13,9 @@ public static class CppNameMapper
     private static readonly object _vtWriteLock = new();
 
     // Caches for pure string transformations (no external state dependencies).
-    private static readonly Dictionary<string, string> _mangleCache = new();
-    private static readonly Dictionary<string, string> _mangleCleanCache = new();
+    // ConcurrentDictionary for thread-safe parallel method body compilation.
+    private static readonly ConcurrentDictionary<string, string> _mangleCache = new();
+    private static readonly ConcurrentDictionary<string, string> _mangleCleanCache = new();
 
     public static void RegisterValueType(string ilTypeName)
     {
@@ -204,6 +207,10 @@ public static class CppNameMapper
                 return "cil2cpp::MdArray*";
         }
 
+        // __Canon: canonical placeholder for reference-type generic args → Object*
+        if (ilTypeName == "__Canon")
+            return isPointer ? "cil2cpp::Object*" : "cil2cpp::Object*";
+
         // Primitive types
         if (PrimitiveTypeMap.TryGetValue(ilTypeName, out var cppName))
         {
@@ -278,11 +285,7 @@ public static class CppNameMapper
     /// </summary>
     public static string MangleTypeName(string ilFullName)
     {
-        if (_mangleCache.TryGetValue(ilFullName, out var cached))
-            return cached;
-        var result = MangleTypeNameUncached(ilFullName);
-        _mangleCache[ilFullName] = result;
-        return result;
+        return _mangleCache.GetOrAdd(ilFullName, MangleTypeNameUncached);
     }
 
     private static string MangleTypeNameUncached(string ilFullName)
@@ -338,11 +341,7 @@ public static class CppNameMapper
     /// </summary>
     public static string MangleTypeNameClean(string ilFullName)
     {
-        if (_mangleCleanCache.TryGetValue(ilFullName, out var cached))
-            return cached;
-        var result = MangleTypeNameCleanUncached(ilFullName);
-        _mangleCleanCache[ilFullName] = result;
-        return result;
+        return _mangleCleanCache.GetOrAdd(ilFullName, MangleTypeNameCleanUncached);
     }
 
     private static string MangleTypeNameCleanUncached(string ilFullName)

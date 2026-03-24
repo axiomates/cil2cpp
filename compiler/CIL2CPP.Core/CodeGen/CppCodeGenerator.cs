@@ -210,6 +210,12 @@ public partial class CppCodeGenerator
     private HashSet<string> _allDeclaredTypeInfoNames = new();
 
     /// <summary>
+    /// Canonical method CppNames that are actually referenced by shared-type wrapper methods.
+    /// Used to skip dead-code non-sharable method bodies on canonical types.
+    /// </summary>
+    private HashSet<string> _usedCanonicalMethods = new();
+
+    /// <summary>
     /// Minimum IR instructions per method partition. Each TU re-parses the full header,
     /// so partitions need enough method code to amortize that overhead.
     /// ~20000 instructions ≈ 13k-17k C++ lines per partition (ratio ~0.7 lines/instruction).
@@ -238,6 +244,20 @@ public partial class CppCodeGenerator
             .Where(t => !HasUnresolvedGenericParams(t))
             .Where(t => seenTypeNames.Add(t.CppName))
             .ToList();
+
+        // Build set of canonical method CppNames that are actually used by shared-type wrappers.
+        // Canonical types only exist for method body sharing; methods not referenced by any
+        // CanonicalMethod link are dead code and should not be emitted.
+        _usedCanonicalMethods = new HashSet<string>();
+        foreach (var type in _userTypes)
+        {
+            if (!type.HasCanonicalSharing) continue;
+            foreach (var method in type.Methods)
+            {
+                if (method.CanonicalMethod != null)
+                    _usedCanonicalMethods.Add(method.CanonicalMethod.CppName);
+            }
+        }
 
         // Build known type set — union of all types that have definitions in the header.
         // Start with _emittedStructDefs (set by GenerateHeader): includes all struct definitions,

@@ -311,40 +311,9 @@ public partial class IRBuilder
     private readonly FeatureSwitchResolver _featureSwitchResolver;
     private readonly Dictionary<string, IRType> _typeCache = new();
 
-    // volatile. prefix flag — set by Code.Volatile, consumed by next field access
-    private bool _pendingVolatile;
-
-    // constrained. prefix type — set by Code.Constrained, consumed by next callvirt
-    private TypeReference? _constrainedType;
-
-    // Fault handler tracking — fault handlers use IRFaultBegin/IRFaultEnd conditional guard
-    private bool _inFaultHandler;
-
-    // Exception filter tracking — set during filter evaluation region (FilterStart → endfilter)
-    private bool _inFilterRegion;
-    private int _endfilterOffset = -1;
-    private (int TryStart, int TryEnd) _currentFilterTryKey;
-    // Filter chain tracking: total filters per try block, and current index for goto labels
-    private Dictionary<(int, int), int> _filterCountPerTry = new();
-    private Dictionary<(int, int), int> _filterIndexPerTry = new();
-
-    // Multi-filter tracking: try regions that already have a filter/catch handler emitted,
-    // and regions that have at least one filter (for IRCatchBegin.AfterFilter).
-    private HashSet<(int TryStart, int TryEnd)> _trysWithHandlerEmitted = new();
-    private HashSet<(int TryStart, int TryEnd)> _trysWithFilter = new();
-    // Current filter handler's skip label (for IRFilterHandlerEnd emission)
-    private string? _currentFilterSkipLabel;
-    // True when an after-filter catch's if-block is open and needs closing at HandlerEnd
-    private bool _afterFilterCatchOpen;
-
-    // Leave-crossing tracking — per-method data for leave dispatch across protected regions.
-    // Maps leave instruction offset → (targetOffset, innermostCrossedTryStart, innermostCrossedTryEnd, fromHandlerBody)
-    // FromHandlerBody: true when leave is from catch/filter handler body (needs inline context restore)
-    private Dictionary<int, (int TargetOffset, int InnermostTryStart, int InnermostTryEnd, bool FromHandlerBody)>? _leaveCrossingTargets;
-
-    // Leave dispatch info per region — maps (TryStart,TryEnd) → list of (targetOffset, chainRegion?)
-    private Dictionary<(int TryStart, int TryEnd),
-        List<(int TargetOffset, (int TryStart, int TryEnd)? ChainRegion)>>? _regionLeaveDispatch;
+    // Per-method compilation context — holds all mutable state that is reset between method compilations.
+    // ThreadLocal for future parallel compilation support (P3).
+    private readonly ThreadLocal<MethodCompilationContext> _ctx = new(() => new());
 
     // Set by Build() before BuildInternal()
     private AssemblySet _assemblySet = null!;
@@ -369,8 +338,11 @@ public partial class IRBuilder
         TypeDefinition? CecilOpenType
     );
 
-    // Generic method instantiation tracking
+    // Generic method instantiation tracking (guarded by _genericMethodInstLock for compound check+register)
     private readonly Dictionary<string, GenericMethodInstantiationInfo> _genericMethodInstantiations = new();
+    // O(1) collision check for generic method mangled names (secondary index, same lock)
+    private readonly HashSet<string> _genericMethodMangledNames = new();
+    private readonly object _genericMethodInstLock = new();
     // Keys already processed by CreateGenericMethodSpecializations — allows safe re-invocation
     private readonly HashSet<string> _processedMethodSpecKeys = new();
     // Keys already processed by the second pass of CreateGenericSpecializations (base types, interfaces)
@@ -404,6 +376,61 @@ public partial class IRBuilder
         _config = config ?? BuildConfiguration.Release;
         _featureSwitchResolver = new FeatureSwitchResolver(_config.FeatureSwitches);
         _module = new IRModule { Name = reader.AssemblyName };
+    }
+
+    /// <summary>
+    /// Pre-resolve Cecil method bodies and instruction operands sequentially.
+    /// Populates Cecil's internal caches (lazy FullName, Resolve, Body parsing)
+    /// so parallel body compilation only reads cached values.
+    /// </summary>
+    private static void PreResolveCecilBodies(List<(IL.MethodInfo MethodDef, IRMethod IrMethod)> bodies)
+    {
+        foreach (var (methodDef, _) in bodies)
+        {
+            try
+            {
+                var cecilMethod = methodDef.GetCecilMethod();
+                if (!cecilMethod.HasBody) continue;
+                var body = cecilMethod.Body;
+
+                // Force body parsing: instructions, variables, exception handlers
+                _ = body.Instructions.Count;
+                _ = body.Variables.Count;
+                _ = body.ExceptionHandlers.Count;
+
+                // Pre-resolve instruction operands to populate Cecil's internal caches
+                foreach (var instr in body.Instructions)
+                {
+                    switch (instr.Operand)
+                    {
+                        case TypeReference typeRef:
+                            try { _ = typeRef.FullName; typeRef.Resolve(); } catch { }
+                            break;
+                        case MethodReference methodRef:
+                            try
+                            {
+                                _ = methodRef.FullName;
+                                _ = methodRef.DeclaringType.FullName;
+                                methodRef.DeclaringType.Resolve();
+                                methodRef.Resolve();
+                            }
+                            catch { }
+                            break;
+                        case FieldReference fieldRef:
+                            try
+                            {
+                                _ = fieldRef.FullName;
+                                _ = fieldRef.DeclaringType.FullName;
+                                fieldRef.DeclaringType.Resolve();
+                                fieldRef.Resolve();
+                            }
+                            catch { }
+                            break;
+                    }
+                }
+            }
+            catch { /* Skip unresolvable bodies — ConvertMethodBody handles these */ }
+        }
     }
 
     /// <summary>
@@ -815,28 +842,52 @@ public partial class IRBuilder
         Console.Error.WriteLine($"[perf] Pass 4-5.5 VTable+InterfaceImpls+Attrs: {pass45sw.ElapsedMilliseconds}ms");
 
         // Pass 6: Convert method bodies (vtables are now available for virtual dispatch)
+        // Parallel compilation: per-method state is in ThreadLocal<MethodCompilationContext>,
+        // shared-accumulate collections (StringLiterals, ArrayInitData, etc.) are thread-safe.
         var pass6sw = System.Diagnostics.Stopwatch.StartNew();
+
+        // Phase A: Filter out methods that don't need body compilation (sequential, fast)
+        var compilableBodies = new List<(IL.MethodInfo MethodDef, IRMethod IrMethod)>();
         foreach (var (methodDef, irMethod) in methodBodies)
         {
-            // Skip record compiler-generated methods — Pass 7 synthesizes replacements
             if (irMethod.DeclaringType?.IsRecord == true && IsRecordSynthesizedMethod(irMethod.Name))
                 continue;
-
-            // Skip ICall-mapped methods — dead code (callers redirected to ICall function)
             if (irMethod.HasICallMapping) continue;
-
-            // Skip methods with CLR-internal dependencies (QCallTypeHandle, RuntimeType, etc.)
-            // These cannot be compiled to C++ — generate a minimal stub body instead
             if (HasClrInternalDependencies(methodDef.GetCecilMethod(), out var clrReason))
             {
                 irMethod.IrStubReason = clrReason;
                 GenerateStubBody(irMethod);
                 continue;
             }
-
-            ConvertMethodBody(methodDef, irMethod);
-
+            compilableBodies.Add((methodDef, irMethod));
         }
+
+        // Phase B1: Pre-resolve Cecil method bodies and instruction operands sequentially.
+        // Cecil's internal resolver uses mutable state (lazy property caching, MetadataResolver)
+        // that isn't thread-safe. Pre-resolving populates all internal caches so parallel
+        // body compilation only reads cached values.
+        var preResolveSw = System.Diagnostics.Stopwatch.StartNew();
+        PreResolveCecilBodies(compilableBodies);
+        preResolveSw.Stop();
+
+        // Phase B2: Compile method bodies in parallel
+        var parallelOpts = new ParallelOptions
+        {
+            MaxDegreeOfParallelism = Environment.ProcessorCount,
+        };
+        var parallelSw = System.Diagnostics.Stopwatch.StartNew();
+        Parallel.ForEach(compilableBodies, parallelOpts, entry =>
+        {
+            ConvertMethodBody(entry.MethodDef, entry.IrMethod);
+        });
+        parallelSw.Stop();
+        Console.Error.WriteLine(
+            $"[perf] Pass 6 bodies: {compilableBodies.Count} methods, " +
+            $"preResolve={preResolveSw.ElapsedMilliseconds}ms, " +
+            $"compile={parallelSw.ElapsedMilliseconds}ms (DOP={Environment.ProcessorCount})");
+
+        // Drain deferred BCL delegate registrations before VTable/specialization passes
+        DrainDeferredBclDelegates();
 
         // Pass 6.1: Compile generic method specializations discovered during Pass 6.
         // E.g., DateTimeFormatInfo.GetAbbreviatedDayName calls ThrowHelper.ThrowArgumentOutOfRange_Range<DayOfWeek>
@@ -903,6 +954,9 @@ public partial class IRBuilder
         // of SafeHandleZeroOrMinusOneIsInvalid). Fills abstract slots from sibling types.
         FixupAbstractVTableSlots();
 
+        // Note: __Canon shared methods now use thin wrapper functions in codegen
+        // that delegate to canonical methods with casts. No call-site rewriting needed.
+
         // Pass 6.9: Ensure attribute constructors are compiled.
         // Attribute constructors are never called from IL (CLR invokes them at metadata-time),
         // so the reachability analyzer doesn't mark them. We need them for runtime attribute
@@ -910,6 +964,13 @@ public partial class IRBuilder
         // Must run after Pass 6 so HasClrInternalDependencies checks and ConvertMethodBody
         // infrastructure are fully set up.
         EnsureAttributeConstructorsCompiled();
+
+        // Pass 6.9b: Final disambiguation fixup for call sites compiled during Pass 6.
+        // Deferred generic bodies (cascade types) may call methods on types created in the
+        // same batch. Their DeferredDisambigKey was stored but never fixed up since
+        // FixupDisambiguatedCalls (Pass 3.7) ran before Pass 6.
+        DisambiguateOverloadedMethods();
+        FixupDisambiguatedCalls();
 
         pass6sw.Stop();
         Console.Error.WriteLine($"[perf] Pass 6 MethodBodies+GenericMethodSpecs+MissingCallees: {pass6sw.ElapsedMilliseconds}ms");
