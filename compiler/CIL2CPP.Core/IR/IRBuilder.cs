@@ -355,6 +355,9 @@ public partial class IRBuilder
     private readonly HashSet<IRType> _deferredVtableTypes = new();
     // Types already processed by DisambiguateOverloadedMethods — prevents re-disambiguation
     private readonly HashSet<IRType> _disambiguatedTypes = new();
+    // Types already attempted for demand-driven method shell addition — prevents repeated attempts
+    // on types whose methods are all generic (filtered by HasGenericParameters).
+    private readonly HashSet<string> _demandDrivenMethodsAttempted = new();
     private readonly HashSet<IRType> _vtableBuilt = new();
     // Incremental VTable tracking: types added since the last BuildVTablesFixpoint call.
     // Avoids re-scanning all _module.Types when only a few new types were added.
@@ -870,6 +873,13 @@ public partial class IRBuilder
         PreResolveCecilBodies(compilableBodies);
         preResolveSw.Stop();
 
+        // Phase B1.5: Ensure call-target types exist for non-generic method bodies.
+        // Generic method bodies go through EnsureBodyReferencedTypesExist which calls
+        // EnsureDemandDrivenNonGenericTypeExists for call targets. Non-generic method
+        // bodies don't have this pre-scan, so types only referenced through method calls
+        // (nested types like Task/SetOnInvokeMres, exception ctors, etc.) can be missed.
+        EnsureCallTargetTypesExist(compilableBodies);
+
         // Phase B2: Compile method bodies in parallel
         var parallelOpts = new ParallelOptions
         {
@@ -931,6 +941,18 @@ public partial class IRBuilder
         // Generic specialization bodies (e.g., SafeHandleMarshaller<T>) may call non-generic
         // methods through resolved type parameters that the reachability analyzer couldn't trace.
         CompileMissingCallees();
+
+        // Pass 6.4b: Fixpoint loop — create missing types and compile their methods.
+        // Each iteration: (1) scan compiled IR for undeclared function calls, (2) create types
+        // from loaded assemblies, (3) compile newly available methods. Repeat until stable.
+        for (int shellPass = 0; shellPass < 5; shellPass++)
+        {
+            int prevMethodCount = _module.Types.Sum(t => t.Methods.Count);
+            EnsureCallTargetMethodShells();
+            CompileMissingCallees();
+            int newMethodCount = _module.Types.Sum(t => t.Methods.Count);
+            if (newMethodCount == prevMethodCount) break;
+        }
 
         // Pass 6.5: Discover types referenced by compiled method bodies but not yet in the module
         // This can happen when BCL methods reference types only as parameters/locals/fields

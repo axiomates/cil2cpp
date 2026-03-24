@@ -42,12 +42,27 @@ public static class DeadCodePatterns
         ("System.ThrowHelper", DeadCodeCategory.Simd, false),
         // EventSource: diagnostic logging (all methods dead)
         ("System.Diagnostics.Tracing.NativeRuntimeEventSource", DeadCodeCategory.EventSource, true),
+        ("System.Diagnostics.Tracing.FrameworkEventSource", DeadCodeCategory.EventSource, true),
+        ("System.Diagnostics.Tracing.ActivityTracker", DeadCodeCategory.EventSource, true),
+        // EventSource nested types: use dot notation (not /) so ToCppPrefix → C++ name matching works.
+        // These are out-of-module (tree-shaken), so only ClassifyDeadCodeByName uses them.
+        ("System.Diagnostics.Tracing.EventSource.EventData", DeadCodeCategory.EventSource, true),
+        ("System.Diagnostics.Tracing.EventSource.EventSourcePrimitive", DeadCodeCategory.EventSource, true),
         ("System.Net.NetEventSource", DeadCodeCategory.EventSource, true),
         ("System.Net.Sockets.NetEventSource", DeadCodeCategory.EventSource, true),
         // AOT-incompatible: no runtime assembly loading
         ("System.Runtime.Loader.AssemblyLoadContext", DeadCodeCategory.AotIncompatible, true),
         // AOT-incompatible: LambdaCompiler uses Reflection.Emit (JIT-only)
         ("System.Linq.Expressions.Compiler.", DeadCodeCategory.AotIncompatible, true),
+        // AOT-incompatible: Reflection.Emit requires JIT — no AOT equivalent
+        ("System.Reflection.Emit.", DeadCodeCategory.AotIncompatible, true),
+        // AOT-excluded: CIL2CPP provides its own C++ thread pool; PortableThreadPool is the BCL
+        // managed thread pool that would conflict. ThreadPool ICalls redirect to runtime.
+        ("System.Threading.PortableThreadPool", DeadCodeCategory.AotIncompatible, true),
+        // AOT-excluded: CIL2CPP provides its own stack trace via DbgHelp/backtrace.
+        // BCL StackFrame/StackFrameHelper reference CLR debugging internals.
+        ("System.Diagnostics.StackFrame", DeadCodeCategory.AotIncompatible, true),
+        ("System.Diagnostics.StackFrameHelper", DeadCodeCategory.AotIncompatible, true),
     };
 
     /// <summary>

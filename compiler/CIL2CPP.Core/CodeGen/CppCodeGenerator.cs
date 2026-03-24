@@ -718,11 +718,13 @@ public partial class CppCodeGenerator
                 // only appear in feature-switch-guarded dead branches (IsSupported=false on AOT).
                 // They're replaced with default values at render time in GenerateMethodImpl.
                 if (instr is IR.IRNewObj newObj && !string.IsNullOrEmpty(newObj.CtorName)
-                    && _undeclaredFunctionNames.Contains(newObj.CtorName))
+                    && _undeclaredFunctionNames.Contains(newObj.CtorName)
+                    && !IsKnownDeadCode(newObj.CtorName))
                     return newObj.CtorName;
                 if (instr is IR.IRLoadFunctionPointer ldftn && !string.IsNullOrEmpty(ldftn.MethodCppName)
                     && !ldftn.IsVirtual // Virtual ldftn uses VTable lookup
-                    && _undeclaredFunctionNames.Contains(ldftn.MethodCppName))
+                    && _undeclaredFunctionNames.Contains(ldftn.MethodCppName)
+                    && !IsKnownDeadCode(ldftn.MethodCppName))
                     return ldftn.MethodCppName;
             }
         }

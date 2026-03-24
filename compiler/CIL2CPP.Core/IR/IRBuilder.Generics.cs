@@ -798,9 +798,16 @@ public partial class IRBuilder
         if (ReferencesSimdTypes(cecilMethod))
             return;
 
-        // Find the declaring IRType
+        // Find the declaring IRType — create on demand if missing (e.g., SortUtils, CollectionsMarshal)
         if (!_typeCache.TryGetValue(info.DeclaringTypeName, out var declaringIrType))
-            return;
+        {
+            // Non-generic declaring types may not be in _typeCache if they were only referenced
+            // through generic method instantiations (not as field types or local variables).
+            // Try to create the type on demand so we can attach the generic method to it.
+            EnsureDemandDrivenNonGenericTypeExists(cecilMethod.DeclaringType);
+            if (!_typeCache.TryGetValue(info.DeclaringTypeName, out declaringIrType))
+                return;
+        }
 
             // Build type parameter map: BOTH declaring type params AND method-level params.
             // E.g., for EnumInfo<Byte>.CloneValues<SByte>:
@@ -1111,6 +1118,157 @@ public partial class IRBuilder
     }
 
     /// <summary>
+    /// Pre-scan all compilable non-generic method bodies for call/callvirt/newobj targets
+    /// whose declaring types are not yet in the IR module. Creates those types on demand
+    /// so their methods are available for declaration and body compilation.
+    /// This fills the gap where EnsureBodyReferencedTypesExist only runs for generic bodies,
+    /// leaving non-generic methods that call nested types (Task/SetOnInvokeMres) or uncommon
+    /// BCL types (TaskSchedulerException) with undeclared callees.
+    /// </summary>
+    private void EnsureCallTargetTypesExist(List<(IL.MethodInfo MethodDef, IRMethod IrMethod)> compilableBodies)
+    {
+        var emptyMap = new Dictionary<string, string>();
+
+        // Only scan methods that will actually be compiled (compilableBodies), not all types.
+        // Scanning _allTypes creates far too many demand-driven types from unreachable methods.
+        foreach (var (methodDef, _) in compilableBodies)
+        {
+            try
+            {
+                var cecilMethod = methodDef.GetCecilMethod();
+                if (!cecilMethod.HasBody) continue;
+
+                foreach (var instr in cecilMethod.Body.Instructions)
+                {
+                    if (instr.OpCode.Code is not (Mono.Cecil.Cil.Code.Call
+                        or Mono.Cecil.Cil.Code.Callvirt or Mono.Cecil.Cil.Code.Newobj))
+                        continue;
+
+                    if (instr.Operand is MethodReference methodRef)
+                    {
+                        EnsureDemandDrivenNonGenericTypeExists(methodRef.DeclaringType);
+                        // Also discover generic type specializations referenced by call targets
+                        // (e.g., Dictionary<String,Int32>.TryAdd from SerializationInfo).
+                        TryCollectResolvedGenericType(methodRef.DeclaringType, emptyMap);
+                    }
+                }
+            }
+            catch { /* Skip unresolvable bodies */ }
+        }
+
+        // Also scan methods on types already in the module that have Cecil bodies but aren't
+        // in compilableBodies. CompileMissingCallees will compile these later, so their call
+        // targets need to exist. Restrict to types in _module.Types (not _allTypes) to avoid
+        // creating types from unreachable code.
+        var prevTypeCount = _module.Types.Count;
+        var compiledTypeNames = new HashSet<string>(_module.Types.Select(t => t.ILFullName));
+        foreach (var typeDef in _allTypes)
+        {
+            if (typeDef.HasGenericParameters) continue;
+            if (!compiledTypeNames.Contains(typeDef.FullName)) continue;
+            foreach (var methodDef in typeDef.Methods)
+            {
+                try
+                {
+                    var cecilMethod = methodDef.GetCecilMethod();
+                    if (!cecilMethod.HasBody) continue;
+
+                    foreach (var instr in cecilMethod.Body.Instructions)
+                    {
+                        if (instr.OpCode.Code is not (Mono.Cecil.Cil.Code.Call
+                            or Mono.Cecil.Cil.Code.Callvirt or Mono.Cecil.Cil.Code.Newobj))
+                            continue;
+
+                        if (instr.Operand is MethodReference methodRef)
+                        {
+                            EnsureDemandDrivenNonGenericTypeExists(methodRef.DeclaringType);
+                            TryCollectResolvedGenericType(methodRef.DeclaringType, emptyMap);
+                        }
+                    }
+                }
+                catch { /* Skip unresolvable bodies */ }
+            }
+        }
+
+    }
+
+    /// <summary>
+    /// Post-compilation pass: scan all compiled method bodies for newobj/call targets whose
+    /// declaring types don't exist in the module or lack method shells.
+    /// Generic specialization bodies may call constructors on types discovered only through
+    /// generic type arguments (e.g., SafeHandleMarshaller&lt;SafeThreadHandle&gt; body calls
+    /// newobj SafeThreadHandle..ctor — SafeThreadHandle was never created because it's only
+    /// referenced as a type parameter, not directly in reachable code).
+    /// </summary>
+    private void EnsureCallTargetMethodShells()
+    {
+        // Collect all called function names from compiled method bodies
+        var calledFunctions = new HashSet<string>();
+        foreach (var type in _module.Types)
+        foreach (var method in type.Methods)
+        {
+            if (method.BasicBlocks.Count == 0) continue;
+            foreach (var block in method.BasicBlocks)
+            foreach (var instr in block.Instructions)
+            {
+                if (instr is IRCall call && !string.IsNullOrEmpty(call.FunctionName))
+                    calledFunctions.Add(call.FunctionName);
+                else if (instr is IRNewObj newObj && !string.IsNullOrEmpty(newObj.CtorName))
+                    calledFunctions.Add(newObj.CtorName);
+                else if (instr is IRLoadFunctionPointer ldftn && !string.IsNullOrEmpty(ldftn.MethodCppName))
+                    calledFunctions.Add(ldftn.MethodCppName);
+            }
+        }
+
+        // Find called functions whose declaring types exist but lack the method
+        var declaredFunctions = new HashSet<string>();
+        foreach (var type in _module.Types)
+        foreach (var method in type.Methods)
+            declaredFunctions.Add(method.CppName);
+
+        // Build index: mangled type name → Cecil TypeDefinition for all loaded assemblies
+        var mangledToTypeDef = new Dictionary<string, TypeDefinition>();
+        foreach (var asm in _assemblySet.LoadedAssemblies.Values)
+        {
+            foreach (var typeDef in asm.MainModule.Types)
+            {
+                if (typeDef.HasGenericParameters) continue;
+                var mangled = CppNameMapper.MangleTypeName(typeDef.FullName);
+                mangledToTypeDef.TryAdd(mangled, typeDef);
+                // Also index nested types
+                foreach (var nested in typeDef.NestedTypes)
+                {
+                    if (nested.HasGenericParameters) continue;
+                    var nestedMangled = CppNameMapper.MangleTypeName(nested.FullName);
+                    mangledToTypeDef.TryAdd(nestedMangled, nested);
+                }
+            }
+        }
+
+        foreach (var funcName in calledFunctions)
+        {
+            if (declaredFunctions.Contains(funcName)) continue;
+
+            // Try to find the type that should own this function by parsing the C++ name.
+            // Function name format: TypeMangledName_MethodName (e.g., Type__ctor for constructor)
+            // Try progressively shorter prefixes to find the type.
+            var underscorePositions = new List<int>();
+            for (int i = funcName.Length - 1; i >= 0; i--)
+                if (funcName[i] == '_') underscorePositions.Add(i);
+
+            foreach (var pos in underscorePositions)
+            {
+                var candidateType = funcName[..pos];
+                if (mangledToTypeDef.TryGetValue(candidateType, out var cecilTypeDef))
+                {
+                    EnsureDemandDrivenNonGenericTypeExists(cecilTypeDef);
+                    break;
+                }
+            }
+        }
+    }
+
+    /// <summary>
     /// Just-in-time discovery: scan a generic method body for GenericInstanceType references
     /// and ensure they exist as IRTypes in _typeCache before body conversion.
     /// This handles cases where a generic METHOD body references generic TYPES parameterized
@@ -1143,6 +1301,49 @@ public partial class IRBuilder
                         catch { /* Cecil resolve failures are handled elsewhere */ }
                     }
                     TryCollectResolvedGenericType(methodRef.DeclaringType, typeParamMap);
+                    // Ensure non-generic declaring types exist (call/callvirt/newobj targets).
+                    // Types only referenced through method calls (not fields) can be missed by RA.
+                    if (instr.OpCode.Code is Code.Call or Code.Callvirt or Code.Newobj)
+                    {
+                        EnsureDemandDrivenNonGenericTypeExists(methodRef.DeclaringType);
+                        // When the declaring type is a generic parameter (e.g., newobj !0::.ctor()
+                        // in SafeHandleMarshaller<T>/ManagedToUnmanagedOut..ctor), resolve it
+                        // through typeParamMap to get the concrete type (e.g., SafeThreadHandle).
+                        if (methodRef.DeclaringType is Mono.Cecil.GenericParameter gp2
+                            && typeParamMap.TryGetValue(gp2.Name, out var resolvedTypeName2)
+                            && !_typeCache.ContainsKey(resolvedTypeName2))
+                        {
+                            // First try _allTypes (reachable types)
+                            var cecilType = _allTypes.FirstOrDefault(t => t.FullName == resolvedTypeName2);
+                            if (cecilType != null)
+                                EnsureDemandDrivenNonGenericTypeExists(cecilType.GetCecilType());
+                            else
+                            {
+                                // Type not in _allTypes — search loaded assemblies for non-reachable types.
+                                // This handles types only referenced as generic type arguments (e.g.,
+                                // SafeHandleMarshaller<SafeThreadHandle> where SafeThreadHandle itself
+                                // was not discovered by the reachability analyzer).
+                                foreach (var asm in _assemblySet.LoadedAssemblies.Values)
+                                {
+                                    var found = asm.MainModule.GetType(resolvedTypeName2.Replace('/', '.'));
+                                    if (found == null)
+                                    {
+                                        // Try with nested type separator
+                                        var lastDot = resolvedTypeName2.LastIndexOf('.');
+                                        if (lastDot > 0)
+                                            found = asm.MainModule.GetType(
+                                                resolvedTypeName2.Substring(0, lastDot),
+                                                resolvedTypeName2.Substring(lastDot + 1));
+                                    }
+                                    if (found != null && !found.HasGenericParameters)
+                                    {
+                                        EnsureDemandDrivenNonGenericTypeExists(found);
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
                     // Track specialized method calls with resolved type params
                     if (methodRef.DeclaringType is GenericInstanceType ensureGit)
                     {
@@ -1751,11 +1952,23 @@ public partial class IRBuilder
         if (declaringTypeRef is GenericInstanceType) return;
         if (declaringTypeRef is Mono.Cecil.GenericParameter) return;
         if (declaringTypeRef is ArrayType || declaringTypeRef is ByReferenceType || declaringTypeRef is PointerType) return;
+        if (declaringTypeRef is RequiredModifierType || declaringTypeRef is OptionalModifierType) return;
+        if (declaringTypeRef is FunctionPointerType || declaringTypeRef is PinnedType || declaringTypeRef is SentinelType) return;
 
         var typeName = declaringTypeRef.FullName;
 
-        // Already exists — nothing to do
-        if (_typeCache.ContainsKey(typeName)) return;
+        // Check if type already exists WITH methods. Types created by field resolution or
+        // base type chains may exist in _typeCache without method shells. If called as a
+        // call/newobj target (e.g., SafeThreadHandle from SafeHandleMarshaller<T> body),
+        // we need to ensure method shells exist.
+        if (_typeCache.TryGetValue(typeName, out var existingType))
+        {
+            if (existingType.Methods.Count > 0) return;
+            // Deduplicate: track types we've already tried to add methods to.
+            // This prevents repeated attempts on types whose methods are all generic (e.g., SortUtils).
+            if (!_demandDrivenMethodsAttempted.Add(typeName)) return;
+            // Type exists but has no methods — fall through to add method shells
+        }
 
         // Don't create core runtime types (Object, String, etc.) on demand — they have
         // runtime-defined layouts and method ownership that can't be replicated here.
@@ -1767,6 +1980,11 @@ public partial class IRBuilder
         catch { return; }
         if (cecilTypeDef == null) return;
 
+        // Skip nested types of core runtime types (e.g., RuntimeType/ActivatorCache).
+        // Their methods call CLR-internal functions that don't exist in our runtime.
+        if (cecilTypeDef.IsNested && cecilTypeDef.DeclaringType != null
+            && RuntimeTypeRegistry.IsCoreRuntime(cecilTypeDef.DeclaringType.FullName)) return;
+
         // Skip open generic type definitions — they have unresolved parameters
         if (cecilTypeDef.HasGenericParameters) return;
 
@@ -1776,71 +1994,244 @@ public partial class IRBuilder
 
         var mangledName = CppNameMapper.MangleTypeName(typeName);
 
-        var irType = new IRType
+        // If type already exists but has no methods, just add method shells to the existing type.
+        // This happens when types are created through field type or base type resolution without
+        // scanning Cecil methods (e.g., SafeThreadHandle from SafeHandleMarshaller generic args).
+        IRType irType;
+        bool needsFields = existingType != null
+            && existingType.Fields.Count == 0
+            && existingType.StaticFields.Count == 0
+            && cecilTypeDef.Fields.Count > 0;
+        if (existingType != null && !needsFields)
         {
-            ILFullName = typeName,
-            CppName = mangledName,
-            Name = cecilTypeDef.Name,
-            Namespace = cecilTypeDef.Namespace,
-            IsValueType = cecilTypeDef.IsValueType && typeName is not "System.Enum" and not "System.ValueType",
-            IsInterface = cecilTypeDef.IsInterface,
-            IsAbstract = cecilTypeDef.IsAbstract,
-            IsSealed = cecilTypeDef.IsSealed,
-            IsEnum = cecilTypeDef.IsEnum,
-            MetadataToken = cecilTypeDef.MetadataToken.ToUInt32(),
-            SourceKind = _assemblySet.ClassifyAssembly(cecilTypeDef.Module.Assembly.Name.Name),
-            // RuntimeProvided types still need statics — their struct layout comes from
-            // runtime headers but static fields need a _Statics struct in generated code.
-            IsRuntimeProvided = RuntimeTypeRegistry.IsRuntimeProvided(typeName),
-        };
-
-        if (irType.IsValueType)
-        {
-            CppNameMapper.RegisterValueType(typeName);
-            CppNameMapper.RegisterValueType(mangledName);
+            irType = existingType;
         }
-
-        // Populate both instance and static fields
-        // LayoutKind.Explicit: fields have explicit byte offsets, may overlap (unions)
-        if (cecilTypeDef.IsExplicitLayout)
-            irType.IsExplicitLayout = true;
-
-        foreach (var fieldDef in cecilTypeDef.Fields)
+        else if (existingType != null && needsFields)
         {
-            var irField = new IRField
+            // Existing type is an opaque stub (no fields) — populate fields from Cecil
+            irType = existingType;
+
+            // Populate both instance and static fields
+            // LayoutKind.Explicit: fields have explicit byte offsets, may overlap (unions)
+            if (cecilTypeDef.IsExplicitLayout)
+                irType.IsExplicitLayout = true;
+
+            foreach (var fieldDef in cecilTypeDef.Fields)
             {
-                Name = fieldDef.Name,
-                CppName = CppNameMapper.MangleFieldName(fieldDef.Name),
-                FieldTypeName = fieldDef.FieldType.FullName,
-                IsStatic = fieldDef.IsStatic,
-                IsPublic = fieldDef.IsPublic,
-                DeclaringType = irType,
+                var irField = new IRField
+                {
+                    Name = fieldDef.Name,
+                    CppName = CppNameMapper.MangleFieldName(fieldDef.Name),
+                    FieldTypeName = fieldDef.FieldType.FullName,
+                    IsStatic = fieldDef.IsStatic,
+                    IsPublic = fieldDef.IsPublic,
+                    DeclaringType = irType,
+                };
+                if (_typeCache.TryGetValue(fieldDef.FieldType.FullName, out var fieldType))
+                    irField.FieldType = fieldType;
+
+                // LayoutKind.Explicit: read per-field byte offset
+                if (!fieldDef.IsStatic && cecilTypeDef.IsExplicitLayout)
+                    irField.ExplicitOffset = fieldDef.Offset;
+
+                if (fieldDef.IsStatic)
+                    irType.StaticFields.Add(irField);
+                else
+                    irType.Fields.Add(irField);
+            }
+
+            // Read explicit struct size from ClassSize metadata
+            if (irType.IsValueType && cecilTypeDef.HasLayoutInfo && cecilTypeDef.ClassSize > 0)
+                irType.ExplicitSize = cecilTypeDef.ClassSize;
+
+            // Flag cctor if present
+            irType.HasCctor = cecilTypeDef.Methods.Any(m => m.IsConstructor && m.IsStatic && m.HasBody);
+        }
+        else
+        {
+            // New type — create from scratch with fields
+            irType = new IRType
+            {
+                ILFullName = typeName,
+                CppName = mangledName,
+                Name = cecilTypeDef.Name,
+                Namespace = cecilTypeDef.Namespace,
+                IsValueType = cecilTypeDef.IsValueType && typeName is not "System.Enum" and not "System.ValueType",
+                IsInterface = cecilTypeDef.IsInterface,
+                IsAbstract = cecilTypeDef.IsAbstract,
+                IsSealed = cecilTypeDef.IsSealed,
+                IsEnum = cecilTypeDef.IsEnum,
+                MetadataToken = cecilTypeDef.MetadataToken.ToUInt32(),
+                SourceKind = _assemblySet.ClassifyAssembly(cecilTypeDef.Module.Assembly.Name.Name),
+                IsRuntimeProvided = RuntimeTypeRegistry.IsRuntimeProvided(typeName),
             };
-            if (_typeCache.TryGetValue(fieldDef.FieldType.FullName, out var fieldType))
-                irField.FieldType = fieldType;
 
-            // LayoutKind.Explicit: read per-field byte offset
-            if (!fieldDef.IsStatic && cecilTypeDef.IsExplicitLayout)
-                irField.ExplicitOffset = fieldDef.Offset;
+            if (irType.IsValueType)
+            {
+                CppNameMapper.RegisterValueType(typeName);
+                CppNameMapper.RegisterValueType(mangledName);
+            }
 
-            if (fieldDef.IsStatic)
-                irType.StaticFields.Add(irField);
-            else
-                irType.Fields.Add(irField);
+            if (cecilTypeDef.IsExplicitLayout)
+                irType.IsExplicitLayout = true;
+
+            foreach (var fieldDef in cecilTypeDef.Fields)
+            {
+                var irField = new IRField
+                {
+                    Name = fieldDef.Name,
+                    CppName = CppNameMapper.MangleFieldName(fieldDef.Name),
+                    FieldTypeName = fieldDef.FieldType.FullName,
+                    IsStatic = fieldDef.IsStatic,
+                    IsPublic = fieldDef.IsPublic,
+                    DeclaringType = irType,
+                };
+                if (_typeCache.TryGetValue(fieldDef.FieldType.FullName, out var fieldType2))
+                    irField.FieldType = fieldType2;
+
+                if (!fieldDef.IsStatic && cecilTypeDef.IsExplicitLayout)
+                    irField.ExplicitOffset = fieldDef.Offset;
+
+                if (fieldDef.IsStatic)
+                    irType.StaticFields.Add(irField);
+                else
+                    irType.Fields.Add(irField);
+            }
+
+            if (irType.IsValueType && cecilTypeDef.HasLayoutInfo && cecilTypeDef.ClassSize > 0)
+                irType.ExplicitSize = cecilTypeDef.ClassSize;
+
+            irType.HasCctor = cecilTypeDef.Methods.Any(m => m.IsConstructor && m.IsStatic && m.HasBody);
         }
 
-        // Read explicit struct size from ClassSize metadata
-        if (irType.IsValueType && cecilTypeDef.HasLayoutInfo && cecilTypeDef.ClassSize > 0)
-            irType.ExplicitSize = cecilTypeDef.ClassSize;
+        // Skip method shell creation for nested types of core runtime types (e.g., RuntimeType/ActivatorCache).
+        // Their methods call CLR-internal functions (RuntimeTypeHandle.GetActivationInfo) that don't exist.
+        bool skipMethodShells = cecilTypeDef.IsNested && cecilTypeDef.DeclaringType != null
+            && RuntimeTypeRegistry.IsCoreRuntime(cecilTypeDef.DeclaringType.FullName);
 
-        // Flag cctor if present
-        irType.HasCctor = cecilTypeDef.Methods.Any(m => m.IsConstructor && m.IsStatic && m.HasBody);
+        // Create method shells so callers can find them during GenerateMissingMethodStubs.
+        // Without method shells, calls to methods on demand-driven types become undeclared.
+        // Include abstract/interface methods (no body) — they need declarations for dispatch.
+        if (!skipMethodShells) foreach (var methodDef in cecilTypeDef.Methods)
+        {
+            if (!methodDef.HasBody && !methodDef.IsAbstract) continue;
+            if (methodDef.HasGenericParameters) continue;
+            if (methodDef.HasBody && ReferencesSimdTypes(methodDef)) continue;
 
-        CalculateInstanceSize(irType);
-        AddTypeToModule(irType);
-        _typeCache[typeName] = irType;
+            var returnTypeName = methodDef.ReturnType.FullName;
+            var irMethod = new IRMethod
+            {
+                Name = methodDef.Name,
+                CppName = CppNameMapper.MangleMethodName(mangledName, methodDef.Name),
+                DeclaringType = irType,
+                ReturnTypeCpp = ResolveTypeForDecl(returnTypeName),
+                IsStatic = methodDef.IsStatic,
+                IsVirtual = methodDef.IsVirtual,
+                IsAbstract = methodDef.IsAbstract,
+                IsConstructor = methodDef.IsConstructor,
+                IsStaticConstructor = methodDef.IsConstructor && methodDef.IsStatic,
+                DeadCodeCategory = ClassifyMethodDeadCode(methodDef),
+            };
 
-        Console.Error.WriteLine($"[demand-driven] Created non-generic type: {typeName}");
+            // Add 'this' parameter is implicit — handled by CppCodeGenerator.
+            foreach (var paramDef in methodDef.Parameters)
+            {
+                irMethod.Parameters.Add(new IRParameter
+                {
+                    Name = paramDef.Name.Length > 0 ? paramDef.Name : $"p{paramDef.Index}",
+                    CppName = CppNameMapper.MangleIdentifier(
+                        paramDef.Name.Length > 0 ? paramDef.Name : $"p{paramDef.Index}"),
+                    CppTypeName = ResolveTypeForDecl(paramDef.ParameterType.FullName),
+                    ILTypeName = paramDef.ParameterType.FullName,
+                    Index = paramDef.Index,
+                });
+            }
+
+            if (HasUnresolvedSignature(irMethod))
+                continue;
+            irType.Methods.Add(irMethod);
+        }
+
+        // Disambiguate overloaded method names and register in DisambiguatedMethodNames
+        // so FixupDisambiguatedCalls can update call sites that reference these methods.
+        var methodGroups = irType.Methods.GroupBy(m => m.CppName).Where(g => g.Count() > 1);
+        foreach (var group in methodGroups)
+        {
+            var originalName = group.Key;
+            foreach (var m in group)
+            {
+                var paramSuffix = string.Join("_", m.Parameters.Select(p =>
+                    CppNameMapper.MangleTypeName(p.ILTypeName ?? p.CppTypeName)));
+                m.CppName = $"{m.CppName}__{paramSuffix}";
+                // Register lookup key: originalName|ilParam1,ilParam2 → disambiguated name
+                var ilParamKey = string.Join(",", m.Parameters.Select(p => p.ILTypeName));
+                var lookupKey = $"{originalName}|{ilParamKey}";
+                _module.DisambiguatedMethodNames[lookupKey] = m.CppName;
+            }
+        }
+
+        if (existingType == null)
+        {
+            CalculateInstanceSize(irType);
+            AddTypeToModule(irType);
+            _typeCache[typeName] = irType;
+            // [demand-driven] type created
+
+            // Create non-generic, non-enum nested types used by this type's methods.
+            // Method bodies may reference nested types as locals/return values (e.g.,
+            // StackSpiller.Result). Without this, nested types remain opaque header stubs.
+            // Only create nested types that are referenced by method body locals or return types.
+            var nestedTypeNames = new HashSet<string>();
+            foreach (var methodDef in cecilTypeDef.Methods)
+            {
+                if (!methodDef.HasBody) continue;
+                try
+                {
+                    if (methodDef.Body.HasVariables)
+                    {
+                        foreach (var local in methodDef.Body.Variables)
+                        {
+                            var localType = local.VariableType;
+                            if (localType is GenericInstanceType || localType is Mono.Cecil.GenericParameter) continue;
+                            if (localType is RequiredModifierType || localType is OptionalModifierType) continue;
+                            if (localType is ArrayType || localType is ByReferenceType || localType is PointerType) continue;
+                            var resolved = localType.Resolve();
+                            if (resolved != null && resolved.IsNested && !resolved.HasGenericParameters
+                                && !resolved.IsEnum
+                                && resolved.DeclaringType?.FullName == cecilTypeDef.FullName)
+                                nestedTypeNames.Add(resolved.FullName);
+                        }
+                    }
+                    if (methodDef.ReturnType.FullName != "System.Void")
+                    {
+                        var retType = methodDef.ReturnType;
+                        if (retType is not (GenericInstanceType or Mono.Cecil.GenericParameter
+                            or RequiredModifierType or OptionalModifierType
+                            or ArrayType or ByReferenceType or PointerType))
+                        {
+                            var resolved = retType.Resolve();
+                            if (resolved != null && resolved.IsNested && !resolved.HasGenericParameters
+                                && !resolved.IsEnum
+                                && resolved.DeclaringType?.FullName == cecilTypeDef.FullName)
+                                nestedTypeNames.Add(resolved.FullName);
+                        }
+                    }
+                }
+                catch { /* Skip unresolvable */ }
+            }
+            foreach (var nestedName in nestedTypeNames)
+            {
+                var nestedDef = cecilTypeDef.NestedTypes.FirstOrDefault(n => n.FullName == nestedName);
+                if (nestedDef != null)
+                    EnsureDemandDrivenNonGenericTypeExists(nestedDef);
+            }
+        }
+        else
+        {
+            if (needsFields)
+                CalculateInstanceSize(irType);
+            // [demand-driven] method shells added to existing type
+        }
     }
 
     /// <summary>
@@ -3015,11 +3406,20 @@ public partial class IRBuilder
 
             // Create method shells + defer body conversion for nested type methods.
             // Same pattern as CreateGenericSpecializations: reachability + CLR gate → defer.
+            // Also check _calledSpecializedMethods — parent type methods compiled before this
+            // point populate the called-methods set via EnsureBodyReferencedTypesExist.
             foreach (var methodDef in openType.Methods)
             {
-                // Skip unreachable non-virtual, non-ctor methods (same as CreateGenericSpecializations)
+                // Skip unreachable non-virtual, non-ctor methods — unless they're
+                // tracked as called by parent type method bodies.
+                // Nested types are already gated by IsNestedTypeReferencedByReachableMethods —
+                // if created, their parent methods reference them. Unlike top-level specializations,
+                // nested type methods don't benefit from _calledSpecializedMethods tracking
+                // (parent body compilation may not generate matching keys for nested type calls).
+                // Keep all methods with bodies; body compilation is still gated by reachability
+                // and CLR-internal checks below.
                 if (!methodDef.IsVirtual && !methodDef.IsConstructor
-                    && !_reachability.IsReachable(methodDef))
+                    && !methodDef.HasBody)
                     continue;
                 // Skip methods with their own generic parameters (method-level generics).
                 // These can't be compiled in the type specialization because the method-level

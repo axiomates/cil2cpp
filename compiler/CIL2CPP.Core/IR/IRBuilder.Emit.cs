@@ -3548,6 +3548,11 @@ public partial class IRBuilder
                 if (HasClrInternalDependencies(cecilMethod, out _)) continue;
                 if (ReferencesSimdTypes(cecilMethod)) continue;
                 if (CallsClrInternalMethods(cecilMethod)) continue;
+                // Skip nested types of CoreRuntime types (e.g., RuntimeType/ActivatorCache).
+                // Their method bodies reference CLR-internal functions not in our runtime.
+                var declCecilType = cecilMethod.DeclaringType;
+                if (declCecilType.IsNested && declCecilType.DeclaringType != null
+                    && RuntimeTypeRegistry.IsCoreRuntime(declCecilType.DeclaringType.FullName)) continue;
 
                 // Populate locals
                 irMethod.Locals.Clear();

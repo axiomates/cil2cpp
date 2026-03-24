@@ -859,6 +859,8 @@ public class IRLoadFunctionPointer : IRInstruction
     public int VTableSlot { get; set; } = -1;
     public bool IsInterfaceCall { get; set; }
     public string? InterfaceTypeCppName { get; set; }
+    /// <summary>Deferred disambiguation key for post-compilation fixup (same as IRCall.DeferredDisambigKey)</summary>
+    public string? DeferredDisambigKey { get; set; }
 
     public override string ToCpp()
     {

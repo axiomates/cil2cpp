@@ -415,6 +415,15 @@ public partial class IRBuilder
                                 newObj.DeferredDisambigKey = null;
                             }
                         }
+                        else if (instr is IRLoadFunctionPointer ldftn && ldftn.DeferredDisambigKey != null)
+                        {
+                            var lookupKey = $"{ldftn.MethodCppName}|{ldftn.DeferredDisambigKey}";
+                            if (_module.DisambiguatedMethodNames.TryGetValue(lookupKey, out var disambiguated3))
+                            {
+                                ldftn.MethodCppName = disambiguated3;
+                                ldftn.DeferredDisambigKey = null;
+                            }
+                        }
                     }
                 }
             }
@@ -3116,12 +3125,25 @@ public partial class IRBuilder
                 {
                     methodCppName = CppNameMapper.MangleMethodName(targetTypeCpp, targetMethod.Name);
                 }
+                // Disambiguation lookup for overloaded methods (same logic as EmitMethodCall)
+                string? ldftnDisambigKey = null;
+                if (targetMethod.Parameters.Count > 0 && ldftnICallName == null)
+                {
+                    var ldftnIlParamKey = string.Join(",", targetMethod.Parameters.Select(p =>
+                        ResolveGenericTypeRef(p.ParameterType, targetMethod.DeclaringType)));
+                    var ldftnLookupKey = $"{methodCppName}|{ldftnIlParamKey}";
+                    if (_module.DisambiguatedMethodNames.TryGetValue(ldftnLookupKey, out var ldftnDisambiguated))
+                        methodCppName = ldftnDisambiguated;
+                    else
+                        ldftnDisambigKey = ldftnIlParamKey; // Store for deferred fixup
+                }
                 var tmp = $"__t{tempCounter++}";
                 block.Instructions.Add(new IRLoadFunctionPointer
                 {
                     MethodCppName = methodCppName,
                     ResultVar = tmp,
-                    IsVirtual = false
+                    IsVirtual = false,
+                    DeferredDisambigKey = ldftnDisambigKey,
                 });
                 stack.Push(tmp);
                 break;

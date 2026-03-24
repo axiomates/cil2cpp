@@ -3710,10 +3710,14 @@ public partial class CppCodeGenerator
         // The generated code creates proper VTables with IL-compiled virtual method overrides
         // (ToString, get_Message, get_ParamName, etc.). Without this patch, vtable dispatch
         // on caught exceptions crashes with null dereference.
+        var constructedTypesExc = _module.ConstructedTypes;
         foreach (var (mangledName, runtimeTypeInfoName) in RuntimeTypeRegistry.GetExceptionTypeInfoAliases())
         {
             var excType = _userTypes.FirstOrDefault(t => t.CppName == mangledName);
             if (excType == null || excType.VTable.Count == 0) continue;
+            // Only patch if VTable struct was actually emitted (same criteria as EmitVTableData)
+            if (constructedTypesExc.Count > 0 && !constructedTypesExc.Contains(excType.ILFullName)
+                && !_referencedTypeInfoNames.Contains(excType.CppName)) continue;
             sb.AppendLine($"    {runtimeTypeInfoName}.vtable = &{excType.CppName}_VTable;");
             if (excType.BaseType != null)
             {
