@@ -3300,6 +3300,13 @@ public partial class IRBuilder
             irType.VTable.Add(new IRVTableEntry { Slot = ObjectVTableSlots.FinalizeSlot, MethodName = "Finalize", Method = null, DeclaringType = null });
         }
 
+        // Build reverse lookup for O(1) vtable slot matching: name → last entry with that name.
+        // "Last wins" semantics: later entries override earlier ones (method hiding).
+        // Dictionary iteration overwrites earlier entries, matching LastOrDefault behavior.
+        var slotByName = new Dictionary<string, IRVTableEntry>();
+        foreach (var entry in irType.VTable)
+            slotByName[entry.MethodName] = entry;
+
         // Override or add virtual methods
         bool isCoreRuntime = CoreRuntimeTypes.Contains(irType.ILFullName);
         foreach (var method in irType.Methods.Where(m => m.IsVirtual))
@@ -3309,12 +3316,24 @@ public partial class IRBuilder
             IRVTableEntry? existing = null;
             if (!method.IsNewSlot)
             {
-                // Use LastOrDefault: when method hiding creates duplicate-named entries,
-                // 'override' targets the most-derived slot (added last)
-                existing = irType.VTable.LastOrDefault(e => e.MethodName == method.Name
-                    && (e.Method != null
-                        ? ParameterTypesMatch(e.Method, method)
-                        : SeedSlotParamsMatch(e.MethodName, method)));
+                if (slotByName.TryGetValue(method.Name, out var candidate))
+                {
+                    if (candidate.Method != null
+                        ? ParameterTypesMatch(candidate.Method, method)
+                        : SeedSlotParamsMatch(candidate.MethodName, method))
+                    {
+                        existing = candidate;
+                    }
+                    else
+                    {
+                        // Rare: same name but parameter mismatch (overloaded virtuals).
+                        // Fall back to linear scan for correct overload resolution.
+                        existing = irType.VTable.LastOrDefault(e => e.MethodName == method.Name
+                            && (e.Method != null
+                                ? ParameterTypesMatch(e.Method, method)
+                                : SeedSlotParamsMatch(e.MethodName, method)));
+                    }
+                }
             }
             else
             {
@@ -3322,8 +3341,11 @@ public partial class IRBuilder
                 // System.Object's methods are newslot=true (they ARE the original declarations),
                 // but we pre-seed slots 0-3 so overrides in derived types find them.
                 // Without this, Object's methods create new slots 4-7, leaving seeds orphaned.
-                existing = irType.VTable.LastOrDefault(e => e.MethodName == method.Name
-                    && e.Method == null && SeedSlotParamsMatch(e.MethodName, method));
+                if (slotByName.TryGetValue(method.Name, out var candidate)
+                    && candidate.Method == null && SeedSlotParamsMatch(candidate.MethodName, method))
+                {
+                    existing = candidate;
+                }
             }
 
             // For CoreRuntimeTypes, don't replace existing vtable entries with bodyless overrides.
@@ -3350,13 +3372,15 @@ public partial class IRBuilder
             {
                 // New virtual method (or newslot override)
                 var slot = irType.VTable.Count;
-                irType.VTable.Add(new IRVTableEntry
+                var entry = new IRVTableEntry
                 {
                     Slot = slot,
                     MethodName = method.Name,
                     Method = method,
                     DeclaringType = irType,
-                });
+                };
+                irType.VTable.Add(entry);
+                slotByName[method.Name] = entry;
                 method.VTableSlot = slot;
             }
         }

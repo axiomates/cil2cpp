@@ -3983,13 +3983,13 @@ public partial class IRBuilder
                 var prevTypeCount = _module.Types.Count;
                 EnsureBodyReferencedTypesExist(cecilMethod, typeParamMap);
 
-                // If new types were discovered, build their VTables and disambiguate overloaded
-                // methods before compiling the body. Without disambiguation, constructor calls
-                // on newly-created types with overloaded ctors get the wrong function name.
+                // If new types were discovered, build only their VTables (pending types).
+                // Full fixpoint (deferred resolution) runs at batch boundaries.
+                // Disambiguation deferred to batch end — DeferredDisambigKey + FixupDisambiguatedCalls
+                // handles calls compiled before disambiguation runs.
                 if (_module.Types.Count > prevTypeCount)
                 {
-                    BuildVTablesFixpoint();
-                    DisambiguateOverloadedMethods();
+                    BuildPendingVTablesOnly();
                 }
 
                 var methodInfo = new IL.MethodInfo(cecilMethod);
@@ -4038,8 +4038,7 @@ public partial class IRBuilder
 
     /// <summary>
     /// Build VTables incrementally: process only newly-added types (from _pendingVTableTypes)
-    /// instead of scanning all _module.Types. Falls back to full scan if no pending types
-    /// (first call, or when deferred types need re-evaluation).
+    /// or deferred types (from _deferredVtableTypes) when deferral progress unblocks children.
     /// Uses a progress flag (set by BuildVTableRecursive on un-deferral) to drive fixpoint.
     /// </summary>
     private void BuildVTablesFixpoint()
@@ -4056,14 +4055,34 @@ public partial class IRBuilder
                 foreach (var irType in batch)
                     BuildVTableRecursive(irType, _vtableBuilt);
             }
-            else
+            else if (_deferredVtableTypes.Count > 0)
             {
                 // No pending types but deferral progress — re-scan deferred types only.
                 // This happens when a base type was resolved, unblocking deferred children.
-                foreach (var irType in _module.Types)
+                // Only deferred types can make progress here; non-deferred types with
+                // VTable.Count > 0 are idempotent-skipped by BuildVTable.
+                var snapshot = new List<IRType>(_deferredVtableTypes);
+                foreach (var irType in snapshot)
                     BuildVTableRecursive(irType, _vtableBuilt);
             }
         } while (_vtableDeferralProgress || _pendingVTableTypes.Count > 0);
+    }
+
+    /// <summary>
+    /// Process only _pendingVTableTypes without full-scan fallback or deferred resolution.
+    /// Used for per-body incremental VTable building where newly discovered types need VTables
+    /// before body compilation, but full fixpoint (deferred chain resolution) is unnecessary.
+    /// Full fixpoint runs at batch start/end via BuildVTablesFixpoint.
+    /// </summary>
+    private void BuildPendingVTablesOnly()
+    {
+        while (_pendingVTableTypes.Count > 0)
+        {
+            var batch = new List<IRType>(_pendingVTableTypes);
+            _pendingVTableTypes.Clear();
+            foreach (var irType in batch)
+                BuildVTableRecursive(irType, _vtableBuilt);
+        }
     }
 
     /// <summary>
