@@ -35,7 +35,7 @@ These are required before CIL2CPP can claim "compiles .NET NativeAOT projects":
 | MarshalAs P/Invoke | C.7 ✅ | `[MarshalAs]` ✅, `[Out]`/`[In]` ✅, array marshaling (ByValTStr/ByValArray/LPArray ✅, [Out] LPArray + SizeParamIndex ✅) — PInvokeTest all 10 tests pass |
 | SChannel TLS (Windows) | E.win ✅ | HTTPS via `secur32.dll`/`schannel.dll` P/Invoke — **working** (HttpsGetTest passes) |
 | Compression | E.2 ✅ | zlib via System.IO.Compression.Native — GZipStream/DeflateStream round-trip working (CompressionTest passes) |
-| RenderedBodyError → 0 | H.2 | Investigated: ~114 stubs are genuinely correct AOT stubs (CLR-internal deps, GenericBodyTypeConflict). Not a codegen bug. |
+| RenderedBodyError → 0 | H.2 ✅ | HelloWorld undeclared=0, invalid_sig=0. Demand-driven method shells, DeadCodePatterns extension, fixpoint call-target discovery, ldftn disambiguation. |
 | SIMD scalar completion | F.1 | Eliminate remaining SIMD stubs via complete scalar fallback paths |
 | 15 NuGet package validation | G.2 | Prove real-world packages compile and run (15/15 smoke tests pass, but coverage is shallow — see Maturity Assessment) |
 
@@ -150,7 +150,7 @@ See "RuntimeProvided Type Classification" section above.
 | KnownBrokenPattern | 458 | 35.8% | SIMD dead-code branches + TypeHandle/MethodTable |
 | ClrInternalType | 96 | 7.5% | QCall/MetadataImport CLR JIT-specific types (permanent) |
 | UndeclaredFunction | 95 | 7.4% | Cascade from MissingBody/KBP — generic specialization gaps |
-| RenderedBodyError | 17 | 1.3% | Codegen bugs — Phase H.2 target: 0 |
+| RenderedBodyError | 0 | 0% | Phase H.2 complete: undeclared=0, invalid_sig=0 |
 | UnknownParameterTypes | 10 | 0.8% | Method parameters reference unknown types |
 | UnknownBodyReferences | 0 | 0% | Resolved |
 
@@ -462,14 +462,14 @@ CIL2CPP at 50K lines is approximately **17-25%** of a minimum viable tool, and *
 | # | Task | Priority | Status | Description |
 |---|------|----------|--------|-------------|
 | H.1 | TypeCode ICall fix + IsPublic/IsNestedPublic | High | ✅ | Map TypeInfo name → TypeCode enum (17 primitives) + TypeFlags::Public/NestedPublic from Cecil metadata. Fixes `Convert.*`, `String.Format`, serializer type switches, `Type.IsPublic` |
-| H.2 | RenderedBodyError reduction | High | ~85% done | 116 → 17 RE stubs. Remaining 17 are real codegen edge cases. Target: 0. |
+| H.2 | RenderedBodyError → 0 | High | ✅ | undeclared=65→0, invalid_sig=0. 5 root causes fixed: DeadCodePatterns (EventSource/AOT types), demand-driven method shells, generic method type creation, fixpoint call-target discovery (Pass 6.4b), ldftn disambiguation. 33/34 integration pass. |
 | H.3 | Remove File ICall bypass (B.6) | High | ✅ | File ICall bypass removed. FileStream.Read hang fixed. BCL IL handles all encoding correctly via StreamReader. 105/105 integration tests pass. |
 | H.4 | Platform compatibility docs | Medium | ✅ | Support matrix with promise levels: Full / Functional / Stub / Not implemented |
 | H.5 | Reflection status docs | Medium | ✅ | Expected-vs-actual table for all 23 reflection icalls + prerequisite phase for full fix |
 | H.6 | Codegen bug reproduction tests | Low | Pending | Minimal C# test cases for each FIXME gate pattern (regression anchors) |
 
 **Prerequisites**: None (runs in parallel)
-**Output**: Documented behavioral boundaries, reduced silent degrade risk, RenderedBodyError reduction
+**Output**: Documented behavioral boundaries, reduced silent degrade risk, RenderedBodyError → 0 ✅
 
 ### Phase D: NativeAOT Metadata & Ecosystem Validation (START IMMEDIATELY — parallel with C.6)
 
