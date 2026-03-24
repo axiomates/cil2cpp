@@ -148,7 +148,7 @@ python tools/dev.py codegen HelloWorld     # 快速代码生成测试
 python tools/dev.py compile HelloWorld     # 一步编译：codegen → cmake → build
 python tools/dev.py compile HelloWorld --run  # 编译并运行
 python tools/dev.py compile -i myapp.csproj   # 编译任意项目
-python tools/dev.py integration            # 集成测试（并行，默认 DOP=4）
+python tools/dev.py integration            # 集成测试（并行，自动检测 workers）
 python tools/dev.py integration -j 2      # 2 个并行工作线程
 python tools/dev.py integration --sequential  # 顺序模式
 python tools/dev.py integration --filter Hello  # 仅运行匹配的测试
@@ -202,7 +202,7 @@ ctest --test-dir runtime/tests/build -C Debug --output-on-failure
 
 完整编译流水线：C# `.csproj` → codegen → CMake configure → C++ build → run → 验证输出。覆盖 34 个测试项目，包括 NuGet 生态验证、真实项目验证和多包组合。
 
-数据驱动测试框架，通过 `ThreadPoolExecutor` 并行执行（默认 DOP=4，约 7 分钟；顺序约 21 分钟）。
+数据驱动测试框架，通过 `ThreadPoolExecutor` 并行执行（自动检测 CPU + 可用内存确定 workers 数量；32 线程/64GB 上约 7 分钟）。
 
 ```bash
 python tools/dev.py integration                    # 并行（默认）

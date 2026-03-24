@@ -148,7 +148,7 @@ python tools/dev.py codegen HelloWorld     # Quick code generation test
 python tools/dev.py compile HelloWorld     # One-step compile: codegen → cmake → build
 python tools/dev.py compile HelloWorld --run  # Compile and run
 python tools/dev.py compile -i myapp.csproj   # Compile arbitrary project
-python tools/dev.py integration            # Integration tests (parallel, default DOP=4)
+python tools/dev.py integration            # Integration tests (parallel, auto-detect workers)
 python tools/dev.py integration -j 2      # 2 parallel workers
 python tools/dev.py integration --sequential  # Sequential mode
 python tools/dev.py integration --filter Hello  # Run only matching tests
@@ -202,7 +202,7 @@ ctest --test-dir runtime/tests/build -C Debug --output-on-failure
 
 Full compilation pipeline: C# `.csproj` → codegen → CMake configure → C++ build → run → verify output. Covers 34 test projects including NuGet ecosystem validation, real project validation, and multi-package composition.
 
-Data-driven test framework with parallel execution via `ThreadPoolExecutor` (default DOP=4, ~7 min wall clock; sequential ~21 min).
+Data-driven test framework with parallel execution via `ThreadPoolExecutor` (auto-detect workers from CPU + available RAM; ~7 min wall clock on 32-thread/64GB).
 
 ```bash
 python tools/dev.py integration                    # parallel (default)
