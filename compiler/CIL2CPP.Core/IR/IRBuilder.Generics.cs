@@ -3948,7 +3948,13 @@ public partial class IRBuilder
         // Draining-queue fixpoint: compile a batch of deferred bodies → EnsureBody may
         // discover new generic types → CreateGenericSpecializations adds new deferred
         // bodies → process next batch until empty.
+        //
+        // Three-phase batch structure (same pattern as Pass 6):
+        //   Phase A: Sequential pre-scan — EnsureBodyReferencedTypesExist + VTable build
+        //   Phase B: Parallel body compilation — ConvertMethodBodyWithGenerics via Parallel.ForEach
+        //   Phase C: Sequential post-processing — recovery loop + CreateGenericSpecializations
         var processed = new HashSet<IRMethod>();
+        var parallelOpts = new ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount };
         while (_deferredGenericBodies.Count > 0)
         {
             var batch = new List<(MethodDefinition CecilMethod, IRMethod IrMethod,
@@ -3956,22 +3962,20 @@ public partial class IRBuilder
             _deferredGenericBodies.Clear();
 
             // Ensure VTables are built for all types before compiling any bodies in this batch.
-            // Fixpoint loop: each sweep resolves one level of deferred chains (A→B→C).
-            // Chains are bounded by inheritance depth (~5-6 max in BCL), so this converges quickly.
             BuildVTablesFixpoint();
 
+            // Phase A: Sequential pre-scan — discover types, build VTables for all methods in batch.
+            // EnsureBodyReferencedTypesExist writes to non-thread-safe shared state
+            // (_pendingGenericKeys, _calledSpecializedMethods, _dispatchedInterfaces),
+            // so it must remain sequential. Also warms Cecil caches for Phase B.
+            var bodiesToCompile = new List<(MethodDefinition CecilMethod, IRMethod IrMethod,
+                Dictionary<string, string> TypeParamMap)>();
             foreach (var (cecilMethod, irMethod, typeParamMap) in batch)
             {
                 if (!processed.Add(irMethod)) continue;
-
-                // Skip record compiler-generated methods — Pass 7 synthesizes replacements
                 if (irMethod.DeclaringType?.IsRecord == true && IsRecordSynthesizedMethod(irMethod.Name))
                     continue;
-
-                // Skip ICall-mapped methods — dead code (callers redirected to ICall function)
                 if (irMethod.HasICallMapping) continue;
-
-                // Pre-compilation check: detect MemberInfo body type conflicts on Cecil body
                 if (irMethod.DeclaringType != null && HasGenericBodyTypeConflict(cecilMethod, irMethod.DeclaringType))
                 {
                     irMethod.IrStubReason = "GenericBodyTypeConflict";
@@ -3979,22 +3983,26 @@ public partial class IRBuilder
                     continue;
                 }
 
-                // Demand-driven: discover types referenced in this body BEFORE compiling.
-                var prevTypeCount = _module.Types.Count;
                 EnsureBodyReferencedTypesExist(cecilMethod, typeParamMap);
-
-                // If new types were discovered, build only their VTables (pending types).
-                // Full fixpoint (deferred resolution) runs at batch boundaries.
-                // Disambiguation deferred to batch end — DeferredDisambigKey + FixupDisambiguatedCalls
-                // handles calls compiled before disambiguation runs.
-                if (_module.Types.Count > prevTypeCount)
-                {
-                    BuildPendingVTablesOnly();
-                }
-
-                var methodInfo = new IL.MethodInfo(cecilMethod);
-                ConvertMethodBodyWithGenerics(methodInfo, irMethod, typeParamMap);
+                bodiesToCompile.Add((cecilMethod, irMethod, typeParamMap));
             }
+
+            // Build VTables for all types discovered during pre-scan (single batch).
+            BuildPendingVTablesOnly();
+
+            // Phase B: Parallel body compilation.
+            // ConvertMethodBodyWithGenerics writes only to per-method state (IRMethod.BasicBlocks)
+            // and thread-safe shared collections (ConcurrentDictionary, locks).
+            // Same pattern as Pass 6 parallel compilation.
+            Parallel.ForEach(bodiesToCompile, parallelOpts, entry =>
+            {
+                var methodInfo = new IL.MethodInfo(entry.CecilMethod);
+                ConvertMethodBodyWithGenerics(methodInfo, entry.IrMethod, entry.TypeParamMap);
+            });
+
+            // Phase C: Sequential post-processing.
+            // Drain deferred BCL delegates discovered during parallel compilation.
+            DrainDeferredBclDelegates();
 
             // Recover skipped methods whose keys are now in _calledSpecializedMethods.
             for (int i = _skippedSpecializedMethods.Count - 1; i >= 0; i--)

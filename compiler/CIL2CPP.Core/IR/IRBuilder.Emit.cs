@@ -4075,10 +4075,12 @@ public partial class IRBuilder
     /// </summary>
     private void DrainDeferredBclDelegates()
     {
-        foreach (var (ilName, type) in _deferredBclDelegates)
+        while (_deferredBclDelegates.TryTake(out var entry))
         {
-            _typeCache[ilName] = type;
-            AddTypeToModule(type);
+            // Idempotent: skip if already added (safe to call multiple times)
+            if (_typeCache.ContainsKey(entry.IlName)) continue;
+            _typeCache[entry.IlName] = entry.Type;
+            AddTypeToModule(entry.Type);
         }
     }
 
