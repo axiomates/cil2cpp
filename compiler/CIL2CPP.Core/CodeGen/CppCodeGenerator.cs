@@ -218,9 +218,9 @@ public partial class CppCodeGenerator
     /// <summary>
     /// Minimum IR instructions per method partition. Each TU re-parses the full header,
     /// so partitions need enough method code to amortize that overhead.
-    /// ~20000 instructions ≈ 13k-17k C++ lines per partition (ratio ~0.7 lines/instruction).
+    /// ~35000 instructions ≈ 24k-30k C++ lines per partition (ratio ~0.7 lines/instruction).
     /// </summary>
-    private const int MinInstructionsPerPartition = 20000;
+    private const int MinInstructionsPerPartition = 35000;
 
     /// <summary>
     /// Generate all C++ files for the module.

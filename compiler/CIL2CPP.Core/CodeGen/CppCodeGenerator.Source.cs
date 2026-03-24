@@ -28,6 +28,7 @@ public partial class CppCodeGenerator
     /// </summary>
     private GeneratedFile GenerateDataFile()
     {
+        var dataSw = System.Diagnostics.Stopwatch.StartNew();
         var sb = new StringBuilder();
         EmitSourceFileHeader(sb, "Data: metadata, TypeInfo, static fields, VTable, P/Invoke");
 
@@ -171,24 +172,37 @@ public partial class CppCodeGenerator
         sb.AppendLine();
 
         // Unboxing thunks for value type methods (must come before vtable/interface data)
+        var sectionMs = dataSw.ElapsedMilliseconds;
         EmitUnboxThunks(sb, _userTypes);
+        var unboxMs = dataSw.ElapsedMilliseconds - sectionMs;
 
         // VTable data
+        sectionMs = dataSw.ElapsedMilliseconds;
         EmitVTableData(sb, _userTypes);
+        var vtableMs = dataSw.ElapsedMilliseconds - sectionMs;
 
         // Interface data
+        sectionMs = dataSw.ElapsedMilliseconds;
         EmitInterfaceData(sb, _userTypes);
+        var ifaceMs = dataSw.ElapsedMilliseconds - sectionMs;
 
         // Finalizer wrappers
+        sectionMs = dataSw.ElapsedMilliseconds;
         EmitFinalizerWrappers(sb, _userTypes);
+        var finalizerMs = dataSw.ElapsedMilliseconds - sectionMs;
 
         // Reflection metadata (FieldInfo/MethodInfo arrays)
+        sectionMs = dataSw.ElapsedMilliseconds;
         EmitReflectionMetadata(sb, _userTypes);
+        var reflectionMs = dataSw.ElapsedMilliseconds - sectionMs;
 
         // Generic variance data arrays (for variance-aware type checking)
+        sectionMs = dataSw.ElapsedMilliseconds;
         EmitGenericVarianceData(sb, _userTypes);
+        var varianceMs = dataSw.ElapsedMilliseconds - sectionMs;
 
         // Type info definitions (skip runtime-provided types — already defined in runtime)
+        sectionMs = dataSw.ElapsedMilliseconds;
         sb.AppendLine("// ===== Type Info =====");
         var emittedTypeInfo = new HashSet<string>();
         // Collect types that already have TypeInfo definitions (primitives, exceptions, base type stubs, aliases)
@@ -293,6 +307,7 @@ public partial class CppCodeGenerator
             emittedTypeInfo.Add(typeName);
         }
         sb.AppendLine();
+        var typeInfoMs = dataSw.ElapsedMilliseconds - sectionMs;
 
         // Static constructor guards — collect all types that SHOULD have ensure_cctor
         // (matches the header declaration loop in GenerateHeader)
@@ -387,6 +402,11 @@ public partial class CppCodeGenerator
         // Each Func<>/Action<> delegate type gets a trampoline registered at init time.
         EmitObjectArrayDelegateTrampolines(sb);
 
+        var restMs = dataSw.ElapsedMilliseconds - sectionMs - typeInfoMs;
+        Console.Error.WriteLine($"[perf] DataFile sections: unbox={unboxMs}ms vtable={vtableMs}ms iface={ifaceMs}ms " +
+            $"finalizer={finalizerMs}ms reflection={reflectionMs}ms variance={varianceMs}ms " +
+            $"typeinfo={typeInfoMs}ms rest={restMs}ms total={dataSw.ElapsedMilliseconds}ms");
+
         return new GeneratedFile
         {
             FileName = $"{_module.Name}_data.cpp",
@@ -404,6 +424,7 @@ public partial class CppCodeGenerator
     /// </summary>
     private List<GeneratedFile> GenerateMethodFiles()
     {
+        var methodsSw = System.Diagnostics.Stopwatch.StartNew();
         var partitions = PartitionTypes(_userTypes);
 
         // Phase 1: Sequential filtering — collect methods to emit per partition.
@@ -414,6 +435,7 @@ public partial class CppCodeGenerator
             foreach (var type in partitions[i])
                 FilterMethodsForType(type, partitionMethods[i]);
         }
+        var phase1Ms = methodsSw.ElapsedMilliseconds;
 
         // Phase 2: Parallel code generation — each partition builds its own StringBuilder.
         var results = new (string FileName, string Content, List<(string, string, string)> DeadCode)[partitions.Count];
@@ -429,6 +451,9 @@ public partial class CppCodeGenerator
 
             results[i] = ($"{_module.Name}_methods_{i}.cpp", sb.ToString(), localDeadCode);
         });
+
+        var phase2Ms = methodsSw.ElapsedMilliseconds - phase1Ms;
+        Console.Error.WriteLine($"[perf] MethodFiles: phase1_filter={phase1Ms}ms phase2_parallel={phase2Ms}ms partitions={partitions.Count}");
 
         // Merge per-partition dead-code diagnostics into the shared list.
         var files = new List<GeneratedFile>(partitions.Count);
