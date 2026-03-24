@@ -593,6 +593,67 @@ def _compare_output_with_skip(got, expected, skip_lines=None):
         raise RuntimeError("Output mismatch:\n" + "\n".join(mismatches))
 
 
+def _get_available_memory_gb():
+    """Get available physical memory in GB. Returns None if detection fails."""
+    try:
+        if sys.platform == "win32":
+            import ctypes
+            class MEMORYSTATUSEX(ctypes.Structure):
+                _fields_ = [
+                    ("dwLength", ctypes.c_ulong),
+                    ("dwMemoryLoad", ctypes.c_ulong),
+                    ("ullTotalPhys", ctypes.c_ulonglong),
+                    ("ullAvailPhys", ctypes.c_ulonglong),
+                    ("ullTotalPageFile", ctypes.c_ulonglong),
+                    ("ullAvailPageFile", ctypes.c_ulonglong),
+                    ("ullTotalVirtual", ctypes.c_ulonglong),
+                    ("ullAvailVirtual", ctypes.c_ulonglong),
+                    ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+                ]
+            ms = MEMORYSTATUSEX()
+            ms.dwLength = ctypes.sizeof(ms)
+            ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(ms))
+            return ms.ullAvailPhys / (1024 ** 3)
+        else:
+            # Linux/macOS: read /proc/meminfo or use os.sysconf
+            with open("/proc/meminfo") as f:
+                for line in f:
+                    if line.startswith("MemAvailable:"):
+                        return int(line.split()[1]) / (1024 ** 2)  # kB → GB
+    except Exception:
+        pass
+    return None
+
+
+def _auto_detect_jobs():
+    """Auto-detect optimal parallel worker count based on CPU and memory.
+
+    Each integration worker runs codegen (CPU) + MSVC/GCC compile + link.
+    CPU is not the bottleneck — MSBuild parallelizes internally and the OS
+    scheduler handles contention. Memory is the hard constraint: MSVC linker
+    on large projects (NuGetSimpleTest: 6.5M lines) peaks at 2-4 GB per worker.
+    """
+    # MSBuild handles its own thread scheduling; 2 workers per core is safe
+    # since most time is spent waiting on I/O or competing for shared caches.
+    THREADS_PER_WORKER = 2
+    # Measured: 14 workers peak ~26 GB total → ~1.8 GB per worker.
+    # MSVC cl.exe + link.exe share OS page cache; actual per-worker RSS is lower
+    # than isolated measurement because BCL headers are cached across workers.
+    MEMORY_GB_PER_WORKER = 2
+
+    cpu = os.cpu_count() or 4
+    cpu_jobs = cpu // THREADS_PER_WORKER
+
+    mem_gb = _get_available_memory_gb()
+    if mem_gb is not None:
+        mem_jobs = int(mem_gb // MEMORY_GB_PER_WORKER)
+        jobs = max(2, min(cpu_jobs, mem_jobs))
+    else:
+        jobs = max(2, cpu_jobs)
+
+    return min(jobs, 16)  # hard cap: diminishing returns beyond 16
+
+
 def cmd_integration(args):
     """Run integration tests — parallel by default, sequential with --sequential.
 
@@ -619,8 +680,7 @@ def cmd_integration(args):
     if sequential:
         jobs = 1
     elif jobs <= 0:
-        cpu = os.cpu_count() or 4
-        jobs = max(2, min(cpu // 4, 4))
+        jobs = _auto_detect_jobs()
 
     cmake_arch = ["-A", "x64"] if "Visual Studio" in generator else []
 
