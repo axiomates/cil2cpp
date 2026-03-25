@@ -21,13 +21,23 @@ public static class IRPeepholeOptimizer
     /// Eliminate single-use temporary variables in all basic blocks of a method.
     /// Thread-safe: uses thread-local state for dead instruction tracking.
     /// </summary>
-    public static void EliminateSingleUseTemps(IRMethod method)
+    /// <param name="undeclaredFunctions">
+    /// Set of undeclared function names (SIMD/EventSource dead-code). IRCall instructions
+    /// referencing these are excluded from inlining so GenerateMethodImpl's dead-code
+    /// replacement can still detect and replace them at render time.
+    /// </param>
+    public static void EliminateSingleUseTemps(IRMethod method, HashSet<string>? undeclaredFunctions = null)
     {
         ClearDeadSet();
+        t_undeclaredFunctions = undeclaredFunctions;
         foreach (var block in method.BasicBlocks)
             OptimizeBlock(block.Instructions);
+        t_undeclaredFunctions = null;
         ClearDeadSet();
     }
+
+    [ThreadStatic]
+    private static HashSet<string>? t_undeclaredFunctions;
 
     private static void OptimizeBlock(List<IRInstruction> instructions)
     {
@@ -151,13 +161,19 @@ public static class IRPeepholeOptimizer
         var defVar = GetDefinedTempVar(instr);
         if (defVar == null) return null;
 
-        // Skip types that produce multi-line, complex, or side-effecting output.
-        // IRCall is excluded because the dead-code replacement logic in GenerateMethodImpl
-        // depends on seeing IRCall instructions to detect undeclared function references.
-        // Inlining a call expression into a consumer would bypass that detection.
-        if (instr is IRNewObj or IRDelegateCreate or IRDelegateInvoke or IRRawCpp or
-            IRCall or IRBox)
+        // Skip types that produce multi-line or opaque output.
+        if (instr is IRNewObj or IRDelegateCreate or IRDelegateInvoke or IRRawCpp)
             return null;
+
+        // IRCall: only exclude undeclared functions (SIMD/EventSource dead-code).
+        // GenerateMethodImpl's dead-code replacement must see these as IRCall instances.
+        // Declared calls are safe to inline. Virtual/interface/GVM calls produce multi-line
+        // ToCpp output containing '\n' or ';' prefix — caught by checks below.
+        if (instr is IRCall call && t_undeclaredFunctions?.Contains(call.FunctionName) == true)
+            return null;
+
+        // IRBox: single-line cil2cpp::box<T>() call. Side effects handled by
+        // HasSideEffects (restricts to adjacent-only inlining).
 
         var cpp = instr.ToCpp();
 

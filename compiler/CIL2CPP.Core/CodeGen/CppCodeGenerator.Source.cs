@@ -1237,9 +1237,11 @@ public partial class CppCodeGenerator
             return;
         }
 
-        // Run peephole optimizer: eliminate single-use __tN temporaries
+        // Run peephole optimizer: eliminate single-use __tN temporaries.
+        // Pass undeclared function names so the optimizer preserves IRCall instructions
+        // that need dead-code replacement at render time (SIMD/EventSource).
         if (method.BasicBlocks.Count > 0)
-            IRPeepholeOptimizer.EliminateSingleUseTemps(method);
+            IRPeepholeOptimizer.EliminateSingleUseTemps(method, _undeclaredFunctionNames);
 
         sb.AppendLine($"// {method.DeclaringType?.ILFullName}::{method.Name}");
         sb.AppendLine($"{method.GetCppSignature()} {{");
@@ -1799,17 +1801,12 @@ public partial class CppCodeGenerator
         // intptr_t/uintptr_t pre-declared vars: in IL, native int and pointers are freely
         // interchangeable. When a pointer (uint8_t*, void*, Object*, etc.) is assigned to
         // an intptr_t/uintptr_t variable, wrap with a C-style cast.
+        // After peephole optimization, the RHS may be an inlined function call or complex
+        // expression — wrap unconditionally (redundant casts are harmless in C++).
         if (preType is "intptr_t" or "uintptr_t")
         {
-            // Already the correct type or already cast
-            if (rhs.StartsWith($"({preType})")) return code;
-            // Simple variable, function call, or expression — wrap with C-style cast
-            // Don't wrap if rhs is already intptr_t/uintptr_t compatible (numeric literal, etc.)
-            // Only wrap when rhs looks like a pointer expression (loc_N, __tN, function call)
-            if (rhs.StartsWith("loc_") || rhs.StartsWith("__t") || rhs.StartsWith("(uint8_t*)")
-                || rhs.StartsWith("(void*)") || rhs.StartsWith("(cil2cpp::"))
-                return $"{varName} = ({preType}){rhs};";
-            return code;
+            if (rhs.StartsWith($"({preType})")) return code; // already correctly cast
+            return $"{varName} = ({preType}){rhs};";
         }
 
         // RHS starts with (void*) — conv.u erased the type.
