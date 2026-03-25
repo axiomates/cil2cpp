@@ -10,6 +10,7 @@
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
+#include <mutex>
 #include <type_traits>
 
 // Platform-specific headers for stack trace capture
@@ -278,13 +279,12 @@ String* capture_stack_trace() {
 
 #if defined(CIL2CPP_WINDOWS)
     // Windows: CaptureStackBackTrace + DbgHelp symbolication
-    static bool sym_initialized = false;
-    if (!sym_initialized) {
+    static std::once_flag s_sym_init_flag;
+    std::call_once(s_sym_init_flag, []() {
         HANDLE process = GetCurrentProcess();
         SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS | SYMOPT_LOAD_LINES);
         SymInitialize(process, NULL, TRUE);
-        sym_initialized = true;
-    }
+    });
 
     void* frames[MAX_FRAMES];
     USHORT frame_count = CaptureStackBackTrace(

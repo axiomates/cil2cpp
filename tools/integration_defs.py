@@ -85,12 +85,8 @@ def compare_socket_output(got, expected):
         g = got_lines[i].strip()
         e = exp_lines[i].strip()
 
-        # DNS section: once we see the Phase4 DNS call, skip all remaining
-        # lines except the final "=== Done ===" marker.
-        if g.startswith("Phase4:") and "Dns.GetHostAddresses" in g:
-            in_dns_section = True
+        # Inside DNS section: skip non-deterministic address results
         if in_dns_section:
-            # Only verify the final marker
             if g == "=== Done ===" or e == "=== Done ===":
                 in_dns_section = False  # compare this line normally
             else:
@@ -103,6 +99,11 @@ def compare_socket_output(got, expected):
         if g != e:
             mismatches.append(
                 f"  line {i+1}: got '{g}', expected '{e}'")
+
+        # Enter DNS section AFTER comparing the Phase4 line itself
+        # (the call line is deterministic; only subsequent results vary)
+        if g.startswith("Phase4:") and "Dns.GetHostAddresses" in g:
+            in_dns_section = True
 
     # Final marker must be present
     if got_lines[-1].strip() != "=== Done ===":

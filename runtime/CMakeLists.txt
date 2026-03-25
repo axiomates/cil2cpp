@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.20)
+cmake_minimum_required(VERSION 3.28)
 project(cil2cpp VERSION 0.1.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
@@ -10,49 +10,41 @@ set(FETCHCONTENT_BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/.deps"
     CACHE PATH "FetchContent cache directory")
 include(FetchContent)
 
-# HACK: FetchContent_Populate() is deprecated in CMake 3.30+ (CMP0169), but we
-# need it for bdwgc/libatomic_ops because a symlink step is required between
-# download and add_subdirectory. FetchContent_MakeAvailable cannot be used here
-# since it combines both operations into one call.
-if(POLICY CMP0169)
-    cmake_policy(SET CMP0169 OLD)
+# libatomic_ops: MSVC-only, headers-only (bdwgc uses libatomic_ops/src for atomics on MSVC)
+if(MSVC)
+    FetchContent_Declare(
+        libatomic_ops
+        GIT_REPOSITORY https://github.com/ivmai/libatomic_ops.git
+        GIT_TAG v7.10.0
+        SOURCE_SUBDIR src   # src/ has no CMakeLists.txt -> skips add_subdirectory
+    )
 endif()
 
 FetchContent_Declare(
     bdwgc
     GIT_REPOSITORY https://github.com/ivmai/bdwgc.git
     GIT_TAG v8.2.12
-)
-FetchContent_Declare(
-    libatomic_ops
-    GIT_REPOSITORY https://github.com/ivmai/libatomic_ops.git
-    GIT_TAG v7.10.0
+    EXCLUDE_FROM_ALL
 )
 
-# Populate sources (download only, don't add_subdirectory yet)
-# bdwgc needs libatomic_ops symlinked into its source tree before add_subdirectory
-FetchContent_GetProperties(bdwgc)
-if(NOT bdwgc_POPULATED)
-    FetchContent_Populate(bdwgc)
-endif()
-FetchContent_GetProperties(libatomic_ops)
-if(NOT libatomic_ops_POPULATED)
-    FetchContent_Populate(libatomic_ops)
-endif()
-
-# MSVC needs libatomic_ops inside bdwgc source tree
-if(MSVC AND NOT EXISTS "${bdwgc_SOURCE_DIR}/libatomic_ops")
-    file(CREATE_LINK "${libatomic_ops_SOURCE_DIR}" "${bdwgc_SOURCE_DIR}/libatomic_ops"
-         COPY_ON_ERROR SYMBOLIC)
-endif()
-
-# Configure bdwgc options and add to build
+# Configure bdwgc options (must precede MakeAvailable which calls add_subdirectory)
 set(enable_cplusplus ON CACHE BOOL "" FORCE)
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 set(build_tests OFF CACHE BOOL "" FORCE)
 set(enable_docs OFF CACHE BOOL "" FORCE)
 set(install_headers OFF CACHE BOOL "" FORCE)
-add_subdirectory(${bdwgc_SOURCE_DIR} ${bdwgc_BINARY_DIR} EXCLUDE_FROM_ALL)
+set(build_cord OFF CACHE BOOL "" FORCE)
+
+if(MSVC)
+    FetchContent_MakeAvailable(libatomic_ops)   # download headers only (no build)
+endif()
+FetchContent_MakeAvailable(bdwgc)               # download + add_subdirectory
+
+# MSVC: bdwgc's include_directories(libatomic_ops/src) resolves to a non-existent
+# path (no symlink). Provide the correct libatomic_ops header path directly.
+if(MSVC)
+    target_include_directories(gc PRIVATE "${libatomic_ops_SOURCE_DIR}/src")
+endif()
 
 # Match our DEBUG_POSTFIX so Debug installs gcd.lib, Release installs gc.lib
 set_target_properties(gc PROPERTIES DEBUG_POSTFIX d)
@@ -68,18 +60,18 @@ if(WIN32)
     FetchContent_MakeAvailable(icu4c)
 
     # Create IMPORTED targets from prebuilt binaries
-    add_library(ICU::uc SHARED IMPORTED)
+    add_library(ICU::uc SHARED IMPORTED GLOBAL)
     set_target_properties(ICU::uc PROPERTIES
         IMPORTED_IMPLIB "${icu4c_SOURCE_DIR}/lib64/icuuc.lib"
         IMPORTED_LOCATION "${icu4c_SOURCE_DIR}/bin64/icuuc78.dll"
         INTERFACE_INCLUDE_DIRECTORIES "${icu4c_SOURCE_DIR}/include"
     )
-    add_library(ICU::dt SHARED IMPORTED)
+    add_library(ICU::dt SHARED IMPORTED GLOBAL)
     set_target_properties(ICU::dt PROPERTIES
         IMPORTED_IMPLIB "${icu4c_SOURCE_DIR}/lib64/icudt.lib"
         IMPORTED_LOCATION "${icu4c_SOURCE_DIR}/bin64/icudt78.dll"
     )
-    add_library(ICU::in SHARED IMPORTED)
+    add_library(ICU::in SHARED IMPORTED GLOBAL)
     set_target_properties(ICU::in PROPERTIES
         IMPORTED_IMPLIB "${icu4c_SOURCE_DIR}/lib64/icuin.lib"
         IMPORTED_LOCATION "${icu4c_SOURCE_DIR}/bin64/icuin78.dll"
@@ -94,15 +86,14 @@ FetchContent_Declare(
     zlib
     GIT_REPOSITORY https://github.com/madler/zlib.git
     GIT_TAG v1.3.1
+    # No EXCLUDE_FROM_ALL: zlibstatic must be in ALL_BUILD because cil2cpp_runtime
+    # only uses zlib headers (no target_link_libraries), so there is no dependency
+    # chain to trigger its build. SKIP_INSTALL_ALL suppresses zlib's own install rules.
 )
 # Suppress zlib's own install/example targets
 set(ZLIB_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(SKIP_INSTALL_ALL ON CACHE BOOL "" FORCE)
-FetchContent_GetProperties(zlib)
-if(NOT zlib_POPULATED)
-    FetchContent_Populate(zlib)
-    add_subdirectory(${zlib_SOURCE_DIR} ${zlib_BINARY_DIR} EXCLUDE_FROM_ALL)
-endif()
+FetchContent_MakeAvailable(zlib)
 # Match our DEBUG_POSTFIX convention
 set_target_properties(zlibstatic PROPERTIES DEBUG_POSTFIX d)
 

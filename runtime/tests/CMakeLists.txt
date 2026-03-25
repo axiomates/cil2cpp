@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.20)
+cmake_minimum_required(VERSION 3.28)
 project(cil2cpp_tests CXX)
 
 set(CMAKE_CXX_STANDARD 20)
