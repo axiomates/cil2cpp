@@ -1151,7 +1151,7 @@ public partial class IRBuilder
                 if (HasClrInternalDependencies(cecilMethod))
                     GenerateStubBody(irMethod);
                 else
-                    _deferredGenericBodies.Add((cecilMethod, irMethod, typeParamMap));
+                    AddDeferredGenericBody(cecilMethod, irMethod, typeParamMap);
                 recovered++;
             }
         }
@@ -1220,7 +1220,7 @@ public partial class IRBuilder
                 }
                 else
                 {
-                    _deferredGenericBodies.Add((entry.CecilMethod, method, entry.TypeParamMap));
+                    AddDeferredGenericBody(entry.CecilMethod, method, entry.TypeParamMap);
                     recoveredCount++;
                 }
             }
@@ -1254,7 +1254,7 @@ public partial class IRBuilder
             else
             {
                 var typeParamMap = BuildTypeParamMap(info.CecilOpenType, info.TypeArguments);
-                _deferredGenericBodies.Add((cecilMethod, method, typeParamMap));
+                AddDeferredGenericBody(cecilMethod, method, typeParamMap);
                 resolvedFromGenericCount++;
             }
         }

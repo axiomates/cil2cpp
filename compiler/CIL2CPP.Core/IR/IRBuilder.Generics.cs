@@ -79,6 +79,21 @@ public partial class IRBuilder
     // pre-disambiguation names (e.g., Dictionary__ctor instead of Dictionary__ctor__System_Int32).
     private readonly List<(MethodDefinition CecilMethod, IRMethod IrMethod, Dictionary<string, string> TypeParamMap)>
         _deferredGenericBodies = new();
+    // O(1) lookup set for IRMethods in _deferredGenericBodies. Maintained in sync to avoid
+    // rebuilding the set on every CreateGenericSpecializations call (was O(n * calls) overhead).
+    private readonly HashSet<IRMethod> _deferredGenericBodiesSet = new();
+    // Methods that have already had EnsureBodyReferencedTypesExist called (during inline
+    // ProcessGenericMethodSpecialization). Phase A can skip re-scanning these.
+    private readonly HashSet<IRMethod> _prescannedMethodBodies = new();
+
+    /// <summary>
+    /// Add a deferred generic body entry and maintain the O(1) lookup set.
+    /// </summary>
+    private void AddDeferredGenericBody(MethodDefinition cecilMethod, IRMethod irMethod, Dictionary<string, string> typeParamMap)
+    {
+        _deferredGenericBodies.Add((cecilMethod, irMethod, typeParamMap));
+        _deferredGenericBodiesSet.Add(irMethod);
+    }
 
     /// <summary>
     /// Tracks which methods on which generic specializations are actually called.
@@ -932,17 +947,15 @@ public partial class IRBuilder
                 }
             }
 
-            // Convert method body with generic substitution context
+            // Convert method body: keep EnsureBodyReferencedTypesExist inline (discovers
+            // types needed by other specs in this batch), but defer body compilation to
+            // the DeferredBodies pipeline for parallel execution.
             if (bodyMethod != null && bodyMethod.HasBody)
             {
-                // Skip methods with CLR-internal dependencies — generate stub instead
                 if (HasClrInternalDependencies(bodyMethod))
                 {
                     GenerateStubBody(irMethod);
                 }
-                // Pre-compilation check: detect MemberInfo body type conflicts on Cecil body
-                // before wasting compilation effort (e.g., MemberInfoCache<RuntimePropertyInfo>.PopulateMethods()
-                // creates RuntimeMethodInfo — non-homomorphic with T)
                 else if (HasGenericBodyTypeConflict(bodyMethod, declaringIrType))
                 {
                     irMethod.IrStubReason = "GenericBodyTypeConflict";
@@ -951,24 +964,22 @@ public partial class IRBuilder
                 else
                 {
                     // Pre-scan: discover generic types referenced in the body that need to
-                    // exist as IRTypes before body conversion. E.g., Array.Sort<String> body
-                    // calls IArraySortHelper<String>.Sort() — the interface type must be in
-                    // _typeCache for virtual dispatch resolution in EmitMethodCall.
+                    // exist as IRTypes before body conversion. Must be inline (not deferred)
+                    // because later specs in this loop may depend on these types.
                     EnsureBodyReferencedTypesExist(bodyMethod, typeParamMap);
+                    _prescannedMethodBodies.Add(irMethod);
 
-                    // Build VTables for newly-added types that haven't been processed yet.
-                    // Types created by earlier specializations may not have vtables yet
-                    // (e.g., Iterator<T> created by a previous method's EnsureBody scan).
+                    // Build VTables for newly-added types.
                     if (_pendingVTableTypes.Count > 0)
                     {
-                        var batch = new List<IRType>(_pendingVTableTypes);
+                        var vtBatch = new List<IRType>(_pendingVTableTypes);
                         _pendingVTableTypes.Clear();
-                        foreach (var irType2 in batch)
+                        foreach (var irType2 in vtBatch)
                             BuildVTableRecursive(irType2, _vtableBuilt);
                     }
 
-                    var methodInfo = new IL.MethodInfo(bodyMethod);
-                    ConvertMethodBodyWithGenerics(methodInfo, irMethod, typeParamMap);
+                    // Defer the actual body compilation to the parallel pipeline.
+                    AddDeferredGenericBody(bodyMethod, irMethod, typeParamMap);
                 }
             }
     }
@@ -2405,12 +2416,17 @@ public partial class IRBuilder
     {
         if (_pendingGenericKeys.Count == 0) return;
 
+        var specTotalSw = System.Diagnostics.Stopwatch.StartNew();
+        long firstPassMs = 0, nestedMs = 0, secondPassMs = 0;
+        int totalBatches = 0, totalKeysProcessed = 0;
+
         // Collect all keys processed in this call (for second pass)
         var allProcessed = new List<string>();
 
         // Drain loop: process pending keys; companions and nested types may add more
         while (_pendingGenericKeys.Count > 0)
         {
+            totalBatches++;
             var batch = new List<string>(_pendingGenericKeys);
             _pendingGenericKeys.Clear();
 
@@ -2427,7 +2443,10 @@ public partial class IRBuilder
                 _pendingGenericKeys.Clear();
             }
 
+            totalKeysProcessed += batch.Count;
+
             // First pass: create types for pending entries only
+            var firstPassSw = System.Diagnostics.Stopwatch.StartNew();
             var canonicalKeysCreated = new List<string>();
             foreach (var key in batch)
             {
@@ -2482,30 +2501,33 @@ public partial class IRBuilder
                 }
             }
 
+            firstPassSw.Stop();
+            firstPassMs += firstPassSw.ElapsedMilliseconds;
+
             allProcessed.AddRange(batch);
             allProcessed.AddRange(canonicalKeysCreated);
 
             // Auto-create nested type specializations (Entry, Enumerator, etc.)
-            // Only process the current batch's entries (not all _genericInstantiations).
-            // Iterate until fixpoint to handle nested-nested types (e.g., KeyCollection.Enumerator).
+            var nestedSw = System.Diagnostics.Stopwatch.StartNew();
             var nestedCandidates = batch;
             while (nestedCandidates.Count > 0)
             {
                 var newlyCreatedKeys = CreateNestedGenericSpecializationsFor(nestedCandidates);
                 nestedCandidates = newlyCreatedKeys;
             }
+            nestedSw.Stop();
+            nestedMs += nestedSw.ElapsedMilliseconds;
             // New entries from nested specializations are in _pendingGenericKeys → next while iteration
         }
 
         // Second pass: resolve base types, interfaces, HasCctor for processed entries.
         // Done after all specializations are in the cache so cross-references work
         // (e.g., SpecialWrapper<int> : Wrapper<int> needs Wrapper<int> already cached).
+        var secondPassSw = System.Diagnostics.Stopwatch.StartNew();
 
-        // Pre-build an O(1) lookup for deferred cctor check (avoids O(n) scan per type).
-        // Built after the first pass completes so it includes all newly deferred methods.
-        var deferredMethodSet = new HashSet<IRMethod>(_deferredGenericBodies.Count);
-        foreach (var d in _deferredGenericBodies)
-            deferredMethodSet.Add(d.IrMethod);
+        // Use the class-level _deferredGenericBodiesSet for O(1) cctor check
+        // (maintained incrementally by AddDeferredGenericBody, no rebuild needed).
+        var deferredMethodSet = _deferredGenericBodiesSet;
 
         // Pre-build ILFullName → IRType index for O(1) FindType fallback
         Dictionary<string, IRType>? moduleTypeIndex = null;
@@ -2697,6 +2719,13 @@ public partial class IRBuilder
             foreach (var key in resolved)
                 _unresolvedBaseTypeKeys.Remove(key);
         }
+
+        secondPassSw.Stop();
+        secondPassMs = secondPassSw.ElapsedMilliseconds;
+        specTotalSw.Stop();
+        Console.Error.WriteLine($"[perf]   CreateGenericSpecializations: {specTotalSw.ElapsedMilliseconds}ms " +
+            $"(batches={totalBatches}, keys={totalKeysProcessed}, processed={allProcessed.Count}, " +
+            $"firstPass={firstPassMs}ms, nested={nestedMs}ms, secondPass={secondPassMs}ms)");
     }
 
     /// <summary>
@@ -3068,8 +3097,8 @@ public partial class IRBuilder
                     }
                     else
                     {
-                        _deferredGenericBodies.Add((methodDef, irMethod,
-                            new Dictionary<string, string>(typeParamMap)));
+                        AddDeferredGenericBody(methodDef, irMethod,
+                            new Dictionary<string, string>(typeParamMap));
                     }
                 }
                 else if (!methodDef.IsAbstract && !methodDef.IsConstructor)
@@ -3238,8 +3267,8 @@ public partial class IRBuilder
 
             if (!HasClrInternalDependencies(crossMethodDef))
             {
-                _deferredGenericBodies.Add((crossMethodDef, irMethod,
-                    new Dictionary<string, string>(typeParamMap)));
+                AddDeferredGenericBody(crossMethodDef, irMethod,
+                    new Dictionary<string, string>(typeParamMap));
             }
         }
     }
@@ -3518,8 +3547,8 @@ public partial class IRBuilder
                     }
                     else
                     {
-                        _deferredGenericBodies.Add((methodDef, irMethod,
-                            new Dictionary<string, string>(typeParamMap)));
+                        AddDeferredGenericBody(methodDef, irMethod,
+                            new Dictionary<string, string>(typeParamMap));
                     }
                 }
             }
@@ -4359,6 +4388,7 @@ public partial class IRBuilder
             var batch = new List<(MethodDefinition CecilMethod, IRMethod IrMethod,
                 Dictionary<string, string> TypeParamMap)>(_deferredGenericBodies);
             _deferredGenericBodies.Clear();
+            _deferredGenericBodiesSet.Clear();
 
             // Ensure VTables are built for all types before compiling any bodies in this batch.
             var vtSw = System.Diagnostics.Stopwatch.StartNew();
@@ -4386,7 +4416,10 @@ public partial class IRBuilder
                     continue;
                 }
 
-                EnsureBodyReferencedTypesExist(cecilMethod, typeParamMap);
+                // Skip EnsureBodyReferencedTypesExist for methods already pre-scanned
+                // during ProcessGenericMethodSpecialization (avoids duplicate work).
+                if (!_prescannedMethodBodies.Remove(irMethod))
+                    EnsureBodyReferencedTypesExist(cecilMethod, typeParamMap);
                 bodiesToCompile.Add((cecilMethod, irMethod, typeParamMap));
             }
 
@@ -4427,7 +4460,7 @@ public partial class IRBuilder
                     if (HasClrInternalDependencies(cecilMethod))
                         GenerateStubBody(irMethod);
                     else
-                        _deferredGenericBodies.Add((cecilMethod, irMethod, typeParamMap));
+                        AddDeferredGenericBody(cecilMethod, irMethod, typeParamMap);
                 }
             }
             recoverSw.Stop();
@@ -4436,6 +4469,7 @@ public partial class IRBuilder
             var specSw = System.Diagnostics.Stopwatch.StartNew();
             var prevTypeCountForVtable = _module.Types.Count;
             CreateGenericSpecializations();
+            var specTypeSw = specSw.ElapsedMilliseconds;
             CreateGenericMethodSpecializations();
             specSw.Stop();
 
@@ -4453,7 +4487,7 @@ public partial class IRBuilder
             Console.Error.WriteLine($"[perf]   DeferredBodies iter {iterationCount}: batch={batch.Count}, " +
                 $"compiled={bodiesToCompile.Count}, phaseA={phaseASw.ElapsedMilliseconds}ms, " +
                 $"phaseB={phaseBSw.ElapsedMilliseconds}ms, phaseC={phaseCSw.ElapsedMilliseconds}ms " +
-                $"(recover={recoverSw.ElapsedMilliseconds} spec={specSw.ElapsedMilliseconds} vt={vtPostSw.ElapsedMilliseconds}), " +
+                $"(recover={recoverSw.ElapsedMilliseconds} specType={specTypeSw} specMethod={specSw.ElapsedMilliseconds - specTypeSw} vt={vtPostSw.ElapsedMilliseconds}), " +
                 $"vtable={vtSw.ElapsedMilliseconds}ms, newDeferred={_deferredGenericBodies.Count}");
         }
         Console.Error.WriteLine($"[perf] DeferredBodies total: {iterationCount} iterations, " +
