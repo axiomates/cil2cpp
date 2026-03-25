@@ -183,8 +183,8 @@ public class CppCodeGeneratorTests
         var output = gen.Generate();
 
         Assert.Contains("Calculator_Add", output.AllSourceContent);
-        Assert.Contains("__t0 = a + b;", output.AllSourceContent);
-        Assert.Contains("return __t0;", output.AllSourceContent);
+        // Peephole optimizer inlines single-use __t0 into return (parens for precedence safety)
+        Assert.Contains("return (a + b);", output.AllSourceContent);
     }
 
     [Fact]
@@ -641,7 +641,8 @@ public class CppCodeGeneratorTests
         var gen = new CppCodeGenerator(module);
         var output = gen.Generate();
 
-        Assert.Contains("auto __t0 = 1 + 2;", output.AllSourceContent);
+        // Peephole optimizer inlines single-use __t0 into return (parens for precedence safety)
+        Assert.Contains("return (1 + 2);", output.AllSourceContent);
     }
 
     [Fact]
@@ -667,7 +668,8 @@ public class CppCodeGeneratorTests
         var gen = new CppCodeGenerator(module);
         var output = gen.Generate();
 
-        Assert.Contains("auto __t1000000 = 1 + 2;", output.AllSourceContent);
+        // Peephole optimizer inlines single-use __t1000000 into return (parens for precedence safety)
+        Assert.Contains("return (1 + 2);", output.AllSourceContent);
     }
 
     // ===== Label Scope Handling =====

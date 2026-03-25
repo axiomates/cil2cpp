@@ -1236,6 +1236,11 @@ public partial class CppCodeGenerator
             EmitCanonicalWrapper(sb, method);
             return;
         }
+
+        // Run peephole optimizer: eliminate single-use __tN temporaries
+        if (method.BasicBlocks.Count > 0)
+            IRPeepholeOptimizer.EliminateSingleUseTemps(method);
+
         sb.AppendLine($"// {method.DeclaringType?.ILFullName}::{method.Name}");
         sb.AppendLine($"{method.GetCppSignature()} {{");
 
@@ -1784,10 +1789,12 @@ public partial class CppCodeGenerator
         var varName = code[..eqIdx];
         if (!crossScopePtrVars.TryGetValue(varName, out var preType)) return code;
 
-        // Already has the correct target type cast (e.g., (String*)(void*)expr) — no wrapping needed
-        if (code.Contains($"({preType})(void*)")) return code;
-
         var rhs = code[(eqIdx + 3)..].TrimEnd(';').Trim();
+
+        // Already has the correct target type cast at start of RHS — no wrapping needed.
+        // Check rhs (not whole code) to avoid matching the preType inside nested sub-expressions
+        // that may appear after peephole optimization inlines complex expressions.
+        if (rhs.StartsWith($"({preType})(void*)")) return code;
 
         // intptr_t/uintptr_t pre-declared vars: in IL, native int and pointers are freely
         // interchangeable. When a pointer (uint8_t*, void*, Object*, etc.) is assigned to
@@ -1805,20 +1812,20 @@ public partial class CppCodeGenerator
             return code;
         }
 
-        // Has (void*) but missing target type — conv.u erased the type.
+        // RHS starts with (void*) — conv.u erased the type.
         // e.g., __t5 = (void*)__t8; → __t5 = (cil2cpp::String*)(void*)__t8;
-        if (code.Contains("(void*)"))
-        {
-            if (rhs.StartsWith("(void*)"))
-                return $"{varName} = ({preType}){rhs};";
-            return code;
-        }
+        // Note: don't check code.Contains("(void*)") broadly — after peephole optimization,
+        // inlined expressions may embed (void*) inside function args or sub-casts.
+        if (rhs.StartsWith("(void*)"))
+            return $"{varName} = ({preType}){rhs};";
 
         // Don't wrap nullptr (compatible with any pointer type)
         if (rhs == "nullptr") return code;
 
-        // Don't wrap ternary expressions or arithmetic
-        if (rhs.Contains('?') || rhs.Contains('+') || rhs.Contains('-') && !rhs.StartsWith("-"))
+        // Don't wrap ternary expressions or top-level arithmetic.
+        // Use space-surrounded operators to avoid matching '->' member access
+        // or '+'/'-' inside nested function args / template parameters.
+        if (rhs.Contains('?') || rhs.Contains(" + ") || rhs.Contains(" - "))
             return code;
 
         // For simple expressions (__tM, __tM->field, loc_N): wrap directly
