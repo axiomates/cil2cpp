@@ -7,6 +7,7 @@
 #include <cil2cpp/string.h>
 #include <cil2cpp/type_info.h>
 
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <type_traits>
@@ -636,10 +637,17 @@ EXCEPTION_TYPEINFO(DllNotFoundException,           "System", "System.DllNotFound
     throw_exception(ex);
 }
 
-#ifndef NDEBUG
+static std::atomic<int> s_stub_call_count{0};
+
 void stub_called(const char* name) {
+    s_stub_call_count.fetch_add(1, std::memory_order_relaxed);
+#ifndef NDEBUG
     fprintf(stderr, "[CIL2CPP] WARNING: stub method called: %s\n", name);
-}
 #endif
+}
+
+int stub_call_count() {
+    return s_stub_call_count.load(std::memory_order_relaxed);
+}
 
 } // namespace cil2cpp

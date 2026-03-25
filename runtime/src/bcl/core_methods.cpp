@@ -45,6 +45,12 @@
 
 // ===== Singleton helpers for Module and Assembly =====
 // AOT has a single module and assembly. These are lazily initialized, thread-safe.
+
+// Fallback allocation size for RuntimeModule when tree-shaking removes its TypeInfo.
+// Must be >= sizeof(Object) + RuntimeModule's BCL field bytes (currently 48).
+// The compiler emits a static_assert when RuntimeModule IS included to verify this.
+static constexpr size_t kRuntimeModuleFallbackSize = sizeof(cil2cpp::Object) + 48;
+
 static cil2cpp::Object* s_singleton_module = nullptr;
 static std::once_flag s_module_once;
 
@@ -57,7 +63,7 @@ static cil2cpp::Object* get_singleton_module() {
         size_t alloc_size = ti->instance_size;
         if (alloc_size == 0) {
             cil2cpp::stub_called("get_singleton_module: TypeInfo has zero instance_size");
-            alloc_size = sizeof(cil2cpp::Object) * 4;
+            alloc_size = kRuntimeModuleFallbackSize;
         }
         s_singleton_module = static_cast<cil2cpp::Object*>(
             cil2cpp::gc::alloc(alloc_size, ti));

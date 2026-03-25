@@ -27,6 +27,10 @@ static std::mutex s_mutex;
 static std::condition_variable s_cv;
 static bool s_shutdown = false;
 static bool s_initialized = false;
+static std::once_flag s_init_flag;
+
+// Fallback thread count when std::thread::hardware_concurrency() returns 0.
+static constexpr int kDefaultThreadCount = 4;
 
 static void worker_loop() {
     gc::register_thread();
@@ -48,19 +52,19 @@ static void worker_loop() {
 }
 
 void init(int num_threads) {
-    if (s_initialized) return;
+    std::call_once(s_init_flag, [num_threads]() mutable {
+        if (num_threads <= 0) {
+            num_threads = static_cast<int>(std::thread::hardware_concurrency());
+            if (num_threads <= 0) num_threads = kDefaultThreadCount;
+        }
 
-    if (num_threads <= 0) {
-        num_threads = static_cast<int>(std::thread::hardware_concurrency());
-        if (num_threads <= 0) num_threads = 4; // fallback
-    }
-
-    s_shutdown = false;
-    s_workers.reserve(num_threads);
-    for (int i = 0; i < num_threads; i++) {
-        s_workers.emplace_back(worker_loop);
-    }
-    s_initialized = true;
+        s_shutdown = false;
+        s_workers.reserve(num_threads);
+        for (int i = 0; i < num_threads; i++) {
+            s_workers.emplace_back(worker_loop);
+        }
+        s_initialized = true;
+    });
 }
 
 void shutdown() {

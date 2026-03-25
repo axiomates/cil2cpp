@@ -107,16 +107,18 @@ static std::mutex g_type_cache_mutex;
 
 // Patch RuntimeType's generated vtable so ToString/Equals/GetHashCode
 // operate on the *represented* type, not on the RuntimeType object itself.
+// Currently called under g_type_cache_mutex, but uses std::call_once for
+// self-contained thread safety regardless of caller context.
+static std::once_flag s_vtable_patch_flag;
 static void patch_runtime_type_vtable() {
-    static bool patched = false;
-    if (patched) return;
-    patched = true;
-    auto* vt = ::System_RuntimeType_TypeInfo.vtable;
-    if (vt && vt->method_count > cil2cpp::object_vtable::kGetHashCode) {
-        vt->methods[cil2cpp::object_vtable::kToString]    = reinterpret_cast<void*>(&Type_ToString_vtable);
-        vt->methods[cil2cpp::object_vtable::kEquals]      = reinterpret_cast<void*>(&Type_Equals_vtable);
-        vt->methods[cil2cpp::object_vtable::kGetHashCode] = reinterpret_cast<void*>(&Type_GetHashCode_vtable);
-    }
+    std::call_once(s_vtable_patch_flag, []() {
+        auto* vt = ::System_RuntimeType_TypeInfo.vtable;
+        if (vt && vt->method_count > cil2cpp::object_vtable::kGetHashCode) {
+            vt->methods[cil2cpp::object_vtable::kToString]    = reinterpret_cast<void*>(&Type_ToString_vtable);
+            vt->methods[cil2cpp::object_vtable::kEquals]      = reinterpret_cast<void*>(&Type_Equals_vtable);
+            vt->methods[cil2cpp::object_vtable::kGetHashCode] = reinterpret_cast<void*>(&Type_GetHashCode_vtable);
+        }
+    });
 }
 
 Type* type_get_type_object(TypeInfo* info) {

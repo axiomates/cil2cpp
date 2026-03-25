@@ -235,14 +235,14 @@ inline void null_check_impl(void* ptr, [[maybe_unused]] const char* file, [[mayb
 #define null_check(ptr) null_check_impl(ptr, __FILE__, __LINE__)
 
 /**
- * Debug-only warning when an unimplemented stub method is called.
- * In Release builds (NDEBUG defined), this is a no-op.
+ * Warning when an unimplemented stub method is called.
+ * Debug: prints warning to stderr.
+ * Release: increments atomic counter (no I/O) — query via stub_call_count().
  */
-#ifndef NDEBUG
 void stub_called(const char* name);
-#else
-inline void stub_called(const char*) {}
-#endif
+
+/** Returns the number of stub_called() invocations since program start. */
+int stub_call_count();
 
 // Exception TypeInfo extern declarations (defined in exception.cpp)
 extern TypeInfo Exception_TypeInfo;

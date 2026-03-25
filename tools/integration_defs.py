@@ -68,34 +68,47 @@ class TestResult:
 
 
 def compare_socket_output(got, expected):
-    """SocketTest custom comparison — skip port line and DNS section.
+    """SocketTest custom comparison — content-based skip for dynamic lines.
 
-    Compare the stable parts of output:
-    - Lines 1-11 (before port line): exact match
-    - Line 12 (0-based 11): port number varies — skip
-    - Lines 13-20 (0-based 12-19): exact match
-    - Lines 21+: DNS section differs — skip
-    - Last line "=== Done ===" must match
+    Skips lines whose content is inherently non-deterministic:
+    - "Phase3: bound to port ..." — OS-assigned port number varies per run
+    - DNS section (after "Phase4: calling Dns.GetHostAddresses...") — address
+      count and address families vary per machine/network configuration
+    All other lines are compared exactly (order-preserving, 1:1 by index).
     """
     got_lines = got.split('\n')
     exp_lines = expected.split('\n')
     mismatches = []
-    # Compare lines before port line
-    for i in range(min(11, len(got_lines), len(exp_lines))):
-        if got_lines[i].strip() != exp_lines[i].strip():
+    in_dns_section = False
+
+    for i in range(min(len(got_lines), len(exp_lines))):
+        g = got_lines[i].strip()
+        e = exp_lines[i].strip()
+
+        # DNS section: once we see the Phase4 DNS call, skip all remaining
+        # lines except the final "=== Done ===" marker.
+        if g.startswith("Phase4:") and "Dns.GetHostAddresses" in g:
+            in_dns_section = True
+        if in_dns_section:
+            # Only verify the final marker
+            if g == "=== Done ===" or e == "=== Done ===":
+                in_dns_section = False  # compare this line normally
+            else:
+                continue
+
+        # Port line: OS-assigned port varies per run
+        if g.startswith("Phase3: bound to port"):
+            continue
+
+        if g != e:
             mismatches.append(
-                f"  line {i+1}: got '{got_lines[i].strip()}', "
-                f"expected '{exp_lines[i].strip()}'")
-    # Compare lines after port line, before DNS section (lines 13-20, 0-based 12-19)
-    for i in range(12, min(20, len(got_lines), len(exp_lines))):
-        if got_lines[i].strip() != exp_lines[i].strip():
-            mismatches.append(
-                f"  line {i+1}: got '{got_lines[i].strip()}', "
-                f"expected '{exp_lines[i].strip()}'")
-    # Verify last line is "=== Done ==="
+                f"  line {i+1}: got '{g}', expected '{e}'")
+
+    # Final marker must be present
     if got_lines[-1].strip() != "=== Done ===":
         mismatches.append(
             f"  last line: got '{got_lines[-1].strip()}', expected '=== Done ==='")
+
     if mismatches:
         raise RuntimeError("Output mismatch:\n" + "\n".join(mismatches))
 
@@ -107,6 +120,8 @@ TESTS = [
                    check_methods_glob=True),
     TestDefinition("ArrayTest", 2, "ArrayTest",
                    check_methods_glob=True),
+    # skip_lines={40, 99}: 0-based line indices containing Object.GetHashCode()
+    # values which are address-based and non-deterministic across runs.
     TestDefinition("FeatureTest", 3, "FeatureTest",
                    check_methods_glob=True, skip_lines=frozenset({40, 99}),
                    run_timeout=60, build_dir_nested=True),

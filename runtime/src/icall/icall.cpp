@@ -280,8 +280,12 @@ intptr_t NativeLibrary_GetSymbol(intptr_t handle, Object* name, bool throwOnErro
     }
     return reinterpret_cast<intptr_t>(result);
 #else
-    // TODO: dlsym on Linux
-    (void)handle; (void)name; (void)throwOnError;
+    // TODO: implement via dlsym when Linux port is active
+    (void)handle; (void)name;
+    if (throwOnError) {
+        cil2cpp::stub_called("NativeLibrary_GetExport: not implemented on this platform");
+        cil2cpp::throw_platform_not_supported();
+    }
     return 0;
 #endif
 }
@@ -611,6 +615,13 @@ Boolean DelegateHelpers_get_CanEmitObjectArrayDelegate() { return 1; }
 // The compiler generates per-signature trampolines for all Func<>/Action<> delegate types
 // and registers them via cil2cpp_register_delegate_trampoline() at startup.
 // This replaces hardcoded runtime trampolines with compile-time generated ones.
+//
+// Thread safety contract:
+//   - Registration: called from __init_delegate_trampolines() in generated main.cpp,
+//     which runs single-threaded before any user code or thread pool init.
+//   - Lookup: called at runtime from DelegateHelpers_CreateObjectArrayDelegateRefEmit().
+//     By this point, registration is complete and the table is read-only.
+//   - Therefore no mutex is needed — the table is immutable after init.
 struct DelegateTrampolineEntry {
     TypeInfo* type;
     void* trampoline;
@@ -692,20 +703,24 @@ Object* Enum_InternalBoxEnum(void* enumType, Int64 value) {
 }
 
 Int32 Enum_InternalGetCorElementType(void* methodTable) {
-    // Called from two contexts:
-    // 1. BCL IL: RuntimeHelpers.GetMethodTable(this) → InternalGetCorElementType(mt) — TypeInfo* directly
-    // 2. Compiled enum methods: Enum.GetNamesNoCopy(RuntimeType*) → InternalGetCorElementType(enumType) — Type*
-    // Detect which by checking if pointer looks like a Type object (has __type_info as first field).
+    // Called from two BCL IL contexts with different pointer semantics:
+    // 1. RuntimeHelpers.GetMethodTable(this) → TypeInfo* directly (compiler intrinsic)
+    // 2. Enum.GetNamesNoCopy(RuntimeType*) → Type* object (RuntimeType reference)
+    //
+    // Discrimination is reliable because the two struct layouts differ at offset 0:
+    //   TypeInfo starts with `const char* name` — a string data pointer
+    //   Type (Object subclass) starts with `TypeInfo* __type_info` — equals &System_RuntimeType_TypeInfo
+    // These addresses can never collide: TypeInfo is a static struct, name points to string data.
+    //
+    // TODO(P0-4): Fix at compiler level — detect argument type at each call site and emit
+    // the appropriate extraction, eliminating this runtime dispatch entirely.
     if (!methodTable) return 0;
 
     auto* typeInfo = reinterpret_cast<TypeInfo*>(methodTable);
 
-    // If this is actually a RuntimeType (Type*) object, extract its type_info field.
-    // Heuristic: if the first field (which would be __type_info for a Type* object)
-    // points to the System_RuntimeType_TypeInfo or another known TypeInfo, then it's a Type*.
+    // Check if this is a RuntimeType (Type*) object rather than a raw TypeInfo*.
     auto* asObj = reinterpret_cast<Object*>(methodTable);
     if (asObj->__type_info == &::System_RuntimeType_TypeInfo) {
-        // It's a RuntimeType object — extract the represented type's TypeInfo
         auto* typeObj = reinterpret_cast<Type*>(methodTable);
         typeInfo = typeObj->type_info;
         if (!typeInfo) return cor_element_type::I4;
@@ -725,13 +740,17 @@ Int32 Enum_InternalGetCorElementType(void* methodTable) {
 
 // ===== System.Delegate (internal) =====
 
+// Minimum delegate allocation: Object header + target + method_ptr + invoke_impl.
+static constexpr int32_t kMinDelegateSize =
+    static_cast<int32_t>(sizeof(Object) + 3 * sizeof(void*));
+
 Object* Delegate_InternalAlloc(void* type) {
     // Allocate a delegate instance of the given RuntimeType.
     auto* typeInfo = reinterpret_cast<TypeInfo*>(type);
     if (!typeInfo) return nullptr;
     auto size = typeInfo->instance_size > 0
         ? typeInfo->instance_size
-        : static_cast<int32_t>(sizeof(Object) + 3 * sizeof(void*));
+        : kMinDelegateSize;
     return reinterpret_cast<Object*>(gc::alloc(size, typeInfo));
 }
 

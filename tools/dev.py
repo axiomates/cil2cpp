@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
 """CIL2CPP Developer CLI - build, test, install, and code generation helper.
 
 Usage:

@@ -376,9 +376,8 @@ def run_tests_parallel(tests, temp_dir, config, generator, cmake_arch,
                 result.steps.append(StepResult(
                     name="fatal", passed=False, elapsed=0,
                     error_msg=str(e)))
-            results.append(result)
-
             with lock:
+                results.append(result)
                 completed += 1
                 status = _c("32", "PASS") if result.passed else _c("31", "FAIL")
                 total_s = result.total_seconds
