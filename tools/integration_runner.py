@@ -258,7 +258,7 @@ def run_single_test(defn, temp_dir, config, generator, cmake_arch,
 
     # Step 2: Codegen
     def step_codegen():
-        cmd = ["dotnet", "run", "--project", str(_CLI_PROJECT), "--",
+        cmd = ["dotnet", "run", "--no-build", "--project", str(_CLI_PROJECT), "--",
                "codegen", "-i", str(csproj_path), "-o", str(output_dir)]
         if defn.codegen_config != "Release":
             cmd += ["-c", defn.codegen_config]
@@ -351,13 +351,22 @@ def run_tests_parallel(tests, temp_dir, config, generator, cmake_arch,
     Progress is printed as each test completes.
     Returns results in phase-number order.
     """
+    # Pre-build the CLI project once before parallel workers start.
+    # Without this, N workers all call 'dotnet run' simultaneously,
+    # each trying to build the same project — MSBuild file locks cause
+    # random failures when too many processes compete.
+    print(f"\n  Pre-building CIL2CPP.CLI...")
+    subprocess.run(
+        ["dotnet", "build", str(_CLI_PROJECT), "--verbosity", "quiet"],
+        check=True, capture_output=True, text=True)
+
     sorted_tests = sorted(tests, key=lambda t: t.expected_seconds, reverse=True)
 
     completed = 0
     lock = threading.Lock()
     total = len(tests)
 
-    print(f"\n  Running {total} tests with {jobs} parallel workers...\n")
+    print(f"  Running {total} tests with {jobs} parallel workers...\n")
 
     results = []
     with ThreadPoolExecutor(max_workers=jobs) as pool:
