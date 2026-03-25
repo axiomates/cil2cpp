@@ -256,6 +256,9 @@ The compiler includes several optimization passes to reduce codegen time and gen
 | Specialized method reachability | Tracks which generic specialization methods are actually called | 77% generic methods skipped |
 | Interface-dispatch-aware specialization | Only materializes generic interfaces that are actually dispatched on | -7.5% types, -13.6% TypeInfo |
 | O(n²) fixpoint optimization | Generic specialization fixpoint uses incremental processing | NuGetSimpleTest 196s → 89s |
+| Mangled-name O(1) index | Hash index for `ScanExternalEnumTypes` and `EnsureCallTargetMethodShells` replaces O(assemblies × types) linear scan | Pass 6 ScanExternalEnums 12.7s → 0.7s |
+| Deferred method spec body compilation | `ProcessGenericMethodSpecialization` defers body compilation to parallel Phase B pipeline | Pass 3.3b-3.4 37s → 23s |
+| Incremental callee tracking | `CollectCalledFunctions` does one full IR scan + incremental updates instead of repeated O(n) scans | NuGetSimpleTest IRBuilder 62s → 38s (39% reduction) |
 
 ## Garbage Collector (GC)
 

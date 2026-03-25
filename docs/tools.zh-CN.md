@@ -202,7 +202,7 @@ ctest --test-dir runtime/tests/build -C Debug --output-on-failure
 
 完整编译流水线：C# `.csproj` → codegen → CMake configure → C++ build → run → 验证输出。覆盖 34 个测试项目，包括 NuGet 生态验证、真实项目验证和多包组合。
 
-数据驱动测试框架，通过 `ThreadPoolExecutor` 并行执行（自动检测 CPU + 可用内存确定 workers 数量；32 线程/64GB 上约 7 分钟）。
+数据驱动测试框架，通过 `ThreadPoolExecutor` 并行执行（自动检测 CPU + 可用内存确定 workers 数量；预编译 CLI 后使用 `--no-build`；32 线程/64GB 上约 6 分钟）。
 
 ```bash
 python tools/dev.py integration                    # 并行（默认）

@@ -202,7 +202,7 @@ ctest --test-dir runtime/tests/build -C Debug --output-on-failure
 
 Full compilation pipeline: C# `.csproj` → codegen → CMake configure → C++ build → run → verify output. Covers 34 test projects including NuGet ecosystem validation, real project validation, and multi-package composition.
 
-Data-driven test framework with parallel execution via `ThreadPoolExecutor` (auto-detect workers from CPU + available RAM; ~7 min wall clock on 32-thread/64GB).
+Data-driven test framework with parallel execution via `ThreadPoolExecutor` (auto-detect workers from CPU + available RAM; pre-builds CLI once then uses `--no-build`; ~6 min wall clock on 32-thread/64GB).
 
 ```bash
 python tools/dev.py integration                    # parallel (default)

@@ -251,6 +251,9 @@ BCL 中部分方法的 IL 引用了 CLR 内部类型，无法编译为 C++。编
 | 特化方法可达性 | 追踪泛型特化中实际被调用的方法 | 77% 泛型方法被跳过 |
 | 接口分派感知特化 | 仅物化实际被分派的泛型接口 | -7.5% 类型，-13.6% TypeInfo |
 | O(n²) fixpoint 优化 | 泛型特化 fixpoint 使用增量处理 | NuGetSimpleTest 196s → 89s |
+| Mangled-name O(1) 索引 | 哈希索引替代 `ScanExternalEnumTypes` 和 `EnsureCallTargetMethodShells` 的 O(程序集 × 类型) 线性扫描 | Pass 6 ScanExternalEnums 12.7s → 0.7s |
+| 延迟方法特化体编译 | `ProcessGenericMethodSpecialization` 将体编译推迟到并行 Phase B 流水线 | Pass 3.3b-3.4 37s → 23s |
+| 增量被调用函数追踪 | `CollectCalledFunctions` 一次全量 IR 扫描 + 增量更新，替代反复 O(n) 扫描 | NuGetSimpleTest IRBuilder 62s → 38s（减少 39%）|
 
 ## 垃圾收集器 (GC)
 

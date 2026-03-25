@@ -175,7 +175,7 @@ CIL2CPP's "IL-first" architecture is extremely efficient at **breadth**: fixing 
 - **Each feature is only smoke-tested** (30-100 line test programs)
 - **Each new NuGet package requires compiler fixes** — the compiler isn't robust enough for arbitrary .NET code
 - **No real-world complex .NET NativeAOT project has been compiled** — all 34 test projects are small examples (3 are real project validations: MiniCsvTool ~400 lines, TodoManager ~550 lines, HealthChecker ~500 lines)
-- **Limited compiler optimizations** — __Canon sharing, parallel passes, PCH generation added; but no inlining, devirtualization, or escape analysis
+- **Limited compiler optimizations** — __Canon sharing, parallel passes, PCH, incremental VTable, mangled-name O(1) index, deferred method spec body compilation, incremental callee tracking (NuGetSimpleTest IRBuilder 62s→38s); but no inlining, devirtualization, or escape analysis
 
 For comparison: a truly mature C compiler (like chibicc) proves itself by compiling the Linux kernel. CIL2CPP has no equivalent real-world validation.
 
@@ -259,8 +259,8 @@ CIL2CPP at 50K lines is approximately **17-25%** of a minimum viable tool, and *
 - ILLink feature switches — **active**: FeatureSwitchResolver substitutes 10+ AOT defaults at compile time
 - `[MarshalAs]` attribute — **C.7.1 ✅ + C.7.2 ✅ + C.7.3 ✅**: Cecil parsing + 21 type mappings + [Out]/[In] support + LPArray array marshaling (direction-aware + SizeParamIndex assertion)
 - NuGet PackageReference — 15 packages pass smoke tests (M6 Phase 2 deepened 6 suites)
-- Codegen performance — NuGetSimpleTest 196s→89s; further optimized via __Canon sharing, parallel passes, PCH
-- **Compiler optimization** — Partial: __Canon sharing, parallel Pass 6, parallel header generation, PCH, incremental VTable. No inlining/devirtualization/escape analysis yet
+- Codegen performance — NuGetSimpleTest IRBuilder 62s→38s (39% reduction from baseline 89s via mangled-name O(1) index, deferred method spec body compilation, incremental callee tracking); total codegen ~52s
+- **Compiler optimization** — Partial: __Canon sharing, parallel Pass 6, parallel header generation, PCH, incremental VTable, mangled-name O(1) index, deferred method spec body compilation, incremental callee tracking. No inlining/devirtualization/escape analysis yet
 - **Real project validation** — 3 real projects validated: MiniCsvTool (~400 lines, 100% match), TodoManager (~550 lines, 66/70 match), HealthChecker (~500 lines, 100% match)
 
 ---
