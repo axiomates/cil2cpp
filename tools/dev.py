@@ -742,6 +742,17 @@ def cmd_integration(args):
             return 1
         print(f"\n  Filter: {test_filter} ({len(tests)} test{'s' if len(tests) != 1 else ''})")
 
+    # ===== Pre-build CLI =====
+    # Build CIL2CPP.CLI once before any test runs. Workers use --no-build
+    # to skip redundant rebuilds and avoid MSBuild file lock contention.
+    print(f"\n  Pre-building CIL2CPP.CLI ... ", end="", flush=True)
+    r = run(["dotnet", "build", str(CLI_PROJECT), "--verbosity", "quiet"],
+            capture=True, check=False)
+    if r.returncode != 0:
+        error(f"FAIL\n{r.stderr}")
+        return 1
+    success("OK")
+
     # ===== Run tests =====
     wall_t0 = time.time()
     if jobs == 1:
