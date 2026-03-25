@@ -358,6 +358,9 @@ public partial class IRBuilder
     // Types already attempted for demand-driven method shell addition — prevents repeated attempts
     // on types whose methods are all generic (filtered by HasGenericParameters).
     private readonly HashSet<string> _demandDrivenMethodsAttempted = new();
+    // Cached mangled-name → Cecil TypeDefinition index (built lazily on first use).
+    // Used by ScanExternalEnumTypes and EnsureCallTargetMethodShells to avoid O(n) assembly scans.
+    private Dictionary<string, TypeDefinition>? _mangledNameIndex;
     private readonly HashSet<IRType> _vtableBuilt = new();
     // Incremental VTable tracking: types added since the last BuildVTablesFixpoint call.
     // Avoids re-scanning all _module.Types when only a few new types were added.
@@ -900,8 +903,7 @@ public partial class IRBuilder
         DrainDeferredBclDelegates();
 
         // Pass 6.1: Compile generic method specializations discovered during Pass 6.
-        // E.g., DateTimeFormatInfo.GetAbbreviatedDayName calls ThrowHelper.ThrowArgumentOutOfRange_Range<DayOfWeek>
-        // which is only discovered when the non-generic method body is compiled in Pass 6.
+        var pass61sw = System.Diagnostics.Stopwatch.StartNew();
         CreateGenericMethodSpecializations();
 
         // Pass 6.1b: Drain deferred generic bodies discovered during Pass 6.1.
@@ -911,19 +913,16 @@ public partial class IRBuilder
             DisambiguateOverloadedMethods();
             ConvertDeferredGenericBodies();
         }
+        pass61sw.Stop();
 
         // Pass 6.2: Recover specialized methods whose keys were added during Pass 6/6.1.
-        // Non-generic method bodies (e.g., PersonValidator..ctor) compiled in Pass 6 may call
-        // methods on generic specializations (e.g., AbstractValidator<Person>.RuleFor<string>)
-        // that were skipped in Pass 3.3b because their keys weren't yet in _calledSpecializedMethods.
-        // EnsureBodyReferencedTypesExist (called during body compilation) adds these keys, but
-        // the only prior recovery point (Pass 3.5a) runs before Pass 6.
-        // Fixpoint: recovered methods may discover more specializations (e.g., RuleFor → PropertyRule
-        // → AccessorCache → Expression.Compile). Keep recovering until no more methods are found.
+        var pass62sw = System.Diagnostics.Stopwatch.StartNew();
+        int pass62Iterations = 0;
         {
             int prevSkipped = _skippedSpecializedMethods.Count;
             do
             {
+                pass62Iterations++;
                 prevSkipped = _skippedSpecializedMethods.Count;
                 RecoverSkippedSpecializedMethods();
                 if (_deferredGenericBodies.Count > 0)
@@ -936,65 +935,69 @@ public partial class IRBuilder
                 CreateGenericMethodSpecializations();
             } while (_skippedSpecializedMethods.Count < prevSkipped || _deferredGenericBodies.Count > 0);
         }
+        pass62sw.Stop();
 
         // Pass 6.4: Compile methods discovered during deferred generic body compilation.
-        // Generic specialization bodies (e.g., SafeHandleMarshaller<T>) may call non-generic
-        // methods through resolved type parameters that the reachability analyzer couldn't trace.
+        var pass64sw = System.Diagnostics.Stopwatch.StartNew();
         CompileMissingCallees();
 
         // Pass 6.4b: Fixpoint loop — create missing types and compile their methods.
-        // Each iteration: (1) scan compiled IR for undeclared function calls, (2) create types
-        // from loaded assemblies, (3) compile newly available methods. Repeat until stable.
+        int shellPassCount = 0;
         for (int shellPass = 0; shellPass < 5; shellPass++)
         {
+            shellPassCount++;
             int prevMethodCount = _module.Types.Sum(t => t.Methods.Count);
             EnsureCallTargetMethodShells();
             CompileMissingCallees();
             int newMethodCount = _module.Types.Sum(t => t.Methods.Count);
             if (newMethodCount == prevMethodCount) break;
         }
+        pass64sw.Stop();
+
+        // Pass 6.5-6.9b: Post-processing
+        var pass65sw = System.Diagnostics.Stopwatch.StartNew();
 
         // Pass 6.5: Discover types referenced by compiled method bodies but not yet in the module
-        // This can happen when BCL methods reference types only as parameters/locals/fields
+        var p65sw = System.Diagnostics.Stopwatch.StartNew();
         DiscoverMissingReferencedTypes();
+        p65sw.Stop();
 
-        // Pass 6.6: Re-scan for external enum types in generic specialization and newly
-        // compiled method bodies (their locals weren't available during Pass 3.2).
-        // Only fixup NEWLY discovered enums — types resolved after Pass 3.2 registration
-        // already have correct pointer levels (ref enum → EnumType*).
+        // Pass 6.6: Re-scan for external enum types
+        var p66sw = System.Diagnostics.Stopwatch.StartNew();
         var newEnums2 = ScanExternalEnumTypes();
         FixupExternalEnumTypes(newEnums2);
+        p66sw.Stop();
 
-        // Pass 6.7: Fix up vtable entries for CoreRuntimeTypes whose methods now have
-        // compiled bodies. During Pass 4, skipOverride prevented these overrides from being
-        // placed (BasicBlocks.Count was 0). Now that bodies are compiled, update vtable entries
-        // so virtual dispatch resolves to the IL-compiled override instead of the runtime fallback.
+        // Pass 6.7: Fix up vtable entries for CoreRuntimeTypes
+        var p67sw = System.Diagnostics.Stopwatch.StartNew();
         FixupCoreRuntimeVTables();
+        p67sw.Stop();
 
-        // Pass 6.8: Fix abstract vtable slots caused by Cecil resolving incorrect base types
-        // for generic specializations (e.g., SafeCrypt32Handle<T>.BaseType → SafeHandle instead
-        // of SafeHandleZeroOrMinusOneIsInvalid). Fills abstract slots from sibling types.
+        // Pass 6.8: Fix abstract vtable slots
+        var p68sw = System.Diagnostics.Stopwatch.StartNew();
         FixupAbstractVTableSlots();
-
-        // Note: __Canon shared methods now use thin wrapper functions in codegen
-        // that delegate to canonical methods with casts. No call-site rewriting needed.
+        p68sw.Stop();
 
         // Pass 6.9: Ensure attribute constructors are compiled.
-        // Attribute constructors are never called from IL (CLR invokes them at metadata-time),
-        // so the reachability analyzer doesn't mark them. We need them for runtime attribute
-        // construction via find_method_info + method_pointer.
-        // Must run after Pass 6 so HasClrInternalDependencies checks and ConvertMethodBody
-        // infrastructure are fully set up.
+        var p69sw = System.Diagnostics.Stopwatch.StartNew();
         EnsureAttributeConstructorsCompiled();
+        p69sw.Stop();
 
-        // Pass 6.9b: Final disambiguation fixup for call sites compiled during Pass 6.
-        // Deferred generic bodies (cascade types) may call methods on types created in the
-        // same batch. Their DeferredDisambigKey was stored but never fixed up since
-        // FixupDisambiguatedCalls (Pass 3.7) ran before Pass 6.
+        // Pass 6.9b: Final disambiguation fixup
+        var p69bsw = System.Diagnostics.Stopwatch.StartNew();
         DisambiguateOverloadedMethods();
         FixupDisambiguatedCalls();
+        p69bsw.Stop();
 
+        pass65sw.Stop();
+        Console.Error.WriteLine($"[perf] Pass 6.5-9b detail: p6.5={p65sw.ElapsedMilliseconds}ms, " +
+            $"p6.6={p66sw.ElapsedMilliseconds}ms, p6.7={p67sw.ElapsedMilliseconds}ms, " +
+            $"p6.8={p68sw.ElapsedMilliseconds}ms, p6.9={p69sw.ElapsedMilliseconds}ms, " +
+            $"p6.9b={p69bsw.ElapsedMilliseconds}ms");
         pass6sw.Stop();
+        Console.Error.WriteLine($"[perf] Pass 6 breakdown: compile={parallelSw.ElapsedMilliseconds}ms, " +
+            $"p6.1={pass61sw.ElapsedMilliseconds}ms, p6.2={pass62sw.ElapsedMilliseconds}ms({pass62Iterations}iter), " +
+            $"p6.4={pass64sw.ElapsedMilliseconds}ms({shellPassCount}iter), p6.5-9={pass65sw.ElapsedMilliseconds}ms");
         Console.Error.WriteLine($"[perf] Pass 6 MethodBodies+GenericMethodSpecs+MissingCallees: {pass6sw.ElapsedMilliseconds}ms");
 
         // Pass 7: Synthesize record method bodies (replace compiler-generated bodies

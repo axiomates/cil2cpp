@@ -539,6 +539,7 @@ public partial class IRBuilder
     /// Check if a C++ type name corresponds to an external enum type.
     /// If the type isn't in the IR module and resolves to a Cecil enum definition,
     /// register it as a value type and add to ExternalEnumTypes.
+    /// Uses the cached _mangledNameIndex for O(1) lookup instead of O(assemblies × types) linear scan.
     /// </summary>
     private void TryRegisterExternalEnum(string cppTypeName, HashSet<string> checkedTypes, HashSet<string> newlyDiscovered)
     {
@@ -556,59 +557,50 @@ public partial class IRBuilder
         // (which would trigger fixup that strips legitimate ref pointers).
         bool alreadyValueType = CppNameMapper.IsValueType(raw);
 
-        // Try to find the IL type name for this mangled C++ name
-        // Scan all loaded assemblies for types whose mangled name matches
-        var assemblies = GetLoadedAssemblies();
-        foreach (var asm in assemblies)
+        // Use O(1) index lookup instead of scanning all assemblies
+        var index = GetMangledNameIndex();
+        if (index.TryGetValue(raw, out var typeDef))
+        {
+            if (!typeDef.IsEnum) return; // Found but not an enum — stop
+
+            var underlyingCpp = GetEnumUnderlyingCppType(typeDef);
+            _module.ExternalEnumTypes[raw] = underlyingCpp;
+            CppNameMapper.RegisterValueType(typeDef.FullName);
+            CppNameMapper.RegisterValueType(raw);
+            if (!alreadyValueType)
+                newlyDiscovered.Add(raw);
+        }
+    }
+
+    /// <summary>
+    /// Build or return the cached mangled-name → Cecil TypeDefinition index.
+    /// Scans all loaded assemblies including nested types at all levels.
+    /// </summary>
+    private Dictionary<string, TypeDefinition> GetMangledNameIndex()
+    {
+        if (_mangledNameIndex != null) return _mangledNameIndex;
+
+        _mangledNameIndex = new Dictionary<string, TypeDefinition>();
+        foreach (var asm in _assemblySet.LoadedAssemblies.Values)
         {
             foreach (var module in asm.Modules)
             {
-                if (FindAndRegisterExternalEnum(module.Types, raw))
-                {
-                    // Only track as newly discovered if it was actually an enum
-                    // AND wasn't already a known value type (no fixup needed for those)
-                    if (_module.ExternalEnumTypes.ContainsKey(raw) && !alreadyValueType)
-                        newlyDiscovered.Add(raw);
-                    return;
-                }
+                IndexTypesRecursive(module.Types, _mangledNameIndex);
             }
         }
+        return _mangledNameIndex;
     }
 
-    /// <summary>
-    /// Recursively search Cecil types for an enum with the given mangled name.
-    /// Returns true if found and registered.
-    /// </summary>
-    private bool FindAndRegisterExternalEnum(
-        IEnumerable<Mono.Cecil.TypeDefinition> types, string mangledName)
+    private static void IndexTypesRecursive(
+        IEnumerable<TypeDefinition> types, Dictionary<string, TypeDefinition> index)
     {
         foreach (var typeDef in types)
         {
-            if (CppNameMapper.MangleTypeName(typeDef.FullName) == mangledName)
-            {
-                if (!typeDef.IsEnum) return true; // Found but not an enum — stop searching
-
-                var underlyingCpp = GetEnumUnderlyingCppType(typeDef);
-                _module.ExternalEnumTypes[mangledName] = underlyingCpp;
-                CppNameMapper.RegisterValueType(typeDef.FullName);
-                CppNameMapper.RegisterValueType(mangledName);
-                return true;
-            }
-
-            // Search nested types
-            if (typeDef.HasNestedTypes && FindAndRegisterExternalEnum(typeDef.NestedTypes, mangledName))
-                return true;
+            var mangled = CppNameMapper.MangleTypeName(typeDef.FullName);
+            index.TryAdd(mangled, typeDef);
+            if (typeDef.HasNestedTypes)
+                IndexTypesRecursive(typeDef.NestedTypes, index);
         }
-        return false;
-    }
-
-    /// <summary>
-    /// Get all loaded Cecil assemblies from the AssemblySet.
-    /// </summary>
-    private IEnumerable<Mono.Cecil.AssemblyDefinition> GetLoadedAssemblies()
-    {
-        foreach (var asm in _assemblySet.LoadedAssemblies.Values)
-            yield return asm;
     }
 
     /// <summary>

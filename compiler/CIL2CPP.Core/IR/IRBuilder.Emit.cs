@@ -3517,26 +3517,19 @@ public partial class IRBuilder
 
         if (bodylessByName.Count == 0) return;
 
+        // Collect all called function names once (initial full scan)
+        var calledFunctions = new HashSet<string>();
+        foreach (var type in _module.Types)
+        foreach (var method in type.Methods)
+        {
+            if (method.BasicBlocks.Count == 0) continue;
+            CollectCalledFunctions(method, calledFunctions);
+        }
+
         bool anyCompiled = true;
         while (anyCompiled)
         {
             anyCompiled = false;
-
-            // Collect all called function names from compiled method bodies
-            var calledFunctions = new HashSet<string>();
-            foreach (var type in _module.Types)
-            foreach (var method in type.Methods)
-            {
-                if (method.BasicBlocks.Count == 0) continue;
-                foreach (var block in method.BasicBlocks)
-                foreach (var instr in block.Instructions)
-                {
-                    if (instr is IRCall call && !string.IsNullOrEmpty(call.FunctionName))
-                        calledFunctions.Add(call.FunctionName);
-                    else if (instr is IRNewObj newObj && !string.IsNullOrEmpty(newObj.CtorName))
-                        calledFunctions.Add(newObj.CtorName);
-                }
-            }
 
             // Compile bodyless methods that are actually called
             foreach (var (cppName, (methodDef, irMethod)) in bodylessByName)
@@ -3568,8 +3561,27 @@ public partial class IRBuilder
                 }
 
                 ConvertMethodBody(methodDef, irMethod);
+                // Incrementally add called functions from newly compiled body
+                CollectCalledFunctions(irMethod, calledFunctions);
                 anyCompiled = true;
             }
+        }
+    }
+
+    /// <summary>
+    /// Collect all called function names from a compiled method's IR instructions.
+    /// </summary>
+    private static void CollectCalledFunctions(IRMethod method, HashSet<string> calledFunctions)
+    {
+        foreach (var block in method.BasicBlocks)
+        foreach (var instr in block.Instructions)
+        {
+            if (instr is IRCall call && !string.IsNullOrEmpty(call.FunctionName))
+                calledFunctions.Add(call.FunctionName);
+            else if (instr is IRNewObj newObj && !string.IsNullOrEmpty(newObj.CtorName))
+                calledFunctions.Add(newObj.CtorName);
+            else if (instr is IRLoadFunctionPointer ldftn && !string.IsNullOrEmpty(ldftn.MethodCppName))
+                calledFunctions.Add(ldftn.MethodCppName);
         }
     }
 

@@ -1208,16 +1208,7 @@ public partial class IRBuilder
         foreach (var method in type.Methods)
         {
             if (method.BasicBlocks.Count == 0) continue;
-            foreach (var block in method.BasicBlocks)
-            foreach (var instr in block.Instructions)
-            {
-                if (instr is IRCall call && !string.IsNullOrEmpty(call.FunctionName))
-                    calledFunctions.Add(call.FunctionName);
-                else if (instr is IRNewObj newObj && !string.IsNullOrEmpty(newObj.CtorName))
-                    calledFunctions.Add(newObj.CtorName);
-                else if (instr is IRLoadFunctionPointer ldftn && !string.IsNullOrEmpty(ldftn.MethodCppName))
-                    calledFunctions.Add(ldftn.MethodCppName);
-            }
+            CollectCalledFunctions(method, calledFunctions);
         }
 
         // Find called functions whose declaring types exist but lack the method
@@ -1226,24 +1217,8 @@ public partial class IRBuilder
         foreach (var method in type.Methods)
             declaredFunctions.Add(method.CppName);
 
-        // Build index: mangled type name → Cecil TypeDefinition for all loaded assemblies
-        var mangledToTypeDef = new Dictionary<string, TypeDefinition>();
-        foreach (var asm in _assemblySet.LoadedAssemblies.Values)
-        {
-            foreach (var typeDef in asm.MainModule.Types)
-            {
-                if (typeDef.HasGenericParameters) continue;
-                var mangled = CppNameMapper.MangleTypeName(typeDef.FullName);
-                mangledToTypeDef.TryAdd(mangled, typeDef);
-                // Also index nested types
-                foreach (var nested in typeDef.NestedTypes)
-                {
-                    if (nested.HasGenericParameters) continue;
-                    var nestedMangled = CppNameMapper.MangleTypeName(nested.FullName);
-                    mangledToTypeDef.TryAdd(nestedMangled, nested);
-                }
-            }
-        }
+        // Reuse cached mangled-name → Cecil TypeDefinition index
+        var mangledToTypeDef = GetMangledNameIndex();
 
         foreach (var funcName in calledFunctions)
         {
@@ -1261,7 +1236,9 @@ public partial class IRBuilder
                 var candidateType = funcName[..pos];
                 if (mangledToTypeDef.TryGetValue(candidateType, out var cecilTypeDef))
                 {
-                    EnsureDemandDrivenNonGenericTypeExists(cecilTypeDef);
+                    // Skip generic types (they need full specialization pipeline, not shell creation)
+                    if (!cecilTypeDef.HasGenericParameters)
+                        EnsureDemandDrivenNonGenericTypeExists(cecilTypeDef);
                     break;
                 }
             }
@@ -2523,6 +2500,16 @@ public partial class IRBuilder
         // Second pass: resolve base types, interfaces, HasCctor for processed entries.
         // Done after all specializations are in the cache so cross-references work
         // (e.g., SpecialWrapper<int> : Wrapper<int> needs Wrapper<int> already cached).
+
+        // Pre-build an O(1) lookup for deferred cctor check (avoids O(n) scan per type).
+        // Built after the first pass completes so it includes all newly deferred methods.
+        var deferredMethodSet = new HashSet<IRMethod>(_deferredGenericBodies.Count);
+        foreach (var d in _deferredGenericBodies)
+            deferredMethodSet.Add(d.IrMethod);
+
+        // Pre-build ILFullName → IRType index for O(1) FindType fallback
+        Dictionary<string, IRType>? moduleTypeIndex = null;
+
         foreach (var key in allProcessed)
         {
             bool alreadyResolved = _resolvedGenericTypeKeys.Contains(key);
@@ -2541,7 +2528,7 @@ public partial class IRBuilder
                 {
                     var baseName2 = ResolveGenericTypeName(info.CecilOpenType.BaseType, typeParamMap2);
                     if (!_typeCache.TryGetValue(baseName2, out var baseType2))
-                        baseType2 = _module.FindType(baseName2);
+                        baseType2 = FindTypeByILName(baseName2, ref moduleTypeIndex);
                     if (baseType2 != null)
                     {
                         irType.BaseType = baseType2;
@@ -2580,7 +2567,7 @@ public partial class IRBuilder
                 else
                 {
                     // Fallback: non-generic base types may be in _module.Types but not _typeCache
-                    var moduleBaseType = _module.FindType(baseName);
+                    var moduleBaseType = FindTypeByILName(baseName, ref moduleTypeIndex);
                     if (moduleBaseType != null)
                     {
                         irType.BaseType = moduleBaseType;
@@ -2643,7 +2630,7 @@ public partial class IRBuilder
                 if (cctorIrMethod != null)
                 {
                     irType.HasCctor = cctorIrMethod.BasicBlocks.Count > 0
-                        || _deferredGenericBodies.Any(d => d.IrMethod == cctorIrMethod);
+                        || deferredMethodSet.Contains(cctorIrMethod);
                 }
             }
 
@@ -2670,7 +2657,7 @@ public partial class IRBuilder
                 {
                     var baseName = ResolveGenericTypeName(prevInfo.CecilOpenType.BaseType, prevTypeParamMap);
                     if (!_typeCache.TryGetValue(baseName, out var baseType))
-                        baseType = _module.FindType(baseName);
+                        baseType = FindTypeByILName(baseName, ref moduleTypeIndex);
                     if (baseType != null)
                     {
                         prevIrType.BaseType = baseType;
@@ -2710,6 +2697,21 @@ public partial class IRBuilder
             foreach (var key in resolved)
                 _unresolvedBaseTypeKeys.Remove(key);
         }
+    }
+
+    /// <summary>
+    /// O(1) FindType by IL name using a lazily-built index over _module.Types.
+    /// Falls back to building the index on first call, then uses dictionary lookup.
+    /// </summary>
+    private IRType? FindTypeByILName(string ilName, ref Dictionary<string, IRType>? index)
+    {
+        if (index == null)
+        {
+            index = new Dictionary<string, IRType>(_module.Types.Count);
+            foreach (var t in _module.Types)
+                index.TryAdd(t.ILFullName, t);
+        }
+        return index.TryGetValue(ilName, out var result) ? result : null;
     }
 
     /// <summary>
@@ -4349,19 +4351,26 @@ public partial class IRBuilder
         //   Phase C: Sequential post-processing — recovery loop + CreateGenericSpecializations
         var processed = new HashSet<IRMethod>();
         var parallelOpts = new ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount };
+        int iterationCount = 0;
+        long totalPhaseA = 0, totalPhaseB = 0, totalPhaseC = 0, totalVtable = 0;
         while (_deferredGenericBodies.Count > 0)
         {
+            iterationCount++;
             var batch = new List<(MethodDefinition CecilMethod, IRMethod IrMethod,
                 Dictionary<string, string> TypeParamMap)>(_deferredGenericBodies);
             _deferredGenericBodies.Clear();
 
             // Ensure VTables are built for all types before compiling any bodies in this batch.
+            var vtSw = System.Diagnostics.Stopwatch.StartNew();
             BuildVTablesFixpoint();
+            vtSw.Stop();
+            totalVtable += vtSw.ElapsedMilliseconds;
 
             // Phase A: Sequential pre-scan — discover types, build VTables for all methods in batch.
             // EnsureBodyReferencedTypesExist writes to non-thread-safe shared state
             // (_pendingGenericKeys, _calledSpecializedMethods, _dispatchedInterfaces),
             // so it must remain sequential. Also warms Cecil caches for Phase B.
+            var phaseASw = System.Diagnostics.Stopwatch.StartNew();
             var bodiesToCompile = new List<(MethodDefinition CecilMethod, IRMethod IrMethod,
                 Dictionary<string, string> TypeParamMap)>();
             foreach (var (cecilMethod, irMethod, typeParamMap) in batch)
@@ -4383,22 +4392,29 @@ public partial class IRBuilder
 
             // Build VTables for all types discovered during pre-scan (single batch).
             BuildPendingVTablesOnly();
+            phaseASw.Stop();
+            totalPhaseA += phaseASw.ElapsedMilliseconds;
 
             // Phase B: Parallel body compilation.
             // ConvertMethodBodyWithGenerics writes only to per-method state (IRMethod.BasicBlocks)
             // and thread-safe shared collections (ConcurrentDictionary, locks).
             // Same pattern as Pass 6 parallel compilation.
+            var phaseBSw = System.Diagnostics.Stopwatch.StartNew();
             Parallel.ForEach(bodiesToCompile, parallelOpts, entry =>
             {
                 var methodInfo = new IL.MethodInfo(entry.CecilMethod);
                 ConvertMethodBodyWithGenerics(methodInfo, entry.IrMethod, entry.TypeParamMap);
             });
+            phaseBSw.Stop();
+            totalPhaseB += phaseBSw.ElapsedMilliseconds;
 
             // Phase C: Sequential post-processing.
+            var phaseCSw = System.Diagnostics.Stopwatch.StartNew();
             // Drain deferred BCL delegates discovered during parallel compilation.
             DrainDeferredBclDelegates();
 
             // Recover skipped methods whose keys are now in _calledSpecializedMethods.
+            var recoverSw = System.Diagnostics.Stopwatch.StartNew();
             for (int i = _skippedSpecializedMethods.Count - 1; i >= 0; i--)
             {
                 var (specKey, cecilMethod, irMethod, typeParamMap) = _skippedSpecializedMethods[i];
@@ -4414,19 +4430,34 @@ public partial class IRBuilder
                         _deferredGenericBodies.Add((cecilMethod, irMethod, typeParamMap));
                 }
             }
+            recoverSw.Stop();
 
             // If new generic types were discovered during body compilation
+            var specSw = System.Diagnostics.Stopwatch.StartNew();
             var prevTypeCountForVtable = _module.Types.Count;
             CreateGenericSpecializations();
             CreateGenericMethodSpecializations();
+            specSw.Stop();
 
             // Build VTables for any newly created types.
+            var vtPostSw = System.Diagnostics.Stopwatch.StartNew();
             if (_module.Types.Count > prevTypeCountForVtable || _deferredGenericBodies.Count > 0)
             {
                 BuildVTablesFixpoint();
                 DisambiguateOverloadedMethods();
             }
+            vtPostSw.Stop();
+            phaseCSw.Stop();
+            totalPhaseC += phaseCSw.ElapsedMilliseconds;
+
+            Console.Error.WriteLine($"[perf]   DeferredBodies iter {iterationCount}: batch={batch.Count}, " +
+                $"compiled={bodiesToCompile.Count}, phaseA={phaseASw.ElapsedMilliseconds}ms, " +
+                $"phaseB={phaseBSw.ElapsedMilliseconds}ms, phaseC={phaseCSw.ElapsedMilliseconds}ms " +
+                $"(recover={recoverSw.ElapsedMilliseconds} spec={specSw.ElapsedMilliseconds} vt={vtPostSw.ElapsedMilliseconds}), " +
+                $"vtable={vtSw.ElapsedMilliseconds}ms, newDeferred={_deferredGenericBodies.Count}");
         }
+        Console.Error.WriteLine($"[perf] DeferredBodies total: {iterationCount} iterations, " +
+            $"phaseA={totalPhaseA}ms, phaseB={totalPhaseB}ms, phaseC={totalPhaseC}ms, vtable={totalVtable}ms");
 
         // Post-condition: all deferred vtables must have been resolved.
         // If any remain, it indicates a bug in the deferral/resolution logic.
