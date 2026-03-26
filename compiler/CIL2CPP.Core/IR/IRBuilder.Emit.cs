@@ -1790,6 +1790,17 @@ public partial class IRBuilder
                     continue;
                 }
 
+                // Enum.InternalGetCorElementType: normalize RuntimeType* argument to TypeInfo*.
+                // BCL IL calls this with either TypeInfo* (from GetMethodTable intrinsic) or
+                // RuntimeType* (from parameter). Extract type_info so runtime always gets TypeInfo*.
+                if (mappedName == "cil2cpp::icall::Enum_InternalGetCorElementType"
+                    && entryType != null
+                    && entryType.Contains("RuntimeType"))
+                {
+                    args[i] = $"(void*)(((cil2cpp::Type*)({args[i]}))->type_info)";
+                    continue;
+                }
+
                 // Value-type struct → void* for ICalls: when a generic parameter resolves
                 // to a value type (e.g., Marshal.StructureToPtr<T> where T is a struct),
                 // the C++ ICall expects void* but the argument is a stack-local struct.

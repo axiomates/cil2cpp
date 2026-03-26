@@ -1479,7 +1479,11 @@ extern "C" void* System_RuntimeTypeHandle_GetRuntimeType(void* __this) {
     // __this is RuntimeTypeHandle* — field 0 is RuntimeType* (f_m_type).
     return *reinterpret_cast<void**>(__this);
 }
-extern "C" bool System_RuntimeTypeHandle_IsNullHandle(void* /*__this*/) { return true; }
+extern "C" bool System_RuntimeTypeHandle_IsNullHandle(void* __this) {
+    if (!__this) return true;
+    // __this is RuntimeTypeHandle* — field 0 is RuntimeType* (f_m_type).
+    return *reinterpret_cast<void**>(__this) == nullptr;
+}
 struct TypeHandle_Stub { void* m_asTAddr; };
 extern "C" TypeHandle_Stub System_RuntimeTypeHandle_GetNativeTypeHandle(void* __this) {
     // __this is RuntimeTypeHandle* — field 0 is RuntimeType* (cil2cpp::Type*).

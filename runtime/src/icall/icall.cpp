@@ -56,6 +56,19 @@ void System_Threading_ThreadPoolWorkQueue_DispatchWorkItem(cil2cpp::Object* work
 extern cil2cpp::TypeInfo System_AttributeUsageAttribute_TypeInfo;
 extern cil2cpp::TypeInfo System_RuntimeType_TypeInfo;
 
+// Layout struct mirroring generated System.AttributeUsageAttribute.
+// Must match codegen struct: Object header + f__attributeTarget + f__allowMultiple + f__inherited.
+struct AttributeUsageAttribute_Layout {
+    cil2cpp::TypeInfo* __type_info;
+    cil2cpp::UInt32 __sync_block;
+    int32_t f__attributeTarget;
+    bool f__allowMultiple;
+    bool f__inherited;
+};
+static_assert(offsetof(AttributeUsageAttribute_Layout, f__attributeTarget) == 12);
+static_assert(offsetof(AttributeUsageAttribute_Layout, f__allowMultiple) == 16);
+static_assert(offsetof(AttributeUsageAttribute_Layout, f__inherited) == 17);
+
 namespace cil2cpp {
 
 // Mask to ensure thread ID hash is non-negative (Int32 range)
@@ -703,28 +716,11 @@ Object* Enum_InternalBoxEnum(void* enumType, Int64 value) {
 }
 
 Int32 Enum_InternalGetCorElementType(void* methodTable) {
-    // Called from two BCL IL contexts with different pointer semantics:
-    // 1. RuntimeHelpers.GetMethodTable(this) → TypeInfo* directly (compiler intrinsic)
-    // 2. Enum.GetNamesNoCopy(RuntimeType*) → Type* object (RuntimeType reference)
-    //
-    // Discrimination is reliable because the two struct layouts differ at offset 0:
-    //   TypeInfo starts with `const char* name` — a string data pointer
-    //   Type (Object subclass) starts with `TypeInfo* __type_info` — equals &System_RuntimeType_TypeInfo
-    // These addresses can never collide: TypeInfo is a static struct, name points to string data.
-    //
-    // TODO(P0-4): Fix at compiler level — detect argument type at each call site and emit
-    // the appropriate extraction, eliminating this runtime dispatch entirely.
+    // Always receives TypeInfo* — compiler normalizes RuntimeType* arguments at call sites
+    // by extracting ->type_info before passing to this ICall.
     if (!methodTable) return 0;
 
     auto* typeInfo = reinterpret_cast<TypeInfo*>(methodTable);
-
-    // Check if this is a RuntimeType (Type*) object rather than a raw TypeInfo*.
-    auto* asObj = reinterpret_cast<Object*>(methodTable);
-    if (asObj->__type_info == &::System_RuntimeType_TypeInfo) {
-        auto* typeObj = reinterpret_cast<Type*>(methodTable);
-        typeInfo = typeObj->type_info;
-        if (!typeInfo) return cor_element_type::I4;
-    }
 
     if (typeInfo->underlying_type && typeInfo->underlying_type->cor_element_type != 0) {
         return static_cast<Int32>(typeInfo->underlying_type->cor_element_type);
@@ -767,9 +763,9 @@ Int64 Interlocked_ExchangeAdd_i64(Int64* location, Int64 value) {
     return atomic->fetch_add(value, std::memory_order_seq_cst);
 }
 
-// ===== System.Threading.ThreadPool (CIL2CPP thread pool — mostly no-ops) =====
-// CIL2CPP uses its own fixed-size thread pool (cil2cpp::threadpool).
-// BCL ThreadPool API calls are redirected here as no-ops or simple stubs.
+// ===== System.Threading.ThreadPool (CIL2CPP dynamic thread pool with hill-climbing) =====
+// CIL2CPP uses its own C++ thread pool with dynamic worker management.
+// BCL ThreadPool API calls are redirected here to feed metrics and control the pool.
 
 Int32 ThreadPool_GetNextConfigUInt32Value(Int32 /*configVariableIndex*/,
     uint32_t* configValue, bool* isBoolean, char16_t** /*appContextConfigName*/) {
@@ -780,33 +776,47 @@ Int32 ThreadPool_GetNextConfigUInt32Value(Int32 /*configVariableIndex*/,
     return -1;
 }
 
+// Thread-local completion count object — BCL uses this as an opaque handle
+// passed between GetOrCreate and NotifyWorkItemComplete.
+// We allocate a minimal GC object (just the Object header) per thread.
+static thread_local Object* t_completion_counter = nullptr;
+
 Object* ThreadPool_GetOrCreateThreadLocalCompletionCountObject() {
-    // CIL2CPP thread pool doesn't track per-thread completion counts.
-    // Return nullptr — callers check for null before use.
-    return nullptr;
+    if (!t_completion_counter) {
+        // Allocate a minimal Object — BCL only uses this as an opaque token.
+        t_completion_counter = static_cast<Object*>(gc::alloc(sizeof(Object), nullptr));
+    }
+    return t_completion_counter;
 }
 
 bool ThreadPool_NotifyWorkItemComplete(Object* /*threadLocalCompletionCountObject*/,
     Int32 /*currentTimeMs*/) {
-    // No-op: CIL2CPP thread pool manages its own worker lifecycle
-    return false; // false = don't request more workers
+    // Return true if there's pending work — signals BCL to request more workers.
+    // Actual completion counting is done by the C++ worker loop (Metrics::total_completions).
+    return threadpool::has_pending_work();
 }
 
 void ThreadPool_NotifyWorkItemProgress() {
-    // No-op: CIL2CPP thread pool doesn't track progress metrics
+    // BCL calls this from long-running work items as a heartbeat.
+    // Notify the pool to prevent idle-shrinking during sustained work.
+    threadpool::notify_progress();
 }
 
 void ThreadPool_ReportThreadStatus(bool /*isWorking*/) {
-    // No-op: CIL2CPP thread pool manages its own worker states
+    // No-op: C++ worker loop already tracks active/idle state via WorkerState::active.
+    // BCL-side ReportThreadStatus would double-count since our dispatch is C++-driven.
 }
 
 void ThreadPool_RequestWorkerThread() {
-    // No-op: CIL2CPP thread pool has a fixed worker count
+    // Request worker injection — if below min_threads, injects immediately;
+    // otherwise lets the gate thread detect the need via throughput metrics.
+    threadpool::request_worker();
 }
 
 bool ThreadPoolWorkQueue_Dispatch() {
-    // No-op: CIL2CPP thread pool handles its own dispatch loop
-    return false; // false = no more work items
+    // C++ worker loop drives dispatch, not BCL dispatch loop.
+    // Return false = no BCL-side dispatch needed.
+    return false;
 }
 
 // Thread pool work item trampoline — delegates to compiled BCL DispatchWorkItem
@@ -1403,19 +1413,13 @@ void* RuntimeTypeCache_GetEventList(void* __this, int32_t /*listType*/, void* /*
 
 Object* CustomAttribute_GetAttributeUsage(void* /*decoratedAttribute*/) {
     // Return a default AttributeUsageAttribute(AttributeTargets.All, Inherited=true, AllowMultiple=false).
-    // Generated struct layout:
-    //   __type_info (8), __sync_block (4), f__attributeTarget (int32, 4), f__allowMultiple (bool, 1), f__inherited (bool, 1)
-    // AttributeTargets.All = 0x7FFF (32767)
-    constexpr int32_t AttributeTargets_All = 0x7FFF;
-    // System_AttributeUsageAttribute_TypeInfo is in generated code (global scope)
-    auto* obj = static_cast<Object*>(gc::alloc(24, &::System_AttributeUsageAttribute_TypeInfo));
-    auto* data = reinterpret_cast<char*>(obj);
-    // f__attributeTarget at offset 12
-    *reinterpret_cast<int32_t*>(data + 12) = AttributeTargets_All;
-    // f__allowMultiple at offset 16
-    *reinterpret_cast<bool*>(data + 16) = false;
-    // f__inherited at offset 17
-    *reinterpret_cast<bool*>(data + 17) = true;
+    constexpr int32_t AttributeTargets_All = 0x7FFF; // System.AttributeTargets.All
+    auto* obj = static_cast<Object*>(
+        gc::alloc(sizeof(AttributeUsageAttribute_Layout), &::System_AttributeUsageAttribute_TypeInfo));
+    auto* attr = reinterpret_cast<AttributeUsageAttribute_Layout*>(obj);
+    attr->f__attributeTarget = AttributeTargets_All;
+    attr->f__allowMultiple = false;
+    attr->f__inherited = true;
     return obj;
 }
 
