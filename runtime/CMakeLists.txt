@@ -117,6 +117,7 @@ set(RUNTIME_SOURCES
     src/icall/span_helpers.cpp
     src/async/task.cpp
     src/async/threadpool.cpp
+    src/async/hill_climbing.cpp
     src/async/cancellation.cpp
     src/async/iocp.cpp
     src/async/async_enumerable.cpp

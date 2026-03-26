@@ -36,6 +36,7 @@ add_executable(cil2cpp_tests
     test_memberinfo.cpp
     test_collections.cpp
     test_async.cpp
+    test_hill_climbing.cpp
     test_typed_reference.cpp
     test_unicode.cpp
     test_checked.cpp
@@ -52,6 +53,9 @@ target_link_libraries(cil2cpp_tests
 # Expose BoehmGC headers for tests that directly call GC APIs (e.g. GC_invoke_finalizers)
 # gc_SOURCE_DIR is set by bdwgc's project() command (cache variable)
 target_include_directories(cil2cpp_tests PRIVATE "${gc_SOURCE_DIR}/include")
+
+# Expose runtime internal headers for unit-testing internal modules (e.g. hill_climbing)
+target_include_directories(cil2cpp_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../src")
 
 # Copy ICU DLLs to test output directory (Windows only)
 if(WIN32 AND TARGET ICU::uc)

@@ -402,3 +402,64 @@ TEST(TaskTest, ConcurrentContinuations_ThreadSafe) {
     }
     EXPECT_EQ(counter.load(), num_threads * conts_per_thread);
 }
+
+// ===== Dynamic Thread Pool Tests =====
+
+TEST(ThreadPoolTest, Metrics_CompletionsAccumulate) {
+    int64_t before = threadpool::get_completions();
+    constexpr int num_items = 50;
+    std::atomic<int> counter{0};
+
+    auto callback = [](void* state) {
+        auto* c = static_cast<std::atomic<int>*>(state);
+        c->fetch_add(1);
+    };
+    for (int i = 0; i < num_items; i++) {
+        threadpool::queue_work(callback, &counter);
+    }
+    // Wait for all items to complete
+    for (int i = 0; i < 5000 && counter.load() < num_items; i++) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    EXPECT_EQ(counter.load(), num_items);
+
+    int64_t after = threadpool::get_completions();
+    EXPECT_GE(after - before, num_items);
+}
+
+TEST(ThreadPoolTest, Metrics_ThreadCountPositive) {
+    EXPECT_GT(threadpool::get_thread_count(), 0);
+    EXPECT_GE(threadpool::get_min_threads(), 1);
+    EXPECT_GE(threadpool::get_max_threads(), threadpool::get_min_threads());
+}
+
+TEST(ThreadPoolTest, Metrics_ActiveCountBounded) {
+    // Active count should never exceed total thread count
+    int active = threadpool::get_active_count();
+    int total = threadpool::get_thread_count();
+    EXPECT_GE(active, 0);
+    EXPECT_LE(active, total);
+}
+
+TEST(ThreadPoolTest, HasPendingWork_EmptyQueue) {
+    // After all work completes, queue should be empty
+    std::atomic<int> done{0};
+    threadpool::queue_work([](void* s) {
+        static_cast<std::atomic<int>*>(s)->store(1);
+    }, &done);
+    for (int i = 0; i < 1000 && done.load() == 0; i++) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    EXPECT_FALSE(threadpool::has_pending_work());
+}
+
+TEST(ThreadPoolTest, RequestWorker_DoesNotCrash) {
+    // Calling request_worker should not crash even when pool is at capacity
+    threadpool::request_worker();
+    EXPECT_TRUE(threadpool::is_initialized());
+}
+
+TEST(ThreadPoolTest, NotifyProgress_DoesNotCrash) {
+    threadpool::notify_progress();
+    EXPECT_TRUE(threadpool::is_initialized());
+}
